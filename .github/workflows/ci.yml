@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Nothing here needs a cluster, a database, or a network. That is a property of the fleet rather
+# than of the workflow: every server answers from data in its own image, and `offline-check` proves
+# it by taking the network away.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync the workspace
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check . && uv run ruff format --check .
+
+      - name: Types
+        run: uv run mypy packages/mcp_server_kit/src servers/props/src
+
+      - name: Tests
+        run: uv run pytest -q
+
+  offline:
+    # The strongest form of the no-egress claim, and the one that does not trust our own code: run
+    # the whole suite in a network namespace with no route off the host. A server quietly reaching
+    # an upstream fails here and nowhere else.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync the workspace
+        run: uv sync --frozen
+
+      - name: Run the suite with no network
+        run: unshare --net -- uv run python scripts/offline_check.py -q
+
+  manifests:
+    # A manifest is a claim about a tool surface, and Chemclaw3's history is a list of claims that
+    # outlived the code they described. The per-server tests check each manifest against a running
+    # server; this job checks the fleet-level invariants a single server cannot see.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync the workspace
+        run: uv sync --frozen
+
+      - name: Every manifest is registered, unique, and points at its own server
+        run: uv run pytest -q tests

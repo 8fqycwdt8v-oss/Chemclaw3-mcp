@@ -1,0 +1,28 @@
+[project]
+name = "chemclaw-mcp-props"
+version = "0.1.0"
+description = "MCP server: solvent and pure-component properties for process R&D, from a vendored table."
+requires-python = ">=3.11"
+# Deliberately short. The engine is arithmetic over a CSV, so this server's image carries the MCP
+# transport and nothing else — no CoolProp, no scientific stack, no HTTP client. Adding a heavy
+# dependency here is a decision to be argued in the pull request that adds it.
+dependencies = [
+    "mcp-server-kit",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_props"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/chemclaw_mcp_props/data" = "chemclaw_mcp_props/data"
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

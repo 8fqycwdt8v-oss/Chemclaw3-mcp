@@ -1,0 +1,50 @@
+[project]
+name = "chemclaw3-mcp"
+version = "0.1.0"
+description = "MCP tool servers for the Chemclaw3 process-R&D agent. One capability, one server, one process."
+requires-python = ">=3.11"
+# The workspace root installs nothing of its own: every runtime dependency belongs to the server
+# that needs it, so a server's image carries its dependency closure and nobody else's.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mcp-server-kit",
+    "chemclaw-mcp-props",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6.0",
+]
+
+[tool.uv.workspace]
+members = ["packages/*", "servers/*"]
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }
+chemclaw-mcp-props = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+# Every package ships its own `src/` layout; point mypy at the sources rather than the installed
+# copies so a type error is reported against the file a person edits.
+mypy_path = "packages/mcp_server_kit/src:servers/props/src"
+
+[[tool.mypy.overrides]]
+module = ["mcp.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "packages", "servers"]

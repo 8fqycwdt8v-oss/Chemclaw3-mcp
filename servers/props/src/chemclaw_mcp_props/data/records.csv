@@ -1,0 +1,45 @@
+name,aliases,cas,smiles,formula,mw,bp_c,mp_c,density_20c,flash_point_c,dielectric,hansen_d,hansen_p,hansen_h,water_miscibility,peroxide_former,ich_class,ich_limit_ppm,greenness_band,hazard_flags,antoine_a,antoine_b,antoine_c,hvap_kj_mol
+water,H2O;aqua,7732-18-5,O,H2O,18.02,100.0,0.0,0.998,,80.1,15.5,16.0,42.3,miscible,no,not_listed,,recommended,,4.6543,1435.264,-64.848,40.65
+methanol,MeOH,67-56-1,CO,CH4O,32.04,64.7,-97.6,0.792,11,32.7,15.1,12.3,22.3,miscible,no,2,3000,problematic,acute_tox;highly_flammable,5.20409,1581.341,-33.50,35.21
+ethanol,EtOH,64-17-5,CCO,C2H6O,46.07,78.4,-114.1,0.789,13,24.5,15.8,8.8,19.4,miscible,no,3,5000,recommended,highly_flammable,5.24677,1598.673,-46.424,38.56
+1-propanol,n-propanol;NPA,71-23-8,CCCO,C3H8O,60.10,97.2,-126.0,0.804,22,20.1,16.0,6.8,17.4,miscible,no,3,5000,recommended,flammable,,,,41.44
+2-propanol,IPA;isopropanol;isopropyl alcohol,67-63-0,CC(C)O,C3H8O,60.10,82.5,-88.0,0.785,12,19.9,15.8,6.1,16.4,miscible,yes,3,5000,recommended,highly_flammable;peroxide_former,4.8610,1357.427,-75.814,39.85
+1-butanol,n-butanol;NBA,71-36-3,CCCCO,C4H10O,74.12,117.7,-89.8,0.810,35,17.8,16.0,5.7,15.8,partial,no,3,5000,recommended,flammable,,,,43.29
+tert-butanol,TBA;2-methyl-2-propanol,75-65-0,CC(C)(C)O,C4H10O,74.12,82.4,25.7,0.781,11,12.5,15.2,5.1,14.7,miscible,no,not_listed,,problematic,flammable,,,,39.07
+tert-amyl alcohol,TAA;2-methyl-2-butanol,75-85-4,CCC(C)(C)O,C5H12O,88.15,102.0,-8.8,0.805,19,5.8,15.6,2.7,13.4,partial,no,not_listed,,problematic,flammable,,,,
+ethylene glycol,"MEG;1,2-ethanediol",107-21-1,OCCO,C2H6O2,62.07,197.3,-12.9,1.113,111,37.7,17.0,11.0,26.0,miscible,no,2,620,recommended,acute_tox;stot_re,,,,50.5
+acetone,propan-2-one;DMK,67-64-1,CC(C)=O,C3H6O,58.08,56.1,-94.7,0.791,-20,20.7,15.5,10.4,7.0,miscible,no,3,5000,recommended,highly_flammable,4.42448,1312.253,-32.445,29.10
+methyl ethyl ketone,MEK;2-butanone,78-93-3,CCC(C)=O,C4H8O,72.11,79.6,-86.6,0.805,-9,18.5,16.0,9.0,5.1,partial,no,3,5000,recommended,highly_flammable,,,,31.30
+methyl isobutyl ketone,MIBK;4-methyl-2-pentanone,108-10-1,CC(C)CC(C)=O,C6H12O,100.16,116.5,-80.0,0.802,14,13.1,15.3,6.1,4.1,partial,no,2,4500,problematic,flammable;stot_se,,,,
+ethyl acetate,EtOAc,141-78-6,CCOC(C)=O,C4H8O2,88.11,77.1,-83.6,0.902,-4,6.0,15.8,5.3,7.2,partial,no,3,5000,recommended,highly_flammable,4.22809,1245.702,-55.189,31.94
+isopropyl acetate,IPAc,108-21-4,CC(C)OC(C)=O,C5H10O2,102.13,88.6,-73.0,0.872,2,5.6,14.9,4.5,8.2,partial,no,3,5000,recommended,highly_flammable,,,,
+n-butyl acetate,BuOAc,123-86-4,CCCCOC(C)=O,C6H12O2,116.16,126.1,-78.0,0.882,22,5.1,15.8,3.7,6.3,immiscible,no,3,5000,recommended,flammable,,,,
+tetrahydrofuran,THF,109-99-9,C1CCOC1,C4H8O,72.11,66.0,-108.4,0.889,-14,7.6,16.8,5.7,8.0,miscible,yes,2,720,problematic,highly_flammable;peroxide_former;carcinogen_cat2,4.12118,1202.942,-46.818,29.80
+2-methyltetrahydrofuran,2-MeTHF;MeTHF,96-47-9,CC1CCCO1,C5H10O,86.13,80.2,-136.0,0.854,-11,6.97,16.9,5.0,4.3,partial,yes,2,500,problematic,highly_flammable;peroxide_former,,,,
+"1,4-dioxane",dioxane,123-91-1,C1COCCO1,C4H8O2,88.11,101.3,11.8,1.034,12,2.2,17.5,1.8,9.0,miscible,yes,2,380,highly_hazardous,highly_flammable;peroxide_former;carcinogen_cat1b;svhc,,,,
+diethyl ether,ether;Et2O,60-29-7,CCOCC,C4H10O,74.12,34.6,-116.3,0.713,-45,4.3,14.5,2.9,5.1,partial,yes,3,5000,hazardous,extremely_flammable;peroxide_former,,,,26.52
+methyl tert-butyl ether,MTBE;TBME,1634-04-4,COC(C)(C)C,C5H12O,88.15,55.2,-109.0,0.740,-28,4.5,14.8,4.3,5.0,partial,yes,3,5000,problematic,extremely_flammable;peroxide_former,,,,
+cyclopentyl methyl ether,CPME,5614-37-9,COC1CCCC1,C6H12O,100.16,106.0,-140.0,0.860,-1,4.76,16.7,4.3,4.3,partial,yes,not_listed,,problematic,highly_flammable;peroxide_former,,,,
+dichloromethane,DCM;methylene chloride;MDC,75-09-2,ClCCl,CH2Cl2,84.93,39.6,-96.7,1.326,,8.9,17.0,7.3,7.1,partial,no,2,600,hazardous,carcinogen_cat2;stot_se,4.53691,1327.016,-20.474,28.06
+chloroform,trichloromethane,67-66-3,ClC(Cl)Cl,CHCl3,119.38,61.2,-63.5,1.489,,4.8,17.8,3.1,5.7,immiscible,no,2,60,highly_hazardous,carcinogen_cat2;reprotoxic_cat2;stot_re,4.20772,1233.129,-40.953,29.24
+"1,2-dichloroethane","EDC;1,2-DCE",107-06-2,ClCCCl,C2H4Cl2,98.96,83.5,-35.7,1.253,13,10.4,19.0,7.4,4.1,immiscible,no,1,5,highly_hazardous,highly_flammable;carcinogen_cat1b,,,,
+toluene,PhMe;methylbenzene,108-88-3,Cc1ccccc1,C7H8,92.14,110.6,-95.0,0.867,4,2.4,18.0,1.4,2.0,immiscible,no,2,890,problematic,highly_flammable;reprotoxic_cat2;stot_re,4.07827,1343.943,-53.773,33.18
+benzene,PhH,71-43-2,c1ccccc1,C6H6,78.11,80.1,5.5,0.876,-11,2.3,18.4,0.0,2.0,immiscible,no,1,2,highly_hazardous,highly_flammable;carcinogen_cat1a;mutagen_cat1b;svhc,4.72583,1660.652,-1.461,30.72
+p-xylene,"para-xylene;1,4-dimethylbenzene",106-42-3,Cc1ccc(C)cc1,C8H10,106.17,138.3,13.2,0.861,27,2.3,17.6,1.0,3.1,immiscible,no,2,2170,problematic,flammable;stot_re,,,,
+n-heptane,heptane,142-82-5,CCCCCCC,C7H16,100.20,98.4,-90.6,0.684,-4,1.9,15.3,0.0,0.0,immiscible,no,3,5000,problematic,highly_flammable;aspiration_hazard;aquatic_tox,4.02832,1268.636,-56.199,31.77
+n-hexane,hexane,110-54-3,CCCCCC,C6H14,86.18,68.7,-95.3,0.659,-22,1.9,14.9,0.0,0.0,immiscible,no,2,290,hazardous,highly_flammable;reprotoxic_cat2;stot_re;aspiration_hazard,4.00266,1171.530,-48.784,28.85
+cyclohexane,,110-82-7,C1CCCCC1,C6H12,84.16,80.7,6.5,0.779,-20,2.0,16.8,0.0,0.2,immiscible,no,2,3880,problematic,highly_flammable;aspiration_hazard;aquatic_tox,3.9920,1216.930,-48.621,29.97
+methylcyclohexane,MCH,108-87-2,CC1CCCCC1,C7H14,98.19,100.9,-126.6,0.770,-4,2.0,16.0,0.0,1.0,immiscible,no,2,1180,problematic,highly_flammable;aspiration_hazard;aquatic_tox,,,,
+acetonitrile,MeCN;ACN,75-05-8,CC#N,C2H3N,41.05,81.6,-45.0,0.786,2,37.5,15.3,18.0,6.1,miscible,no,2,410,problematic,highly_flammable;acute_tox,4.27873,1355.374,-37.853,29.75
+"N,N-dimethylformamide",DMF,68-12-2,CN(C)C=O,C3H7NO,73.09,153.0,-60.4,0.944,58,36.7,17.4,13.7,11.3,miscible,no,2,880,highly_hazardous,reprotoxic_cat1b;svhc,,,,38.30
+"N,N-dimethylacetamide",DMAc;DMA,127-19-5,CC(=O)N(C)C,C4H9NO,87.12,165.0,-20.0,0.937,63,37.8,16.8,11.5,10.2,miscible,no,2,1090,highly_hazardous,reprotoxic_cat1b;svhc,,,,
+N-methylpyrrolidone,NMP;1-methyl-2-pyrrolidinone,872-50-4,CN1CCCC1=O,C5H9NO,99.13,202.0,-24.0,1.028,91,32.2,18.0,12.3,7.2,miscible,no,2,530,highly_hazardous,reprotoxic_cat1b;svhc,,,,
+dimethyl sulfoxide,DMSO,67-68-5,CS(C)=O,C2H6OS,78.13,189.0,18.5,1.100,89,46.7,18.4,16.4,10.2,miscible,no,3,5000,problematic,skin_permeation_enhancer,,,,
+sulfolane,tetramethylene sulfone,126-33-0,O=S1(=O)CCCC1,C4H8O2S,120.17,285.0,27.5,1.261,165,43.3,20.3,18.2,10.9,miscible,no,2,160,problematic,acute_tox,,,,
+pyridine,,110-86-1,c1ccncc1,C5H5N,79.10,115.2,-41.6,0.982,20,12.3,19.0,8.8,5.9,miscible,no,2,200,hazardous,highly_flammable;acute_tox,,,,
+triethylamine,TEA;Et3N,121-44-8,CCN(CC)CC,C6H15N,101.19,89.5,-114.7,0.726,-9,2.4,15.5,0.4,1.0,partial,no,3,5000,hazardous,highly_flammable;acute_tox;corrosive,,,,
+acetic acid,AcOH,64-19-7,CC(O)=O,C2H4O2,60.05,118.1,16.6,1.049,39,6.2,14.5,8.0,13.5,miscible,no,3,5000,recommended,flammable;corrosive,,,,23.70
+formic acid,,64-18-6,OC=O,CH2O2,46.03,100.8,8.4,1.220,50,58.5,14.3,11.9,16.6,miscible,no,3,5000,problematic,corrosive;flammable,,,,
+anisole,methoxybenzene,100-66-3,COc1ccccc1,C7H8O,108.14,153.7,-37.5,0.995,41,4.3,17.8,4.1,6.8,immiscible,no,3,5000,recommended,flammable,,,,
+dimethyl carbonate,DMC,616-38-6,COC(=O)OC,C3H6O3,90.08,90.0,4.6,1.070,17,3.1,15.5,8.6,9.7,partial,no,not_listed,,recommended,highly_flammable,,,,
+propylene carbonate,"PC;4-methyl-1,3-dioxolan-2-one",108-32-7,CC1COC(=O)O1,C4H6O3,102.09,242.0,-48.8,1.205,132,64.9,20.0,18.0,4.1,partial,no,not_listed,,recommended,eye_irritant,,,,
