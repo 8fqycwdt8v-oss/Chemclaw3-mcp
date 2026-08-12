@@ -1,0 +1,52 @@
+# The `props` bundle, as Chemclaw3 reads it.
+#
+# This is a connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): there is
+# no `server/` half in the Chemclaw3 tree, only this manifest and an address. Drop this directory
+# into a path on `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.props.url` in the Helm chart — hosting is a deployment
+# fact and does not belong in a manifest.
+name: props
+description: >-
+  Solvent and pure-component properties for process R&D, from a vendored, checksummed table of 44
+  process solvents: boiling and melting point, density, flash point, dielectric constant, Hansen
+  parameters, water miscibility, peroxide formation, ICH Q3C class and residual-solvent limit, and
+  the GHS hazard flags behind an indicative greenness band. Also computes vapour pressure at a
+  temperature, boiling point under vacuum, and a filtered, Hansen-ranked solvent-swap shortlist.
+  Pure and synchronous — no store, no durable state, and no network call at any point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8850/mcp
+  health_url: http://127.0.0.1:8850/healthz
+  # Generous for what is a dictionary lookup and a bisection, because the bound exists to stop a
+  # mute connector hanging a turn, not to police a fast one.
+  request_timeout: 15
+  # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here
+  # and refuse it the moment a deployment points this at a real host — and a manifest whose auth
+  # mode changes with its address is one whose serving side gets it wrong. The token env var is the
+  # same name on both sides: Chemclaw3 reads it to send, `app.py` reads it to verify.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_PROPS_TOKEN
+  tools:
+    - list_solvents
+    - solvent_properties
+    - vapour_pressure
+    - boiling_point_at_pressure
+    - solvent_swap_candidates
+    - compare_solvents
+  # Every tool is a pure function of its arguments and a read of a read-only table: nothing here
+  # spends compute worth gating, writes anything, or has an effect the plan gate should hold. So an
+  # agent may use all six while building the plan a human is asked to approve — which is the point,
+  # since "what is the flash point of the solvent you are proposing" is a question that has to be
+  # answerable *before* approval, not after.
+  read_only:
+    - list_solvents
+    - solvent_properties
+    - vapour_pressure
+    - boiling_point_at_pressure
+    - solvent_swap_candidates
+    - compare_solvents

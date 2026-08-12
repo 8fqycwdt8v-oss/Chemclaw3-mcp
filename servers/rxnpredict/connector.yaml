@@ -1,0 +1,43 @@
+# The `rxnpredict` bundle, as Chemclaw3 reads it.
+#
+# Drop this directory onto `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit
+# (D-2026-08-09-a-connector-we-do-not-run). The URL below is the loopback dev default; a cluster
+# address is set per deployment by `CHEMCLAW_CONNECTOR_URLS` or `connectors.rxnpredict.url`.
+name: rxnpredict
+description: >-
+  Forward reaction prediction and reaction-condition prediction by ensemble: several open-source
+  models are run in parallel and their ranked outputs combined by Borda-weighted voting, gated on a
+  coarse SMARTS reaction class. Answers "what will this give?" and "how would people run this?",
+  always with the per-model spread beside the consensus. Predictions from literature-trained models,
+  not measurements — strong on common couplings, weak on stereochemistry and rare classes.
+
+endpoint:
+  transport: http
+  url: http://127.0.0.1:8857/mcp
+  health_url: http://127.0.0.1:8857/healthz
+  # Generous, and deliberately so. A first call pays the model load — a T5 checkpoint off local disk
+  # into memory — and every later call is inference plus the ensemble. This is the bound that stops
+  # a wedged predictor hanging a turn, not a performance target. If a measured call ever approaches
+  # it, the answer is a durable job (`jobs:`), not a larger number here.
+  request_timeout: 120
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_RXNPREDICT_TOKEN
+  tools:
+    - predict_forward_reaction
+    - predict_reaction_conditions
+    - predict_forward_single_model
+    - predict_conditions_single_model
+    - list_available_models
+    - classify_reaction
+  # Every tool is a pure function of its arguments: model inference plus an in-process cache, no
+  # store, no durable state, nothing an unapproved plan could change. Upstream's
+  # `clear_prediction_cache` was the one exception and is not served here — an agent has no reason
+  # to clear a cache, and dropping it leaves this server with no state-changing surface at all.
+  read_only:
+    - predict_forward_reaction
+    - predict_reaction_conditions
+    - predict_forward_single_model
+    - predict_conditions_single_model
+    - list_available_models
+    - classify_reaction

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "amide_formation_acetanilide",
+    "reactants": "CC(=O)Cl.Nc1ccccc1",
+    "expected_product": "CC(=O)Nc1ccccc1",
+    "notes": "Acetyl chloride + aniline -> acetanilide."
+  },
+  {
+    "name": "fischer_esterification",
+    "reactants": "CC(=O)O.CCO",
+    "expected_product": "CCOC(C)=O",
+    "notes": "Acetic acid + ethanol -> ethyl acetate."
+  },
+  {
+    "name": "suzuki_coupling",
+    "reactants": "Brc1ccccc1.OB(O)c1ccccc1",
+    "expected_product": "c1ccc(-c2ccccc2)cc1",
+    "notes": "Bromobenzene + phenylboronic acid -> biphenyl (with Pd cat, base)."
+  }
+]

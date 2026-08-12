@@ -1,0 +1,8 @@
+{
+  "name": "rxnpredict-trust-priors",
+  "version": "0.1.0",
+  "licence": "CC0-1.0 (public domain dedication) — first-party content produced in this repository",
+  "retrieved_from": "Produced by scripts/calibrate_rxnpredict_priors.py, run by a person outside the serving image against a labelled reaction set, and reviewed in the pull request that changes it. Not fetched at runtime; nothing reads this field as an address.",
+  "description": "Per-reaction-class trust priors: the weight each predictor's votes carry in the meta-aggregator, keyed by the coarse SMARTS class from engine/meta/classifier.py. SHIPPED EMPTY ON PURPOSE — no calibration run has been performed against this fork's predictor set, and inventing per-class weights would be fabricating the numbers that decide every ranking this server produces. With an empty table the aggregator falls back to the global per-model priors in Settings.model_trust_priors, which are the figures each predictor's own published benchmark reports. Replace this file with a real calibration before relying on class-specific weighting, and bump the version when you do.",
+  "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+}
