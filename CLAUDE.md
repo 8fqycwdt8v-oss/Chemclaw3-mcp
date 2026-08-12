@@ -36,9 +36,9 @@ directions, because a map nobody verifies is read, believed, and wrong.
 **One tool family = one server = one directory = one process = one port = one `connector.yaml`.**
 
 Never bolt a tool onto an unrelated server because it is convenient. A server is a *dependency
-closure* as much as a capability: `retro` will carry AiZynthFinder and a few hundred MB of models,
-and the reason `props` starts in under a second is that it carries none of that. Merging two
-capabilities merges their images, their restart blast radius and their scaling decisions.
+closure* as much as a capability: `retro` carries 40+ ML engines across as many containers, and the
+reason `props` starts in under a second is that it carries none of that. Merging two capabilities
+merges their images, their restart blast radius and their scaling decisions.
 
 The name is one string, used four times, and they must match: the directory under `servers/`, the
 package suffix (`chemclaw_mcp_<name>`), the manifest's `name:`, and the key Chemclaw3 addresses it
@@ -58,6 +58,30 @@ servers/<name>/
 │   └── data/                        # records + dataset.json (licence, sha256, retrieved_from)
 └── tests/
 ```
+
+## Servers hosted in another repository
+
+Not every server in the fleet lives here, and that is the seam working as designed rather than an
+exception to it. `retro` (`chemclaw2_retrosynthesis`) and `rxnpredict` (`chemclaw2_forward`) are
+multi-container systems with GPU profiles and their own release cadence; pulling them into this
+workspace would buy nothing and cost their independence. Chemclaw3 does not care where a server is
+hosted — `D-2026-08-09-a-connector-we-do-not-run` made the address the whole knob.
+
+What such a server owes the fleet is the same contract, checked the same way:
+
+- **A `manifests/<name>/connector.yaml` here**, with every tool classified. That is this
+  repository's job, and the reason `manifests/` is a directory rather than a detail of `servers/`.
+- **Bearer auth enforced on `/mcp` itself.** An external server built on `fastapi-mcp` applies its
+  credential as a route dependency, and its MCP surface is *mounted* — a mount bypasses the
+  enclosing app's dependencies. Verify against a running server; do not read it off the source.
+- **The no-egress posture, or an argued exemption.** A gateway calling its own backend Services is
+  east-west traffic and fine. A predictor calling a third-party API at request time is not, and
+  `chemclaw2_forward` ships one that is live as soon as its optional extra is installed.
+- **A row in `MODULES.md`** saying where it lives and what it costs to consume.
+
+The one thing they cannot inherit is `mcp_server_kit`, since they are not in this workspace. That is
+a reason to keep the kit's behaviours documented here in prose as well as in code — the four traps
+above are properties of the MCP transport, not of this repository.
 
 ## The three layers inside a server
 
@@ -198,7 +222,8 @@ this.
 | Port | Server | Status |
 | --- | --- | --- |
 | 8850 | `props` | built |
-| 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `retro`, `rxnsearch`, `blocks` | proposed |
+| 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
+| 8854, 8857 | `retro`, `rxnpredict` | **hosted in the chemclaw2 repositories** — adopted, not rebuilt |
 | 8860+ | compound identity & data | proposed |
 | 8870+ | safety, tox & regulatory | proposed |
 | 8880+ | literature & IP | proposed |
