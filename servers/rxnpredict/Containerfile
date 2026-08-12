@@ -1,0 +1,57 @@
+# The `rxnpredict` server as one rootless image, with its model weights baked in.
+#
+# The build fetches checkpoints; the runtime cannot. That split is the whole design: a predictor
+# library asked for a model it cannot find will reach a hub, and the point of this server is that
+# it never reaches anything. So the fetch happens once, here, under review — and the runtime stage
+# sets the offline switches that make a missing weight an error instead of a download.
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY servers/rxnpredict /build/servers/rxnpredict
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
+        ./packages/mcp_server_kit "./servers/rxnpredict[reaction_t5,rxn_insight]"
+
+# The one sanctioned moment this fleet reaches a network, and it is a build step in a stage that is
+# thrown away. `MCP_EGRESS_ALLOW` is set only here; it appears in no runtime environment and in no
+# deployment.
+ENV HF_HOME=/opt/models/hf
+ARG MODEL_HOSTS=huggingface.co,cdn-lfs.huggingface.co
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
+    && MCP_EGRESS_ALLOW="${MODEL_HOSTS}" MCP_EGRESS_GUARD=off \
+       python /build/servers/rxnpredict/scripts/fetch_models.py \
+    && find /opt/models -type f -print0 | xargs -0 sha256sum > /opt/models/SHA256SUMS
+
+FROM python:3.11-slim
+
+ARG UID=1001
+RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+
+COPY --from=build /wheels /wheels
+COPY --from=build /opt/models /opt/models
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
+    && rm -rf /wheels
+
+USER ${UID}
+EXPOSE 8857
+
+# The three switches that keep inference local. The first two stop the HuggingFace libraries from
+# consulting the hub at all — including for a metadata check on a model they already have, which is
+# a network call an "offline" server would otherwise still make. The guard is the backstop that
+# catches whatever else tries.
+ENV HF_HOME=/opt/models/hf \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    MCP_EGRESS_GUARD=on \
+    CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models
+
+# Longer start period than a light server's: the first probe must not fire while a T5 checkpoint is
+# still being read off disk into memory.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8857/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_rxnpredict.app:app", "--host", "0.0.0.0", "--port", "8857"]

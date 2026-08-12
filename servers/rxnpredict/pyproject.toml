@@ -1,0 +1,45 @@
+[project]
+name = "chemclaw-mcp-rxnpredict"
+version = "0.1.0"
+description = "MCP server: forward reaction and reaction-condition prediction by open-source model ensemble."
+requires-python = ">=3.11"
+# The core install carries the gateway and RDKit and nothing else. Every predictor's heavy
+# dependency closure is an extra, because they do not co-install: `molecular_transformer` and
+# `reagents_mt` pin legacy PyTorch through OpenNMT-py and cannot share an environment with
+# `reaction_t5`. A predictor whose extra is absent reports itself unavailable with the reason.
+dependencies = [
+    "mcp-server-kit",
+    "pydantic-settings>=2.4",
+    "rdkit>=2024.3.1",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+# The pair the shipped image installs — upstream's Phase A, and the only two that co-install.
+reaction_t5 = ["accelerate>=0.27", "sentencepiece>=0.2", "torch>=2.1", "transformers>=4.40"]
+rxn_insight = ["rxn-insight>=0.1.0", "rxnmapper>=0.3.0"]
+# Adapters that ship but are not installed: each needs a checkpoint fetched by a person, and two of
+# them pin a torch that conflicts with the above. See README.md.
+t5chem = ["sentencepiece>=0.2", "t5chem>=0.1.0", "torch>=2.1", "transformers>=4.40"]
+chemformer = ["torch>=2.1", "transformers>=4.40"]
+megan = ["torch>=2.1"]
+graphrxn = ["torch>=2.1"]
+molecular_transformer = ["OpenNMT-py>=2.2,<3"]
+reagents_mt = ["OpenNMT-py>=2.2,<3"]
+parrot = ["torch>=2.1", "transformers>=4.40"]
+two_stage_dnn = ["scikit-learn>=1.4", "torch>=2.1"]
+askcos_condition = []
+dev = ["httpx>=0.27", "pytest>=8.3", "pytest-asyncio>=0.24", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_rxnpredict"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/chemclaw_mcp_rxnpredict/data" = "chemclaw_mcp_rxnpredict/data"
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

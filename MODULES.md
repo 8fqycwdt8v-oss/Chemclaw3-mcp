@@ -30,6 +30,36 @@ temperature, boiling point under vacuum, and a filtered, Hansen-ranked swap shor
 *Why first:* pure, deterministic, genuinely offline by nature, and it exercises every part of the
 mechanism the rest will copy. See `servers/props/README.md`.
 
+### `rxnpredict` — forward reaction & condition prediction · port 8857 · **built**
+
+What will this reaction give, and how would people run it? Several open-source predictors run in
+parallel and their ranked outputs are combined by Borda-weighted voting, gated on a coarse SMARTS
+reaction class. The per-model spread comes back with the consensus, because "four of five agree"
+and "only the rule-based one produced this" are different answers.
+
+*Tools:* `predict_forward_reaction`, `predict_reaction_conditions`, `predict_forward_single_model`,
+`predict_conditions_single_model`, `list_available_models`, `classify_reaction` — all `read_only`.
+*Offline:* model checkpoints baked in at build time (`scripts/fetch_models.py` in a builder stage),
+with `HF_HUB_OFFLINE=1` at runtime; per-class trust priors as a checksummed vendored dataset.
+*Provenance:* **a fork of [`chemclaw2_forward`](https://github.com/8fqycwdt8v-oss/chemclaw2_forward)**
+(branch `claude/reaction-condition-meta-model-29YIz`, MIT, same owner) at commit `6affefb`. Upstream's
+own tests for the aggregator, classifier, priors and preprocessing pass here unmodified, which is
+the evidence the fork is the same model rather than a similar one.
+
+**What was removed from upstream, so nobody restores it believing it was an oversight:**
+
+- **The Phase-C `claude` predictor**, both adapters, `llm_prompts.py`, the `[claude]` extra and the
+  `anthropic_*` settings. It called the Anthropic API per request and was live by default —
+  `enabled_forward_models` defaults to `*`, so installing the extra with a key present was enough.
+- **`clear_prediction_cache`**, with the diskcache it cleared. The cache is now an in-process
+  bounded LRU, so there is no volume, no TTL, and no state-changing tool on this server at all.
+- **`health_check` as a tool.** `/healthz` comes from the transport.
+
+**What was fixed:** upstream applied its bearer check as a route `Depends(...)` while its MCP
+surface was *mounted* — and a mount bypasses the enclosing app's dependencies, so the credential
+guarded the REST routes and not `/mcp`. Here it is ASGI middleware, and `tests/test_server.py`
+asserts the 401. See `servers/rxnpredict/README.md` for the full list.
+
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic
@@ -59,11 +89,11 @@ crystallisation yield from a solubility curve, filtration and drying times.
 
 *Offline:* first-party correlations.
 
-### `retro` — retrosynthesis and route scoring · port 8854 · **superseded — adopt, do not build**
+### `retro` — retrosynthesis and route scoring · port 8854 · **adopted, not built**
 
-Two servers already exist for this, built for chemclaw2. Building a third would be the duplication
-this catalogue exists to prevent — see "Adopted from the chemclaw2 fleet" below. What remains is
-integration work, not implementation work.
+A server already exists for this, written for chemclaw2, and it covers far more than this entry
+ever proposed. Building a second would be the duplication this catalogue exists to prevent — see
+"Adopted from the chemclaw2 fleet" below. What remains is integration work.
 
 ### `rxnsearch` — reaction precedent statistics · port 8855 · proposed
 
@@ -83,18 +113,20 @@ in dev.
 
 ---
 
----
-
 ## Adopted from the chemclaw2 fleet
 
-Two MCP servers already exist, written for chemclaw2, and they cover more ground than the `retro`
-entry above ever proposed. **Adopt them; do not rebuild.** They stay in their own repositories —
-Chemclaw3's connector seam is built for exactly this (`D-2026-08-09-a-connector-we-do-not-run`), and
-both are multi-container systems with their own release cadence and GPU profiles that have no
-business inside this workspace.
+Two MCP servers already existed, written for chemclaw2. **`rxnpredict` has since been forked into
+this repository** (tranche 1, where its entry is authoritative); `retro` stays where it is.
 
-What this repository owes them is a `manifests/<name>/connector.yaml` each. What they owe Chemclaw3
-is listed under "before either can be consumed".
+The two went different ways for a reason worth recording. `chemclaw2_forward` is a single process
+whose heavy dependencies are already optional extras, so it forks cleanly and gains the fleet's
+transport, auth and no-egress posture in the process. `chemclaw2_retrosynthesis` is 40+ engines
+across as many containers with GPU profiles and its own release cadence; pulling that into this
+workspace would buy nothing and cost its independence, and Chemclaw3's connector seam is built for
+exactly that case (`D-2026-08-09-a-connector-we-do-not-run`).
+
+What this repository owes `retro` is a `manifests/retro/connector.yaml`. What it owes Chemclaw3 is
+listed under "before it can be consumed".
 
 ### `retro` — [`chemclaw2_retrosynthesis`](https://github.com/8fqycwdt8v-oss/chemclaw2_retrosynthesis) · port 8854
 
@@ -107,15 +139,10 @@ SCScore / round-trip boosts and full per-backend provenance. FastAPI, mounted as
 `retrosynthesis_multi_step`, `reaction_forward`, `reaction_classify`, `reaction_conditions`,
 `score_synthesizability`, `backends_list`, `healthz`, `version`.
 
-### `rxnpredict` — [`chemclaw2_forward`](https://github.com/8fqycwdt8v-oss/chemclaw2_forward) · port 8857
+### `rxnpredict` — **forked into this repository**, see tranche 1 above
 
-Forward reaction prediction and reaction-condition prediction, ensembled by Borda-weighted rank
-voting with mixture-of-experts gating on a SMARTS reaction class, plus calibrated per-class trust
-priors and a disk cache.
-
-*Tools:* `predict_forward_reaction`, `predict_reaction_conditions`, `predict_forward_single_model`,
-`predict_conditions_single_model`, `list_available_models`, `classify_reaction`,
-`clear_prediction_cache`, `health_check`.
+`chemclaw2_forward` is no longer consumed where it stands: it is forked into `servers/rxnpredict/`
+and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 
 ### What this does to the rest of the catalogue
 
@@ -128,37 +155,29 @@ priors and a disk cache.
   question — the failure `CLAUDE.md`'s duplication rule exists to prevent.
 - **`score_synthesizability` is new capability** with no counterpart anywhere in Chemclaw3.
 
-### Before either can be consumed
+### Before `retro` can be consumed
 
-1. **Neither ships a `connector.yaml`.** They were built for chemclaw2's `mcpServers` JSON config,
-   which Chemclaw3 has removed — and because its settings are `extra="forbid"`, exporting
-   `CHEMCLAW_MCP_SERVERS` now aborts startup rather than being ignored. Each needs a manifest with
-   its tools classified `read_only` / `state_changing`. Most are read-only;
-   `clear_prediction_cache` plainly is not.
+1. **It ships no `connector.yaml`.** Built for chemclaw2's `mcpServers` JSON config, which
+   Chemclaw3 has removed — and because its settings are `extra="forbid"`, exporting
+   `CHEMCLAW_MCP_SERVERS` now aborts startup rather than being ignored. It needs a manifest with
+   every tool classified `read_only` / `state_changing`. Most are read-only.
 2. **Verify the credential is enforced on `/mcp`, not just on the REST routes.** `chemclaw-retro`
    applies its bearer check as `Depends(require_token)` on each router, and its MCP surface is
-   *mounted* — and a mount bypasses the enclosing app's dependencies. That is precisely the defect
+   *mounted* — a mount bypasses the enclosing app's dependencies. That is precisely the defect
    Chemclaw3 recorded on its own connector fleet (a secret mounted, the control recorded as
-   enabled, every tool served to anything that could reach the pod). It may well be fine, because
-   `fastapi-mcp` may re-enter the route; it must be *checked* against a running server rather than
-   read off the source. `chemclaw2_forward` has **no auth at all**, and Chemclaw3's `HttpEndpoint`
-   refuses `auth: {mode: none}` on a non-loopback URL — so it cannot be deployed as-is.
+   enabled, every tool served to anything that could reach the pod), and the one found in
+   `chemclaw2_forward` and fixed by forking it. It may be fine here, because `fastapi-mcp` may
+   re-enter the route — but it must be *checked against a running server*, not read off the source.
 3. **`retrosynthesis_multi_step` takes minutes.** It is a Chemclaw3 durable job (`jobs:` in the
    manifest), not a synchronous tool. This is the first entry in the catalogue that needs one.
-4. **`chemclaw2_forward` calls the Anthropic API at request time.** Its Phase-C `claude` predictor
-   is not opt-in at the config level: `enabled_forward_models` defaults to `*`, so the predictor is
-   live as soon as the `[claude]` extra is installed and a key is present. Under this fleet's
-   no-egress rule it must be **disabled by configuration and the extra left uninstalled**, and the
-   NetworkPolicy must not have a hole that would let it work. A prediction server that silently
-   phones an external API is the exact thing the egress guard exists to catch.
-5. **East-west traffic is not egress, and the distinction has to be drawn explicitly.** Both
-   gateways call their own backend microservices over HTTP. That is legitimate and unavoidable;
-   what it is not is a licence to reach the internet. Their NetworkPolicies admit their own backend
-   Services and nothing else, and if either ever adopts `mcp_server_kit`, those Service addresses
-   are what `MCP_EGRESS_ALLOW` is for.
-6. **Model weights are fetched by a script.** `download_weights.sh` / `download_models.py` run at
-   build time, outside the serving image — which is exactly the sanctioned pattern. They must not
-   become a first-request lazy download.
+4. **East-west traffic is not egress, and the distinction has to be drawn explicitly.** The gateway
+   calls its own backend microservices over HTTP. That is legitimate and unavoidable; what it is
+   not is a licence to reach the internet. Its NetworkPolicy admits its own backend Services and
+   nothing else, and if it ever adopts `mcp_server_kit`, those Service addresses are what
+   `MCP_EGRESS_ALLOW` is for.
+5. **Model weights are fetched by a script.** `download_weights.sh` runs at build time, outside the
+   serving image — exactly the sanctioned pattern, and the same one `servers/rxnpredict/` now uses.
+   It must not become a first-request lazy download.
 
 ## Tranche 2 — Compound identity and reference data
 

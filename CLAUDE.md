@@ -62,9 +62,10 @@ servers/<name>/
 ## Servers hosted in another repository
 
 Not every server in the fleet lives here, and that is the seam working as designed rather than an
-exception to it. `retro` (`chemclaw2_retrosynthesis`) and `rxnpredict` (`chemclaw2_forward`) are
-multi-container systems with GPU profiles and their own release cadence; pulling them into this
-workspace would buy nothing and cost their independence. Chemclaw3 does not care where a server is
+exception to it. `retro` (`chemclaw2_retrosynthesis`) is a
+multi-container system with GPU profiles and its own release cadence; pulling it into this
+workspace would buy nothing and cost its independence. (`rxnpredict` went the other way — a single
+process with optional extras forks cleanly, and `servers/rxnpredict/README.md` records what changed.) Chemclaw3 does not care where a server is
 hosted — `D-2026-08-09-a-connector-we-do-not-run` made the address the whole knob.
 
 What such a server owes the fleet is the same contract, checked the same way:
@@ -75,8 +76,8 @@ What such a server owes the fleet is the same contract, checked the same way:
   credential as a route dependency, and its MCP surface is *mounted* — a mount bypasses the
   enclosing app's dependencies. Verify against a running server; do not read it off the source.
 - **The no-egress posture, or an argued exemption.** A gateway calling its own backend Services is
-  east-west traffic and fine. A predictor calling a third-party API at request time is not, and
-  `chemclaw2_forward` ships one that is live as soon as its optional extra is installed.
+  east-west traffic and fine. A predictor calling a third-party API at request time is not — which
+  is one of the reasons `chemclaw2_forward` was forked rather than adopted.
 - **A row in `MODULES.md`** saying where it lives and what it costs to consume.
 
 The one thing they cannot inherit is `mcp_server_kit`, since they are not in this workspace. That is
@@ -222,8 +223,9 @@ this.
 | Port | Server | Status |
 | --- | --- | --- |
 | 8850 | `props` | built |
+| 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
 | 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
-| 8854, 8857 | `retro`, `rxnpredict` | **hosted in the chemclaw2 repositories** — adopted, not rebuilt |
+| 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
 | 8860+ | compound identity & data | proposed |
 | 8870+ | safety, tox & regulatory | proposed |
 | 8880+ | literature & IP | proposed |

@@ -1,0 +1,39 @@
+# Default-deny egress for the `rxnpredict` server.
+#
+# This one carries more weight than the fleet's other policies. Its predictors are ML libraries that
+# fetch weights from a hub the moment they cannot find them locally, so this empty `egress:` block
+# is what turns "the checkpoints are baked into the image" from an intention into a fact. If a build
+# ever ships without the weights, the server fails loudly on first inference instead of quietly
+# downloading a model nobody reviewed.
+#
+# `policyTypes` names both directions and `egress:` is an empty list rather than an absent key —
+# the same thing to Kubernetes, and a visibly deliberate choice to a reader. `tests/test_deploy.py`
+# asserts both halves.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chemclaw-mcp-rxnpredict
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-rxnpredict
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-rxnpredict
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: chemclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8857
+  # Empty, and not even DNS. This server has no upstream: the models are on its own disk and the
+  # only thing it talks to is whoever called it.
+  egress: []
