@@ -12,6 +12,8 @@ import math
 import pytest
 from chemclaw_mcp_props import tools
 from chemclaw_mcp_props.engine import correlations, records
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import ValidationError
 
 
 def test_solvent_properties_resolves_an_abbreviation() -> None:
@@ -74,6 +76,67 @@ def test_a_vacuum_that_freezes_the_solvent_is_refused() -> None:
     """Sulfolane melts at 27.5 °C; a deep vacuum reaches its boiling point below that."""
     with pytest.raises(ValueError, match="freezes in the still"):
         tools.boiling_point_at_pressure("sulfolane", 0.001)
+
+
+def test_a_pressure_the_solvent_never_reaches_is_refused() -> None:
+    """It used to answer "400.0 °C" — the end of its own search, wearing the shape of a result.
+
+    The bisection bracketed [mp, 400 °C] and checked only the low end, so any target above the
+    vapour pressure at 400 °C converged on the bound. Toluene at 200 bar and at 10 000 bar both
+    came back as 400.0 °C. The realistic way to ask an unreachable pressure is a unit slip, so the
+    message says which unit this argument is in.
+    """
+    for pressure in (200_000.0, 10_000_000.0):
+        with pytest.raises(ValueError, match="does not reach"):
+            tools.boiling_point_at_pressure("toluene", pressure)
+    with pytest.raises(ValueError, match="mbar, not Pa or bar"):
+        tools.boiling_point_at_pressure("toluene", 101_325.0)  # atmospheric, in the wrong unit
+
+
+def test_a_temperature_past_the_correlation_s_ceiling_is_refused() -> None:
+    """Water at 500 °C used to come back as 424 bar labelled "good to about a percent".
+
+    Past the critical point there is no vapour pressure at all, and the module docstring claimed a
+    range fallback the code never had. The table records no fitted range per row, so the bound is a
+    blanket one — but it is a bound, and it refuses instead of extrapolating.
+    """
+    assert tools.vapour_pressure("water", 300.0).pressure_bar > 1.0
+    with pytest.raises(ValueError, match=r"above the 400\.0 °C ceiling"):
+        tools.vapour_pressure("water", 500.0)
+
+
+async def test_an_out_of_vocabulary_constraint_is_refused_not_silently_applied() -> None:
+    """A typo used to block every candidate with a reason that read like real chemistry.
+
+    `require_water_miscibility="immisible"` matched no row, so all 43 candidates came back blocked
+    with "is miscible with water, not immisible" and the shortlist read as "nothing works". As a
+    `Literal` the value is refused with the allowed set in the message.
+
+    Driven through the tool manager rather than by calling the function, because that is where the
+    refusal happens: the annotation is a *tool argument* schema, and a direct Python call does not
+    consult it. This is the path the agent takes.
+    """
+    with pytest.raises(ToolError) as raised:
+        await tools.server._tool_manager.call_tool(
+            "solvent_swap_candidates",
+            {"name": "dichloromethane", "require_water_miscibility": "immisible"},
+        )
+    assert isinstance(raised.value.__cause__, ValidationError)
+    assert "immiscible" in str(raised.value)
+
+
+def test_excluding_an_ich_class_actually_excludes_it() -> None:
+    """`max_ich_class` read as a ceiling while class 1 is the worst, so "1" filtered nothing at all.
+
+    Naming the exclusion removes the direction question entirely: what is passed is what is
+    rejected.
+    """
+    result = tools.solvent_swap_candidates("dichloromethane", top_n=40, exclude_ich_classes=["2"])
+    blocked = [c for c in result.candidates if "ICH Q3C class 2" in " ".join(c.blockers)]
+    assert blocked, "the table carries class 2 solvents; excluding the class must block them"
+    for candidate in result.candidates:
+        if candidate.passes_constraints:
+            assert candidate.ich_class != "2"
 
 
 def test_swap_candidates_never_silently_worsen_the_hazard_band() -> None:

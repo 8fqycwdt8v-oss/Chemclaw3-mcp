@@ -129,11 +129,27 @@ class BodySizeLimit:
     class shipped with the counter only, and the test for it passed for the wrong reason). The
     declared `content-length` is therefore refused up front, and the running total still guards
     the chunked case where no such declaration exists.
+
+    **The refusal is sent from the receive channel, not raised through the app.** Raising was the
+    obvious design and it does not survive contact with either layer above it. `BaseHTTPMiddleware`
+    — which `BearerAuthMiddleware` and `CallerLogMiddleware` both are — runs what it wraps in an
+    anyio task group, so the sentinel comes back out as a `BaseExceptionGroup` that an
+    `except _BodyTooLarge` never sees; measured against a real `/mcp` mount, that left an unhandled
+    `ExceptionGroup` escaping the app with no response at all. Unwrapping the group only moved the
+    problem: the MCP transport catches exceptions from its own `receive()` and answers 500, so the
+    caller got a server error for a request the *client* got wrong.
+
+    So on overflow this sends the 413 itself and then hands the app `http.disconnect` — the ASGI way
+    to say "there is no more body". Whatever the app does with that (Starlette raises
+    `ClientDisconnect`; the MCP transport answers 500) is dropped on the floor, because the caller
+    already has its answer. The one case that cannot be answered is a refusal *after* the app has
+    responded, which is uvicorn draining a body the handler never read; that is logged.
     """
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+    def __init__(self, app: ASGIApp, *, server: str, max_bytes: int) -> None:
         """Wrap `app`, refusing bodies over `max_bytes`. A `max_bytes` of 0 disables the cap."""
         self._app = app
+        self._server = server
         self._max_bytes = max_bytes
 
     def _declared_length(self, scope: Scope) -> int | None:
@@ -157,27 +173,48 @@ class BodySizeLimit:
             return
         seen = 0
         refused = False
+        answered = False
 
         async def counting_receive() -> Message:
+            """Feed the app, and once the cap is passed answer the caller and cut the body off."""
             nonlocal seen, refused
+            if refused:
+                return {"type": "http.disconnect"}
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body", b""))
                 if seen > self._max_bytes:
                     refused = True
-                    raise _BodyTooLarge
+                    if answered:
+                        logger.warning(
+                            "server %s: a request body over the %d-byte cap was cut off after the "
+                            "response had already been sent",
+                            self._server,
+                            self._max_bytes,
+                        )
+                    else:
+                        await PlainTextResponse("request body too large", status_code=413)(
+                            scope, receive, send
+                        )
+                    return {"type": "http.disconnect"}
             return message
 
-        try:
-            await self._app(scope, counting_receive, send)
-        except _BodyTooLarge:
+        async def guarded_send(message: Message) -> None:
+            """Pass the app's response through, unless the caller has already been refused."""
+            nonlocal answered
             if refused:
-                await PlainTextResponse("request body too large", status_code=413)(
-                    scope, receive, send
-                )
                 return
-            raise
+            if message["type"] == "http.response.start":
+                answered = True
+            await send(message)
 
-
-class _BodyTooLarge(Exception):
-    """Internal signal from the counting receive channel to `BodySizeLimit.__call__`."""
+        try:
+            await self._app(scope, counting_receive, guarded_send)
+        except BaseException:
+            # Only ever swallowed for a request already answered with a 413: the app is unwinding
+            # from the disconnect handed to it above (`ClientDisconnect`, a task group carrying it,
+            # or the transport's own 500 attempt), and none of that is news. Anything else is a
+            # real fault and is re-raised.
+            if not refused:
+                raise
+            logger.debug("server %s: app unwound after an oversized body was refused", self._server)

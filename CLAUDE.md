@@ -72,6 +72,9 @@ What such a server owes the fleet is the same contract, checked the same way:
 
 - **A `manifests/<name>/connector.yaml` here**, with every tool classified. That is this
   repository's job, and the reason `manifests/` is a directory rather than a detail of `servers/`.
+  `tests/test_fleet.py` iterates `manifests/` rather than `servers/` so an externally-hosted
+  manifest is held to the classification, bearer and port rules like any other — it iterated
+  `servers/` first, which gave the manifests this section is *about* no coverage at all.
 - **Bearer auth enforced on `/mcp` itself.** An external server built on `fastapi-mcp` applies its
   credential as a route dependency, and its MCP surface is *mounted* — a mount bypasses the
   enclosing app's dependencies. Verify against a running server; do not read it off the source.
@@ -81,8 +84,8 @@ What such a server owes the fleet is the same contract, checked the same way:
 - **A row in `MODULES.md`** saying where it lives and what it costs to consume.
 
 The one thing they cannot inherit is `mcp_server_kit`, since they are not in this workspace. That is
-a reason to keep the kit's behaviours documented here in prose as well as in code — the four traps
-above are properties of the MCP transport, not of this repository.
+a reason to keep the kit's behaviours documented here in prose as well as in code — the five traps
+below are properties of the MCP transport, not of this repository.
 
 ## The three layers inside a server
 
@@ -100,7 +103,7 @@ science belongs in `engine/` — and if it grows past this repository, it belong
 
 Every server's `app.py` is three lines because `mcp_server_kit.connector_app` owns the shape:
 `/healthz`, `/metrics`, `/mcp`, bearer auth, caller logging, a body cap, and error sanitising.
-**Do not hand-roll a transport.** Four things in that helper are non-obvious, and each is quiet
+**Do not hand-roll a transport.** Five things in that helper are non-obvious, and each is quiet
 when wrong:
 
 1. **The parent app must run the MCP session manager.** `FastMCP.streamable_http_app()` returns a
@@ -114,7 +117,15 @@ when wrong:
    alice's handshake then bob's call had the tool reading alice.
 4. **An unexpected exception must not reach the model verbatim.** `Tool.run` folds `str(e)` into
    the error result. `ValueError` — the family used here for deliberately worded, caller-safe
-   messages — passes through; anything else is replaced and logged.
+   messages — passes through; anything else is replaced and logged. A `ToolError` with **no**
+   `__cause__` passes through too: that is the SDK's own `Unknown tool: <name>`, and replacing it
+   left an agent that misspelled a tool — or called one a stale manifest advertises — with nothing
+   to act on.
+5. **A body cap cannot refuse by raising.** `BaseHTTPMiddleware` runs what it wraps in an anyio
+   task group, so the sentinel comes back wrapped and the `except` never fires; unwrap it and the
+   MCP transport, which catches exceptions from its own `receive()`, answers 500 instead. The cap
+   sends its own 413 from the receive channel and then hands the app `http.disconnect`. Assume none
+   of this and the failure is an unhandled traceback with no response at all.
 
 ## Authentication and identity
 

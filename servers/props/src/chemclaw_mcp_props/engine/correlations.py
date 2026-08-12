@@ -14,10 +14,17 @@ A tool that returned only the number would let those two be confused, and the se
 carries several times the error of the first. So the method comes back with the value, every time,
 and the tool docstrings tell the model to quote it.
 
-Nothing here is extrapolated past the point of embarrassment: a temperature far outside the
-Antoine fit falls back to the boiling-point route rather than evaluating a fit where it is known to
-diverge, and both routes refuse below the melting point, where a liquid vapour pressure is not the
-quantity anybody wants.
+**Both routes refuse rather than extrapolate into nonsense**, and the bounds are stated because
+they are the difference between an answer and a number. Below the melting point neither is asked
+for a liquid vapour pressure. Above `MAX_TEMPERATURE_C` neither answers at all: an Antoine fit is
+a correlation over a range and this table records no range for its rows, so the honest bound is a
+blanket one well past any process temperature. `boiling_point_at` refuses a pressure it cannot
+reach inside that window instead of returning the end of its own search — which it did, silently,
+returning "400.0 °C" for toluene at 200 bar and at 10 000 bar alike.
+
+What this still does not know is where each solvent's critical point is. Above it there is no
+boiling point and no vapour pressure, and the table carries no `tc_c` column to check against, so
+an answer between the boiling point and `MAX_TEMPERATURE_C` can be past it. The caveats say so.
 """
 
 from __future__ import annotations
@@ -35,6 +42,13 @@ ATM_BAR = 1.01325
 # it systematically *underestimates* ΔHvap for hydrogen-bonding liquids (alcohols, acids, water),
 # which is why every answer that uses it says so rather than quietly widening its own error bar.
 TROUTON_J_PER_MOL_K = 88.0
+
+# The blanket ceiling on both routes. 400 °C is comfortably past every process temperature a
+# pharmaceutical or fine-chemical route runs at, and past the critical point of every solvent in
+# the table — so anything above it is a question this server should refuse rather than answer with
+# an extrapolated fit. It is deliberately not per-solvent: the corpus records no fitted range, and
+# a bound that pretended to be one would be the same false precision in a different place.
+MAX_TEMPERATURE_C = 400.0
 
 Method = Literal["antoine", "clausius_clapeyron", "clausius_clapeyron_trouton"]
 
@@ -91,12 +105,21 @@ def vapour_pressure(solvent: Solvent, temperature_c: float) -> VapourPressure:
 
     Raises:
         ValueError: below the melting point, where a liquid vapour pressure is not the quantity
-            being asked for — the answer there is a sublimation pressure this server does not carry.
+            being asked for — the answer there is a sublimation pressure this server does not carry
+            — or above `MAX_TEMPERATURE_C`, where both routes are extrapolating past any range the
+            vendored table can support.
     """
     if temperature_c < solvent.mp_c:
         raise ValueError(
             f"{temperature_c} °C is below the melting point of {solvent.name} ({solvent.mp_c} °C); "
             "this server carries liquid vapour pressures only"
+        )
+    if temperature_c > MAX_TEMPERATURE_C:
+        raise ValueError(
+            f"{temperature_c} °C is above the {MAX_TEMPERATURE_C} °C ceiling this server answers "
+            f"within. Past it both routes are extrapolating far outside anything the vendored "
+            f"table supports, and {solvent.name} is above its critical point, where a vapour "
+            "pressure does not exist."
         )
     temperature_k = temperature_c + KELVIN
     if solvent.antoine is not None:
@@ -155,17 +178,28 @@ def boiling_point_at(solvent: Solvent, pressure_mbar: float) -> float:
         The boiling temperature in degrees Celsius.
 
     Raises:
-        ValueError: for a non-positive pressure, or one whose boiling point lies below the melting
-            point (the solvent freezes before it boils at that vacuum).
+        ValueError: for a non-positive pressure; for one whose boiling point lies below the melting
+            point (the solvent freezes before it boils at that vacuum); or for one it does not reach
+            below `MAX_TEMPERATURE_C`.
     """
     if pressure_mbar <= 0:
         raise ValueError("pressure must be positive")
     target_bar = pressure_mbar / 1000.0
-    low, high = solvent.mp_c, max(solvent.bp_c + 200.0, 400.0)
+    low, high = solvent.mp_c, MAX_TEMPERATURE_C
     if vapour_pressure(solvent, low).pressure_bar > target_bar:
         raise ValueError(
             f"{solvent.name} reaches {pressure_mbar} mbar only below its melting point "
             f"({solvent.mp_c} °C) — it freezes in the still before it boils at that vacuum"
+        )
+    # The check the bisection was missing. Without it the loop converges on `high` whenever the
+    # target is out of reach and returns the search bound as if it were an answer — and the
+    # realistic way to ask an unreachable pressure is a unit slip, passing Pa or bar as mbar.
+    if vapour_pressure(solvent, high).pressure_bar < target_bar:
+        raise ValueError(
+            f"{solvent.name} does not reach {pressure_mbar} mbar below {MAX_TEMPERATURE_C} °C, "
+            f"which is as high as this server answers. Its normal boiling point is "
+            f"{solvent.bp_c} °C at about 1013 mbar — if you meant a vacuum, check the units: this "
+            "argument is absolute pressure in mbar, not Pa or bar."
         )
     for _ in range(200):
         middle = (low + high) / 2.0

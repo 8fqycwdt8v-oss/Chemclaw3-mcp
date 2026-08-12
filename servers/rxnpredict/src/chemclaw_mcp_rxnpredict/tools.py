@@ -89,7 +89,7 @@ def _provenance(predictors: list[str]) -> str:
     )
 
 
-def _select(available: list[str], requested: list[str] | None) -> set[str] | None:
+def _select(available: list[str], requested: list[str] | None) -> set[str]:
     """Which predictors to query: the caller's subset, narrowed by configuration."""
     settings = get_settings()
     disabled = settings.parse_disabled()
@@ -105,9 +105,7 @@ def _forward_predictors(requested: list[str] | None) -> list[object]:
     enabled = settings.parse_enabled(settings.enabled_forward_models)
     allowed = _select([p.name for p in list_forward()], requested)
     return [
-        p
-        for p in list_forward()
-        if p.name in (allowed or set()) and (enabled is None or p.name in enabled)
+        p for p in list_forward() if p.name in allowed and (enabled is None or p.name in enabled)
     ]
 
 
@@ -117,23 +115,52 @@ def _conditions_predictors(requested: list[str] | None) -> list[object]:
     enabled = settings.parse_enabled(settings.enabled_conditions_models)
     allowed = _select([p.name for p in list_conditions()], requested)
     return [
-        p
-        for p in list_conditions()
-        if p.name in (allowed or set()) and (enabled is None or p.name in enabled)
+        p for p in list_conditions() if p.name in allowed and (enabled is None or p.name in enabled)
     ]
 
 
-def _no_predictors(kind: str) -> ValueError:
-    """The error an agent should see when this build has nothing to answer with.
+def _usable(kind: str) -> list[str]:
+    """The predictor IDs this deployment will actually run, ignoring any caller subset."""
+    chosen = _forward_predictors(None) if kind == "forward" else _conditions_predictors(None)
+    return sorted(p.name for p in chosen)  # type: ignore[attr-defined]
 
-    Deliberately names what *is* installed, so the next step is obvious: either call
-    `list_available_models` to see why a predictor did not load, or stop asking this server.
+
+def _no_predictors(kind: str, requested: list[str] | None) -> ValueError:
+    """The error an agent should see when nothing was left to answer with.
+
+    Two very different situations end here and they need different sentences. A deployment with no
+    predictor installed is broken and the agent should stop asking this server. A caller whose
+    `models` list matched nothing has a working server and a typo — telling it the deployment is
+    empty sends it to `list_available_models`, where it finds nothing wrong and concludes the server
+    is unusable. Getting this wrong costs a turn and can cost the capability.
     """
+    usable = _usable(kind)
+    if requested is not None and usable:
+        return ValueError(
+            f"none of the requested {kind} predictors {sorted(requested)} is available here; "
+            f"this deployment runs: {', '.join(usable)}. Drop the `models` argument to use all "
+            "of them."
+        )
     return ValueError(
         f"no {kind} predictors are available in this deployment "
         f"({len(unavailable())} known predictor(s) failed to load). "
         "Call list_available_models to see which, and why — this server cannot answer without one."
     )
+
+
+def _unusable_model(kind: str, model_name: str, loaded: list[str]) -> ValueError:
+    """The error for a single-model call naming a predictor this deployment will not run.
+
+    Distinguishes "there is no such predictor" from "an operator turned that one off", because the
+    second is not something the agent can fix by trying a different spelling.
+    """
+    usable = ", ".join(_usable(kind)) or "none"
+    if model_name in loaded:
+        return ValueError(
+            f"the {kind} predictor {model_name!r} is loaded but turned off in this deployment "
+            f"(CHEMCLAW_RXNPREDICT_DISABLED_MODELS or ENABLED_*_MODELS); usable: {usable}"
+        )
+    return ValueError(f"no {kind} predictor named {model_name!r} is loaded (usable: {usable})")
 
 
 @server.tool()
@@ -174,7 +201,7 @@ async def predict_forward_reaction(
     settings = get_settings()
     predictors = _forward_predictors(models)
     if not predictors:
-        raise _no_predictors("forward")
+        raise _no_predictors("forward", models)
 
     results = await asyncio.gather(
         *(p.predict(reactants, top_k) for p in predictors),  # type: ignore[attr-defined]
@@ -239,7 +266,7 @@ async def predict_reaction_conditions(
     settings = get_settings()
     predictors = _conditions_predictors(models)
     if not predictors:
-        raise _no_predictors("conditions")
+        raise _no_predictors("conditions", models)
 
     results = await asyncio.gather(
         *(p.predict(reactants, product, top_k) for p in predictors),  # type: ignore[attr-defined]
@@ -279,6 +306,10 @@ async def predict_forward_single_model(
     they disagree. Prefer `predict_forward_reaction` for chemistry questions — a single model's
     output carries none of the agreement that makes the ensemble worth having.
 
+    This is not a way around the deployment's configuration. A predictor an operator disabled is
+    refused here exactly as it is excluded from the consensus; `list_available_models` reports it as
+    `enabled: false`, and it stays off.
+
     Args:
         model_name: A predictor ID from `list_available_models`, e.g. `reaction_t5_v2`.
         reactants: Dot-separated reactant SMILES.
@@ -288,13 +319,13 @@ async def predict_forward_single_model(
         That model's ranked predictions, each with its own score and rank.
 
     Raises:
-        ValueError: if no predictor of that name is loaded — the message names what is.
+        ValueError: if no predictor of that name is loaded, or if an operator has turned it off in
+            this deployment — the message says which, and names what is usable.
     """
-    matches = [p for p in list_forward() if p.name == model_name]
+    matches = _forward_predictors([model_name])
     if not matches:
-        loaded = ", ".join(sorted(p.name for p in list_forward())) or "none"
-        raise ValueError(f"no forward predictor named {model_name!r} is loaded (loaded: {loaded})")
-    return await matches[0].predict(reactants, top_k)
+        raise _unusable_model("forward", model_name, [p.name for p in list_forward()])
+    return await matches[0].predict(reactants, top_k)  # type: ignore[attr-defined,no-any-return]
 
 
 @server.tool()
@@ -306,8 +337,9 @@ async def predict_conditions_single_model(
 ) -> list[ConditionsPrediction]:
     """Ask one named condition predictor on its own, bypassing the consensus.
 
-    The condition-side counterpart of `predict_forward_single_model`, and the same caveat applies:
-    this is for interrogating a model, not for answering a chemistry question.
+    The condition-side counterpart of `predict_forward_single_model`, and the same two caveats
+    apply: this is for interrogating a model rather than answering a chemistry question, and a
+    predictor the deployment has disabled is refused here too.
 
     Args:
         model_name: A predictor ID from `list_available_models`, e.g. `rxn_insight`.
@@ -319,15 +351,15 @@ async def predict_conditions_single_model(
         That model's ranked condition sets. Temperatures are in degrees Celsius.
 
     Raises:
-        ValueError: if no predictor of that name is loaded — the message names what is.
+        ValueError: if no predictor of that name is loaded, or if an operator has turned it off in
+            this deployment — the message says which, and names what is usable.
     """
-    matches = [p for p in list_conditions() if p.name == model_name]
+    matches = _conditions_predictors([model_name])
     if not matches:
-        loaded = ", ".join(sorted(p.name for p in list_conditions())) or "none"
-        raise ValueError(
-            f"no conditions predictor named {model_name!r} is loaded (loaded: {loaded})"
-        )
-    return await matches[0].predict(reactants, product, top_k)
+        raise _unusable_model("conditions", model_name, [p.name for p in list_conditions()])
+    return await matches[0].predict(  # type: ignore[attr-defined,no-any-return]
+        reactants, product, top_k
+    )
 
 
 @server.tool()
@@ -338,21 +370,28 @@ def list_available_models() -> ModelsResponse:
     that expected five predictors and installed one still returns an answer — it is just an answer
     from one model wearing the word "consensus", and this is the tool that reveals it.
 
+    **`available` and `enabled` are different questions.** `available` says the predictor's code and
+    dependencies loaded; `enabled` says this deployment will run it. A predictor an operator turned
+    off is available and not enabled, and no tool on this server will call it — including
+    `predict_forward_single_model`. Do not offer one as an alternative when a consensus looks thin.
+
     Each entry carries the predictor's citation, so a result can be attributed to the paper behind
     the model rather than to "the server".
 
     Returns:
-        Forward and condition predictors, each with `available`, a description, a citation, the pip
-        extra that would install it, and — when it did not load — the reason.
+        Forward and condition predictors, each with `available`, `enabled`, a description, a
+        citation, the pip extra that would install it, and — when it did not load — the reason.
     """
     unavailable_by_name = unavailable()
 
     def _rows(kind: str, loaded: list[object]) -> list[ModelInfo]:
+        usable = set(_usable(kind))
         rows = [
             ModelInfo(
                 name=p.name,  # type: ignore[attr-defined]
                 kind=kind,  # type: ignore[arg-type]
                 available=True,
+                enabled=p.name in usable,  # type: ignore[attr-defined]
                 description=p.description,  # type: ignore[attr-defined]
                 citation=p.citation,  # type: ignore[attr-defined]
                 extras_install=p.extras_install,  # type: ignore[attr-defined]
@@ -364,6 +403,7 @@ def list_available_models() -> ModelsResponse:
                 name=name,
                 kind=kind,  # type: ignore[arg-type]
                 available=False,
+                enabled=False,
                 description="(not loaded)",
                 unavailable_reason=reason,
             )

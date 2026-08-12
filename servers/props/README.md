@@ -68,7 +68,7 @@ of them cannot survive:
 The rest are structural — closed vocabularies, melting point below boiling point, ICH limits
 present exactly when a class is, and no name or alias resolving two ways.
 
-## Two things the tools are careful about
+## Three things the tools are careful about
 
 **Absent is not zero.** `flash_point_c` is `null` for dichloromethane, chloroform and water because
 they *have* no flash point. Reporting 0 °C there would be a fire-safety error rather than a rounding
@@ -81,6 +81,14 @@ by Trouton's rule, which underestimates it for alcohols, acids and water — so 
 the boiling point. Every answer carries `method` and a `caveat` naming what that method is good for,
 and the docstrings tell the model to quote them. A chemist sizing a condenser needs to know which of
 the three they were given.
+
+**Out of range is an error, not a number.** Both correlations stop at 400 °C, and
+`boiling_point_at_pressure` refuses a pressure the solvent does not reach below it rather than
+returning the end of its own search — which it used to do, answering "400.0 °C" for toluene at
+200 bar and at 10 000 bar alike. The realistic way to ask an unreachable pressure is a unit slip, so
+the refusal says which unit the argument is in. What the table still cannot check is each solvent's
+critical point: it carries no `tc_c` column, so an answer between the boiling point and the ceiling
+can be past it.
 
 ## What it is not
 

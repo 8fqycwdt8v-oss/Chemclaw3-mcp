@@ -7,20 +7,28 @@ anything that could reach the pod. The middleware is only real if a test proves 
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
-from fastapi import FastAPI
-from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit
+from fastapi import FastAPI, Request
+from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit, CallerLogMiddleware
 
 TOKEN_ENV = "TEST_SERVER_TOKEN"
 
 
 def _app(*, token_env: str | None, max_bytes: int = 0) -> FastAPI:
-    """A minimal app carrying the same middleware stack `connector_app` installs."""
+    """A minimal app carrying the same middleware stack `connector_app` installs.
+
+    The order matters and is copied deliberately: two `BaseHTTPMiddleware` layers sit between the
+    body cap and the route, and each of them runs what it wraps in an anyio task group. That
+    nesting is what wraps the oversize sentinel on its way back out.
+    """
     app = FastAPI()
+    app.add_middleware(CallerLogMiddleware, server="test")
     app.add_middleware(BearerAuthMiddleware, server="test", token_env=token_env)
     if max_bytes:
-        app.add_middleware(BodySizeLimit, max_bytes=max_bytes)
+        app.add_middleware(BodySizeLimit, server="test", max_bytes=max_bytes)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -29,6 +37,16 @@ def _app(*, token_env: str | None, max_bytes: int = 0) -> FastAPI:
     @app.post("/mcp")
     async def mcp() -> dict[str, str]:
         return {"served": "yes"}
+
+    @app.post("/drain")
+    async def drain(request: Request) -> dict[str, int]:
+        """Reads the raw stream, the way the mounted MCP transport does.
+
+        The `/mcp` route above never pulls from the receive channel, and FastAPI's own body parsing
+        swallows what a counting channel raises and answers 400. Neither shape is what a real server
+        does with a request body, so the streaming half of the cap needs a route that reads it.
+        """
+        return {"read": len(await request.body())}
 
     return app
 
@@ -119,3 +137,46 @@ async def test_an_oversized_body_is_refused(monkeypatch: pytest.MonkeyPatch) -> 
         content=b"x" * 4096,
     )
     assert response.status_code == 413
+
+
+async def test_an_oversized_chunked_body_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The half the test above cannot reach: no `content-length`, so only the counter can refuse.
+
+    httpx sets `content-length` for any body it can measure, so the test above exercises the
+    declared-length check alone — which is how this cap shipped twice in a row with one of its two
+    halves unproven. An async generator body has no length to declare, so the running total is the
+    only thing between the request and the route, and the sentinel it raises comes back out through
+    two task groups.
+    """
+    monkeypatch.setenv(TOKEN_ENV, "s3cret")
+
+    async def oversized() -> AsyncIterator[bytes]:
+        for _ in range(8):
+            yield b"x" * 32  # 256 bytes, no content-length
+
+    response = await _call(
+        _app(token_env=TOKEN_ENV, max_bytes=64),
+        "POST",
+        "/drain",
+        headers={"authorization": "Bearer s3cret"},
+        content=oversized(),
+    )
+    assert response.status_code == 413
+
+
+async def test_a_chunked_body_inside_the_cap_is_served(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other direction, or a cap that refused everything would pass the test above."""
+    monkeypatch.setenv(TOKEN_ENV, "s3cret")
+
+    async def small() -> AsyncIterator[bytes]:
+        yield b"x" * 16
+
+    response = await _call(
+        _app(token_env=TOKEN_ENV, max_bytes=64),
+        "POST",
+        "/drain",
+        headers={"authorization": "Bearer s3cret"},
+        content=small(),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"read": 16}

@@ -38,6 +38,14 @@ which is the evidence that the fork is the same model rather than a similar one.
 
 All six are `read_only`.
 
+**Configuration wins over the caller, on every one of them.**
+`CHEMCLAW_RXNPREDICT_DISABLED_MODELS` and the `ENABLED_*_MODELS` lists are enforced by the
+single-model tools exactly as they are by the consensus tools, and `list_available_models` reports a
+predictor an operator turned off as `enabled: false`. That was not true at first: the consensus path
+honoured the setting, `predict_forward_single_model` ran the disabled predictor anyway, and
+`list_available_models` advertised it as usable — so an operator who disabled a predictor because it
+was wrong had a surface that routed around them.
+
 ## Running it
 
 ```sh
@@ -88,6 +96,15 @@ Behind them sit the fleet's usual layers — the runtime egress guard, the AST s
 package, and `deploy/networkpolicy.yaml` with an empty `egress:`. Together they mean that a build
 which failed to bake a checkpoint fails loudly on first inference rather than quietly downloading a
 model nobody reviewed.
+
+The build also records a `SHA256SUMS` over what it fetched, and the runtime stage **verifies it
+after the `COPY`** — so a truncated layer or a bad copy fails the build rather than becoming a wrong
+prediction. The server re-checks at startup and logs the result (`engine/weights.py`). Be precise
+about what that buys: it is an integrity check on the copy, not provenance. The digests are
+generated in the same build that fetches the models, so what testifies to *which* model was approved
+is the pinned revision in `scripts/fetch_models.py`, reviewed in a pull request like any other
+dependency. The manifest existed before any of this and was read by nothing at all, which is the
+same shape as a README asserting a control.
 
 ## Data
 

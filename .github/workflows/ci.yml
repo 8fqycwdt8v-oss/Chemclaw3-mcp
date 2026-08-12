@@ -29,8 +29,11 @@ jobs:
       - name: Lint
         run: uv run ruff check . && uv run ruff format --check .
 
+      # Through the Makefile rather than repeated here, so the source list has one definition. It
+      # was repeated once, and both copies then missed `rxnpredict` for the whole of its first
+      # release: green over 15 files with 28 unchecked.
       - name: Types
-        run: uv run mypy packages/mcp_server_kit/src servers/props/src
+        run: make type
 
       - name: Tests
         run: uv run pytest -q

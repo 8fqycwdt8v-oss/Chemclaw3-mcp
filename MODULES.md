@@ -29,6 +29,11 @@ temperature, boiling point under vacuum, and a filtered, Hansen-ranked swap shor
 *Offline:* a vendored, checksummed CSV compiled in this repository (CC0). No upstream at all.
 *Why first:* pure, deterministic, genuinely offline by nature, and it exercises every part of the
 mechanism the rest will copy. See `servers/props/README.md`.
+*Bounds:* both correlations stop at 400 °C, and `boiling_point_at_pressure` refuses a pressure the
+solvent does not reach below it — it used to return the end of its own bisection instead, answering
+"400.0 °C" for toluene at 200 bar and at 10 000 bar alike. The swap filters are closed vocabularies
+in the tool signature, so a misspelled constraint is refused rather than blocking every candidate
+with a reason that reads like chemistry.
 
 ### `rxnpredict` — forward reaction & condition prediction · port 8857 · **built**
 
@@ -40,7 +45,8 @@ and "only the rule-based one produced this" are different answers.
 *Tools:* `predict_forward_reaction`, `predict_reaction_conditions`, `predict_forward_single_model`,
 `predict_conditions_single_model`, `list_available_models`, `classify_reaction` — all `read_only`.
 *Offline:* model checkpoints baked in at build time (`scripts/fetch_models.py` in a builder stage),
-with `HF_HUB_OFFLINE=1` at runtime; per-class trust priors as a checksummed vendored dataset.
+with `HF_HUB_OFFLINE=1` at runtime and their digests verified after the `COPY`; per-class trust
+priors as a checksummed vendored dataset.
 *Provenance:* **a fork of [`chemclaw2_forward`](https://github.com/8fqycwdt8v-oss/chemclaw2_forward)**
 (branch `claude/reaction-condition-meta-model-29YIz`, MIT, same owner) at commit `6affefb`. Upstream's
 own tests for the aggregator, classifier, priors and preprocessing pass here unmodified, which is
@@ -59,6 +65,13 @@ the evidence the fork is the same model rather than a similar one.
 surface was *mounted* — and a mount bypasses the enclosing app's dependencies, so the credential
 guarded the REST routes and not `/mcp`. Here it is ASGI middleware, and `tests/test_server.py`
 asserts the 401. See `servers/rxnpredict/README.md` for the full list.
+
+**What a later review of this fork found and fixed**, recorded because each was a control that read
+as enforced and was not: `DISABLED_MODELS` was honoured by the consensus tools and bypassed by the
+single-model ones, which also advertised the disabled predictor as usable; an empty result from a
+caller's `models` filter was reported as "no predictors are available in this deployment", sending
+the agent to diagnose a server that was fine; and this server's source was outside the type-checked
+set entirely — `make check` was green over 15 files with 28 unchecked.
 
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 

@@ -1,7 +1,11 @@
 # The gate. `make check` is what CI runs; nothing here needs a cluster, a database or a network.
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src
+# Globbed, not listed. The listed version silently stopped covering `rxnpredict` the day that
+# server landed: `make check` stayed green over 15 files while 28 more went unchecked, which is
+# exactly the failure a hand-maintained list of directories produces. `tests/test_fleet.py` asserts
+# that every server under `servers/` is reached by this.
+SRC := packages/mcp_server_kit/src $(wildcard servers/*/src)
 
 .PHONY: help
 help: ## Show this help.
@@ -48,3 +52,9 @@ check: lint type test ## Everything CI runs.
 run-props: ## Run the props server on its dev port with a dev token.
 	CHEMCLAW_PROPS_TOKEN=$${CHEMCLAW_PROPS_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_props.app:app --host 127.0.0.1 --port 8850
+
+.PHONY: run-rxnpredict
+run-rxnpredict: ## Run the rxnpredict server on its dev port. With no extras installed it serves
+                ## its tools and reports every predictor unavailable — see its README for a double.
+	CHEMCLAW_RXNPREDICT_TOKEN=$${CHEMCLAW_RXNPREDICT_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_rxnpredict.app:app --host 127.0.0.1 --port 8857

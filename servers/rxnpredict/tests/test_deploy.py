@@ -52,5 +52,9 @@ def test_the_image_runs_offline_and_on_the_declared_port() -> None:
     assert "HF_HUB_OFFLINE=1" in containerfile
     assert "TRANSFORMERS_OFFLINE=1" in containerfile
     assert "8857" in containerfile
+    # The digests are only worth writing if something reads them. They were written and read by
+    # nothing, so both halves are asserted: recorded in the builder, verified after the COPY.
+    assert "sha256sum > SHA256SUMS" in containerfile
+    assert "verify_weights" in containerfile
     manifest = yaml.safe_load((POLICY.parents[1] / "connector.yaml").read_text(encoding="utf-8"))
     assert ":8857/mcp" in manifest["endpoint"]["url"]

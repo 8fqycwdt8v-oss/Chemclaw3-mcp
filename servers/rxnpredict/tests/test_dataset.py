@@ -9,10 +9,12 @@ weighting at all rather than erroring.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from chemclaw_mcp_rxnpredict.engine.config import DATA_DIR, Settings
 from chemclaw_mcp_rxnpredict.engine.meta.classifier import ALL_CLASSES
 from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import load_vendored_priors
+from chemclaw_mcp_rxnpredict.engine.weights import verify_weights
 from mcp_server_kit import load_dataset
 
 
@@ -43,6 +45,47 @@ def test_every_named_class_and_model_is_one_the_code_knows() -> None:
         assert reaction_class in ALL_CLASSES, f"unknown reaction class {reaction_class!r}"
         for model in weights:
             assert model in known_models, f"unknown predictor {model!r} in {reaction_class!r}"
+
+
+def test_absent_model_weights_are_nothing_to_verify(tmp_path: Path) -> None:
+    """A checkout with no baked weights is the normal state here, and must not read as a failure."""
+    report = verify_weights(tmp_path)
+    assert report.manifest is None
+    assert report.verified
+    assert "nothing to verify" in report.summary()
+
+
+def test_intact_model_weights_verify(tmp_path: Path) -> None:
+    """The positive case, in the `sha256sum` format the Containerfile writes — binary mode too."""
+    (tmp_path / "hf").mkdir()
+    (tmp_path / "hf" / "model.bin").write_bytes(b"weights")
+    # Written out rather than computed here: a test that hashes the file it wrote would agree with
+    # itself whatever the verifier did. This is `sha256sum` on the literal bytes `weights`.
+    digest = "9a129038d9a00aed0cf6a7ea059ca50a813449061ab87848cf1a13eafdf33b2c"
+    (tmp_path / "SHA256SUMS").write_text(f"{digest} *./hf/model.bin\n", encoding="utf-8")
+
+    report = verify_weights(tmp_path)
+    assert report.verified, report.summary()
+    assert report.checked == 1
+
+
+def test_a_changed_or_missing_weight_is_named(tmp_path: Path) -> None:
+    """The failure this exists for: the file on disk is not the one the build recorded.
+
+    The manifest used to be generated and read by nothing at all — so a truncated layer or a bad
+    COPY would have been discovered as a wrong prediction, if ever.
+    """
+    (tmp_path / "changed.bin").write_bytes(b"not what the build produced")
+    (tmp_path / "SHA256SUMS").write_text(
+        "0000000000000000000000000000000000000000000000000000000000000000  ./changed.bin\n"
+        "1111111111111111111111111111111111111111111111111111111111111111  ./gone.bin\n",
+        encoding="utf-8",
+    )
+
+    report = verify_weights(tmp_path)
+    assert not report.verified
+    assert report.mismatched == ("./changed.bin",)
+    assert report.missing == ("./gone.bin",)
 
 
 def test_the_global_priors_cover_every_predictor_this_build_knows() -> None:

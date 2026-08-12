@@ -18,12 +18,21 @@ here does that; a server that starts doing real work must revisit this.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_props.engine import correlations, records, selection
 
 server = FastMCP("props")
+
+# Closed vocabularies, spelled out in the tool signature so pydantic refuses a value outside them at
+# the boundary and tells the caller what the set is. As free `str` arguments they were silent: a
+# misspelled `require_water_miscibility` matched no row, so *every* candidate came back blocked with
+# a plausible-sounding reason and the shortlist read as "nothing works".
+Miscibility = Literal["miscible", "partial", "immiscible"]
+IchClass = Literal["1", "2", "3"]
 
 
 class SolventSummary(BaseModel):
@@ -251,8 +260,10 @@ def vapour_pressure(name: str, temperature_c: float) -> VapourPressureResult:
         The pressure in mbar, bar and mmHg, plus `method`, `caveat` and `source`.
 
     Raises:
-        ValueError: if the solvent is unknown, or the temperature is below its melting point —
-            this server carries liquid vapour pressures only.
+        ValueError: if the solvent is unknown, if the temperature is below its melting point (this
+            server carries liquid vapour pressures only), or if it is above 400 °C, where both
+            routes would be extrapolating past anything the vendored table supports and every
+            solvent in it is supercritical.
     """
     solvent = records.require(name)
     result = correlations.vapour_pressure(solvent, temperature_c)
@@ -283,14 +294,18 @@ def boiling_point_at_pressure(name: str, pressure_mbar: float) -> BoilingPointRe
 
     Args:
         name: The solvent, in any spelling the table answers to.
-        pressure_mbar: Absolute pressure in the still, in mbar. Atmospheric is about 1013 mbar.
+        pressure_mbar: Absolute pressure in the still, **in mbar**. Atmospheric is about 1013 mbar;
+            a typical rotovap runs 20-200 mbar. Not Pa (101 325 at atmospheric) and not bar
+            (1.013) — a pressure passed in the wrong unit is the common way to ask this tool a
+            question it cannot answer, and it now refuses rather than returning a plausible number.
 
     Returns:
         The boiling temperature at that pressure, alongside the normal boiling point for comparison.
 
     Raises:
-        ValueError: if the solvent is unknown, the pressure is not positive, or the solvent would
-            freeze before boiling at that vacuum.
+        ValueError: if the solvent is unknown, the pressure is not positive, the solvent would
+            freeze before boiling at that vacuum, or it does not boil at that pressure below
+            400 °C — which usually means the pressure was given in the wrong unit.
     """
     solvent = records.require(name)
     temperature = correlations.boiling_point_at(solvent, pressure_mbar)
@@ -314,8 +329,8 @@ def solvent_swap_candidates(
     min_bp_c: float | None = None,
     max_bp_c: float | None = None,
     exclude_peroxide_formers: bool = False,
-    require_water_miscibility: str | None = None,
-    max_ich_class: str | None = None,
+    require_water_miscibility: Miscibility | None = None,
+    exclude_ich_classes: list[IchClass] | None = None,
 ) -> SwapResult:
     """Shortlist replacements for a solvent, nearest in Hansen space first.
 
@@ -345,9 +360,12 @@ def solvent_swap_candidates(
         require_water_miscibility: `miscible`, `partial` or `immiscible` — the aqueous-workup
             constraint. `immiscible` is what an extraction needs; `miscible` is what a homogeneous
             quench needs.
-        max_ich_class: `1`, `2` or `3`. Rejects anything in a worse ICH Q3C class. Solvents the
-            guideline does not list are never rejected by this filter — their `ich_class` comes back
-            as `not_listed`, and that still needs a justified limit.
+        exclude_ich_classes: The ICH Q3C classes to reject, e.g. `["1"]` to rule out the
+            solvents-to-be-avoided, or `["1", "2"]` to keep only class 3 and unlisted ones.
+            Remember the direction: **class 1 is the worst** and class 3 the least restricted, so
+            this names what to exclude rather than a ceiling. Solvents the guideline does not list
+            are never rejected by this filter — their `ich_class` comes back as `not_listed`, which
+            means the guideline is silent, not that the solvent is unrestricted.
 
     Returns:
         The ranked shortlist, each entry carrying its Hansen distance, boiling-point shift,
@@ -365,7 +383,7 @@ def solvent_swap_candidates(
         max_bp_c=max_bp_c,
         exclude_peroxide_formers=exclude_peroxide_formers,
         require_water_miscibility=require_water_miscibility,
-        max_ich_class=max_ich_class,
+        exclude_ich_classes=tuple(exclude_ich_classes or ()),
     )
     return SwapResult(
         replacing=solvent.name,

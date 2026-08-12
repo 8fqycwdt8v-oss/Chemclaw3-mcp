@@ -22,8 +22,15 @@ ARG MODEL_HOSTS=huggingface.co,cdn-lfs.huggingface.co
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
     && MCP_EGRESS_ALLOW="${MODEL_HOSTS}" MCP_EGRESS_GUARD=off \
-       python /build/servers/rxnpredict/scripts/fetch_models.py \
-    && find /opt/models -type f -print0 | xargs -0 sha256sum > /opt/models/SHA256SUMS
+       python /build/servers/rxnpredict/scripts/fetch_models.py
+
+# Digests of what was fetched, recorded here and verified after the COPY below — so a truncated
+# layer or a bad copy fails the build rather than serving predictions from a damaged checkpoint.
+# Relative paths, and the manifest excludes itself: the shell creates it before `find` walks the
+# tree, so a plain `find /opt/models -type f` races its own output and lists it with whatever digest
+# it happened to have mid-write.
+RUN cd /opt/models \
+    && find . -type f ! -name SHA256SUMS -print0 | xargs -0 sha256sum > SHA256SUMS
 
 FROM python:3.11-slim
 
@@ -35,6 +42,16 @@ COPY --from=build /opt/models /opt/models
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
     && rm -rf /wheels
+
+# The check the digests exist for. Runs after the COPY, in the runtime stage, against the files this
+# image will actually serve from — so "the weights are baked in" is verified here rather than
+# assumed, and a bad copy is a failed build instead of a wrong prediction. The server re-checks at
+# startup and logs; this is the one that stops the image existing.
+RUN python -c "\
+import sys; from pathlib import Path; \
+from chemclaw_mcp_rxnpredict.engine.weights import verify_weights; \
+r = verify_weights(Path('/opt/models')); print(r.summary()); \
+sys.exit(0 if r.verified and r.manifest is not None else 1)"
 
 USER ${UID}
 EXPOSE 8857

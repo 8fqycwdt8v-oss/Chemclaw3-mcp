@@ -87,6 +87,43 @@ async def test_a_disabled_predictor_is_not_queried(
     assert set(result.per_model) == {"fake_a"}
 
 
+async def test_a_disabled_predictor_stays_off_on_every_path(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The test above held on the consensus path while the single-model tools ran it anyway.
+
+    An operator disables a predictor because it is wrong, broken or too slow. A surface that
+    enforces that on one tool and not its neighbour is not a control — and `list_available_models`
+    advertising it as usable is how the agent finds the way around.
+    """
+    monkeypatch.setenv("CHEMCLAW_RXNPREDICT_DISABLED_MODELS", "fake_b,fake_d")
+    from chemclaw_mcp_rxnpredict.engine.config import reset_settings_for_tests
+
+    reset_settings_for_tests()
+
+    with pytest.raises(ValueError, match="turned off in this deployment"):
+        await tools.predict_forward_single_model("fake_b", "CC(=O)Cl.Nc1ccccc1")
+    with pytest.raises(ValueError, match="turned off in this deployment"):
+        await tools.predict_conditions_single_model(
+            "fake_d", "CC(=O)Cl.Nc1ccccc1", "CC(=O)Nc1ccccc1"
+        )
+
+    listed = tools.list_available_models()
+    off = {row.name for row in listed.forward + listed.conditions if not row.enabled}
+    assert {"fake_b", "fake_d"} <= off
+    assert {"fake_a", "fake_c"}.isdisjoint(off)
+
+
+async def test_a_caller_subset_that_matches_nothing_says_so(fake_predictors: None) -> None:
+    """A typo in `models` is not a broken deployment, and must not be reported as one.
+
+    The old message sent the agent to `list_available_models`, where it would find every predictor
+    healthy and reasonably conclude the server was unusable.
+    """
+    with pytest.raises(ValueError, match="none of the requested forward predictors"):
+        await tools.predict_forward_reaction("CCO", models=["typoed_name"])
+
+
 async def test_a_single_model_call_reaches_that_model(fake_predictors: None) -> None:
     """The introspection path, for when the question is about a model rather than a reaction."""
     predictions = await tools.predict_forward_single_model("fake_a", "CC(=O)Cl.Nc1ccccc1", top_k=1)

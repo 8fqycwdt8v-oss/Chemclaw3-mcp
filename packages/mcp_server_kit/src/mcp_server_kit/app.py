@@ -91,6 +91,13 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     allowed to say. A deliberately worded domain message is a `ValueError` (pydantic's
     `ValidationError` is one too); anything else is a bug or an infrastructure fault and is
     replaced, with the real exception logged so an operator can still find it.
+
+    **A `ToolError` with no `__cause__` is the SDK's own wording, not a leak.** `Tool.run` wraps a
+    tool's exception as `ToolError(...) from e`, so anything originating inside a tool body arrives
+    with a cause; the only causeless one the SDK raises is `Unknown tool: <name>`. Replacing that
+    told an agent that misspelled a tool — or called one the manifest advertises and the server no
+    longer serves, which is exactly the drift this repository tests for — that an internal error had
+    occurred, leaving it nothing to act on.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
@@ -101,7 +108,7 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
         try:
             return await wrapped(*args, **kwargs)
         except ToolError as exc:
-            if isinstance(exc.__cause__, ValueError):
+            if exc.__cause__ is None or isinstance(exc.__cause__, ValueError):
                 raise
             logger.exception("server %s: a tool raised an unexpected exception", name)
             raise ToolError("an internal error occurred") from exc.__cause__
@@ -160,7 +167,7 @@ def connector_app(
     # check outside it: an unauthenticated request is refused before anything logs or reads it.
     app.add_middleware(BearerAuthMiddleware, server=name, token_env=token_env)
     if max_request_bytes:
-        app.add_middleware(BodySizeLimit, max_bytes=max_request_bytes)
+        app.add_middleware(BodySizeLimit, server=name, max_bytes=max_request_bytes)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

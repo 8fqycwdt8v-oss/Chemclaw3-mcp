@@ -91,7 +91,7 @@ def swap_candidates(
     max_bp_c: float | None = None,
     exclude_peroxide_formers: bool = False,
     require_water_miscibility: str | None = None,
-    max_ich_class: str | None = None,
+    exclude_ich_classes: tuple[str, ...] = (),
 ) -> list[SwapCandidate]:
     """Rank replacements for `reference`, nearest in Hansen space first.
 
@@ -109,8 +109,10 @@ def swap_candidates(
         exclude_peroxide_formers: Reject ethers and other peroxide formers outright.
         require_water_miscibility: One of `miscible`, `partial`, `immiscible` — the aqueous-workup
             constraint.
-        max_ich_class: `1`, `2` or `3`. Rejects anything in a *worse* ICH Q3C class; solvents the
-            guideline does not list are never rejected by this filter, and are flagged instead.
+        exclude_ich_classes: The ICH Q3C classes to reject outright, from `1`, `2`, `3`. Named as an
+            exclusion rather than a ceiling because class 1 is the *worst*, so a "maximum" reads
+            backwards — and read backwards, the most restrictive-sounding value filtered nothing.
+            Solvents the guideline does not list are never rejected here.
 
     Returns:
         Up to `top_n` candidates, passing ones first and each ordered by Hansen distance.
@@ -138,11 +140,7 @@ def swap_candidates(
             blockers.append(
                 f"is {candidate.water_miscibility} with water, not {require_water_miscibility}"
             )
-        if (
-            max_ich_class is not None
-            and candidate.ich_class in {"1", "2", "3"}
-            and int(candidate.ich_class) < int(max_ich_class)
-        ):
+        if candidate.ich_class in exclude_ich_classes:
             blockers.append(f"is ICH Q3C class {candidate.ich_class}")
         scored.append(
             SwapCandidate(

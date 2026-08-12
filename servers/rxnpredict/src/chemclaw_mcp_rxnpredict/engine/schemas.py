@@ -113,7 +113,14 @@ class ConditionsResponse(BaseModel):
 class ModelInfo(BaseModel):
     name: str
     kind: Literal["forward", "conditions"]
-    available: bool
+    available: bool = Field(
+        ..., description="Whether this predictor's code and dependencies loaded in this build."
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether this deployment will actually run it. A loaded predictor an operator "
+        "turned off is available and not enabled, and no tool here will call it.",
+    )
     description: str
     citation: str | None = None
     extras_install: str | None = Field(

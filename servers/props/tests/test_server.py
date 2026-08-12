@@ -130,9 +130,61 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
         assert_manifest_matches(MANIFEST, names)
 
 
+async def test_an_oversized_chunked_body_is_refused_by_the_real_mount(running_server: str) -> None:
+    """413 on the mounted transport, over a real socket — measured, because it was not true.
+
+    The kit's unit test drives a middleware stack it assembles itself. This drives the one
+    `connector_app` assembles, through uvicorn and into the mounted MCP transport: the configuration
+    where an oversized chunked body used to leave an unhandled `ExceptionGroup` and send nothing at
+    all.
+
+    The session id is not decoration. Without one the transport rejects the POST on sight and never
+    reads the body, so the cap is never the thing that refuses and the test would pass while proving
+    nothing. With one, the transport is reading — which is the case that has to end in a 413.
+    """
+    async with (
+        httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,
+        streamable_http_client(f"{running_server}/mcp", http_client=http_client) as (rx, tx, ids),
+        ClientSession(rx, tx) as session,
+    ):
+        await session.initialize()
+        session_id = ids()
+        assert session_id, "this transport did not issue a session id; the test cannot be faithful"
+
+        async def oversized() -> AsyncIterator[bytes]:
+            for _ in range(64):
+                yield b"x" * 32_768  # 2 MB, over the 1 MB default, and no content-length
+
+        response = await http_client.post(
+            f"{running_server}/mcp",
+            content=oversized(),
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": session_id,
+            },
+            timeout=30.0,
+        )
+    assert response.status_code == 413
+
+
 async def test_a_bad_argument_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """A deliberately worded domain error passes through; an internal one would not."""
     async with _session(running_server) as session:
         result = await session.call_tool("solvent_properties", {"name": "unobtainium"})
         assert result.isError is True
         assert "vendored solvent table" in str(result.content)
+
+
+async def test_a_misspelled_tool_name_says_so(running_server: str) -> None:
+    """An unknown tool is the one error an agent can recover from, and it was being suppressed.
+
+    The sanitiser replaced it because it carries no `__cause__`, so a misspelled tool — and a
+    manifest advertising a tool this server no longer has, which is the drift the fleet tests exist
+    for — both arrived as "an internal error occurred".
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool("solvent_propertys", {"name": "toluene"})
+        assert result.isError is True
+        assert "solvent_propertys" in str(result.content)
+        assert "internal error" not in str(result.content)

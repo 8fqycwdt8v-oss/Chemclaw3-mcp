@@ -29,11 +29,35 @@ def server_dirs() -> list[Path]:
     return sorted(path for path in SERVERS.iterdir() if (path / "connector.yaml").is_file())
 
 
+def registered_manifests() -> list[Path]:
+    """Every manifest Chemclaw3 would read from `manifests/`, whatever it points at.
+
+    Not the same set as `server_dirs()`, and the difference is the point. `manifests/` is a
+    directory rather than a detail of `servers/` precisely so a server hosted in another repository
+    — `retro` is the one due — can be declared here with no code beside it. Those manifests were
+    the ones nothing checked: not classification, not bearer auth, not port uniqueness, which is the
+    whole contract this repository owes a server it does not host.
+    """
+    return sorted(path / "connector.yaml" for path in MANIFESTS.iterdir() if path.is_dir())
+
+
+def parse(manifest: Path) -> dict[str, object]:
+    """One parsed manifest, from its own path."""
+    loaded = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict), f"{manifest} is not a mapping"
+    return loaded
+
+
+def endpoint_of(manifest: Path) -> dict[str, object]:
+    """One manifest's `endpoint:` block."""
+    endpoint = parse(manifest)["endpoint"]
+    assert isinstance(endpoint, dict), f"{manifest} has no endpoint mapping"
+    return endpoint
+
+
 def manifest_of(server: Path) -> dict[str, object]:
     """One server's parsed manifest."""
-    loaded = yaml.safe_load((server / "connector.yaml").read_text(encoding="utf-8"))
-    assert isinstance(loaded, dict)
-    return loaded
+    return parse(server / "connector.yaml")
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -47,6 +71,10 @@ def test_a_server_ships_the_whole_set(server: Path) -> None:
         "deploy/networkpolicy.yaml",
         "tests/test_no_egress.py",
         "tests/test_server.py",
+        # The file that asserts the NetworkPolicy beside it denies egress in both directions. It
+        # was the one required artifact this list did not require, which is the wrong one to leave
+        # optional when the whole posture rests on it.
+        "tests/test_deploy.py",
     ):
         assert (server / required).exists(), f"{server.name} is missing {required}"
 
@@ -71,43 +99,92 @@ def test_the_manifest_is_registered_by_symlink(server: Path) -> None:
     assert registered.resolve() == (server / "connector.yaml").resolve()
 
 
-@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
-def test_every_tool_is_classified_exactly_once(server: Path) -> None:
+@pytest.mark.parametrize("manifest", registered_manifests(), ids=lambda path: path.parent.name)
+def test_every_manifest_names_the_directory_it_is_registered_under(manifest: Path) -> None:
+    """The name Chemclaw3 dials is the directory name; a manifest calling itself something else
+    would be advertised under one string and addressed by another."""
+    assert parse(manifest)["name"] == manifest.parent.name
+
+
+@pytest.mark.parametrize("manifest", registered_manifests(), ids=lambda path: path.parent.name)
+def test_every_tool_is_classified_exactly_once(manifest: Path) -> None:
     """The rule Chemclaw3's HttpEndpoint enforces (D-167). Omission fails *open* at the gate."""
-    endpoint = manifest_of(server)["endpoint"]
-    assert isinstance(endpoint, dict)
+    name = manifest.parent.name
+    endpoint = endpoint_of(manifest)
     tools = set(endpoint.get("tools", []))
     read_only = set(endpoint.get("read_only", []))
     state_changing = set(endpoint.get("state_changing", []))
-    assert tools, f"{server.name} declares no tools"
-    assert not (tools - read_only - state_changing), f"{server.name}: unclassified tools"
-    assert not (read_only & state_changing), f"{server.name}: tools classified twice"
-    assert not ((read_only | state_changing) - tools), f"{server.name}: classified an unserved tool"
+    assert tools, f"{name} declares no tools"
+    assert not (tools - read_only - state_changing), f"{name}: unclassified tools"
+    assert not (read_only & state_changing), f"{name}: tools classified twice"
+    assert not ((read_only | state_changing) - tools), f"{name}: classified an unserved tool"
 
 
-@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
-def test_a_networked_manifest_carries_a_credential(server: Path) -> None:
+@pytest.mark.parametrize("manifest", registered_manifests(), ids=lambda path: path.parent.name)
+def test_a_networked_manifest_carries_a_credential(manifest: Path) -> None:
     """Bearer even on the loopback dev URL — an auth mode that changes with the address gets
     forgotten on the serving side the day the address changes."""
-    endpoint = manifest_of(server)["endpoint"]
-    assert isinstance(endpoint, dict)
-    auth = endpoint.get("auth", {})
-    assert auth.get("mode") == "bearer", f"{server.name} must declare bearer auth"
-    assert auth.get("token_env"), f"{server.name} declares bearer with no token_env"
+    name = manifest.parent.name
+    auth = endpoint_of(manifest).get("auth", {})
+    assert isinstance(auth, dict)
+    assert auth.get("mode") == "bearer", f"{name} must declare bearer auth"
+    assert auth.get("token_env"), f"{name} declares bearer with no token_env"
 
 
 def test_ports_are_unique_and_inside_this_repository_s_block() -> None:
-    """8850+ keeps the fleet clear of Chemclaw3's own 8810-8815 and the mock's 8090-8091."""
+    """8850+ keeps the fleet clear of Chemclaw3's own 8810-8815 and the mock's 8090-8091.
+
+    Over `manifests/`, not `servers/`: a collision between a server hosted here and one hosted
+    elsewhere is exactly as fatal to a local full-stack run, and only this side can see it.
+    """
     seen: dict[int, str] = {}
-    for server in server_dirs():
-        endpoint = manifest_of(server)["endpoint"]
-        assert isinstance(endpoint, dict)
-        found = re.search(r":(\d+)/mcp", str(endpoint["url"]))
-        assert found, f"{server.name}: cannot read a port out of {endpoint['url']!r}"
+    for manifest in registered_manifests():
+        name = manifest.parent.name
+        url = endpoint_of(manifest)["url"]
+        found = re.search(r":(\d+)/mcp", str(url))
+        assert found, f"{name}: cannot read a port out of {url!r}"
         port = int(found.group(1))
-        assert port in PORT_RANGE, f"{server.name} claims {port}, outside 8850-8899"
-        assert port not in seen, f"{server.name} and {seen[port]} both claim port {port}"
-        seen[port] = server.name
+        assert port in PORT_RANGE, f"{name} claims {port}, outside 8850-8899"
+        assert port not in seen, f"{name} and {seen[port]} both claim port {port}"
+        seen[port] = name
+
+
+@pytest.mark.parametrize("manifest", registered_manifests(), ids=lambda path: path.parent.name)
+def test_a_manifest_is_either_a_server_here_or_documented_as_hosted_elsewhere(
+    manifest: Path,
+) -> None:
+    """Nothing was checking `manifests/` in this direction, so nothing could see an orphan.
+
+    A manifest with no server under `servers/` is not an error — it is how this repository declares
+    a capability hosted in another one, which the connector seam exists to allow. What *would* be an
+    error is one nobody can trace: a directory left behind after a server was removed, still read by
+    Chemclaw3, still advertising tools. So a manifest that is not a symlink into `servers/` has to
+    say in `MODULES.md` where its server actually lives.
+    """
+    name = manifest.parent.name
+    if manifest.is_symlink():
+        assert manifest.resolve() == (SERVERS / name / "connector.yaml").resolve()
+        return
+    catalogue = (ROOT / "MODULES.md").read_text(encoding="utf-8")
+    assert re.search(rf"`{re.escape(name)}`[^\n]*(hosted|repositor)", catalogue, re.IGNORECASE), (
+        f"manifests/{name}/ has no server under servers/ and MODULES.md does not record where it "
+        "is hosted — an orphan manifest is a capability Chemclaw3 advertises and cannot reach"
+    )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_server_s_sources_reach_the_type_checker(server: Path) -> None:
+    """`make type` must cover this server, or its code is outside the gate that says it is checked.
+
+    Not hypothetical. `SRC` was a hand-written list of two directories, and `rxnpredict` was added
+    to neither — so `make check` and CI reported success over 15 source files while 28 more were
+    never type-checked at all. A glob fixes today's instance; this fixes the next one.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    src_line = next(line for line in makefile.splitlines() if line.startswith("SRC "))
+    covered = "servers/*/src" in src_line or f"servers/{server.name}/src" in src_line
+    assert covered, f"{server.name}/src is not in the Makefile's SRC: {src_line!r}"
+    assert (server / "src").is_dir()
 
 
 def test_the_map_and_the_tree_agree() -> None:
