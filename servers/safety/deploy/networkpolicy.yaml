@@ -1,0 +1,47 @@
+# Default-deny egress for the `safety` server — the layer that makes "no outbound calls" true even
+# if every line of Python in this repository were wrong.
+#
+# `policyTypes` names both directions, and `egress:` is an **empty list rather than an absent key**.
+# That difference is the whole object: an absent `egress` key with `Egress` in `policyTypes` means
+# "deny all", and so does an empty list, but only the empty list says so on purpose where a reader
+# can see it. Removing `Egress` from `policyTypes` would silently restore unrestricted outbound
+# traffic while the file still looked like a network policy.
+#
+# `tests/test_deploy.py` asserts this shape, in both directions, because a chart nobody verifies is
+# a chart that drifts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chemclaw-mcp-safety
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-safety
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-safety
+  policyTypes:
+    - Ingress
+    - Egress
+  # Two callers, and no third. The agent's front door opens MCP sessions; Prometheus scrapes
+  # `/metrics`. Neither needs anything else to reach this pod.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: chemclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8859
+  # Deliberately empty. RDKit is a local library and all four tables are baked into the image: this
+  # server has no database, no upstream API, and no reason to resolve a name. Not even DNS is
+  # permitted, because a server that never dials a host never needs to look one up — and a DNS hole
+  # is the usual way a "default-deny" egress policy quietly stops being one.
+  #
+  # It matters more here than on most servers: a hazard screen that reached out for a rule table
+  # would be answering from a source nobody reviewed, and its empty result — the one this whole
+  # server insists is not a clearance — would then be an empty result about nothing.
+  egress: []

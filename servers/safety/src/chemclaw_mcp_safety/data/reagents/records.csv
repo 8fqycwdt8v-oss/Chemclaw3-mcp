@@ -1,0 +1,62 @@
+name,synonyms,smiles,density_g_per_ml
+tetrahydrofuran,thf;tetrahydrofuran,C1CCOC1,0.889
+2-methyltetrahydrofuran,2-methf;2-methyltetrahydrofuran,CC1CCCO1,0.854
+"N,N-dimethylformamide","dmf;n,n-dimethylformamide;dimethylformamide",CN(C)C=O,0.944
+dimethyl sulfoxide,dmso;dimethylsulfoxide,CS(C)=O,1.100
+dichloromethane,dcm;dichloromethane;methylenechloride,ClCCl,1.326
+acetonitrile,mecn;acn;acetonitrile,CC#N,0.786
+ethyl acetate,etoac;ethylacetate,CCOC(C)=O,0.902
+methanol,meoh;methanol,CO,0.792
+ethanol,etoh;ethanol,CCO,0.789
+isopropanol,ipa;isopropanol;2-propanol,CC(C)O,0.786
+toluene,toluene;phme,Cc1ccccc1,0.867
+"1,4-dioxane","dioxane;1,4-dioxane",C1COCCO1,1.034
+"1,2-dimethoxyethane",dme,COCCOC,0.868
+N-methyl-2-pyrrolidone,nmp,CN1CCCC1=O,1.028
+"N,N-dimethylacetamide",dmac,CN(C)C(C)=O,0.937
+n-heptane,heptane,CCCCCCC,0.684
+n-hexane,hexane,CCCCCC,0.659
+water,water,O,0.998
+diethyl ether,diethylether;et2o,CCOCC,0.713
+methyl tert-butyl ether,mtbe,COC(C)(C)C,0.740
+acetone,acetone,CC(C)=O,0.791
+acetic acid,aceticacid;acoh,CC(O)=O,1.049
+"N,N-diisopropylethylamine","dipea;hunigsbase;n,n-diisopropylethylamine",CCN(C(C)C)C(C)C,
+triethylamine,tea;et3n;triethylamine,CCN(CC)CC,
+N-methylmorpholine,nmm,CN1CCOCC1,
+pyridine,pyridine,c1ccncc1,
+4-dimethylaminopyridine,dmap,CN(C)c1ccncc1,
+"1,8-diazabicyclo[5.4.0]undec-7-ene",dbu,C1CCC2=NCCCN2CC1,
+potassium carbonate,k2co3;potassiumcarbonate,[K+].[K+].[O-]C([O-])=O,
+cesium carbonate,cs2co3,[Cs+].[Cs+].[O-]C([O-])=O,
+sodium carbonate,na2co3,[Na+].[Na+].[O-]C([O-])=O,
+sodium bicarbonate,nahco3,[Na+].OC([O-])=O,
+sodium hydroxide,naoh,[Na+].[OH-],
+potassium hydroxide,koh,[K+].[OH-],
+potassium phosphate,k3po4,[K+].[K+].[K+].[O-]P([O-])([O-])=O,
+sodium hydride,nah,[Na+].[H-],
+lithium diisopropylamide,lda,CC(C)[N-]C(C)C.[Li+],
+sodium borohydride,nabh4,[Na+].[BH4-],
+lithium aluminium hydride,lialh4,[Li+].[AlH4-],
+palladium(II) acetate,pd(oac)2;palladiumacetate,CC(=O)O[Pd]OC(C)=O,
+"[1,1'-bis(diphenylphosphino)ferrocene]palladium(II) dichloride",pd(dppf)cl2,Cl[Pd]Cl.c1ccc(cc1)P(c1ccccc1)[CH]1[CH][CH][CH][CH]1[Fe][CH]1[CH][CH][CH][CH]1P(c1ccccc1)c1ccccc1,
+triphenylphosphine,pph3,c1ccc(cc1)P(c1ccccc1)c1ccccc1,
+XPhos,xphos,CC(C)c1cc(C(C)C)c(c(c1)C(C)C)-c1ccccc1P(C1CCCCC1)C1CCCCC1,
+TBTU,tbtu,CN(C)C(=[N+](C)C)On1nnc2ccccc21.F[B-](F)(F)F,
+HATU,hatu,CN(C)C(=[N+](C)C)On1nnc2cccnc12.F[P-](F)(F)(F)(F)F,
+EDC,edc,CCN=C=NCCCN(C)C,
+DCC,dcc,C1CCC(CC1)N=C=NC1CCCCC1,
+thionyl chloride,socl2,O=S(Cl)Cl,
+trifluoroacetic acid,tfa,OC(=O)C(F)(F)F,
+trifluoroacetic anhydride,tfaa,FC(F)(F)C(=O)OC(=O)C(F)(F)F,
+di-tert-butyl dicarbonate,boc2o,CC(C)(C)OC(=O)OC(=O)OC(C)(C)C,
+methanesulfonyl chloride,mscl,CS(Cl)(=O)=O,
+tosyl chloride,tscl,Cc1ccc(cc1)S(Cl)(=O)=O,
+meta-chloroperoxybenzoic acid,mcpba,OOC(=O)c1cccc(Cl)c1,
+hydrogen peroxide,h2o2;hydrogenperoxide,OO,
+tert-butyl hydroperoxide,tbhp,CC(C)(C)OO,
+Oxone,oxone,[K+].[K+].OOS([O-])(=O)=O.[O-]S(=O)(=O)O,
+sodium periodate,naio4,[Na+].[O-][I](=O)(=O)=O,
+sodium azide,nan3;sodiumazide,[Na+].[N-]=[N+]=[N-],
+diphenylphosphoryl azide,dppa,c1ccc(cc1)OP(=O)(N=[N+]=[N-])Oc1ccccc1,
+trimethylsilyl azide,tmsn3,C[Si](C)(C)N=[N+]=[N-],

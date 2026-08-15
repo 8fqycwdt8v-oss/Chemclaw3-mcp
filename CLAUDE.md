@@ -225,6 +225,7 @@ this.
 | 8850 | `props` | built |
 | 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
 | 8858 | `chem` | built (port of Chemclaw3's own `chem` bundle — see below) |
+| 8859 | `safety` | built (port of Chemclaw3's own `safety` bundle — see below) |
 | 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
 | 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
 | 8860+ | compound identity & data | proposed |
@@ -248,7 +249,7 @@ question — the failure its own `connectors/README.md` records as two live defi
 | xTB energies, pKa, logD, solubility, thermochemistry, the calibration ledger | `calc` |
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
-| Structural hazard alerts, genotoxic alerts, ICH Q3D impurity limits | `safety` |
+| ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
 | DFT via Nextflow/HPC | `qm` |
 | Knowledge graph read/write, the PR-gate | core |
 | ELN and ORD ingestion | `ingest/sources` |
@@ -257,12 +258,22 @@ Before proposing a tool, check `MODULES.md` and the table above. Overlap that is
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
 because per-record ORD retrieval is already `eln-ord` plus `rxnfp`.
 
-**`chem` used to be the first row of that table and is now `servers/chem/`.** A capability moving
-out of Chemclaw3 is the one sanctioned way off this list, and it is only sanctioned when the move is
-a *replacement*: same manifest `name`, same tools, same arguments, so exactly one of the two can be
-addressed (`CHEMCLAW_CONNECTOR_URLS` is keyed by name, and `CHEMCLAW_CONNECTORS_DIR` gives the first
-directory the collision). A port that renamed itself would leave both live, which is the duplication
-this section exists to prevent. See `servers/chem/README.md`.
+**Two rows of that table have left it: `chem` is now `servers/chem/` and `safety` is now
+`servers/safety/`.** A capability moving out of Chemclaw3 is the one sanctioned way off this list,
+and it is only sanctioned when the move is a *replacement*: same manifest `name`, same tools, same
+arguments, so exactly one of the two can be addressed (`CHEMCLAW_CONNECTOR_URLS` is keyed by name,
+and `CHEMCLAW_CONNECTORS_DIR` gives the first directory the collision). A port that renamed itself
+would leave both live, which is the duplication this section exists to prevent. See
+`servers/chem/README.md` and `servers/safety/README.md`.
+
+A port leaves things behind, and what it leaves behind is part of the argument. Both of these did:
+`chem` dropped Chemclaw3's `standardize` pipeline because none of its tools asked the compound
+question, and `safety` dropped the `kg-validate` hazard gate because a gate on a knowledge graph in
+a git repository is not something a tool server can have. **A skill is the other thing that does not
+travel** — Chemclaw3's `safety` bundle ships `skills/safety-screening/SKILL.md`, which is the
+judgment about what its three answers mean, and a skill is architecture layer 3 over there while
+this fleet has no equivalent seam. Ported manifests therefore declare no `skills:`, and whoever
+wires the server up keeps the skill reachable on the Chemclaw3 side.
 
 ## Working in this repository
 
@@ -271,6 +282,7 @@ make install         # uv sync
 make check           # lint + mypy --strict + the whole suite (what CI runs)
 make offline-run     # the same suite with the network namespace taken away
 make run-props       # the reference server on 127.0.0.1:8850
+make run-safety      # one per server; see the Makefile for the full list
 ```
 
 - Python ≥ 3.11, `uv` workspace, `ruff` (line length 100), `mypy --strict`.

@@ -1,0 +1,30 @@
+[project]
+name = "chemclaw-mcp-safety"
+version = "0.1.0"
+description = "MCP server: cited hazard screening, genotoxicity alerts and ICH Q3C/Q3D impurity limits."
+requires-python = ">=3.11"
+# `rdkit` for SMARTS matching and the strict SMILES parse; `pyyaml` because all four corpora are
+# YAML rather than CSV — a rule needs a multi-line explanation and a nested pair, which a CSV cell
+# cannot hold. Nothing else: the tables are files in this package and no answer leaves the process.
+dependencies = [
+    "mcp-server-kit",
+    "pyyaml>=6.0",
+    "rdkit>=2024.3.1",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_safety"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/chemclaw_mcp_safety/data" = "chemclaw_mcp_safety/data"
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }
