@@ -8,6 +8,12 @@ appear once, in a deployment, months later.
 The shape is Chemclaw3's `tests/test_repo_map.py`: check the declarations against the directories
 on disk, **in both directions**, because a one-way check passes happily while the tree grows things
 the documentation does not know about.
+
+One check here is about *data* rather than structure, and it belongs here for the same reason: two
+servers carrying a density for THF is a fact neither of them can see, and a chemist who is told
+0.889 by one and 0.886 by the other has been given two answers to one question — which is what this
+repository's central rule forbids, whether the second answer comes from a second implementation or
+from a second table.
 """
 
 from __future__ import annotations
@@ -146,3 +152,42 @@ def test_the_catalogue_claims_no_port_a_server_contradicts() -> None:
         assert re.search(pattern, catalogue), (
             f"MODULES.md does not record port {port.group(1)} for {server.name}"
         )
+
+
+def test_the_two_tables_that_both_hold_densities_agree() -> None:
+    """`props` and `chem` both record ambient densities. They must not disagree about a solvent.
+
+    The overlap is real and neither table is wrong to have it: `props` answers "what is this
+    solvent like", `chem` needs a number to turn 10 volumes into a mass. What is forbidden is the
+    two drifting, because the failure is silent in the worst possible way — a charge table computed
+    from one density beside a solvent sheet quoting the other, with nothing on either saying they
+    came from different files.
+
+    Matched on canonical SMILES rather than on a name, so `2-MeTHF` and `2-methyltetrahydrofuran`
+    are compared rather than skipped. The tolerance is 1%: these are handbook values at "20-25 °C",
+    and demanding equality would fail on the temperature the compiler happened to quote.
+    """
+    from chemclaw_mcp_chem.engine.chem import require_canonical_smiles
+    from chemclaw_mcp_chem.engine.reagents import dataset as chem_dataset
+    from chemclaw_mcp_props.engine import records
+    from mcp_server_kit import read_records
+
+    props_densities = {
+        require_canonical_smiles(solvent.smiles): (solvent.name, solvent.density_20c)
+        for solvent in records.all_solvents()
+    }
+    compared = 0
+    for row in read_records(chem_dataset()):
+        raw = row["density_g_per_ml"].strip()
+        if not raw:
+            continue
+        found = props_densities.get(require_canonical_smiles(row["smiles"]))
+        if found is None:
+            continue
+        name, density = found
+        compared += 1
+        assert abs(float(raw) - density) / density < 0.01, (
+            f"chem says {raw} g/mL for {row['name']} and props says {density} for {name}; "
+            "one solvent, two answers"
+        )
+    assert compared >= 20, f"only {compared} solvents overlap — did a table lose its densities?"

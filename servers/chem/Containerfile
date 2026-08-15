@@ -1,0 +1,39 @@
+# The `chem` server as one rootless image. Deliberately boring: the reagent table is baked in at
+# build time, the process runs unprivileged, and the runtime image holds no credential for any
+# external service because none is ever called.
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY servers/chem /build/servers/chem
+
+# Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
+# which is also what the tests import. RDKit ships manylinux wheels, so nothing is compiled here.
+RUN python -m pip install --no-cache-dir --upgrade pip build \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels ./packages/mcp_server_kit ./servers/chem
+
+FROM python:3.11-slim
+
+# A fixed high UID rather than a name: OpenShift assigns an arbitrary UID from the namespace range,
+# and the process must own nothing it needs to write (it writes nothing).
+ARG UID=1001
+RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+
+COPY --from=build /wheels /wheels
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit chemclaw-mcp-chem \
+    && rm -rf /wheels
+
+USER ${UID}
+EXPOSE 8858
+
+# The egress guard is armed on import and is left at its default. `MCP_EGRESS_ALLOW` is not set
+# here, and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside
+# this file denies egress at the network layer regardless.
+ENV MCP_EGRESS_GUARD=on
+
+# The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8858/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_chem.app:app", "--host", "0.0.0.0", "--port", "8858"]

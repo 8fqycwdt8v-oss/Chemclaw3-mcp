@@ -60,6 +60,46 @@ surface was *mounted* — and a mount bypasses the enclosing app's dependencies,
 guarded the REST routes and not `/mcp`. Here it is ASGI middleware, and `tests/test_server.py`
 asserts the 401. See `servers/rxnpredict/README.md` for the full list.
 
+### `chem` — bench chemistry over RDKit · port 8858 · **built**
+
+What do I weigh out, what is this compound, what does it look like, and how green is this route.
+`resolve_compound` turns the name a chemist wrote (`DIPEA`, `Pd(dppf)Cl2`, `2-MeTHF`) into a
+canonical structure — the bridge every structure-taking tool in the fleet needs;
+`stoichiometry_table` scales a batch to the limiting reagent and converts solvent *volumes* into
+real masses; `green_metrics` computes E-factor and PMI from exactly those masses; `render_structure`
+draws a molecule or reaction as an inline SVG.
+
+*Tools:* `resolve_compound`, `stoichiometry_table`, `green_metrics`, `render_structure` — all
+`read_only`.
+*Offline:* a vendored, checksummed CSV of 61 reagents under 87 spellings (CC0), plus RDKit. No
+upstream at all, and deliberately so: an external resolver (PubChem, OPSIN) is a request-time
+network call, which this repository does not permit and which the common case does not need.
+*Provenance:* **a port of Chemclaw3's own in-tree `chem` connector** — the same manifest name, the
+same four tools, the same argument names, the same model-facing docstrings. It is a replacement for
+that bundle rather than a second implementation, and the two cannot both answer:
+`CHEMCLAW_CONNECTOR_URLS` is keyed by name, and `CHEMCLAW_CONNECTORS_DIR` resolves a name collision
+by first directory (`connectors/registry.py::_bundle_dirs`). Moving it here takes RDKit out of the
+chat service's image and gives the surface its own release cadence.
+
+**What changed in the port, so nobody restores it believing it was an oversight:**
+
+- **`auth: {mode: none}` became bearer** (`CHEMCLAW_CHEM_TOKEN`). The in-tree bundle was only ever
+  dialled over loopback from the same pod; a server in another image is dialled across a network.
+- **The reagent table became a vendored dataset.** It was a Python dict in Chemclaw3
+  (`core/reagents.py`); here it is `data/records.csv` with a licence and a checksum, because that
+  is what this repository requires of every corpus it answers from.
+- **`settings.structure_render_size_px` became `CHEMCLAW_CHEM_RENDER_SIZE_PX`** (same default,
+  320). One integer does not earn a pydantic-settings object.
+- **The reaction-drawing path was hardened.** Measured against the installed RDKit rather than
+  read off the source: `ReactionFromSmarts` *raises* where the ported code checked for `None`,
+  `">>"` parses to an empty reaction, and `"°C>>CC=O"` parses as *methane* — all three now refuse.
+
+**The one thing to know before touching it:** `engine/chem.py` duplicates Chemclaw3's
+canonical-SMILES definition, which on the Chemclaw3 side is the calculation-cache key (D-011) with
+26 importers. Chemclaw3 is the authority and nothing here derives a key;
+`tests/test_canonicalization_contract.py` pins the two together as literal strings so a divergence
+is caught rather than served. See `servers/chem/README.md`.
+
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic

@@ -12,6 +12,7 @@ dev = [
     "mcp-server-kit",
     "chemclaw-mcp-props",
     "chemclaw-mcp-rxnpredict",
+    "chemclaw-mcp-chem",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
@@ -28,6 +29,7 @@ members = ["packages/*", "servers/*"]
 mcp-server-kit = { workspace = true }
 chemclaw-mcp-props = { workspace = true }
 chemclaw-mcp-rxnpredict = { workspace = true }
+chemclaw-mcp-chem = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -41,7 +43,7 @@ python_version = "3.11"
 strict = true
 # Every package ships its own `src/` layout; point mypy at the sources rather than the installed
 # copies so a type error is reported against the file a person edits.
-mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src"
+mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/chem/src"
 
 [[tool.mypy.overrides]]
 module = [

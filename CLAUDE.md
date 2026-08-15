@@ -224,6 +224,7 @@ this.
 | --- | --- | --- |
 | 8850 | `props` | built |
 | 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
+| 8858 | `chem` | built (port of Chemclaw3's own `chem` bundle — see below) |
 | 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
 | 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
 | 8860+ | compound identity & data | proposed |
@@ -244,7 +245,6 @@ question — the failure its own `connectors/README.md` records as two live defi
 
 | Already in Chemclaw3 | Where |
 | --- | --- |
-| Compound name → structure, stoichiometry/charge tables, E-factor & PMI, structure rendering | `chem` |
 | xTB energies, pKa, logD, solubility, thermochemistry, the calibration ledger | `calc` |
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
@@ -256,6 +256,13 @@ question — the failure its own `connectors/README.md` records as two live defi
 Before proposing a tool, check `MODULES.md` and the table above. Overlap that is deliberate must be
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
 because per-record ORD retrieval is already `eln-ord` plus `rxnfp`.
+
+**`chem` used to be the first row of that table and is now `servers/chem/`.** A capability moving
+out of Chemclaw3 is the one sanctioned way off this list, and it is only sanctioned when the move is
+a *replacement*: same manifest `name`, same tools, same arguments, so exactly one of the two can be
+addressed (`CHEMCLAW_CONNECTOR_URLS` is keyed by name, and `CHEMCLAW_CONNECTORS_DIR` gives the first
+directory the collision). A port that renamed itself would leave both live, which is the duplication
+this section exists to prevent. See `servers/chem/README.md`.
 
 ## Working in this repository
 

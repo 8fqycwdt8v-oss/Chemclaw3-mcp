@@ -1,0 +1,53 @@
+# The `chem` bundle, as Chemclaw3 reads it.
+#
+# This is a connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): drop this
+# directory onto a path in `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+#
+# It carries the **same name** as Chemclaw3's own in-tree `chem` bundle, deliberately. This is a
+# port of that bundle, not a second one: same four tools, same argument names, same docstrings.
+# Chemclaw3 resolves a bundle-name collision by first directory on `CHEMCLAW_CONNECTORS_DIR`
+# (`connectors/registry.py::_bundle_dirs`, "first dir wins"), so listing this fleet's `manifests/`
+# ahead of Chemclaw3's own connectors directory is what makes exactly one of the two answer — and
+# the two cannot both be addressed anyway, because `CHEMCLAW_CONNECTOR_URLS` is keyed by that name.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.chem.url` in the Helm chart — hosting is a deployment
+# fact and does not belong in a manifest.
+name: chem
+description: >-
+  Bench chemistry over RDKit: resolve a compound name, abbreviation or SMILES to a canonical
+  structure from a vendored, checksummed table of 61 reagents and solvents; build a stoichiometry
+  and charge table scaled to the limiting reagent, converting solvent volumes to real masses;
+  compute E-factor and PMI for a route from those masses; and render a molecule or reaction as an
+  inline SVG. Pure and synchronous — no store, no durable state, and no network call at any point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8858/mcp
+  health_url: http://127.0.0.1:8858/healthz
+  # Chemclaw3's own bundle allowed 30 s and it is kept: a depiction is tens of milliseconds, but
+  # the bound exists to stop a mute connector hanging a turn, not to police a fast one.
+  request_timeout: 30
+  # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here
+  # and refuse it the moment a deployment points this at a real host — and a manifest whose auth
+  # mode changes with its address is one whose serving side gets it wrong. The token env var is the
+  # same name on both sides: Chemclaw3 reads it to send, `app.py` reads it to verify.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_CHEM_TOKEN
+  tools:
+    - resolve_compound
+    - stoichiometry_table
+    - green_metrics
+    - render_structure
+  # Pure functions of their arguments plus a read of a read-only table: nothing here spends compute
+  # worth gating, writes anything, or has an effect the plan gate should hold. So an agent may use
+  # all four while building the plan a human is asked to approve — which is the point, since "what
+  # do we actually charge, and what does it cost in waste" is a question that has to be answerable
+  # *before* approval, not after.
+  read_only:
+    - resolve_compound
+    - stoichiometry_table
+    - green_metrics
+    - render_structure

@@ -1,0 +1,10 @@
+{
+  "name": "bench-reagents",
+  "version": "0.1.0",
+  "licence": "CC0-1.0 (public domain dedication) — first-party content, ported from Chemclaw3's `chemclaw.core.reagents`, which is MIT-licensed content of the same owner",
+  "retrieved_from": "Ported verbatim from Chemclaw3's `src/chemclaw/core/reagents.py` (`_RAW_SYNONYMS` and `_RAW_DENSITIES`), which was hand-compiled in that repository from the reagents a process-chemistry group writes daily; structures are standard SMILES, ambient densities are handbook values at 20-25 degrees Celsius. Nothing is fetched at runtime and no address here is read by any code.",
+  "description": "61 bench reagents, solvents, bases, catalysts and coupling agents, keyed by the 87 spellings a chemist actually writes (`DIPEA`, `Pd(dppf)Cl2`, `2-MeTHF`). One row per substance: the display name, every recognised spelling, the SMILES, and — for the 22 that can be charged by volume — an ambient density in g/mL. The density column is deliberately sparse: a density is a fact about a substance, and its absence is what makes this server refuse to turn a volume into a mass rather than assume 1 g/mL. VERIFY AGAINST A PRIMARY SOURCE before a number here enters a batch record: this is a working table for an agent's reasoning, not a certified reference.",
+  "sha256": "9ae9dd97293f32447615d5d5b0f6584d6213574c834feb5aec50b6aff6dd7b24",
+  "text_column": "name",
+  "smiles_column": "smiles"
+}

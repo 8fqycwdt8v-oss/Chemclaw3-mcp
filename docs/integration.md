@@ -50,6 +50,24 @@ and what could replace dichloromethane in a plant?"* — and confirm the tool wa
 recalled. The `source` field in the answer is the tell: it names the vendored dataset and its
 licence.
 
+### The one server that collides with a Chemclaw3 bundle, on purpose
+
+`chem` is a **port** of Chemclaw3's own in-tree `chem` connector and carries the same name, so which
+of the two answers is decided by the order of `CHEMCLAW_CONNECTORS_DIR` — first directory wins
+(`connectors/registry.py::_bundle_dirs`). Putting this fleet's `manifests/` first, as above, is what
+makes this server the `chem` the agent sees:
+
+```sh
+export CHEMCLAW_CONNECTORS_DIR="/path/to/Chemclaw3-mcp/manifests:$CHEMCLAW_OWN"   # this one wins
+export CHEMCLAW_CONNECTOR_URLS='{"chem":"http://127.0.0.1:8858/mcp"}'
+export CHEMCLAW_CHEM_TOKEN=dev-token      # the same variable the server verifies
+```
+
+Reverse the two paths and the in-tree bundle wins instead, with no error either way — which is the
+intended behaviour, and the thing to check when a `chem` answer arrives that this server cannot
+have produced. There is no configuration in which both are reachable: one name, one URL key, one
+winner.
+
 ### Checking it is really connected
 
 ```sh
