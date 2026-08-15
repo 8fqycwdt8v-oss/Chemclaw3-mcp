@@ -39,7 +39,7 @@ manifest-validate: ## Every connector.yaml parses, is classified, and matches it
 
 .PHONY: offline-run
 offline-run: ## Prove every server answers with the network taken away (needs unshare; Linux).
-	unshare --net -- $(UV) run python scripts/offline_check.py -q
+	unshare --user --map-root-user --net -- $(UV) run python scripts/offline_check.py -q
 
 .PHONY: check
 check: lint type test ## Everything CI runs.
