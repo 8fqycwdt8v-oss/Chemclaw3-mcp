@@ -16,6 +16,7 @@ members = [
     "chemclaw-mcp-chem",
     "chemclaw-mcp-props",
     "chemclaw-mcp-rxnpredict",
+    "chemclaw-mcp-safety",
     "chemclaw3-mcp",
     "mcp-server-kit",
 ]
@@ -601,6 +602,36 @@ requires-dist = [
 provides-extras = ["reaction-t5", "rxn-insight", "t5chem", "chemformer", "megan", "graphrxn", "molecular-transformer", "reagents-mt", "parrot", "two-stage-dnn", "askcos-condition", "dev"]
 
 [[package]]
+name = "chemclaw-mcp-safety"
+version = "0.1.0"
+source = { editable = "servers/safety" }
+dependencies = [
+    { name = "mcp-server-kit" },
+    { name = "pyyaml" },
+    { name = "rdkit" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rdkit", specifier = ">=2024.3.1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "chemclaw3-mcp"
 version = "0.1.0"
 source = { virtual = "." }
@@ -610,6 +641,7 @@ dev = [
     { name = "chemclaw-mcp-chem" },
     { name = "chemclaw-mcp-props" },
     { name = "chemclaw-mcp-rxnpredict" },
+    { name = "chemclaw-mcp-safety" },
     { name = "httpx" },
     { name = "mcp-server-kit" },
     { name = "mypy" },
@@ -627,6 +659,7 @@ dev = [
     { name = "chemclaw-mcp-chem", editable = "servers/chem" },
     { name = "chemclaw-mcp-props", editable = "servers/props" },
     { name = "chemclaw-mcp-rxnpredict", editable = "servers/rxnpredict" },
+    { name = "chemclaw-mcp-safety", editable = "servers/safety" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
     { name = "mypy", specifier = ">=1.11" },

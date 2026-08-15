@@ -100,6 +100,56 @@ canonical-SMILES definition, which on the Chemclaw3 side is the calculation-cach
 `tests/test_canonicalization_contract.py` pins the two together as literal strings so a divergence
 is caught rather than served. See `servers/chem/README.md`.
 
+### `safety` — cited hazard, genotoxicity and ICH impurity tables · port 8859 · **built**
+
+Three questions a chemist asks separately, kept separate, each answered from a committed table with
+a citation on it. `screen_hazards` matches 11 structural motifs (azides, diazo, diazonium, peroxide,
+nitrate ester, polynitroaromatic, perchlorate, hydrazine, N-halamine) plus 5 pairwise
+incompatibilities checked across a reaction's components; `screen_genotoxic_alerts` matches 9
+DNA-reactive structural alerts plus the nitrosamine formation route; `ich_impurity_limit` reads the
+transcribed ICH Q3C residual-solvent limits and Q3D elemental-impurity PDEs.
+
+*Tools:* `screen_hazards`, `screen_genotoxic_alerts`, `ich_impurity_limit` — all `read_only`, and
+they must stay open under an unapproved plan: these are exactly the checks a chemist wants *before*
+approving the work.
+*Offline:* four vendored, checksummed YAML corpora plus RDKit, and a byte-identical copy of `chem`'s
+reagent table (see below). No upstream at all — the obvious things to reach for here are an SDS
+service, a hazard database or ICH's own site, and all three are request-time network calls.
+*Provenance:* **a port of Chemclaw3's own in-tree `safety` connector** — the same manifest name, the
+same three tools, the same argument names, the same model-facing docstrings, which are carried over
+word for word because every disclaimer in them exists to prevent a mistake that was measured in a
+live run. It is a replacement for that bundle rather than a second implementation, resolved the same
+way `chem` is (name-keyed URLs, first directory wins a collision).
+
+**Nothing here is a clearance, a classification or a risk assessment**, and each result says so in
+its own payload as a pydantic `computed_field` rather than only in a docstring — a plain property is
+dropped by serialization, which is how a caveat comes to exist in the code, pass every unit test, and
+never reach the model writing the answer.
+
+**Three things to know before touching it:**
+
+- **`rules.yaml` has no licence and its `dataset.json` records that as UNRESOLVED.** Every rule
+  carries a citation and the file carries no licence statement, in this repository or the one it came
+  from. It is very likely first-party — original SMARTS written against cited hazard literature
+  rather than a transcribed table — but that is an explanation, not a grant, and a test pins the
+  string so nobody quietly types `CC0` to make the loader happy. **This is open and a reviewer has
+  to settle it.**
+- **The deliberate omissions are load-bearing.** `tert`-butyl alcohol, water, `EDC`/`DMA`/`TCE`,
+  and Ag/Au/Ni are absent on purpose, each because a value could not be verified against the source;
+  and Q3C's "R9 / 2024" revision label is the one field nobody has checked, on every row's citation.
+  A contributor "completing" the tables from memory reintroduces exactly the fabrication they
+  replaced.
+- **`data/reagents/` is a byte-identical second copy of `chem`'s corpus**, needed because a SMILES is
+  not a spelling of a name and `ich_impurity_limit("C1CCOC1")` has to reach the tetrahydrofuran row.
+  `tests/test_fleet.py` asserts the two files are equal from outside, which is what makes the
+  duplication safe rather than merely accepted.
+
+**What was dropped in the port:** Chemclaw3's `science/safety/notes.py` and the ~370 lines of tests
+covering its `kg-validate` hazard gate (that gate reads knowledge-graph notes in a git repository,
+which this fleet has none of), the `at_least` severity helper the gate was its only remaining caller
+of, and the bundle's `skills:` key — the `safety-screening` SKILL.md stays in Chemclaw3, which is the
+repository that has a skills layer. See `servers/safety/README.md`.
+
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic
@@ -109,8 +159,10 @@ oxygen-balance screen for energetic functionality.
 *Proposed tools:* `adiabatic_temperature_rise`, `mtsr`, `tmr_ad`, `sadt`,
 `stoessel_criticality_class`, `heat_removal_capacity`, `oxygen_balance_screen`.
 *Offline:* first-party formulas; no corpus needed.
-*Note:* complements Chemclaw3's `safety` connector, which screens *structures* for hazard alerts.
-This one takes DSC/RC1/ARC numbers and answers "what happens if the cooling fails".
+*Note:* complements the `safety` server above, which screens *structures* for hazard alerts. This one
+takes DSC/RC1/ARC numbers and answers "what happens if the cooling fails". The two belong apart:
+`safety` answers from cited tables and needs RDKit, this one is arithmetic over numbers the chemist
+supplies and needs nothing.
 
 ### `kinetics` — rate laws and reactor simulation · port 8852 · proposed
 

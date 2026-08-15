@@ -50,23 +50,32 @@ and what could replace dichloromethane in a plant?"* — and confirm the tool wa
 recalled. The `source` field in the answer is the tell: it names the vendored dataset and its
 licence.
 
-### The one server that collides with a Chemclaw3 bundle, on purpose
+### The servers that collide with a Chemclaw3 bundle, on purpose
 
-`chem` is a **port** of Chemclaw3's own in-tree `chem` connector and carries the same name, so which
-of the two answers is decided by the order of `CHEMCLAW_CONNECTORS_DIR` — first directory wins
-(`connectors/registry.py::_bundle_dirs`). Putting this fleet's `manifests/` first, as above, is what
-makes this server the `chem` the agent sees:
+`chem` and `safety` are **ports** of Chemclaw3's own in-tree connectors and carry the same names, so
+which of each pair answers is decided by the order of `CHEMCLAW_CONNECTORS_DIR` — first directory
+wins (`connectors/registry.py::_bundle_dirs`). Putting this fleet's `manifests/` first, as above, is
+what makes these servers the `chem` and the `safety` the agent sees:
 
 ```sh
 export CHEMCLAW_CONNECTORS_DIR="/path/to/Chemclaw3-mcp/manifests:$CHEMCLAW_OWN"   # this one wins
-export CHEMCLAW_CONNECTOR_URLS='{"chem":"http://127.0.0.1:8858/mcp"}'
-export CHEMCLAW_CHEM_TOKEN=dev-token      # the same variable the server verifies
+export CHEMCLAW_CONNECTOR_URLS='{"chem":"http://127.0.0.1:8858/mcp","safety":"http://127.0.0.1:8859/mcp"}'
+export CHEMCLAW_CHEM_TOKEN=dev-token      # the same variables the servers verify
+export CHEMCLAW_SAFETY_TOKEN=dev-token
 ```
 
-Reverse the two paths and the in-tree bundle wins instead, with no error either way — which is the
-intended behaviour, and the thing to check when a `chem` answer arrives that this server cannot
-have produced. There is no configuration in which both are reachable: one name, one URL key, one
-winner.
+Reverse the two paths and the in-tree bundles win instead, with no error either way — which is the
+intended behaviour, and the thing to check when a `chem` or `safety` answer arrives that these
+servers cannot have produced. There is no configuration in which both are reachable: one name, one
+URL key, one winner.
+
+**`safety` needs one extra thing that is not a connector.** Chemclaw3's in-tree bundle ships
+`skills/safety-screening/SKILL.md`, the judgment about which of the three tools answers which
+question and how to report what comes back, and a skill is architecture layer 3 over there rather
+than something a tool server can carry. This fleet's manifest therefore declares no `skills:`.
+Keep that SKILL.md reachable on the Chemclaw3 side when this server wins the collision — the tools
+are deterministic and have no opinion, and losing the skill loses the half that says what an empty
+result does not mean.
 
 ### Checking it is really connected
 

@@ -191,3 +191,28 @@ def test_the_two_tables_that_both_hold_densities_agree() -> None:
             "one solvent, two answers"
         )
     assert compared >= 20, f"only {compared} solvents overlap — did a table lose its densities?"
+
+
+def test_the_reagent_table_two_servers_carry_is_one_file() -> None:
+    """`chem` and `safety` both ship the bench-reagent corpus. It must be the *same* corpus.
+
+    This is the density check's sibling and it exists for a stronger version of the same reason. One
+    server never imports another, so a table two servers need is carried by both — `chem` resolves
+    the name a chemist wrote into a structure, `safety` needs the same resolution to get `THF`,
+    `2-MeTHF` and `C1CCOC1` to an ICH row. Neither server can see the other's copy, so neither can
+    notice the day they stop agreeing, and the failure is the one this repository's central rule
+    forbids: two answers to one question, with nothing on either saying they came from different
+    files.
+
+    Byte-identity rather than a tolerance, because unlike the densities these are not independently
+    compiled numbers — one was copied from the other, and anything less than equality is drift. If
+    the two ever have to diverge, this test is where the argument for it gets written down.
+    """
+    copies = [
+        SERVERS / "chem" / "src" / "chemclaw_mcp_chem" / "data",
+        SERVERS / "safety" / "src" / "chemclaw_mcp_safety" / "data" / "reagents",
+    ]
+    records = {path: (path / "records.csv").read_bytes() for path in copies}
+    manifests = {path: (path / "dataset.json").read_bytes() for path in copies}
+    assert len(set(records.values())) == 1, f"the reagent tables differ: {list(records)}"
+    assert len(set(manifests.values())) == 1, f"the reagent manifests differ: {list(manifests)}"

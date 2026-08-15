@@ -1,7 +1,7 @@
 # The gate. `make check` is what CI runs; nothing here needs a cluster, a database or a network.
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src
 
 .PHONY: help
 help: ## Show this help.
@@ -53,3 +53,8 @@ run-props: ## Run the props server on its dev port with a dev token.
 run-chem: ## Run the chem server on its dev port with a dev token.
 	CHEMCLAW_CHEM_TOKEN=$${CHEMCLAW_CHEM_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_chem.app:app --host 127.0.0.1 --port 8858
+
+.PHONY: run-safety
+run-safety: ## Run the safety server on its dev port with a dev token.
+	CHEMCLAW_SAFETY_TOKEN=$${CHEMCLAW_SAFETY_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_safety.app:app --host 127.0.0.1 --port 8859

@@ -1,0 +1,58 @@
+# The `safety` bundle, as Chemclaw3 reads it.
+#
+# This is a connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): drop this
+# directory onto a path in `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+#
+# It carries the **same name** as Chemclaw3's own in-tree `safety` bundle, deliberately. This is a
+# port of that bundle, not a second one: same three tools, same argument names, same docstrings.
+# Chemclaw3 resolves a bundle-name collision by first directory on `CHEMCLAW_CONNECTORS_DIR`
+# (`connectors/registry.py::_bundle_dirs`, "first dir wins"), so listing this fleet's `manifests/`
+# ahead of Chemclaw3's own connectors directory is what makes exactly one of the two answer — and
+# the two cannot both be addressed anyway, because `CHEMCLAW_CONNECTOR_URLS` is keyed by that name.
+#
+# **The `skills:` key of the in-tree bundle is deliberately absent**, and that is a real difference
+# rather than an oversight. Chemclaw3's bundle ships `skills/safety-screening/SKILL.md` — the
+# judgment about which of these three tools answers which question and how to report what comes
+# back. A skill is architecture layer 3 in that repository and this fleet has no equivalent seam, so
+# the SKILL.md stays there. Whoever wires this server up must keep that skill reachable, because the
+# tools are deterministic and have no opinion: the judgment is the half that lives in the skill.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.safety.url` in the Helm chart — hosting is a deployment
+# fact and does not belong in a manifest.
+name: safety
+description: >-
+  Cited safety and impurity reference tables, three separate questions kept separate: structural
+  hazard screening of molecules and whole reactions (energetic and reactive motifs, plus dangerous
+  combinations), DNA-reactive genotoxicity structural alerts, and ICH Q3C/Q3D limit lookup. Every
+  answer is advisory and carries its citation; none is a clearance or a classification. Four
+  vendored, checksummed corpora and RDKit — no store, no durable state, and no network call at any
+  point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8859/mcp
+  health_url: http://127.0.0.1:8859/healthz
+  # Chemclaw3's own bundle allowed 30 s and it is kept: a bounded screen is single-digit
+  # milliseconds, but the bound exists to stop a mute connector hanging a turn, not to police a fast
+  # one.
+  request_timeout: 30
+  # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here
+  # and refuse it the moment a deployment points this at a real host — and a manifest whose auth
+  # mode changes with its address is one whose serving side gets it wrong. The token env var is the
+  # same name on both sides: Chemclaw3 reads it to send, `app.py` reads it to verify.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_SAFETY_TOKEN
+  tools:
+    - screen_hazards
+    - screen_genotoxic_alerts
+    - ich_impurity_limit
+  # Three table lookups. They must stay open under an unapproved plan for a reason beyond
+  # convenience: a hazard screen, an alert list and a published limit are exactly the checks a
+  # chemist wants *before* deciding whether to approve the work.
+  read_only:
+    - screen_hazards
+    - screen_genotoxic_alerts
+    - ich_impurity_limit
