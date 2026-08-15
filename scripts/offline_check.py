@@ -5,7 +5,14 @@ guard, the AST scan and the NetworkPolicy are all assertions *about* the servers
 takes the network away and checks that every answer is unchanged. If a server were quietly reaching
 a host, it would fail here and nowhere else.
 
-Run it as `make offline-run`, which is `unshare --net -- python scripts/offline_check.py`.
+Run it as `make offline-run`, which is
+`unshare --user --map-root-user --net -- python scripts/offline_check.py`.
+
+**Both unshare flags are load-bearing.** `--net` alone needs `CAP_SYS_ADMIN`, which an ordinary
+user does not have, so the bare form only ever worked as root — and CI, which runs as an
+unprivileged user, failed with "Operation not permitted" on every run this repository has had.
+Creating a user namespace first grants `CAP_SYS_ADMIN` inside it, and `--map-root-user` is also
+what supplies the `CAP_NET_ADMIN` the loopback ioctl below needs.
 
 **Loopback has to be brought up by hand.** A fresh network namespace starts with `lo` DOWN, so
 without this the run fails on the server tests for a reason that has nothing to do with egress —

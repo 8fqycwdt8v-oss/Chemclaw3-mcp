@@ -1,7 +1,7 @@
 # The gate. `make check` is what CI runs; nothing here needs a cluster, a database or a network.
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src
 
 .PHONY: help
 help: ## Show this help.
@@ -39,7 +39,7 @@ manifest-validate: ## Every connector.yaml parses, is classified, and matches it
 
 .PHONY: offline-run
 offline-run: ## Prove every server answers with the network taken away (needs unshare; Linux).
-	unshare --net -- $(UV) run python scripts/offline_check.py -q
+	unshare --user --map-root-user --net -- $(UV) run python scripts/offline_check.py -q
 
 .PHONY: check
 check: lint type test ## Everything CI runs.
@@ -48,3 +48,8 @@ check: lint type test ## Everything CI runs.
 run-props: ## Run the props server on its dev port with a dev token.
 	CHEMCLAW_PROPS_TOKEN=$${CHEMCLAW_PROPS_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_props.app:app --host 127.0.0.1 --port 8850
+
+.PHONY: run-chem
+run-chem: ## Run the chem server on its dev port with a dev token.
+	CHEMCLAW_CHEM_TOKEN=$${CHEMCLAW_CHEM_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_chem.app:app --host 127.0.0.1 --port 8858

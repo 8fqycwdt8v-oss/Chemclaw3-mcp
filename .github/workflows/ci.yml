@@ -30,7 +30,7 @@ jobs:
         run: uv run ruff check . && uv run ruff format --check .
 
       - name: Types
-        run: uv run mypy packages/mcp_server_kit/src servers/props/src
+        run: uv run mypy packages/mcp_server_kit/src servers/props/src servers/chem/src
 
       - name: Tests
         run: uv run pytest -q
@@ -51,8 +51,32 @@ jobs:
       - name: Sync the workspace
         run: uv sync --frozen
 
+      # This job had never passed — red on every run including `main`, with `check` and `manifests`
+      # green throughout, so the strongest no-egress claim in the repository was the one that had
+      # never actually run.
+      #
+      # **`unshare --net` alone needs `CAP_SYS_ADMIN`,** which the runner user does not have; it
+      # only ever worked where someone ran it as root. Creating a *user* namespace first grants
+      # `CAP_SYS_ADMIN` inside it, which is what makes the network namespace reachable
+      # unprivileged — and `--map-root-user` is also what gives the script the `CAP_NET_ADMIN` its
+      # loopback ioctl needs. Both flags are load-bearing; neither is belt-and-braces.
+      #
+      # The sysctl is the *second* gate: `ubuntu-latest` is 24.04, which puts unprivileged user
+      # namespaces behind AppArmor. Best-effort, so an image without the knob — or a future one
+      # that drops the restriction — falls through to the check rather than failing on its
+      # workaround.
+      #
+      # `sudo unshare` would also work and is deliberately not used: a no-egress proof that needs
+      # root is a weaker claim than one that does not.
+      #
+      # Verified as a non-root user before committing, rather than reasoned about: plain
+      # `unshare --net` reproduces CI's "Operation not permitted" exactly, the form below succeeds,
+      # loopback comes up, and an outbound request raises `URLError` inside it.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Run the suite with no network
-        run: unshare --net -- uv run python scripts/offline_check.py -q
+        run: unshare --user --map-root-user --net -- uv run python scripts/offline_check.py -q
 
   manifests:
     # A manifest is a claim about a tool surface, and Chemclaw3's history is a list of claims that
