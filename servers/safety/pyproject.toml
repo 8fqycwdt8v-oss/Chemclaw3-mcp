@@ -23,8 +23,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/chemclaw_mcp_safety"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/chemclaw_mcp_safety/data" = "chemclaw_mcp_safety/data"
 
 [tool.uv.sources]
 mcp-server-kit = { workspace = true }
