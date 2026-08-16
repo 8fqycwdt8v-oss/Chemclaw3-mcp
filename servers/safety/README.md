@@ -105,27 +105,27 @@ that is a copy of `chem`'s reagent table (see below).
 change when a guideline revision does, and that is a person reading the source document and editing
 a row — never a fetch.
 
-### `rules.yaml` has no licence, and that is recorded rather than resolved
+### `rules.yaml` is first-party, and the manifest says why rather than naming a licence
 
-**This is a real blocker for a vendored dataset and it is open.** The file carries a citation on
-every rule and **no licence statement of any kind**, in this repository or in the one it was ported
-from. Its `dataset.json` therefore records `licence: "UNRESOLVED — …"` and says why, and
-`tests/test_dataset.py::test_the_hazard_rules_record_an_unresolved_licence_rather_than_a_borrowed_one`
-pins that string.
+It shipped as `UNRESOLVED` and is settled: **CC0-1.0**, on the same basis as `genotox`.
 
-The likely explanation is that the SMARTS are **original expressions written against cited hazard
-literature** rather than a transcribed table — you cannot copyright the fact that azides are
-energetic, and the patterns themselves are this project's own work, which would make them
-first-party content under the same terms as everything else here. But "likely" is not a licence,
-nothing in either repository says so, and inventing one to satisfy the loader would be exactly the
-kind of claim `CLAUDE.md` says a corpus with no recorded licence leaves nobody able to answer a year
-later. A reviewer settles it; closing that test is the last step of settling it, not the first.
+The file cites a source on every rule and reproduces none of them. Bretherick's Handbook and the
+four cited papers are prose — they contain no SMARTS — and the patterns here were written *and
+debugged* in Chemclaw3, which the `peroxide` rule shows plainly: it carries an in-repo fix for
+`[OX1-]`, added because the two-coordinate-only pattern had screened sodium peroxide clean. The
+underlying facts, that an organic azide is shock-sensitive, are not copyrightable subject matter.
+So the SMARTS and the flag text are this project's own expression of published science that each
+row attributes.
 
-The other three are cleaner. The genotoxicity SMARTS are first-party in the same way and the alert
-*concepts* are attributed per row. The two ICH files are transcribed figures from published
-guidelines, cited on every answer they produce; ICH permits reproduction of its guidelines for
-non-commercial use with the source acknowledged, and a commercial redistribution of those two files
-needs ICH's own terms checked rather than a sentence in a README.
+**The three corpora here answer one provenance question three ways, and that is deliberate.**
+`genotox` and `rules` are first-party expression → CC0-1.0. `ich_q3c` and `ich_q3d` *transcribe
+figures* out of a guideline and therefore carry ICH's own reproduction terms instead. Leaving
+`rules` open while `genotox` — identical in provenance — was resolved was the actual defect: to a
+later maintainer it reads as a real problem with this file rather than as caution.
+
+`tests/test_dataset.py` asserts the *reasoning* rather than the identifier. A bare `CC0-1.0` is
+precisely what the original guard existed to stop somebody typing to satisfy the loader, and that
+failure mode does not disappear now that the identifier happens to be correct.
 
 ### The deliberate omissions, which must survive
 

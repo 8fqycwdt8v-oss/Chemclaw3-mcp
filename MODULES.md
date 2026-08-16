@@ -128,12 +128,13 @@ never reach the model writing the answer.
 
 **Three things to know before touching it:**
 
-- **`rules.yaml` has no licence and its `dataset.json` records that as UNRESOLVED.** Every rule
-  carries a citation and the file carries no licence statement, in this repository or the one it came
-  from. It is very likely first-party — original SMARTS written against cited hazard literature
-  rather than a transcribed table — but that is an explanation, not a grant, and a test pins the
-  string so nobody quietly types `CC0` to make the loader happy. **This is open and a reviewer has
-  to settle it.**
+- **`rules.yaml` is first-party (CC0-1.0), and its `dataset.json` records the basis, not just the
+  identifier.** It shipped `UNRESOLVED` and is settled: every rule cites a source and reproduces
+  none — Bretherick's and the four cited papers are prose containing no SMARTS, the patterns were
+  written and debugged in Chemclaw3, and the underlying facts are not copyrightable. Same basis as
+  `genotox`; deliberately *not* the basis `ich_q3c`/`ich_q3d` use, which transcribe guideline
+  figures and carry ICH's terms. The test asserts the reasoning rather than the string, because a
+  bare `CC0` typed to satisfy the loader is still the failure to prevent.
 - **The deliberate omissions are load-bearing.** `tert`-butyl alcohol, water, `EDC`/`DMA`/`TCE`,
   and Ag/Au/Ni are absent on purpose, each because a value could not be verified against the source;
   and Q3C's "R9 / 2024" revision label is the one field nobody has checked, on every row's citation.

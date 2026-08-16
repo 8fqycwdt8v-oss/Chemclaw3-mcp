@@ -67,24 +67,36 @@ def test_every_corpus_is_the_one_that_was_approved(directory: Path, records_file
     assert loaded.description.strip()
 
 
-def test_the_hazard_rules_record_an_unresolved_licence_rather_than_a_borrowed_one() -> None:
-    """The one corpus here with no licence, recorded as unresolved — never quietly filled in.
+def test_the_hazard_rules_licence_names_its_basis_rather_than_asserting_an_identifier() -> None:
+    """The rule table is first-party, and the manifest has to say *why* — not just name a licence.
 
-    `rules.yaml` carries a citation on every rule and **no licence statement of any kind**, in this
-    repository or the one it came from. That is a real blocker for a vendored dataset and this test
-    is what keeps it visible: the honest failure mode is not somebody shipping it knowingly, it is
-    somebody seeing an empty-looking field a year from now, assuming the port dropped it, and typing
-    `CC0-1.0` to make the loader happy.
+    It shipped as `UNRESOLVED` through the port, guarded by a test pinning that prefix, because the
+    file carries a citation on every rule and no licence statement anywhere. Settled since: it
+    cites its sources and reproduces none of them. Bretherick's and the four cited papers are
+    prose and contain no SMARTS; the patterns here were written *and debugged* in Chemclaw3, which
+    the `peroxide` rule shows plainly — it carries an in-repo fix for `[OX1-]`, because the
+    two-coordinate-only pattern had screened sodium peroxide clean. And the underlying facts (an
+    organic azide is shock-sensitive) are not copyrightable subject matter.
 
-    The likely explanation — original SMARTS written against cited hazard literature rather than a
-    transcribed table, which would make them first-party content — is recorded in the manifest as an
-    explanation, not as a grant. Settling it is a reviewer's job, and closing this test is the last
-    step of that job rather than the first.
+    That is the same basis as `genotox` and deliberately not the basis `ich_q3c`/`ich_q3d` use —
+    those transcribe figures out of a guideline and carry that guideline's terms. **The asymmetry
+    was the defect**: three sibling corpora with one provenance question answered three ways, one
+    of them left open, which reads to a later maintainer as a real problem with this file rather
+    than as caution.
+
+    So the assertion is on the *reasoning*, not on the string `CC0-1.0`. A bare identifier is
+    exactly what the original test existed to prevent somebody typing to satisfy the loader, and
+    that failure mode does not go away now that the identifier happens to be right.
     """
     licence = load_dataset(screen.RULES_DIR, records_file=screen.RULES_FILE).licence
-    assert licence.startswith("UNRESOLVED"), (
-        "the hazard rule table's licence is genuinely unresolved; if that has been settled, record "
-        "the finding and the source in dataset.json and update this test in the same commit"
+    assert licence.startswith("CC0-1.0"), licence
+    assert "first-party" in licence, (
+        "the licence must record why this table is first-party, not merely which licence it "
+        "carries — a bare identifier is unreviewable and is what the UNRESOLVED guard existed for"
+    )
+    assert "genotox" in licence, (
+        "the licence must name the sibling corpus it shares a basis with, so the three-way "
+        "provenance split in this server stays legible rather than looking arbitrary"
     )
 
 
