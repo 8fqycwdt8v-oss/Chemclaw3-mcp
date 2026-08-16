@@ -12,6 +12,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# **Pin the interpreter, because `python_version` in mypy's config does not pick one.**
+# `pyproject.toml` declares `requires-python = ">=3.11"` and `[tool.mypy] python_version = "3.11"`,
+# so with nothing set here uv resolved whatever the runner happened to ship — 3.12 — and installed
+# numpy's 3.12-flavoured stubs, which mypy targeting 3.11 cannot parse:
+# `numpy/__init__.pyi: Type statement is only supported in Python 3.12 and greater`. mypy reports
+# that one error and stops ("errors prevented further checking"), so the job goes red without
+# having looked at any first-party code.
+#
+# There was nothing to notice before `servers/calc`: no server here had needed numpy, so no
+# third-party stub disagreed with the target. And it fails *only* in CI — a developer on 3.11 gets
+# 3.11 stubs and a clean run — which is the "a green `make` locally means a green CI" promise
+# breaking. So the fix belongs on the interpreter rather than on mypy's target: lowering the target
+# would make the two agree by checking against a Python nobody runs.
+env:
+  UV_PYTHON: "3.11"
+
 jobs:
   check:
     runs-on: ubuntu-latest
