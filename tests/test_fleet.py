@@ -216,3 +216,57 @@ def test_the_reagent_table_two_servers_carry_is_one_file() -> None:
     manifests = {path: (path / "dataset.json").read_bytes() for path in copies}
     assert len(set(records.values())) == 1, f"the reagent tables differ: {list(records)}"
     assert len(set(manifests.values())) == 1, f"the reagent manifests differ: {list(manifests)}"
+
+
+def test_every_server_builds_a_wheel_that_carries_its_data() -> None:
+    """A server that cannot be packaged cannot be deployed, and nothing else here would notice.
+
+    **Four of the five servers could not build a wheel at all**, and the fleet was green throughout:
+    `make check`, `offline-run` and every per-server suite run from the source tree, where a
+    `data/` directory is simply a directory. Only building a distribution reveals that
+    `[tool.hatch.build.targets.wheel] packages = ["src/chemclaw_mcp_<name>"]` already includes
+    everything beneath it, so the `force-include` of `.../data` added each corpus a **second** time
+    and hatchling refused:
+
+        ValueError: A second file is being added to the wheel archive at the same path:
+        `chemclaw_mcp_safety/data/genotox/dataset.json`.
+
+    `calc` was the only one that built, because it is the only server with no vendored data and
+    therefore never had the redundant entry. So the gap was invisible in exactly the servers whose
+    whole point is the corpus baked into their image — including the two Chemclaw3 dials in
+    production.
+
+    **Both halves are asserted, and the second is the dangerous one.** Removing a `force-include`
+    to make a build pass would be a silent catastrophe if the data then stopped shipping: a hazard
+    screen with no `rules.yaml` answers "no rule matched" for every molecule, which reads as *safe*.
+    So this counts the corpus files inside the built wheel rather than trusting that the packaging
+    change was equivalent.
+    """
+    import subprocess
+    import tempfile
+    import zipfile
+
+    for server in sorted(p for p in SERVERS.iterdir() if (p / "pyproject.toml").is_file()):
+        data_dir = next(iter((server / "src").glob("*/data")), None)
+        with tempfile.TemporaryDirectory() as out:
+            built = subprocess.run(
+                ["uv", "build", "--wheel", "--out-dir", out, str(server)],
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+            )
+            assert built.returncode == 0, (
+                f"{server.name} cannot be packaged, so it cannot be deployed:\n{built.stderr}"
+            )
+            wheels = list(Path(out).glob("*.whl"))
+            assert len(wheels) == 1, f"{server.name} built {len(wheels)} wheels"
+            names = zipfile.ZipFile(wheels[0]).namelist()
+
+        if data_dir is None:
+            continue
+        on_disk = sum(1 for p in data_dir.rglob("*") if p.is_file())
+        in_wheel = sum(1 for n in names if "/data/" in n)
+        assert in_wheel == on_disk, (
+            f"{server.name} ships {in_wheel} of its {on_disk} data files; a server whose corpus "
+            "is missing answers 'nothing matched' for every input, which reads as a clean result"
+        )
