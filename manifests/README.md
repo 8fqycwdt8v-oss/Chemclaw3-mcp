@@ -21,8 +21,9 @@ entries here use it on purpose** — `chem` and `safety` are complete ports carr
 name, so the override swaps one implementation for an identical one.
 
 **`calc` is a third entry carrying a Chemclaw3 bundle's name, and it must *not* be registered this
-way.** It serves the computation behind nine of that bundle's fifteen tools and is called from
-inside Chemclaw3's own `cached_compute` as a backend, not dialled as a connector. Putting this
+way.** It holds the physics behind that bundle's calculators and durable jobs — as individually
+keyed primitives — and is called from inside Chemclaw3's own `cached_compute` as a backend, not
+dialled as a connector. Putting this
 directory on `CHEMCLAW_CONNECTORS_DIR` would let a partial port win the name and take the
 calibration ledger, the calculation cache, the artifact store and every durable calc job off the
 agent's surface — **with no error**. Its manifest lives here because this repository requires one

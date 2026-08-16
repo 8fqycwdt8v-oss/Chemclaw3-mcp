@@ -11,22 +11,37 @@ asserted are structural rather than about size, and the suite runs on every pull
 
 from __future__ import annotations
 
-import math
 import re
 
+import numpy as np
 import pytest
-from chemclaw_mcp_calc.engine import xtb_cli, xtb_props
+from chemclaw_mcp_calc.engine import crest_cli, xtb_cli, xtb_props
 from chemclaw_mcp_calc.engine.chem import InvalidSmilesError
+from chemclaw_mcp_calc.engine.config import settings
+from chemclaw_mcp_calc.engine.crest_search import (
+    ComplexSpec,
+    EnsembleSpec,
+    combine_structures,
+    ordered_pair,
+    require_crest,
+    search_ensemble,
+)
 from chemclaw_mcp_calc.engine.descriptors import DescriptorInput, compute_descriptor_profile
 from chemclaw_mcp_calc.engine.logd import LogdInput, predict_logd
 from chemclaw_mcp_calc.engine.pka import PkaInput, ionisable_sites, predict_pka
+from chemclaw_mcp_calc.engine.scan import drive_coordinate, scan_point_inputs
 from chemclaw_mcp_calc.engine.solubility import SolubilityInput, predict_solubility
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.uncertainty import CalculationDomainError
 from chemclaw_mcp_calc.engine.xtb import XtbInput, run_xtb
+from chemclaw_mcp_calc.engine.xtb_hessian import (
+    HessianSpec,
+    compute_hessian,
+    pack_array,
+    unpack_array,
+)
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec, resolve_backend
-from chemclaw_mcp_calc.engine.xtb_thermo import ThermoSpec, compute_thermochemistry
 
 # ----------------------------------------------------------------------------------------------
 # Structure: the validation every xTB task inherits
@@ -217,62 +232,50 @@ def test_freezing_everything_is_an_error_rather_than_a_no_op() -> None:
 
 
 # ----------------------------------------------------------------------------------------------
-# Thermochemistry
+# The Hessian, the scan point and the CREST primitives
 
 
-def test_water_comes_out_with_three_real_modes_and_its_measured_entropy() -> None:
-    """The whole RRHO stack in one assertion, against a number that exists outside this repository.
+def test_the_hessian_is_symmetric_and_round_trips_through_its_wire_format() -> None:
+    """Both halves of what a caller receives: the physics, and the bytes.
 
-    Water's standard molar entropy in the gas phase is 188.8 J/(mol K) = 45.1 cal/(mol K), at
-    sigma = 2. Getting the symmetry number wrong shifts it by R ln 2 = 1.4 cal/(mol K), which is why
-    the second half of this test matters as much as the first: it is the one error in this module
-    that a plausible-looking result hides completely.
+    Symmetry is the physics half — central differences of an exact gradient give a nearly symmetric
+    matrix and the code forces the symmetry, because the small asymmetry left otherwise puts a
+    spurious imaginary component into the eigenvalues.
+
+    The round trip is the transport half, and it is asserted as **exact** equality rather than
+    approximate: `.npy` was chosen over a JSON array of decimal literals precisely because float64
+    survives it unchanged, and a format that merely round-tripped to six decimals would put a
+    silent error into every frequency computed downstream.
     """
     relaxed = optimize_structure(OptSpec(), structure_from_smiles("O", optimize=True)).structure
-    result = compute_thermochemistry(ThermoSpec(symmetry_number=2), relaxed)
-    assert result.is_minimum and result.mode_count == 3
-    assert all(mode.wavenumber_cm > 0 for mode in result.modes)
-    assert result.entropy_cal_per_mol_k == pytest.approx(45.1, abs=0.5)
+    hessian = compute_hessian(HessianSpec(), relaxed)
+    assert hessian.matrix.shape == (9, 9)
+    assert np.allclose(hessian.matrix, hessian.matrix.T)
+    # In-process backend, so dipole derivatives rather than the binary's own intensities.
+    assert hessian.dipole_derivatives is not None and hessian.ir_intensities is None
 
-    unsymmetric = compute_thermochemistry(ThermoSpec(symmetry_number=1), relaxed)
-    gas_constant_ln2 = 8.314462618 * math.log(2) / 4.184
-    assert unsymmetric.entropy_cal_per_mol_k - result.entropy_cal_per_mol_k == pytest.approx(
-        gas_constant_ln2, abs=0.01
-    )
+    assert np.array_equal(unpack_array(pack_array(hessian.matrix)), hessian.matrix)
 
 
-def test_a_linear_molecule_keeps_3n_minus_5_modes() -> None:
-    """CO2 loses a real mode to a naive projection, because an "optimized linear" molecule is bent.
+def test_the_hessian_payload_size_is_bounded_by_the_atom_cap() -> None:
+    """The ceiling a deployment needs to know, computed rather than asserted from memory.
 
-    Its null rotation then has a small but perfectly ordinary singular value and survives a
-    singular-value cut. The fix is to build the rotations about the principal axes and drop the one
-    with a vanishing moment — asserted here on the mode *count*, which is the observable.
+    At the default 150-atom cap the matrix is 450x450 float64 — 1.62 MB raw, ~2.16 MB base64. That
+    is above `mcp_server_kit.DEFAULT_MAX_REQUEST_BYTES`, which caps *requests* and so does not apply
+    to this response, but it is the number to check a proxy against.
     """
-    relaxed = optimize_structure(OptSpec(), structure_from_smiles("O=C=O", optimize=True)).structure
-    result = compute_thermochemistry(ThermoSpec(symmetry_number=2), relaxed)
-    assert result.mode_count == 3 * len(relaxed.elements) - 5
-
-
-def test_the_free_energy_is_the_electronic_energy_plus_the_correction() -> None:
-    """Internal consistency of the reported fields, in the two units they are reported in."""
-    relaxed = optimize_structure(OptSpec(), structure_from_smiles("O", optimize=True)).structure
-    result = compute_thermochemistry(ThermoSpec(symmetry_number=2), relaxed)
-    hartree_per_kcal = 1.0 / 627.5094740631
-    assert result.gibbs_free_energy_hartree == pytest.approx(
-        result.electronic_energy_hartree + result.gibbs_correction_kcal * hartree_per_kcal, abs=1e-9
-    )
-    assert result.enthalpy_hartree > result.gibbs_free_energy_hartree
+    limit = settings.xtb_hessian_max_atoms
+    encoded = pack_array(np.zeros((3 * limit, 3 * limit)))
+    assert len(encoded) < 2_300_000
+    # base64 is 4 bytes per 3, so the ceiling scales as the square of the atom count. Lowering the
+    # cap lowers it quadratically, which is the knob a constrained deployment has.
+    assert len(pack_array(np.zeros((3 * limit // 2, 3 * limit // 2)))) < len(encoded) / 3
 
 
 def test_a_molecule_over_the_atom_limit_is_refused_and_says_where_to_go() -> None:
     """The refusal names Chemclaw3's durable job path, because this server has none of its own."""
-    from chemclaw_mcp_calc.engine.config import settings
-    from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, compute_hessian
-
     # Two over the limit rather than one, because an odd number of hydrogens is an odd number of
-    # electrons and `Structure` rejects that before the size check is ever reached — a nicely
-    # illustrative ordering of the two guards, and one that made the first draft of this test fail
-    # for the wrong reason.
+    # electrons and `Structure` rejects that before the size check is ever reached.
     count = settings.xtb_hessian_max_atoms + 2
     big = Structure(
         elements=[1] * count,
@@ -280,6 +283,95 @@ def test_a_molecule_over_the_atom_limit_is_refused_and_says_where_to_go() -> Non
     )
     with pytest.raises(ValueError, match="durable QM job path"):
         compute_hessian(HessianSpec(), big)
+
+
+def test_driving_a_coordinate_moves_it_and_leaves_the_molecule_intact() -> None:
+    """The scan point's geometry half: deterministic, and the whole fragment moves with it.
+
+    Determinism is what makes the point's key derivable without running it, so it is asserted
+    directly — two drives of the same coordinate to the same value give the same structure id.
+    """
+    ethanol = structure_from_smiles("CCO", optimize=True)
+    driven = drive_coordinate(ethanol, (0, 1, 2, 3), 60.0)
+    assert driven.elements == ethanol.elements
+    assert driven.structure_id != ethanol.structure_id
+    assert drive_coordinate(ethanol, (0, 1, 2, 3), 60.0).structure_id == driven.structure_id
+
+
+def test_a_scan_point_holds_its_coordinate_while_the_rest_relaxes() -> None:
+    """The constraint is exact — the defining atoms do not move — and everything else does."""
+    ethanol = structure_from_smiles("CCO", optimize=True)
+    spec, driven = scan_point_inputs(ethanol, (0, 1, 2, 3), 60.0)
+    relaxed = optimize_structure(spec, driven)
+    for index in (0, 1, 2, 3):
+        assert relaxed.structure.positions[index] == driven.positions[index]
+    assert relaxed.frozen_atoms == [0, 1, 2, 3]
+
+
+def test_a_scan_point_needs_the_smiles_its_connectivity_comes_from() -> None:
+    """A `Structure` has coordinates and no bonds, and an internal coordinate needs bonds.
+
+    Refused rather than guessed from interatomic distances: a bond perception that disagreed with
+    the molecule would silently drive the wrong coordinate.
+    """
+    naked = Structure(elements=[8, 1, 1], positions=[[0, 0, 0], [0.96, 0, 0], [-0.24, 0.93, 0]])
+    with pytest.raises(ValueError, match="needs the molecule's SMILES"):
+        drive_coordinate(naked, (0, 1), 1.1)
+
+
+def test_combining_two_molecules_starts_them_apart_and_sums_their_charges() -> None:
+    """The complex search's starting arrangement: pure geometry, and the pair is one structure."""
+    water = structure_from_smiles("O", optimize=True)
+    ethanol = structure_from_smiles("CCO", optimize=True)
+    pair = combine_structures(water, ethanol, 3.5)
+    assert len(pair.elements) == len(water.elements) + len(ethanol.elements)
+    assert pair.charge == water.charge + ethanol.charge
+    assert pair.smiles == "O.CCO"
+    # Far enough apart that nothing is fused: the closest cross-pair distance clears a bond length.
+    left = np.array(pair.positions[: len(water.elements)])
+    right = np.array(pair.positions[len(water.elements) :])
+    assert np.linalg.norm(left[:, None, :] - right[None, :, :], axis=-1).min() > 1.5
+
+
+def test_the_pair_is_ordered_so_a_with_b_and_b_with_a_are_one_calculation() -> None:
+    """`combine_structures` is not symmetric, so the *names* are ordered before it is called."""
+    assert ordered_pair("CCO", "O") == ordered_pair("O", "CCO")
+
+
+def test_a_crest_search_refuses_by_name_when_the_binary_is_absent() -> None:
+    """The honest state of this server today, asserted rather than left to a reader to discover.
+
+    `crest` is in neither this image nor Chemclaw3's, so these refuse identically wherever they run
+    — nothing that previously worked has stopped working. The message says which binary and what is
+    unavailable without it, because "internal error" would send a chemist looking for a different
+    substrate.
+
+    This test **inverts** the day someone ships the binary, which is the intent: a refusal asserted
+    as permanent would be a lie, so it is asserted against `is_available()` instead.
+    """
+    water = structure_from_smiles("O", optimize=True)
+    if crest_cli.is_available():  # pragma: no cover - no crest in this image or Chemclaw3's
+        assert search_ensemble(EnsembleSpec(), water)
+        return
+    with pytest.raises(ValueError, match="not installed on this server"):
+        require_crest()
+    with pytest.raises(ValueError, match="crest"):
+        search_ensemble(EnsembleSpec(), water)
+
+
+def test_a_crest_key_names_crest_and_not_the_xtb_backend() -> None:
+    """The rule `CrestSpec` exists for: name the program that runs.
+
+    An ensemble search's numbers all come from crest, so its version names crest's build and drops
+    `engine` — while a complex search's surrounding optimisations *do* run on `engine`, so that spec
+    puts it back. Two specs, one rule, and the difference is visible in the strings.
+    """
+    water = structure_from_smiles("O", optimize=True)
+    ensemble = EnsembleSpec().cache_key(water)
+    complexed = ComplexSpec().cache_key(water)
+    assert "crest-" in ensemble.calc_version and "tblite-" not in ensemble.calc_version
+    assert "crest-" in complexed.calc_version and "tblite-" in complexed.calc_version
+    assert ensemble.calc_type == "xtb.conformers" and complexed.calc_type == "xtb.complex"
 
 
 # ----------------------------------------------------------------------------------------------

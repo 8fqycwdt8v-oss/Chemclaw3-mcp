@@ -7,14 +7,23 @@ transport).
 Ported from Chemclaw3's own in-tree `calc` connector. It is a **partial replacement**, and the word
 *partial* is the thing to understand before wiring it up:
 
-- **The nine request/response compute tools moved here** — `compute_xtb_energy`,
-  `compute_electronic_properties`, `predict_site_reactivity`, `optimize_geometry`,
-  `compute_thermochemistry`, `predict_pka`, `predict_solubility`, `predict_logd`,
-  `predict_developability_profile`. Same names, same arguments, same model-facing docstrings.
-- **The calculation cache, the calibration ledger, the artifact store and the durable jobs did
-  not**, because they are stateful and this fleet's servers are not. Chemclaw3's `calc` bundle
+- **The eight request/response compute tools moved here** — `compute_xtb_energy`,
+  `compute_electronic_properties`, `predict_site_reactivity`, `optimize_geometry`, `predict_pka`,
+  `predict_solubility`, `predict_logd`, `predict_developability_profile`. Same names, same
+  arguments, same model-facing docstrings.
+- **So did the physics behind the durable jobs, re-cut as six keyed primitives** —
+  `relax_structure`, `compute_properties_at`, `compute_hessian`, `scan_point`,
+  `search_conformer_ensemble`, `search_binding_modes` — plus `embed_structure` and
+  `combine_structures` to build what they consume.
+- **The calculation cache, the calibration ledger, the artifact store and the Temporal workflows
+  did not**, because they are stateful and this fleet's servers are not. Chemclaw3's `calc` bundle
   keeps `report_measurement`, `find_calculations`, `list_artifacts`, `fetch_artifact`,
-  `calculator_trust` and `calculator_outliers`, plus every `jobs:` entry.
+  `calculator_trust` and `calculator_outliers`, plus every `jobs:` entry — whose *activities* now
+  call the primitives above.
+- **`compute_thermochemistry` moved and then came back**, because its key names the geometry its
+  refinement loop settles on: an output, so no caller can look it up before running it. A composite
+  like that is a loop with state and belongs on the durable side; Chemclaw3 assembles it from
+  `relax_structure` + `compute_hessian` + its own RRHO arithmetic instead, and every part caches.
 
 So unlike `chem` and `safety`, **this server is not a connector Chemclaw3 dials.** It keeps its
 `calc` bundle and all fifteen tools, and calls this server from inside

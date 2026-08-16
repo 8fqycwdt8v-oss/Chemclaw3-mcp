@@ -115,6 +115,25 @@ def test_build_folds_the_epoch_into_params_and_nothing_else() -> None:
     )
 
 
+def test_the_structure_id_is_serialized_and_ignored_on_the_way_back_in() -> None:
+    """It has to *be on the payload*, and it has to be recomputed rather than trusted.
+
+    Both halves matter and they pull in opposite directions. A plain property would not serialize at
+    all, so a caller receiving a geometry would have to re-derive its content address — the silent
+    divergence this seam exists to remove, since the derivation depends on the installed RDKit and
+    on `xtb_geometry_decimals`. But a field a caller could *set* would be worse: an edited payload
+    would then key as whatever it claimed rather than as what it is.
+
+    `computed_field` is exactly that pair — written on the way out, ignored on the way in.
+    """
+    structure = Structure(elements=[8, 1], positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.96]], charge=-1)
+    payload = structure.model_dump()
+    assert payload["structure_id"] == structure.structure_id
+
+    lying = {**payload, "structure_id": "st_0000000000000000"}
+    assert Structure.model_validate(lying).structure_id == structure.structure_id
+
+
 def test_structure_id_is_derived_from_the_rounded_geometry_and_nothing_else() -> None:
     """The four fields that make a structure id, and the two that deliberately do not.
 

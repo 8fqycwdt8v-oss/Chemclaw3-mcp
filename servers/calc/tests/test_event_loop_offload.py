@@ -25,7 +25,17 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_calc import tools
-from chemclaw_mcp_calc.engine import xtb_props
+from chemclaw_mcp_calc.engine import crest_search, xtb_props
+from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+
+# Built at import rather than per case: these are inputs, and embedding them inside a case would
+# make the spy see the fixture's own RDKit work instead of the tool's.
+WATER = structure_from_smiles("O", optimize=True)
+ETHANOL = structure_from_smiles("CCO", optimize=True)
+
+# Refuse on the missing `crest` binary before any work is dispatched, so there is no offload to
+# observe. Named so that shipping the binary turns this into a visible gap rather than a silent one.
+CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
 
 # (tool name, the module attribute whose call must land off the loop, a zero-argument coroutine).
 #
@@ -48,12 +58,6 @@ CASES: list[tuple[str, Any, str, Callable[[], Awaitable[Any]]]] = [
         lambda: tools.predict_site_reactivity("CCO"),
     ),
     ("optimize_geometry", tools, "optimize_structure", lambda: tools.optimize_geometry("O")),
-    (
-        "compute_thermochemistry",
-        tools,
-        "relax_to_minimum",
-        lambda: tools.compute_thermochemistry("O", symmetry_number=2),
-    ),
     ("predict_pka", tools, "_predict_pka", lambda: tools.predict_pka("CC(=O)O")),
     ("predict_solubility", tools, "_predict_solubility", lambda: tools.predict_solubility("CCO")),
     ("predict_logd", tools, "_predict_logd", lambda: tools.predict_logd("CC(=O)O", ph=1.0)),
@@ -72,6 +76,41 @@ CASES: list[tuple[str, Any, str, Callable[[], Awaitable[Any]]]] = [
         "calculation_identity",
         lambda: tools.calculation_key("compute_xtb_energy", {"smiles": "CCO"}),
     ),
+    (
+        "embed_structure",
+        tools,
+        "structure_from_smiles",
+        lambda: tools.embed_structure("CCO"),
+    ),
+    (
+        "combine_structures",
+        crest_search,
+        "combine_structures",
+        lambda: tools.combine_structures(WATER, WATER, 3.5),
+    ),
+    # The structure-in primitives. These are the ones a durable-job activity calls in a loop, so a
+    # hop lost here would stop the whole process for the length of a scan rather than of one call.
+    ("relax_structure", tools, "optimize_structure", lambda: tools.relax_structure(WATER)),
+    (
+        "compute_properties_at",
+        xtb_props,
+        "compute_properties",
+        lambda: tools.compute_properties_at(WATER),
+    ),
+    (
+        "compute_hessian",
+        tools,
+        "compute_hessian_engine",
+        lambda: tools.compute_hessian(WATER),
+    ),
+    (
+        "scan_point",
+        tools,
+        "optimize_structure",
+        lambda: tools.scan_point(ETHANOL, [0, 1, 2], 109.0),
+    ),
+    # The two CREST searches refuse before they reach a thread, so there is no hop to observe. They
+    # are excluded by name below rather than skipped silently.
 ]
 
 
@@ -113,11 +152,11 @@ def test_the_calculation_runs_off_the_event_loop(
 
 
 def test_every_served_tool_is_covered() -> None:
-    """A tenth tool added without a row here would ship its blocking call unguarded.
+    """A tool added without a row here would ship its blocking call unguarded.
 
     The list this checks against is the *served* surface rather than a hand-kept list, for the same
     reason `test_calc_version.py` does it: the thing that must not be forgotten is exactly the thing
     a forgetful change adds.
     """
-    served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
+    served = {tool.name for tool in asyncio.run(tools.server.list_tools())} - CREST_TOOLS
     assert {case[0] for case in CASES} == served

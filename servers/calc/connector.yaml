@@ -7,7 +7,8 @@
 # `chem` and `safety` are connectors Chemclaw3 dials (D-2026-08-09-a-connector-we-do-not-run):
 # drop their directory on the path and the capability appears with no core edit. **This one is
 # not.** Chemclaw3 keeps its own `calc` bundle and all fifteen of its tools; what moved here is
-# the *computation* behind nine of them, and Chemclaw3 calls this server from inside
+# the *physics* behind them — its calculators and its durable jobs' activities alike — and
+# Chemclaw3 calls this server from inside
 # `science/calc/store.py::cached_compute` as a backend on a cache miss.
 #
 # The name is nonetheless `calc`, because this repository requires the directory, the package
@@ -61,39 +62,63 @@ endpoint:
     mode: bearer
     token_env: CHEMCLAW_CALC_TOKEN
   tools:
-    - calculation_key
+    # The eight an agent calls: a SMILES in, a chemist's answer out.
     - compute_xtb_energy
     - compute_electronic_properties
     - predict_site_reactivity
     - optimize_geometry
-    - compute_thermochemistry
     - predict_pka
     - predict_solubility
     - predict_logd
     - predict_developability_profile
-  # **`calculation_key` is the one `read_only` tool here, and the split is the whole classification
-  # argument in miniature.** `read_only` is not a claim about side effects; it is a gate — the plan
-  # gate lets an *unapproved* plan call a `read_only` tool. Asking "would this calculation be a cache
-  # hit?" costs a canonicalisation, an embedding and two hashes, runs no SCF, and is exactly the kind
-  # of thing a chemist wants answerable *before* deciding whether to approve the work.
-  read_only:
+    # The six primitives Chemclaw3's durable-job activities compose: a structure in, a structure or
+    # a matrix out. Individually keyed, which is the point — Chemclaw3 caches one row per primitive
+    # instead of one per job, so a solvent screen that gains a seventh solvent reuses the other six
+    # and a scan that gains two points reuses the twenty-four it had.
+    - relax_structure
+    - compute_properties_at
+    - compute_hessian
+    - scan_point
+    - search_conformer_ensemble
+    - search_binding_modes
+    # Three helpers that compute nothing: two build the geometries the primitives consume, and one
+    # answers what a calculation *would* be stored under, so the caller can look it up first.
+    - embed_structure
+    - combine_structures
     - calculation_key
-  # **The nine compute tools stay `state_changing`, matching Chemclaw3's own manifest exactly**, and
-  # the classification is kept rather than revisited even though nothing here writes anything.
+  # **The three that compute nothing are `read_only`, and the classification argument is the whole
+  # design in miniature.** `read_only` is not a claim about side effects — nothing on this server
+  # writes anything — it is a gate: the plan gate lets an *unapproved* plan call a `read_only` tool.
+  # These three cost a canonicalisation, an embedding and a few hashes between them, run no SCF, and
+  # are exactly what a chemist wants answerable *before* deciding whether to approve the work: what
+  # molecule is this, and has it already been computed?
+  read_only:
+    - embed_structure
+    - combine_structures
+    - calculation_key
+  # **Everything that runs an SCF stays `state_changing`**, matching Chemclaw3's own manifest for
+  # the tools it shares with it.
   #
-  # It reads oddly for a stateless server and it is still right, by the same gate argument in the
-  # other direction: these are minutes of CPU each with no cache underneath, and the reason to make a
-  # chemist approve the plan before they run has if anything got stronger since the cache stopped
-  # absorbing repeats. Reclassifying one would also silently widen what an unapproved plan may do on
-  # the Chemclaw3 side, which is a decision that belongs in an ADR over there rather than in a port's
-  # manifest.
+  # It reads oddly for a stateless server and is still right, by the same gate argument in the other
+  # direction: these are seconds to hours of CPU each with no cache underneath them here, and the
+  # reason to make a chemist approve the plan before they run has if anything got stronger since the
+  # cache moved to the caller. The two CREST searches are the extreme case — Chemclaw3's own
+  # manifest additionally marks their durable-job equivalents `expensive: true`, feeding
+  # `authz.expensive_actions`, and **that gate stays on the Chemclaw3 side**: it is an authorization
+  # decision about a person, which a tool server has no basis to make and this one deliberately does
+  # not try to reproduce.
   state_changing:
     - compute_xtb_energy
     - compute_electronic_properties
     - predict_site_reactivity
     - optimize_geometry
-    - compute_thermochemistry
     - predict_pka
     - predict_solubility
     - predict_logd
     - predict_developability_profile
+    - relax_structure
+    - compute_properties_at
+    - compute_hessian
+    - scan_point
+    - search_conformer_ensemble
+    - search_binding_modes

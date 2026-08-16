@@ -98,31 +98,28 @@ class CalcSettings(BaseSettings):
     # named the durable QM job path as the alternative, and this server has no durable path — so
     # the message says so instead of naming a route that does not exist from here.
     xtb_hessian_max_atoms: int = 150
-    # Thermochemistry conditions. 298.15 K and 1 atm are the reference state every tabulated
-    # thermodynamic quantity is quoted at.
+    # **CREST sampling temperature, and the only survivor of the thermochemistry block.** It keeps
+    # Chemclaw3's name and value because it keeps Chemclaw3's *meaning*: it is passed to `crest
+    # --temp`, so it changes what the search samples and therefore belongs in an ensemble's key. The
+    # seven settings that stood beside it — pressure, the quasi-RRHO cutoff, the imaginary-mode
+    # threshold and kick, the refinement attempt count, the reported free-energy uncertainty and the
+    # IR band count — were all read by the RRHO arithmetic, which stayed in Chemclaw3 along with
+    # `compute_thermochemistry`. A setting with no reader is configuration in appearance only, so
+    # they are gone rather than kept for symmetry.
     xtb_thermo_temperature_k: float = 298.15
-    xtb_thermo_pressure_pa: float = 101325.0
-    # Quasi-RRHO damping frequency (cm^-1, Grimme 2012): below it a vibration is treated as a free
-    # rotor for the entropy, because a harmonic oscillator's entropy diverges as the frequency goes
-    # to zero and low modes are exactly where the harmonic approximation fails. 25 cm^-1 is the
-    # published value and what xtb itself uses.
-    xtb_rrho_cutoff_cm: float = 25.0
-    # A negative Hessian eigenvalue below this magnitude (cm^-1) is numerical noise from the finite
-    # differences, not a real imaginary mode. Above it the geometry is a saddle point and the
-    # thermochemistry says so.
-    xtb_imaginary_threshold_cm: float = 25.0
-    # Reported uncertainty on a semiempirical free energy, in kcal/mol. Attached to every
-    # thermochemistry result — GFN2 energies are useful for comparison and poor as absolutes.
-    xtb_reaction_uncertainty_kcal: float = 3.0
-    # How many times a geometry that lands on a saddle point may be displaced along its imaginary
-    # mode and re-optimized, and how far (Angstrom, the largest atom's motion). One attempt clears
-    # the ordinary case — a force field's eclipsed methyl held by symmetry through a Cartesian
-    # optimization; more than two means the structure is saying something real.
-    xtb_minimum_refinement_attempts: int = 2
-    xtb_imaginary_kick_angstrom: float = 0.3
-    # Default number of IR bands a thermochemistry result reports, strongest first. A measured
-    # spectrum is compared on its strong bands; the weak modes between them cost context.
-    xtb_ir_bands_top_n: int = 12
+    # Maximum points in a relaxed scan. **Read by nothing on this server**, deliberately: a scan is
+    # a sweep and this server exposes only the *point*, so the bound belongs to whoever writes the
+    # loop. It is named here rather than silently dropped because a reader looking for it should
+    # find out where it went — `chemclaw.science.calc.xtb_scan.ScanSpec` enforces it, in the
+    # repository that owns the sweep.
+    #
+    # CREST sampling. GPL-3.0 and optional: absent, the ensemble primitives refuse and everything
+    # else works. `crest_effort` is the default search depth and the timeout is generous because
+    # this is the most expensive calculation this server can run.
+    crest_binary: str = "crest"
+    crest_effort: Literal["quick", "normal", "extensive"] = "quick"
+    crest_threads: int = 0
+    crest_timeout_seconds: int = 14400
     # xTB-based pKa predictor: pKa from the GFN2-xTB solvated (ALPB) deprotonation energy via a
     # linear calibration pKa = slope*dE + intercept. Defaults fitted over 10 reference O-H acids
     # (R^2 0.93, residual ~1.6 pKa units). **All four are interpolated into `pka.calc_version()`.**

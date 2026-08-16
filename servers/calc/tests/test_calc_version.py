@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
 from chemclaw_mcp_calc import tools
 from chemclaw_mcp_calc.engine.key import Keyed
 
@@ -53,42 +52,60 @@ KEY_SHAPE = re.compile(r"^[a-z_.]+@.+:[0-9a-f]{16}:[0-9a-f]{16}$")
 ETHANOL = "CCO"
 ACETIC = "CC(=O)O"
 
+# Tools that compute nothing and therefore carry no version: two build a geometry, one answers what
+# a calculation would be stored under. Named rather than filtered by a predicate, so adding a
+# fourth is a deliberate act with a reason beside it.
+HELPERS = {"embed_structure", "combine_structures", "calculation_key"}
+
+# The two CREST searches. They key and refuse like everything else, but they cannot *run* without a
+# binary this image does not ship, so they are exercised in `test_engine.py` (the refusal) and
+# `test_calculation_key.py` (the identity) rather than here.
+CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
+
 
 async def _every_tool_result() -> dict[str, Keyed]:
-    """Call all nine tools once and return their results by tool name.
+    """Call every computing tool once and return its result by tool name.
 
-    One helper rather than nine fixtures because the assertions below are the *same* assertion nine
-    times — a per-tool fixture would make it possible to add a tenth tool and a tenth fixture
-    without the new tool ever being checked, which is the failure mode this file is guarding against
-    in the first place.
+    One helper rather than a fixture per tool because the assertions below are the *same* assertion
+    twelve times — a per-tool fixture would make it possible to add a thirteenth tool and a
+    thirteenth fixture without the new tool ever being checked, which is the failure mode this file
+    guards against in the first place.
 
-    `compute_thermochemistry` runs on water: three atoms, so the 6N finite-difference Hessian is 18
-    single points and the whole call is milliseconds. Every other tool takes ethanol or acetic acid.
+    Water for the primitives: three atoms, so a Hessian is 18 single points and the whole chain runs
+    in milliseconds. The CREST searches are absent from this dict and subtracted from the served set
+    below rather than skipped silently — a skip would stop noticing the day the binary *is* shipped.
     """
+    water = await tools.embed_structure("O")
+    relaxed = await tools.relax_structure(water)
     return {
         "compute_xtb_energy": await tools.compute_xtb_energy(ETHANOL),
         "compute_electronic_properties": await tools.compute_electronic_properties(ETHANOL),
         "predict_site_reactivity": await tools.predict_site_reactivity(ETHANOL),
         "optimize_geometry": await tools.optimize_geometry("O"),
-        "compute_thermochemistry": await tools.compute_thermochemistry("O", symmetry_number=2),
         "predict_pka": await tools.predict_pka(ACETIC),
         "predict_solubility": await tools.predict_solubility(ETHANOL),
         "predict_logd": await tools.predict_logd(ACETIC, ph=1.0),
         "predict_developability_profile": await tools.predict_developability_profile(ETHANOL),
+        "relax_structure": relaxed,
+        "compute_properties_at": await tools.compute_properties_at(relaxed.structure),
+        "compute_hessian": await tools.compute_hessian(relaxed.structure),
+        "scan_point": await tools.scan_point(
+            await tools.embed_structure(ETHANOL), [0, 1, 2, 3], 60.0
+        ),
     }
 
 
 async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
-    """The one invariant this port turns on. Nine tools, one property, no exceptions.
+    """The one invariant this port turns on. Every calculation, one property, no exceptions.
 
-    Also asserts the *count*, so adding a tenth tool to `tools.py` without adding it here fails
-    rather than being silently unchecked.
+    Also asserts the *set*, so adding a tool to `tools.py` without adding it here fails rather than
+    being silently unchecked — and the two exclusions are named sets rather than a predicate, so
+    growing either is a deliberate act.
     """
     results = await _every_tool_result()
-    # `calculation_key` is excluded by name rather than by forgetting it: it returns an identity
-    # rather than a computed value, so it has a `calc_version` and nothing to compute one *for*.
-    # Naming it here is what keeps the rest of the assertion a closed set.
-    served = {tool.name for tool in await tools.server.list_tools()} - {"calculation_key"}
+    # The helpers are excluded by name rather than by forgetting them, and the CREST searches
+    # because no binary is installed — both sets stated, so the remainder is closed.
+    served = {tool.name for tool in await tools.server.list_tools()} - HELPERS - CREST_TOOLS
     assert set(results) == served, (
         "a tool is served that this test does not exercise (or vice versa); every compute "
         "tool must be checked for calc_version, and the served surface is the list that decides"
@@ -114,7 +131,10 @@ async def test_the_version_names_the_programs_that_actually_ran() -> None:
         "compute_electronic_properties",
         "predict_site_reactivity",
         "optimize_geometry",
-        "compute_thermochemistry",
+        "relax_structure",
+        "compute_properties_at",
+        "compute_hessian",
+        "scan_point",
     ):
         version = results[name].calc_version
         assert "GFN2-xTB" in version, f"{name}: {version!r} does not name the method"
@@ -200,20 +220,4 @@ async def test_a_different_parameter_is_a_different_key() -> None:
     assert gas.calc_version == solvated.calc_version, (
         "the solvent is a parameter, not a calculator version: it must move params_hash and leave "
         "calc_version alone, or every solvent would partition the calibration ledger"
-    )
-
-
-@pytest.mark.parametrize("temperature", [298.15, 350.0])
-async def test_a_state_variable_moves_the_thermochemistry_key(temperature: float) -> None:
-    """Temperature belongs to the thermochemistry's key and not to the Hessian's underneath it.
-
-    Asserted through the tool because that projection is where it would be lost. The Hessian spec is
-    deliberately narrower (`ThermoSpec.hessian_spec`), which is what lets Chemclaw3 hit the
-    expensive cache and miss the cheap one when a chemist asks for a second temperature.
-    """
-    result = await tools.compute_thermochemistry("O", symmetry_number=2, temperature_k=temperature)
-    assert result.temperature_k == temperature
-    assert result.calc_key is not None and str(temperature) not in result.calc_version, (
-        "a state variable must ride in params_hash, never in calc_version — otherwise every "
-        "temperature would be a separate calibration"
     )

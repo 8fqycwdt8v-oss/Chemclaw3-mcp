@@ -85,7 +85,8 @@ first-directory-wins applies, and Chemclaw3's own `calc` bundle would lose six t
 durable job to a partial port.
 
 Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moves is the *computation*
-underneath nine of them: this server is called from inside `science/calc/store.py::cached_compute`,
+underneath them, its durable jobs included: this server is called from inside
+`science/calc/store.py::cached_compute`,
 as a client, on a miss.
 
 ```python
@@ -118,7 +119,44 @@ exactly where they are, unaffected:
 | `report_measurement`, `calculator_trust`, `calculator_outliers` | the calibration ledger — predictions reconciled against measurements |
 | `find_calculations` | a query over the calculation cache |
 | `list_artifacts`, `fetch_artifact` | the content-addressed artifact store |
-| every `jobs:` entry | solvent screens, conformer ensembles, reaction energetics, relaxed scans, host–guest complexes, on Temporal |
+| every `jobs:` entry | the Temporal workflows. Their *activities* now call this server's primitives; the orchestration, the retries and the durability stay put. |
+
+### Composing a durable job out of primitives
+
+The jobs' engines were re-cut rather than moved whole, because a composite's key names its own
+output and cannot be looked up before it runs. Thermochemistry is the worked example:
+
+```python
+opt_key = await remote.calculation_key("relax_structure", {"structure": geometry})
+relaxed = await cached(opt_key, lambda: remote.relax_structure(structure=geometry))
+hess_key = await remote.calculation_key("compute_hessian", {"structure": relaxed["structure"]})
+hessian = await cached(hess_key, lambda: remote.compute_hessian(structure=relaxed["structure"]))
+thermo = rrho(hessian, relaxed["structure"], symmetry_number, temperature)  # local, pure Python
+```
+
+Both halves cache. That matters more than it looks: repeating `compute_thermochemistry` in Chemclaw3
+today costs **0.007 s against 0.816 s** cold for ethanol and **0.012 s against 3.273 s** for ethyl
+acetate — two orders of magnitude, entirely from the nested `xtb.opt`/`xtb.hess` entries. Shipping
+the composite as one remote tool would have converted every repeat into a full recompute; composed,
+every one of those hits still hits.
+
+The same shape applies to the rest:
+
+| Job | Composition |
+| --- | --- |
+| relaxed scan | `scan_point` per value — the sweep, the relative energies and the point cap are the caller's. The points were already independent: `run_scan` drives each from the input geometry rather than the previous one. |
+| conformer ensemble | one `search_conformer_ensemble`, then Boltzmann populations and conformational entropy locally. |
+| interaction energy | `embed_structure` ×2 → `relax_structure` ×2 → `combine_structures` → `search_binding_modes` → `relax_structure` on the best mode → subtract. Six cached rows instead of one, so changing the separation no longer re-relaxes both monomers. |
+| reaction energetics / solvent screen | per-species `relax_structure` + `compute_hessian`, then stoichiometric sums. No new primitive was needed — it is composition all the way down. |
+
+**`sample_conformers` and `compute_interaction_energy` are `expensive: true` in Chemclaw3's own
+manifest, feeding `authz.expensive_actions`. That gate stays there** and is deliberately not
+reproduced here: it is an authorization decision about a person, which a tool server has no basis to
+make.
+
+**The `crest` binary is in neither environment today.** The two ensemble primitives refuse by name
+rather than degrading, and they refuse identically wherever they run — so nothing that previously
+worked has stopped. Adding the binary to this server's image is what turns them on.
 
 **What the manifest here is for, then.** `servers/calc/connector.yaml` is this repository's own
 declaration of the served surface — every tool classified, checked against the running server by
@@ -134,14 +172,12 @@ The reconstruction does not fail loudly: `xtb_cli.binary_version()` returns the 
 `predictions`, and `calculator_trust("pka")` reports `UNCALIBRATED` — a confident answer about a
 calibration that is merely unreachable. `calculation_key` exists so that nobody has to.
 
-**Two tools return no key, and say why.** `predict_logd` never had one — Chemclaw3 did not cache
-logD, because its expensive half is already a cached pKa. `compute_thermochemistry`'s key names the
-geometry its refinement loop finally settled on, which is an *output*: the loop optimises, takes a
-Hessian, and displaces along the imaginary mode and repeats when the optimiser lands on a saddle.
-Chemclaw3's own `compute_thermochemistry` was not a single cached calculation either — its economy
-came from the nested `xtb.opt` and `xtb.hess` entries, and those are now inside one remote call.
-Store its result under the `calc_key` the result itself carries; do **not** substitute the
-optimisation's key, which would hit the un-refined answer wherever a row for that geometry exists.
+**One tool returns no key, and says why.** `predict_logd` never had one — Chemclaw3 did not cache
+logD, because its expensive half is already a cached pKa, and the caveat names that pKa's key.
+
+**The two CREST searches refuse to be keyed without their binary**, on purpose:
+`CrestSpec.calc_version()` answers `crest-absent` rather than raising, so a key *is* derivable with
+no crest and would name a program that cannot run. The probe refuses exactly where the search would.
 
 ### What the two repositories must still keep in step
 

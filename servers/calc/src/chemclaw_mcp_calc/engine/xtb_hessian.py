@@ -7,16 +7,29 @@ deliberately narrower than `ThermoSpec`, and that narrowness is the whole point:
 requests differing only in temperature project onto the *same* `HessianSpec`, so on the Chemclaw3
 side the cheap answer misses and the expensive one hits.
 
-**Ported without the artifact store.** In Chemclaw3 the 3N by 3N matrix is too large for a JSONB
-result row, so it lives in a content-addressed blob store and the row holds the addresses — and a
-cached row whose blob is gone counts as a miss. None of that machinery is here: this server computes
-the matrix, hands it to `xtb_thermo`, and drops it. `HessianResult`, `_pack`/`_unpack`, `_load`,
-`_persist` and `run_cached_hessian` are all gone with it; `compute_hessian` returns the `Hessian`
-itself rather than `(hessian, files_to_store)`.
+**Ported without the artifact store, and with a wire format instead.** In Chemclaw3 the 3N by 3N
+matrix is too large for a JSONB result row, so it lives in a content-addressed blob store and the
+row holds the addresses. None of that machinery is here — no store, no eviction, no
+row-whose-blob-is-gone — but the matrix still has to reach the caller, so `packed()` serializes it
+the same way Chemclaw3's store already holds it: **`.npy` bytes, base64 for JSON transport**.
+
+That choice is not arbitrary. `.npy` round-trips float64 exactly (a JSON array of decimal literals
+does not, and is nearly twice the size), it is self-describing about shape and dtype, and it is
+byte-for-byte what Chemclaw3's `calculation_artifacts` table stores — so a caller can put the bytes
+straight into its artifact store without re-serializing anything.
+
+**The size ceiling is `xtb_hessian_max_atoms`, and it is worth doing the arithmetic once.** At the
+default 150 atoms the matrix is 450x450 float64 = 1.62 MB raw, ~2.16 MB base64; the dipole
+derivatives are 450x3 = 10.8 kB. So a response tops out near 2.2 MB. That is above
+`mcp_server_kit.DEFAULT_MAX_REQUEST_BYTES` (1 MB) — which caps *requests* and not responses, so it
+does not apply here, but a deployment putting a proxy in front of this server should know the
+number. Lowering `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` lowers the ceiling quadratically.
 """
 
 from __future__ import annotations
 
+import base64
+import io
 from dataclasses import dataclass
 from typing import Literal
 
@@ -29,7 +42,7 @@ from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb_engine import AU_TO_DEBYE, evaluate_point, make_calculator
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 
-__all__ = ["Hessian", "HessianSpec", "compute_hessian"]
+__all__ = ["Hessian", "HessianSpec", "compute_hessian", "pack_array", "unpack_array"]
 
 
 class HessianSpec(XtbSpec):
@@ -145,3 +158,27 @@ def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
         electronic_energy_hartree=energy,
         dipole_derivatives=dipole_derivatives,
     )
+
+
+def pack_array(array: np.ndarray) -> str:
+    """Serialize a float array as base64-encoded `.npy` — how a Hessian crosses the wire.
+
+    `.npy` rather than a JSON array of numbers for three reasons, in order of importance: it
+    round-trips float64 **exactly** where decimal literals do not, it carries its own shape and
+    dtype so a truncated payload fails to load instead of reshaping into something plausible, and it
+    is the format Chemclaw3's artifact store already holds these in — so the bytes a caller receives
+    are the bytes it can store, with no second serialization to disagree about.
+    """
+    buffer = io.BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def unpack_array(encoded: str) -> np.ndarray:
+    """Read a `pack_array` payload back into an array — the inverse, and the round-trip test's other
+    half.
+
+    `allow_pickle=False` because these bytes come off a wire: pickle deserialization is arbitrary
+    code execution, and nothing this module produces needs it.
+    """
+    return np.asarray(np.load(io.BytesIO(base64.b64decode(encoded)), allow_pickle=False))

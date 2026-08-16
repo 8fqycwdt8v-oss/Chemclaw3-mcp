@@ -28,19 +28,43 @@ from chemclaw_mcp_calc.engine import xtb_engine
 from chemclaw_mcp_calc.engine.identity import COMPUTE_TOOLS, calculation_identity
 from chemclaw_mcp_calc.engine.key import CalculationKey
 
-# The two tools whose key is not derivable from their arguments, and which therefore return `None`
-# on **both** sides of the parity check. Named as a set so a third cannot join them quietly: adding
-# a tool here is a deliberate statement that its answer cannot be looked up before it is computed,
-# which is a real loss and should be argued rather than absorbed.
+# Tools that compute nothing, so there is nothing to derive an identity *for*: two build a geometry
+# and one is this probe itself.
+HELPERS = {"embed_structure", "combine_structures", "calculation_key"}
+
+
+def sweep_arguments(tool: str, accepts: frozenset[str], geometry: dict[str, Any]) -> dict[str, Any]:
+    """Minimal valid arguments for `tool`, for the tests that sweep the whole table.
+
+    One builder rather than a literal per tool, because these tests are about the *set* being
+    closed: a new tool must be exercised by them without anyone remembering to add a case, and a
+    builder keyed on the declared `accepts` set is what makes that automatic.
+    """
+    arguments: dict[str, Any] = (
+        {"structure": geometry} if "structure" in accepts else {"smiles": "CC(=O)O"}
+    )
+    if tool == "scan_point":
+        arguments |= {"atoms": [0, 1, 2], "value": 1.5}
+    return arguments
+
+
+# The tools whose key is not derivable from their arguments, and which therefore return `None` on
+# **both** sides of the parity check. A frozenset with one member rather than a bare constant, so a
+# second joining it is a deliberate statement that its answer cannot be looked up before it is
+# computed — a real loss, to be argued rather than absorbed.
 #
-# - `predict_logd` never had a key: Chemclaw3 did not cache logD, because its expensive half is
-#   already a cached pKa and Crippen LogP is sub-millisecond. Its result carries `calc_key: null`
-#   too, so the two sides agree exactly.
-# - `compute_thermochemistry`'s key names the geometry `relax_to_minimum` finally settled on, which
-#   is an *output* — the loop optimises, takes a Hessian, and displaces along the imaginary mode and
-#   repeats when the optimiser lands on a saddle. Its result does carry a key (computed after the
-#   fact); it simply cannot be known beforehand.
-WITHOUT_A_DERIVABLE_KEY = frozenset({"predict_logd", "compute_thermochemistry"})
+# `predict_logd` never had a key: Chemclaw3 did not cache logD, because its expensive half is
+# already a cached pKa and Crippen LogP is sub-millisecond. Its result carries `calc_key: null` too,
+# so the two sides agree exactly.
+#
+# **It briefly had company, and how that resolved is the point of this file.**
+# `compute_thermochemistry`'s key named the geometry its refinement loop settled on — an output, not
+# a function of its arguments — so it could not be derived. Rather than ship a tool Chemclaw3 could
+# not cache, the *composite* was removed and its parts exposed instead: `relax_structure` +
+# `compute_hessian`, each keyed, with the RRHO arithmetic on the caller's side. The measurement that
+# forced it: repeating thermochemistry in Chemclaw3 costs 0.007 s against 0.816 s cold for ethanol
+# and 0.012 s against 3.273 s for ethyl acetate. Decomposed, every one of those hits still hits.
+WITHOUT_A_DERIVABLE_KEY = frozenset({"predict_logd"})
 
 # One argument set per tool, and the compute coroutine that must agree with it. Deliberately the
 # *same* arguments on both sides — that is the property, and passing different ones would make the
@@ -60,11 +84,6 @@ CASES: list[tuple[str, dict[str, Any], Any]] = [
     ),
     ("optimize_geometry", {"smiles": "O"}, tools.optimize_geometry),
     ("optimize_geometry", {"smiles": "O", "solvent": "thf"}, tools.optimize_geometry),
-    (
-        "compute_thermochemistry",
-        {"smiles": "O", "symmetry_number": 2},
-        tools.compute_thermochemistry,
-    ),
     ("predict_pka", {"smiles": "CC(=O)O"}, tools.predict_pka),
     ("predict_solubility", {"smiles": "CCO"}, tools.predict_solubility),
     ("predict_logd", {"smiles": "CC(=O)O", "ph": 1.0}, tools.predict_logd),
@@ -109,6 +128,81 @@ async def test_the_key_derived_up_front_is_the_key_the_result_carries(
     )
 
 
+async def test_the_primitives_key_up_front_too() -> None:
+    """The same property for the structure-in primitives, which is where it actually pays.
+
+    These are what Chemclaw3's durable-job activities compose, so the identity has to be answerable
+    *before* the call for the composition to hit a cache at all — a scan point that could only be
+    keyed after it ran would make a 24-point profile 24 unavoidable optimisations.
+
+    Built as one chain rather than independent cases because that is how a caller uses them: embed,
+    relax, then differentiate at the relaxed geometry.
+    """
+    water = await tools.embed_structure("O")
+    ethanol = await tools.embed_structure("CCO")
+
+    relax_id = await tools.calculation_key("relax_structure", {"structure": water.model_dump()})
+    relaxed = await tools.relax_structure(water)
+    assert relax_id.calc_key == relaxed.calc_key
+    assert relax_id.structure_id == water.structure_id
+
+    for tool, arguments, computed in (
+        (
+            "compute_properties_at",
+            {"structure": relaxed.structure.model_dump()},
+            await tools.compute_properties_at(relaxed.structure),
+        ),
+        (
+            "compute_hessian",
+            {"structure": relaxed.structure.model_dump()},
+            await tools.compute_hessian(relaxed.structure),
+        ),
+        (
+            "scan_point",
+            {"structure": ethanol.model_dump(), "atoms": [0, 1, 2, 3], "value": 60.0},
+            await tools.scan_point(ethanol, [0, 1, 2, 3], 60.0),
+        ),
+    ):
+        identity = await tools.calculation_key(tool, arguments)
+        assert identity.calc_key == computed.calc_key, tool
+        assert identity.calc_version == computed.calc_version, tool
+
+
+async def test_a_scan_point_keys_as_the_constrained_optimisation_it_is() -> None:
+    """A scan point is an `xtb.opt` row, not a namespace of its own.
+
+    Not a coincidence to preserve but the reason `scan_point` has no task of its own: driving the
+    coordinate is pure geometry, so what is actually computed is an optimisation with those atoms
+    frozen. Sharing the row is what stops a profile and a hand-written constrained relaxation of the
+    same geometry paying twice — and it is why `XtbTask` deliberately has no `scan` member.
+    """
+    ethanol = await tools.embed_structure("CCO")
+    point = await tools.calculation_key(
+        "scan_point", {"structure": ethanol.model_dump(), "atoms": [0, 1, 2, 3], "value": 60.0}
+    )
+    assert point.key is not None and point.key.calc_type == "xtb.opt"
+
+    # The frozen atoms have to be *in* the key, or every point of a profile would collide with the
+    # free optimisation of the same driven geometry.
+    free = await tools.calculation_key("relax_structure", {"structure": ethanol.model_dump()})
+    assert free.key is not None and free.key.calc_type == "xtb.opt"
+    assert free.key.params_hash != point.key.params_hash
+
+
+async def test_a_crest_search_refuses_to_be_keyed_without_its_binary() -> None:
+    """The probe refuses exactly where the search would, and for the reason that matters.
+
+    `CrestSpec.calc_version()` answers `crest-absent` rather than raising, so a key *is* derivable
+    with no binary — and it would be a well-formed identity naming a program that cannot run,
+    addressing a row nothing will ever write. That is the same shape as the `binary_version()` trap
+    this whole port exists to contain, so both paths refuse together.
+    """
+    water = await tools.embed_structure("O")
+    for tool in ("search_conformer_ensemble", "search_binding_modes"):
+        with pytest.raises(ValueError, match="crest"):
+            await tools.calculation_key(tool, {"structure": water.model_dump()})
+
+
 @pytest.mark.parametrize(
     ("tool", "arguments", "compute"), CASES, ids=[f"{c[0]}-{c[1]['smiles']}" for c in CASES]
 )
@@ -146,48 +240,55 @@ async def test_deriving_a_key_runs_no_scf() -> None:
     exact tool a cache is most needed for.
     """
 
+    from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+
+    # Embedded *before* the SCF is broken: building a geometry is RDKit's job, not tblite's, and
+    # this test is about what the derivation does with one rather than about how it was made.
+    geometry = structure_from_smiles("CC(=O)O", optimize=True).model_dump()
+
     def _explode(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("deriving a key must not run an SCF")
 
     original = xtb_engine.Calculator
     xtb_engine.Calculator = _explode  # type: ignore[misc]
     try:
-        for tool in sorted(COMPUTE_TOOLS):
-            identity = calculation_identity(tool, {"smiles": "CCO"})
+        for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
+            if tool.startswith("search_"):
+                continue  # refuses on the missing binary before any of this is reached
+            identity = calculation_identity(tool, sweep_arguments(tool, accepts, geometry))
             assert identity.calc_version
     finally:
         xtb_engine.Calculator = original  # type: ignore[misc]
 
 
-async def test_only_the_two_named_tools_lack_a_derivable_key() -> None:
-    """The set is closed. A third tool losing its key would be a real regression, quietly.
+async def test_only_the_named_tool_lacks_a_derivable_key() -> None:
+    """The set is closed. A second tool losing its key would be a real regression, quietly.
 
     Checked over the whole surface rather than over the cases above, so it holds for arguments no
     case happens to use.
     """
-    for tool in sorted(COMPUTE_TOOLS):
-        identity = calculation_identity(tool, {"smiles": "CC(=O)O"})
+    from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+
+    geometry = structure_from_smiles("CC(=O)O", optimize=True).model_dump()
+    for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
+        if tool.startswith("search_"):
+            continue  # keyed like the rest; refuses without the binary, checked separately
+        identity = calculation_identity(tool, sweep_arguments(tool, accepts, geometry))
         assert (identity.calc_key is None) == (tool in WITHOUT_A_DERIVABLE_KEY), tool
 
 
-async def test_the_two_tools_without_a_key_say_why() -> None:
-    """An absent key must never read as "not computed yet". Both cases carry their reason.
+async def test_the_one_tool_without_a_key_says_why() -> None:
+    """An absent key must never read as "not computed yet". The one case carries its reason.
 
-    They are different absences and the messages say which. `predict_logd` never had a key —
-    Chemclaw3 did not cache logD, because the expensive half is already a cached pKa.
-    `compute_thermochemistry` cannot have one derived from its arguments, because its key names the
-    geometry the refinement loop settled on, which is an output of the calculation.
+    And the reason names the alternative: logD's cost is a pKa, whose key *is* available, so a
+    caller that wants to avoid paying twice knows exactly what to look up.
     """
     logd = await tools.calculation_key("predict_logd", {"smiles": "CC(=O)O"})
     assert logd.key is None and logd.calc_key is None
     assert logd.caveat is not None and "predict_pka" in logd.caveat
-
-    thermo = await tools.calculation_key("compute_thermochemistry", {"smiles": "O"})
-    assert thermo.key is None and thermo.calc_key is None
-    assert thermo.caveat is not None and "refinement loop" in thermo.caveat
-    # The version is still exact, and still worth returning: it is the string the calibration ledger
-    # matches on, and the ledger is keyed per prediction rather than per cache entry.
-    assert "GFN2-xTB" in thermo.calc_version
+    # The version is still exact, and still worth returning: it is what a calibration ledger matches
+    # on, and a ledger is keyed per prediction rather than per cache entry.
+    assert logd.calc_version.startswith("logd/")
 
 
 async def test_an_argument_the_tool_does_not_take_is_refused_not_ignored() -> None:
@@ -226,7 +327,7 @@ async def test_the_derivation_table_matches_the_served_surface() -> None:
     derivation for a tool that no longer exists would be a key nothing ever writes.
     """
     served = {tool.name for tool in await tools.server.list_tools()}
-    assert set(COMPUTE_TOOLS) | {"calculation_key"} == served
+    assert set(COMPUTE_TOOLS) | HELPERS == served
 
 
 async def test_each_derivation_accepts_exactly_its_tool_s_arguments() -> None:

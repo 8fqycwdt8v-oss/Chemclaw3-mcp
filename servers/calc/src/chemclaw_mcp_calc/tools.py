@@ -19,6 +19,21 @@ binary live here, and `xtb_cli.binary_version()` answers `"absent"` rather than 
 deriving the string locally would produce a well-formed value matching zero ledger rows and read as
 `UNCALIBRATED` rather than as an error.
 
+## Two audiences, one surface
+
+The eight tools above take a SMILES and answer a chemist's question. Below them sit the
+**primitives**: structure-in, structure-out calculations that Chemclaw3's durable-job activities
+compose into reaction energetics, relaxed scans, conformer ensembles and interaction energies. They
+are on the same MCP surface because there is only one, and their docstrings say who they are for —
+an agent answering a question should reach for the eight, not for these.
+
+The split is by *runtime*, not by subject: **Chemclaw3 keeps orchestration and the cache; this
+server holds the physics.** A composite — optimise, take a Hessian, displace along the imaginary
+mode, repeat — is a loop with state whose key names its own output, so it cannot be cached as a
+unit and does not belong here. Its parts each key cleanly and do.
+
+That is why `compute_thermochemistry` is **not** on this server. See `servers/calc/README.md`.
+
 **Nothing here is cheap by event-loop standards.** A single point is tens to hundreds of
 milliseconds; a Hessian on a drug-sized molecule is minutes. One uvicorn process serves every
 connected turn on one loop, so every tool body runs its work in a worker thread
@@ -36,7 +51,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from chemclaw_mcp_calc.engine import xtb_props
+from chemclaw_mcp_calc.engine import crest_cli, crest_search, xtb_props
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.descriptors import (
     DescriptorInput,
@@ -44,11 +59,13 @@ from chemclaw_mcp_calc.engine.descriptors import (
     compute_descriptor_profile,
 )
 from chemclaw_mcp_calc.engine.identity import CalculationIdentity, calculation_identity
+from chemclaw_mcp_calc.engine.key import Keyed
 from chemclaw_mcp_calc.engine.logd import LogdInput, LogdResult
 from chemclaw_mcp_calc.engine.logd import predict_logd as _predict_logd
 from chemclaw_mcp_calc.engine.pka import PkaInput, PkaResult
 from chemclaw_mcp_calc.engine.pka import calc_version as pka_calc_version
 from chemclaw_mcp_calc.engine.pka import predict_pka as _predict_pka
+from chemclaw_mcp_calc.engine.scan import scan_point_inputs
 from chemclaw_mcp_calc.engine.solubility import (
     SolubilityInput,
     SolubilityResult,
@@ -56,9 +73,12 @@ from chemclaw_mcp_calc.engine.solubility import (
 from chemclaw_mcp_calc.engine.solubility import (
     predict_solubility as _predict_solubility,
 )
-from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb import XtbInput, XtbResult, run_xtb
+from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, pack_array
+from chemclaw_mcp_calc.engine.xtb_hessian import compute_hessian as compute_hessian_engine
 from chemclaw_mcp_calc.engine.xtb_opt import (
+    OptimizationResult,
     OptimizationSummary,
     OptSpec,
     optimization_inputs,
@@ -69,7 +89,7 @@ from chemclaw_mcp_calc.engine.xtb_props import (
     FukuiMode,
     SiteReactivityResult,
 )
-from chemclaw_mcp_calc.engine.xtb_thermo import ThermochemistryResult, ThermoSpec, relax_to_minimum
+from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 
 server = FastMCP("calc")
 
@@ -77,8 +97,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "calculation_key",
+    "combine_structures",
     "compute_electronic_properties",
-    "compute_thermochemistry",
     "compute_xtb_energy",
     "optimize_geometry",
     "predict_developability_profile",
@@ -329,67 +349,6 @@ async def optimize_geometry(smiles: str, solvent: str | None = None) -> Optimiza
 
 
 @server.tool()
-async def compute_thermochemistry(
-    smiles: str,
-    solvent: str | None = None,
-    symmetry_number: int = 1,
-    temperature_k: float = 0.0,
-    top_bands: int = 0,
-) -> ThermochemistryResult:
-    """Compute vibrational frequencies, an IR spectrum, and free energy (GFN2-xTB).
-
-    Optimizes the molecule, then takes its second derivatives. That gives three things:
-    whether the structure is a genuine minimum (`is_minimum`, with any imaginary
-    frequencies listed), a predicted IR spectrum with band positions and intensities,
-    and ideal-gas thermochemistry — zero-point energy, enthalpy, entropy and Gibbs free
-    energy. Use the spectrum to test a proposed structure against a measured one, and
-    the free energy for equilibrium questions that an electronic energy cannot answer.
-
-    Read it with three limits in mind. Frequencies are semiempirical and systematically
-    a few percent off, so compare *patterns and orderings* with a measured spectrum
-    rather than expecting positions to match. Everything describes one conformer, not
-    the molecule's real population. And the entropy depends on the rotational symmetry
-    number, which defaults to 1 — pass the true value (2 for water, 3 for ammonia, 6
-    for ethane, 12 for benzene) when the molecule is symmetric, or the entropy comes
-    out too high by R·ln(symmetry number).
-
-    **This is the most expensive tool here**: the second derivatives cost 6N single points, so a
-    drug-sized molecule is minutes rather than seconds and a molecule above the configured atom
-    limit is refused outright. Ask for it when the free energy or the spectrum is the question, not
-    as a routine follow-up to an energy.
-
-    Args:
-        smiles: The molecule as a SMILES string.
-        solvent: Optional implicit solvent name; omit for gas phase.
-        symmetry_number: Rotational symmetry number; 1 if the molecule has no symmetry.
-        temperature_k: Temperature for the thermal corrections; 0 uses 298.15 K.
-        top_bands: How many IR bands to report, strongest first. 0 uses the configured
-            default; imaginary modes are always reported in full.
-
-    Returns:
-        Frequencies with IR intensities, whether the geometry is a minimum, and the
-        thermochemistry with the uncertainty to quote alongside it.
-    """
-
-    def _run() -> ThermochemistryResult:
-        structure = structure_from_smiles(smiles, multiplicity=None, optimize=True)
-        spec = ThermoSpec(
-            solvent=solvent,
-            symmetry_number=symmetry_number,
-            temperature_k=temperature_k or settings.xtb_thermo_temperature_k,
-        )
-        _, result = relax_to_minimum(structure, OptSpec(solvent=solvent), spec)
-        limit = top_bands if top_bands > 0 else settings.xtb_ir_bands_top_n
-        # The imaginary mode's 3N-vector is refinement machinery, not something a model can read;
-        # the frequency itself is already in `imaginary_frequencies_cm`.
-        return result.model_copy(
-            update={"modes": result.strongest_bands(limit), "imaginary_displacement": None}
-        )
-
-    return await asyncio.to_thread(_run)
-
-
-@server.tool()
 async def predict_developability_profile(smiles: str) -> DescriptorProfile:
     """Compute a developability descriptor panel: MW, LogP, TPSA, H-bond counts, Ro5/Veber flags.
 
@@ -446,3 +405,391 @@ async def predict_logd(smiles: str, ph: float | None = None) -> LogdResult:
         uncertainty (state it — this is not an exact value).
     """
     return await asyncio.to_thread(_predict_logd, LogdInput(smiles=smiles, ph=ph))
+
+
+# ------------------------------------------------------------------------------------------------
+# The primitives.
+#
+# Everything below takes and returns a `Structure` rather than a SMILES, and exists so Chemclaw3's
+# durable-job activities can compose the physics they need while keeping the orchestration — and the
+# cache — on their side. An agent answering a chemist's question wants the eight tools above.
+#
+# Each is separately keyed, which is the property that makes the composition worth doing: Chemclaw3
+# caches one row per *primitive* instead of one per job, so a solvent screen that adds a seventh
+# solvent reuses the other six, and a scan that gains two points reuses the twenty-four it had.
+
+
+class HessianPayload(Keyed):
+    """Second derivatives at one geometry, with the arrays base64-encoded as `.npy`.
+
+    `hessian_npy` is (3N, 3N) in Hartree/Angstrom^2. Exactly one of `dipole_derivatives_npy`
+    (3N, 3) in Debye/Angstrom and `ir_intensities` (one per Cartesian mode, km/mol) is populated,
+    and which one says which backend ran: the in-process path collects dipole derivatives while it
+    displaces, the `xtb` binary computes intensities itself.
+
+    **Both are what a caller needs to derive an IR spectrum**, and neither is a spectrum: the
+    normal-mode projection and the RRHO arithmetic over them stayed in Chemclaw3, because they are
+    pure partition functions over what this returns.
+    """
+
+    structure_id: str
+    method: str
+    solvent: str | None
+    atom_count: int
+    electronic_energy_hartree: float
+    hessian_npy: str
+    dipole_derivatives_npy: str | None = None
+    ir_intensities: list[float] | None = None
+
+
+class EnsemblePayload(Keyed):
+    """What one CREST search found, and nothing computed from it.
+
+    `members` is ordered lowest energy first and carries each structure with the **rotamer
+    degeneracy** that collapsed onto it. The degeneracy is not bookkeeping: a Boltzmann population
+    that ignores it is wrong by a lot — measured on n-butane, degeneracy-weighted populations give
+    the anti conformer 59.2% against CREST's own 59.14%, and ignoring degeneracy gives 73%.
+
+    Populations, conformational entropy and the ensemble free-energy correction are arithmetic over
+    exactly these two numbers per member, and they stayed with the durable jobs that report them.
+    """
+
+    structure_id: str
+    method: str
+    solvent: str | None
+    search: str
+    effort: str
+    members: list[crest_cli.EnsembleMember]
+    total_found: int
+
+
+@server.tool()
+async def embed_structure(
+    smiles: str,
+    charge: int | None = None,
+    multiplicity: int | None = None,
+    relax_with_force_field: bool = True,
+) -> Structure:
+    """Build the 3D geometry every other primitive takes. Cheap — RDKit only, no SCF.
+
+    **For the orchestrator, not the chemist.** It is the first call of any composition, because a
+    `Structure` is what the primitives consume and what their keys are derived from — and because
+    the embedding must happen *here*: `structure_id` is a hash of coordinates RDKit produced at
+    *this* RDKit version from the configured seed, so a geometry embedded anywhere else would
+    address a different row.
+
+    Canonicalises the SMILES before embedding, which is what makes two spellings of one molecule
+    produce one geometry and therefore one key.
+
+    Args:
+        smiles: The molecule as a SMILES string.
+        charge: Net charge. Omit to take the SMILES' own formal charge; a value contradicting it is
+            refused rather than computed at the wrong electron count.
+        multiplicity: Spin multiplicity 2S+1, validated against the electron count. Omit for the
+            closed-shell default; pass 0 to derive it from the SMILES' explicit radical electrons,
+            which is what a set of species that may include radicals wants.
+        relax_with_force_field: Pre-optimise with MMFF where it has parameters. On by default and
+            worth leaving on — measured over five textbook isomer pairs, a raw ETKDG embedding gets
+            the *sign* of the relative energy wrong in two of them.
+
+    Returns:
+        The geometry, its content address (`structure_id`), and the canonical SMILES it came from.
+    """
+    # `multiplicity=0` is the wire spelling of "derive it from the radicals": the engine takes
+    # `None` for that, and `None` on this signature already means "use the closed-shell default".
+    derived = None if multiplicity == 0 else (1 if multiplicity is None else multiplicity)
+    return await asyncio.to_thread(
+        structure_from_smiles,
+        smiles,
+        charge=charge,
+        multiplicity=derived,
+        optimize=relax_with_force_field,
+    )
+
+
+@server.tool()
+async def combine_structures(
+    first: Structure, second: Structure, separation_angstrom: float = 3.5
+) -> Structure:
+    """Place two molecules side by side as one structure. Cheap — pure geometry, no SCF.
+
+    **For the orchestrator, not the chemist.** It is the step that produces the *subject* a
+    non-covalent complex search is keyed on: without it a caller cannot derive that key and would be
+    back to guessing one.
+
+    Each monomer is centred and offset along x by the sum of their radii plus the gap, so the pair
+    starts apart regardless of shape. Only a starting point — the search's wall potential decides
+    where they end up.
+
+    **Not symmetric in its arguments.** Swapping them is a different starting arrangement and a
+    different key, so order the pair canonically first if A-with-B and B-with-A should be one
+    calculation.
+
+    Args:
+        first: The monomer held at the origin.
+        second: The monomer offset along x.
+        separation_angstrom: Gap between the two bounding spheres.
+
+    Returns:
+        The pair as one structure, charges summed and multiplicities combined.
+    """
+    return await asyncio.to_thread(
+        crest_search.combine_structures, first, second, separation_angstrom
+    )
+
+
+@server.tool()
+async def relax_structure(
+    structure: Structure,
+    solvent: str | None = None,
+    frozen_atoms: list[int] | None = None,
+) -> OptimizationResult:
+    """Relax a geometry to a stationary point, and return the coordinates.
+
+    **For the orchestrator, not the chemist** — `optimize_geometry` is the same calculation for an
+    agent, summarised without its 3N Cartesians. This one hands the geometry back because the next
+    primitive in a composition needs it.
+
+    Raises rather than returning a non-converged geometry: frequencies, thermochemistry and reaction
+    energies computed on one all look ordinary and mean nothing, so holding a result is a guarantee
+    that the gradient criterion was met.
+
+    Args:
+        structure: The starting geometry, from `embed_structure` or a previous primitive.
+        solvent: ALPB implicit solvent name; omit for gas phase.
+        frozen_atoms: Indices held at their input positions — an exact constrained minimisation over
+            the free subspace, not a penalty. Empty for a free optimisation.
+
+    Returns:
+        The converged energy, the relaxed geometry, how far the atoms moved, and the key this
+        calculation is addressed by. The geometry carries `origin`, that same key, so its lineage
+        travels with it.
+    """
+    spec = OptSpec(solvent=solvent, frozen_atoms=tuple(frozen_atoms or ()))
+    return await asyncio.to_thread(optimize_structure, spec, structure)
+
+
+@server.tool()
+async def compute_properties_at(
+    structure: Structure, solvent: str | None = None
+) -> ElectronicProperties:
+    """One GFN2-xTB single point at a given geometry: energy, orbitals, charges, bond orders.
+
+    **For the orchestrator, not the chemist** — `compute_electronic_properties` embeds from a SMILES
+    and answers the same question. This one runs at whatever geometry it is handed, which is what a
+    composition needs: an energy at a *relaxed* geometry is a different number from one at a
+    force-field geometry, and only the caller knows which it has.
+
+    The energy comes out of the same SCF as everything else here, so this is also the cheapest way
+    to get one — there is no separate energy-only primitive because there would be nothing cheaper
+    about it.
+
+    Args:
+        structure: The geometry to evaluate at.
+        solvent: ALPB implicit solvent name; omit for gas phase.
+
+    Returns:
+        Total energy, HOMO/LUMO/gap in eV, dipole in Debye, per-atom Mulliken charges and Wiberg
+        bond orders, plus the key this calculation is addressed by.
+    """
+    return await asyncio.to_thread(
+        xtb_props.compute_properties, XtbSpec(task="properties", solvent=solvent), structure
+    )
+
+
+@server.tool()
+async def compute_hessian(structure: Structure, solvent: str | None = None) -> HessianPayload:
+    """Second derivatives at a geometry — the expensive half of every vibrational question.
+
+    **For the orchestrator, not the chemist.** It returns matrices, not a spectrum: the normal-mode
+    projection, the IR intensities and the RRHO thermochemistry over them are pure arithmetic and
+    stayed in Chemclaw3 with the jobs that report them.
+
+    Cost is 6N + 1 single points in-process — minutes on a drug-sized molecule, and refused above
+    `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150 by default) because a tool call that would run for an hour
+    is a durable job. **Nothing is cached here**, so ask `calculation_key` first.
+
+    The arrays are base64-encoded `.npy`, which round-trips float64 exactly and is byte-for-byte
+    what Chemclaw3's artifact store already holds. At the 150-atom cap a response is about 2.2 MB.
+
+    Args:
+        structure: The geometry to differentiate at — normally a converged minimum from
+            `relax_structure`, because a Hessian at a non-stationary point describes nothing.
+        solvent: ALPB implicit solvent name; omit for gas phase.
+
+    Returns:
+        The Hessian in Hartree/Angstrom^2, the electronic energy at that geometry, and either the
+        dipole derivatives (in-process backend) or the binary's own per-mode IR intensities.
+    """
+    spec = HessianSpec(solvent=solvent)
+
+    def _run() -> HessianPayload:
+        hessian = compute_hessian_engine(spec, structure)
+        resolved = spec.for_structure(structure)
+        key = resolved.cache_key(structure)
+        return HessianPayload(
+            calc_version=key.calc_version,
+            calc_key=key.as_str(),
+            structure_id=structure.structure_id,
+            method=resolved.method,
+            solvent=resolved.solvent,
+            atom_count=len(structure.elements),
+            electronic_energy_hartree=hessian.electronic_energy_hartree,
+            hessian_npy=pack_array(hessian.matrix),
+            dipole_derivatives_npy=(
+                None
+                if hessian.dipole_derivatives is None
+                else pack_array(hessian.dipole_derivatives)
+            ),
+            ir_intensities=(
+                None
+                if hessian.ir_intensities is None
+                else [float(value) for value in hessian.ir_intensities]
+            ),
+        )
+
+    return await asyncio.to_thread(_run)
+
+
+@server.tool()
+async def scan_point(
+    structure: Structure, atoms: list[int], value: float, solvent: str | None = None
+) -> OptimizationResult:
+    """One point of a relaxed scan: drive an internal coordinate, freeze it, relax the rest.
+
+    **For the orchestrator, not the chemist.** A profile is a *sweep* over values, and the sweep is
+    a loop the caller writes — which is the point: Chemclaw3 caches one row per point instead of one
+    per profile, so adding two points to a twenty-four-point scan recomputes two.
+
+    The decomposition is exact rather than convenient: the sweep drives every point from the input
+    geometry rather than from the previous one, deliberately, so the points were already
+    independent.
+
+    A scan point is an ordinary constrained optimisation and keys as one, so it shares a row with a
+    `relax_structure` call that froze the same atoms at the same geometry.
+
+    Args:
+        structure: The starting geometry. Must carry its SMILES — connectivity is what lets RDKit
+            move the attached fragment rather than dragging one atom out of place.
+        atoms: Two atoms for a bond, three for an angle, four for a dihedral, bonded in sequence.
+        value: Angstrom for a bond, degrees for an angle or dihedral.
+        solvent: ALPB implicit solvent name; omit for gas phase.
+
+    Returns:
+        The relaxed geometry at that coordinate value and its energy. Relative energies and the
+        barrier maximum are arithmetic over a whole profile and belong to whoever walked it.
+    """
+
+    def _run() -> OptimizationResult:
+        return optimize_structure(*scan_point_inputs(structure, tuple(atoms), value, solvent))
+
+    return await asyncio.to_thread(_run)
+
+
+@server.tool()
+async def search_conformer_ensemble(
+    structure: Structure,
+    search: crest_search.EnsembleSearch = "conformers",
+    effort: crest_cli.CrestEffort = "quick",
+    solvent: str | None = None,
+    temperature_k: float = 0.0,
+) -> EnsemblePayload:
+    """Sample conformers, tautomers or protomers with CREST. Minutes to hours; one call, one answer.
+
+    **For the orchestrator, not the chemist**, and the one primitive that cannot be decomposed: a
+    metadynamics search is a single stateful trajectory, its intermediate structures are not
+    answers, and there is no point at which half of it is a result.
+
+    It removes the caveat on every other number here — everything else describes *one* conformer,
+    which for a flexible molecule is a shape rather than the molecule. `tautomers` is the search
+    that matters most: a pKa, a Fukui ranking and a reaction energy all describe whichever tautomer
+    was drawn, so getting it wrong invalidates them silently.
+
+    Returns the ensemble and nothing computed from it. Boltzmann populations, conformational entropy
+    and the ensemble free-energy correction are arithmetic over the energies and degeneracies here.
+
+    **Requires the `crest` binary, which this image does not ship** — the call refuses, by name,
+    rather than degrading. It is absent from Chemclaw3's environment too, so nothing that worked
+    before has stopped working.
+
+    Args:
+        structure: The starting geometry.
+        search: Which space to sample.
+        effort: How hard. `quick` is right for a screening question; `extensive` for the case where
+            a missed conformer changes the answer.
+        solvent: ALPB implicit solvent name; omit for gas phase. temperature_k: Sampling
+        temperature, passed to `crest --temp`. 0 uses the configured default.
+
+    Returns:
+        Every member found, lowest energy first, each with its rotamer degeneracy.
+    """
+    spec = crest_search.EnsembleSpec(
+        search=search,
+        effort=effort,
+        solvent=solvent,
+        temperature_k=temperature_k or settings.xtb_thermo_temperature_k,
+    )
+    return await asyncio.to_thread(_ensemble_payload, spec, structure, search)
+
+
+@server.tool()
+async def search_binding_modes(
+    structure: Structure,
+    effort: crest_cli.CrestEffort = "quick",
+    solvent: str | None = None,
+) -> EnsemblePayload:
+    """Search how two molecules associate, with CREST's non-covalent mode. Minutes to hours.
+
+    **For the orchestrator, not the chemist.** Takes the *combined* pair from `combine_structures`,
+    because the pair is the calculation's subject exactly as a single molecule is elsewhere — and
+    because that is what the key is derived from.
+
+    The `--nci` wall potential is what makes this a binding search: without it a metadynamics run
+    simply lets two molecules drift apart instead of sampling how they bind.
+
+    Returns the binding modes and nothing computed from them. An interaction energy is the bound
+    complex's energy minus the two relaxed monomers' — three `relax_structure` calls and a
+    subtraction, on the caller's side, each separately cached.
+
+    **One mode found is a weak result, not a confident one**: it usually means the search was too
+    quick rather than that the pair has a single way to bind.
+
+    **Requires the `crest` binary, which this image does not ship** — see
+    `search_conformer_ensemble`.
+
+    Args:
+        structure: The combined pair, from `combine_structures`.
+        effort: How hard to search.
+        solvent: ALPB implicit solvent name; omit for gas phase.
+
+    Returns:
+        Every binding mode found, lowest energy first.
+    """
+    spec = crest_search.ComplexSpec(effort=effort, solvent=solvent)
+    return await asyncio.to_thread(_ensemble_payload, spec, structure, "complex")
+
+
+def _ensemble_payload(
+    spec: crest_search.EnsembleSpec | crest_search.ComplexSpec,
+    structure: Structure,
+    search: str,
+) -> EnsemblePayload:
+    """Run a CREST search and wrap it with the identity it is addressed by.
+
+    One helper for both search tools because the wrapping is identical and the two differ only in
+    which spec they build — the difference that matters (`ComplexSpec` keys the surrounding
+    optimisations' backend as well) lives in the specs, not here.
+    """
+    members = crest_search.search_ensemble(spec, structure)
+    key = spec.cache_key(structure)
+    return EnsemblePayload(
+        calc_version=key.calc_version,
+        calc_key=key.as_str(),
+        structure_id=structure.structure_id,
+        method=spec.method,
+        solvent=spec.solvent,
+        search=search,
+        effort=spec.effort,
+        members=members,
+        total_found=len(members),
+    )

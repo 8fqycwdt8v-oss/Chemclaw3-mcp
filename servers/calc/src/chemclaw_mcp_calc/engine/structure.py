@@ -27,7 +27,7 @@ Coordinates are in **Angstrom** — the interchange unit of RDKit, XYZ files, an
 from __future__ import annotations
 
 import numpy as np
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 from rdkit import Chem
 
 from chemclaw_mcp_calc.engine.chem import require_canonical_smiles
@@ -97,9 +97,22 @@ class Structure(BaseModel):
             )
         return self
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def structure_id(self) -> str:
         """Content address: `st_` + a stable hash of the chemistry, not the provenance.
+
+        **A `computed_field` rather than a plain property, and that is load-bearing rather than
+        stylistic.** A plain property is not serialized, so a `Structure` crossing the wire would
+        arrive without its content address — and a caller would then have to re-derive it, which is
+        the one thing this whole seam exists to prevent: the derivation depends on the installed
+        RDKit's embedding and on `xtb_geometry_decimals`, so a client-side rebuild is the silent
+        divergence again. `tests/test_server.py` caught exactly this by asserting it on the payload
+        rather than on the object.
+
+        Output-only, so a caller may send the field back unchanged and it is ignored on the way in:
+        the id is always recomputed from the coordinates that actually arrived, and a payload edited
+        in transit therefore keys as what it *is* rather than as what it claims.
 
         Deliberately excludes `smiles` and `origin`: two identical geometries are the same structure
         whether one was embedded from a SMILES and the other optimized, and that is exactly the

@@ -60,11 +60,13 @@ picks the tools up on the next turn. Full instructions, including the Helm side 
 degrades-silently failure mode to watch for, are in [`docs/integration.md`](docs/integration.md).
 
 **One server is wired differently and it is not optional to know which.** `calc` is not a connector
-Chemclaw3 dials: it serves the *computation* behind nine of that bundle's fifteen tools and is called
-from inside Chemclaw3's own `cached_compute` on a cache miss. Putting its manifest on
-`CHEMCLAW_CONNECTORS_DIR` would let a partial port win the `calc` name collision and take the
+Chemclaw3 dials: it holds the *physics* behind that bundle's calculators and durable jobs, and is
+called from inside Chemclaw3's own `cached_compute` on a cache miss. Putting its manifest on
+`CHEMCLAW_CONNECTORS_DIR` would let a partial surface win the `calc` name collision and take the
 calibration ledger, the calculation cache, the artifact store and every durable calc job off the
-agent's surface — with no error. See [`servers/calc/README.md`](servers/calc/README.md).
+agent's surface — with no error. It is also the server that shows what this fleet does and does not
+promise: it may run for hours, and it may not hold state. See
+[`servers/calc/README.md`](servers/calc/README.md).
 
 ## Adding a server
 

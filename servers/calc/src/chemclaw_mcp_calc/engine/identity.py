@@ -47,23 +47,30 @@ result, which is the cheapest possible check that the two paths agree.
 `CALCULATION_EPOCH`. Not the config (only this server reads it), not the RDKit build (only this
 server embeds), not the flat-string format (nobody parses it). One constant.
 
-## Two tools have no key, and both say why
+## What is covered, and the one tool that is not
 
-`predict_logd` never had one — Chemclaw3 did not cache logD, because its expensive half is already a
-cached pKa and Crippen LogP is sub-millisecond.
+Every **calculation** is here — the eight SMILES-in tools an agent calls, and the six
+structure-in primitives Chemclaw3's activities compose. Three tools are deliberately absent because
+they are not calculations and nothing stores their output: `embed_structure` and
+`combine_structures` build geometries (cheap, pure, and the *input* to a key rather than a keyed
+thing), and `calculation_key` is this probe itself.
 
-`compute_thermochemistry` cannot have one derived from its arguments, and that is a property of the
-calculation rather than a gap here: its key names the geometry `relax_to_minimum` *finally settled
-on*, and reaching that geometry means optimising, taking a Hessian, and — when the optimiser lands
-on a rotational saddle, which an ordinary ester does — displacing along the imaginary mode and doing
-it again. The geometry is an output. Chemclaw3's own `compute_thermochemistry` tool was not a single
-cached calculation either; its economy came from the nested `xtb.opt` and `xtb.hess` entries, and
-the split has moved those inside one remote call.
+`predict_logd` is the one calculation with no key, and it says so in a `caveat` rather than by
+omission. Chemclaw3 never cached logD, because its expensive half is already a cached pKa and
+Crippen LogP is sub-millisecond, so there is no key derivation to port.
 
-Deliberately **not** offered: the first optimisation's key as a stand-in. It would usually be a
-miss, and in the case where Chemclaw3 happened to hold an `xtb.hess` row for that unrefined geometry
-it would be a *hit on the wrong answer* — the un-refined thermochemistry, served for a request whose
-tool refines. A key that can silently return the wrong result is worse than no key.
+There was briefly a second: `compute_thermochemistry`, whose key named the geometry its refinement
+loop settled on and was therefore an output rather than a function of its arguments. That
+underivable key was the structural signal that a *composite* does not belong on this server at all,
+and the tool was removed rather than shipped uncacheable — Chemclaw3 assembles the same answer from
+`relax_structure` + `compute_hessian` + its own RRHO arithmetic, and every part of it caches. See
+`servers/calc/README.md`.
+
+**The CREST searches key like anything else, and refuse like nothing else.** `CrestSpec
+.calc_version()` answers `crest-absent` when the binary is missing rather than raising, so a key
+*is* derivable with no crest — and it would name a program that cannot run, addressing a row nothing
+will ever write. So the derivation calls `crest_search.require_crest()` exactly as the compute path
+does: the probe refuses precisely where the calculation would.
 """
 
 from __future__ import annotations
@@ -73,13 +80,22 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from chemclaw_mcp_calc.engine import descriptors, logd, pka, solubility, xtb, xtb_props
+from chemclaw_mcp_calc.engine import (
+    crest_search,
+    descriptors,
+    logd,
+    pka,
+    solubility,
+    xtb,
+    xtb_props,
+)
 from chemclaw_mcp_calc.engine.chem import require_canonical_smiles
 from chemclaw_mcp_calc.engine.key import CalculationKey
-from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
-from chemclaw_mcp_calc.engine.xtb_opt import optimization_inputs
+from chemclaw_mcp_calc.engine.scan import scan_point_inputs
+from chemclaw_mcp_calc.engine.structure import Structure
+from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec
+from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimization_inputs
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
-from chemclaw_mcp_calc.engine.xtb_thermo import ThermoSpec
 
 __all__ = ["COMPUTE_TOOLS", "CalculationIdentity", "calculation_identity"]
 
@@ -155,39 +171,6 @@ def _optimize_geometry(arguments: dict[str, Any]) -> CalculationIdentity:
     )
 
 
-def _thermochemistry(arguments: dict[str, Any]) -> CalculationIdentity:
-    """`compute_thermochemistry` — a version, and an explained absence where the key would be.
-
-    The spec is still built and resolved against the *input* geometry, which is enough for the
-    version to be exactly right: `for_structure` only ever switches on the electron count, and
-    relaxation preserves it. What the input geometry cannot give is the key, because the key names
-    the geometry the refinement loop settled on. See the module docstring for why the optimisation's
-    own key is not offered as a stand-in.
-    """
-    solvent = _solvent(arguments)
-    spec = ThermoSpec(
-        solvent=solvent,
-        symmetry_number=int(arguments.get("symmetry_number", 1)),
-        temperature_k=float(arguments.get("temperature_k", 0.0)) or ThermoSpec().temperature_k,
-    )
-    structure = structure_from_smiles(str(arguments["smiles"]), multiplicity=None, optimize=True)
-    return CalculationIdentity(
-        tool="compute_thermochemistry",
-        calc_version=spec.for_structure(structure).calc_version(),
-        structure_id=structure.structure_id,
-        caveat=(
-            "no key is derivable from these arguments: this tool's key names the geometry its "
-            "refinement loop finally settled on, which is an output of the calculation (optimise, "
-            "take the Hessian, and displace along the imaginary mode and repeat when the optimiser "
-            "lands on a saddle point). Chemclaw3's own compute_thermochemistry was not a single "
-            "cached calculation either — its economy came from the nested xtb.opt and xtb.hess "
-            "entries, which the split has moved inside this one call. Store the result under the "
-            "calc_key the result itself carries; do not substitute the optimisation's key, which "
-            "would hit the un-refined answer wherever a row for that geometry exists"
-        ),
-    )
-
-
 def _pka(arguments: dict[str, Any]) -> CalculationIdentity:
     """`predict_pka` — no geometry needed: the key is on the canonical SMILES.
 
@@ -233,6 +216,88 @@ def _logd(arguments: dict[str, Any]) -> CalculationIdentity:
     )
 
 
+def _structure(arguments: dict[str, Any]) -> Structure:
+    """The `structure` argument, validated through the same model the compute path uses.
+
+    A caller sends a geometry as JSON; `Structure` rounds and validates it on construction exactly
+    as it did when this server produced it, so a payload that was truncated or edited in transit
+    fails here rather than keying a geometry nobody computed.
+    """
+    return Structure.model_validate(arguments["structure"])
+
+
+def _relax_structure(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`relax_structure` — an ordinary optimisation of a geometry the caller already holds."""
+    structure = _structure(arguments)
+    frozen = tuple(int(index) for index in arguments.get("frozen_atoms") or ())
+    spec = OptSpec(solvent=_solvent(arguments), frozen_atoms=frozen)
+    return _from_spec("relax_structure", spec, structure)
+
+
+def _properties_at(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`compute_properties_at` — the same `xtb.properties` calculation as the SMILES-in tool.
+
+    Same `calc_type`, so a properties row computed from a SMILES and one computed at the identical
+    geometry are one entry rather than two. That is the whole reason both tools exist without
+    duplicating anything: they differ in how the caller names the subject, not in what is computed.
+    """
+    return _from_spec(
+        "compute_properties_at",
+        XtbSpec(task="properties", solvent=_solvent(arguments)),
+        _structure(arguments),
+    )
+
+
+def _hessian(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`compute_hessian` — keyed on the geometry and what moves the matrix, and nothing else.
+
+    `HessianSpec` is deliberately narrower than the thermochemistry spec Chemclaw3 wraps it in:
+    temperature, pressure, the symmetry number and the quasi-RRHO cutoff are absent because a
+    Hessian does not depend on them. That absence is what lets a caller ask for a second temperature
+    and pay only the partition functions.
+    """
+    return _from_spec(
+        "compute_hessian", HessianSpec(solvent=_solvent(arguments)), _structure(arguments)
+    )
+
+
+def _scan_point(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`scan_point` — driving the coordinate is deterministic, so the key is derivable.
+
+    The driven geometry is a pure function of `(structure, atoms, value)`, so this runs the same
+    driver the compute path does and keys the result. It comes out as an `xtb.opt` key, which is
+    correct: a scan point *is* a constrained optimisation, and it shares its row with one.
+    """
+    atoms = tuple(int(index) for index in arguments["atoms"])
+    spec, driven = scan_point_inputs(
+        _structure(arguments), atoms, float(arguments["value"]), _solvent(arguments)
+    )
+    return _from_spec("scan_point", spec, driven)
+
+
+def _conformer_ensemble(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`search_conformer_ensemble` — refuses without the binary, exactly as the search does."""
+    crest_search.require_crest()
+    spec = crest_search.EnsembleSpec(
+        search=arguments.get("search", "conformers"),
+        effort=arguments.get("effort", "quick"),
+        solvent=_solvent(arguments),
+        temperature_k=(
+            float(arguments.get("temperature_k", 0.0)) or crest_search.EnsembleSpec().temperature_k
+        ),
+    )
+    return _from_spec("search_conformer_ensemble", spec, _structure(arguments))
+
+
+def _binding_modes(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`search_binding_modes` — same refusal, and a version that also names the opt backend."""
+    crest_search.require_crest()
+    spec = crest_search.ComplexSpec(
+        effort=arguments.get("effort", "quick"), solvent=_solvent(arguments)
+    )
+    return _from_spec("search_binding_modes", spec, _structure(arguments))
+
+
 def _solvent(arguments: dict[str, Any]) -> str | None:
     """The `solvent` argument, or None for gas phase — never a silently-defaulted empty string."""
     value = arguments.get("solvent")
@@ -252,14 +317,20 @@ COMPUTE_TOOLS: dict[str, tuple[frozenset[str], Callable[[dict[str, Any]], Calcul
     "compute_electronic_properties": (frozenset({"smiles", "solvent"}), _electronic_properties),
     "predict_site_reactivity": (frozenset({"smiles", "mode", "top_n"}), _site_reactivity),
     "optimize_geometry": (frozenset({"smiles", "solvent"}), _optimize_geometry),
-    "compute_thermochemistry": (
-        frozenset({"smiles", "solvent", "symmetry_number", "temperature_k", "top_bands"}),
-        _thermochemistry,
-    ),
     "predict_pka": (frozenset({"smiles"}), _pka),
     "predict_solubility": (frozenset({"smiles"}), _solubility),
     "predict_logd": (frozenset({"smiles", "ph"}), _logd),
     "predict_developability_profile": (frozenset({"smiles"}), _developability),
+    # The structure-in primitives Chemclaw3's activities compose.
+    "relax_structure": (frozenset({"structure", "solvent", "frozen_atoms"}), _relax_structure),
+    "compute_properties_at": (frozenset({"structure", "solvent"}), _properties_at),
+    "compute_hessian": (frozenset({"structure", "solvent"}), _hessian),
+    "scan_point": (frozenset({"structure", "atoms", "value", "solvent"}), _scan_point),
+    "search_conformer_ensemble": (
+        frozenset({"structure", "search", "effort", "solvent", "temperature_k"}),
+        _conformer_ensemble,
+    ),
+    "search_binding_modes": (frozenset({"structure", "effort", "solvent"}), _binding_modes),
 }
 
 
@@ -268,8 +339,9 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
 
     Args:
         tool: One of the nine compute tools' names.
-        arguments: The arguments that would be passed to it. `smiles` is required by all nine;
-            every other argument is optional and takes the compute tool's own default.
+        arguments: The arguments that would be passed to it. Every tool requires its subject —
+            `smiles` for the eight SMILES-in tools, `structure` for the six primitives — and every
+            other argument is optional and takes the compute tool's own default.
 
     Returns:
         The version, and the key in both shapes where one is derivable.
@@ -294,6 +366,7 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
             "produce the key of a different calculation, and the lookup would then hit a real row "
             "holding an answer to a question nobody asked"
         )
-    if "smiles" not in arguments:
-        raise ValueError(f"{tool} requires a 'smiles' argument")
+    subject = "structure" if "structure" in accepts else "smiles"
+    if subject not in arguments:
+        raise ValueError(f"{tool} requires a {subject!r} argument")
     return derive(arguments)

@@ -1,8 +1,11 @@
-# `calc` — GFN2-xTB, pKa, solubility, logD and developability descriptors · port 8860
+# `calc` — the physics behind Chemclaw3's calculators · port 8860
 
-Nine request/response calculators, ported from Chemclaw3's own in-tree `calc` connector. No cache,
-no artifact store, no calibration ledger, no durable jobs, and no network call at any point: this
-server takes a SMILES, computes, and returns.
+Seventeen tools: **eight** an agent calls with a SMILES, **six** structure-in primitives Chemclaw3's
+durable-job activities compose, and **three** helpers that compute nothing. No cache, no artifact
+store, no calibration ledger, no job records, no resumption, and no network call at any point —
+Chemclaw3 keeps orchestration and the cache; this server holds the physics.
+
+**Eight agent-facing tools**, a SMILES in and a chemist's answer out:
 
 | Tool | What it computes |
 | --- | --- |
@@ -10,12 +13,74 @@ server takes a SMILES, computes, and returns.
 | `compute_electronic_properties` | HOMO/LUMO/gap (eV), dipole (Debye), Mulliken charges, Wiberg bond orders. |
 | `predict_site_reactivity` | Condensed Fukui indices, atoms ranked by susceptibility to attack. |
 | `optimize_geometry` | Relaxation to a stationary point of the GFN2 surface. |
-| `compute_thermochemistry` | Frequencies, IR spectrum, and ideal-gas RRHO ZPE/H/S/G. |
 | `predict_pka` | pKa of the most acidic O-H/S-H site, or a base's conjugate acid (pKaH). |
 | `predict_solubility` | Aqueous log S from the ESOL (Delaney 2004) baseline, with a domain check. |
 | `predict_logd` | pH-dependent logD, for singly-ionisable molecules only. |
 | `predict_developability_profile` | MW, cLogP, TPSA, H-bond counts, sp3 fraction, QED, Ro5/Veber flags. |
-| `calculation_key` | What a calculation *would* be stored under — without running it. |
+
+**Six primitives**, structure-in, for Chemclaw3's durable-job activities to compose:
+
+| Primitive | What it computes |
+| --- | --- |
+| `relax_structure` | An optimisation that hands the coordinates back, with atoms optionally frozen. |
+| `compute_properties_at` | One SCF at a given geometry — energy, orbitals, charges, bond orders. |
+| `compute_hessian` | Second derivatives plus dipole derivatives, as base64 `.npy`. |
+| `scan_point` | Drive an internal coordinate, freeze it, relax the rest. One point of a profile. |
+| `search_conformer_ensemble` | CREST conformer / tautomer / protomer sampling. |
+| `search_binding_modes` | CREST non-covalent search over a combined pair. |
+
+**Three helpers** that compute nothing: `embed_structure` and `combine_structures` build the
+geometries the primitives consume, and `calculation_key` answers what a calculation *would* be
+stored under.
+
+## The seam: Chemclaw3 keeps orchestration and the cache; this server holds the physics
+
+Not "fast things move and slow things stay" — this server runs CREST searches that take hours. The
+line is **statelessness**, and the structural test for it is whether a calculation's key can be
+derived from its arguments:
+
+- **It can** → the caller can ask "have I computed this?" before paying, so it is a primitive and it
+  belongs here.
+- **It cannot, because the key names an output** → it is a loop with state. That is a durable job,
+  and it stays in Chemclaw3.
+
+### Why `compute_thermochemistry` is not here
+
+It was ported, and then removed, and the removal is the clearest statement of the rule. Four
+independent reasons pointed the same way:
+
+1. **It failed the fleet's own runtime expectation and needed the rule bent** — a 900 s timeout and
+   a 150-atom cap on a fleet whose norm was ~20 s. A tool that needs an exception written for it is
+   usually on the wrong side of the line.
+2. **It is orchestration, not request/response**: optimise → Hessian → displace along the imaginary
+   mode → repeat is a loop with state.
+3. **Its key names an output.** `calculation_key` could not derive one, because the key names the
+   geometry the refinement loop *finally settled on*. That was the structural signal, and it agreed
+   with the other three.
+4. **The measurement.** Repeating `compute_thermochemistry` in Chemclaw3 costs **0.007 s against
+   0.816 s** cold for ethanol and **0.012 s against 3.273 s** for ethyl acetate — two orders of
+   magnitude, on tiny molecules, entirely from the *nested* `xtb.opt` and `xtb.hess` caches.
+   Shipping it here uncacheable would have converted every repeat into a full recompute, on the most
+   expensive tool in the set. That is a D-011 violation in substance if not in letter.
+
+**The answer was not to keep it in Chemclaw3 but to stop shipping composites.** Chemclaw3 assembles
+the same result from `relax_structure` + `compute_hessian` + its own RRHO partition functions — and
+every part of that caches, so the two-orders-of-magnitude repeat still hits. `engine/xtb_thermo.py`
+is gone from this server; the RRHO arithmetic lives where it always did.
+
+The same argument applied to everything else the durable jobs needed:
+
+| Chemclaw3 engine | What moved here | What stayed, and why |
+| --- | --- | --- |
+| `xtb_scan.py` | `scan_point` — drive, freeze, relax | The sweep. A profile is a loop, and its relative energies and barrier maximum are arithmetic over the points. The decomposition is *exact*: `run_scan` already drove every point from the input geometry rather than the previous one, so the points were independent by construction. |
+| `conformers.py` | `search_conformer_ensemble` — the CREST call | Boltzmann populations, conformational entropy, the ensemble free-energy correction, and `max_members` truncation. All arithmetic over the energies and degeneracies returned. |
+| `complexes.py` | `search_binding_modes` + `combine_structures` | The interaction energy: three `relax_structure` calls and a subtraction, each separately cached — where Chemclaw3's single `xtb.complex` row recomputed every monomer whenever the separation changed. |
+| `reaction.py` | **nothing** | It is pure composition over primitives already exposed: per-species optimise + Hessian, stoichiometric sums, and a formula-balance check. Adding a tool for it would be adding a composite back. |
+| `progress.py` | **nothing** | A progress callback needs somewhere to report *to*. A request/response tool has no such channel, and inventing one would mean holding job state. |
+
+**A CREST search is the one thing exposed whole**, and it is not an exception to the rule but an
+application of it: a metadynamics run is a single trajectory, its intermediate structures are not
+answers, and there is no point at which half of it is a result. One tool, one key, minutes to hours.
 
 ## Read this first: it is a backend, not a connector Chemclaw3 dials
 
@@ -24,7 +89,8 @@ implementation for an identical one. **This server is different, and putting it 
 wrong.**
 
 Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moved here is the *computation*
-behind nine of them; the other six have no computation to move, because they **are** the state:
+behind them; six of that bundle's tools have no computation to move at all, because they **are**
+the state:
 
 | Stays entirely in Chemclaw3 | What it is |
 | --- | --- |
@@ -40,7 +106,7 @@ error** — and take those six tools and every durable job off the agent's surfa
 is this repository's own declaration of the served surface, checked against the running server by
 `tests/test_server.py`; it is not an instruction to point Chemclaw3 at it.
 
-## `calculation_key`: why the cache seam needed a tenth tool
+## `calculation_key`: why the cache seam needed a tool of its own
 
 Chemclaw3 calls this server from inside `science/calc/store.py::cached_compute`:
 
@@ -71,25 +137,28 @@ to parse — `calc_version` legitimately contains both `@` and `:` (`esol-delane
 `cal-0.28733:-29.3116`), so a caller splitting the flat form is one delimiter from a key that misses
 forever. The flat `calc_key` comes back beside it, and the compute result carries the same string, so
 asserting the two against each other is a free check that both paths agree.
-`tests/test_calculation_key.py` asserts exactly that property for every tool, which is what the whole
-design rests on. "Cheap" is asserted too: every route through `Calculator` is made to raise and all
-nine identities still come back.
+`tests/test_calculation_key.py` asserts exactly that property for every tool — the eight SMILES-in
+and the primitives alike — which is what the whole design rests on. "Cheap" is asserted too: every route through `Calculator` is made to raise and all
+every identity still comes back.
 
-**Two tools return no key, and say why in a `caveat` rather than by omission.** `predict_logd` never
-had one — Chemclaw3 did not cache logD, because its expensive half is already a cached pKa and
-Crippen LogP is sub-millisecond. `compute_thermochemistry`'s key names the geometry its refinement
-loop *finally settled on*, which is an output: the loop optimises, takes a Hessian, and displaces
-along the imaginary mode and repeats when the optimiser lands on a rotational saddle (which an
-ordinary ester does). Chemclaw3's own `compute_thermochemistry` was not a single cached calculation
-either — its economy came from the nested `xtb.opt` and `xtb.hess` entries, and the split has moved
-those inside one remote call. The optimisation's key is deliberately *not* offered as a stand-in: it
-would usually miss, and where Chemclaw3 happened to hold an `xtb.hess` row for that unrefined
-geometry it would be a hit on the wrong answer.
+**One tool returns no key, and says why in a `caveat` rather than by omission.** `predict_logd`
+never had one — Chemclaw3 did not cache logD, because its expensive half is already a cached pKa and
+Crippen LogP is sub-millisecond — and the caveat names the pKa whose key *is* available.
+
+**The two CREST searches key like everything else and refuse like nothing else.**
+`CrestSpec.calc_version()` answers `crest-absent` when the binary is missing rather than raising, so
+a key *is* derivable with no crest — and it would be a well-formed identity naming a program that
+cannot run, addressing a row nothing will ever write. That is the same shape as the
+`binary_version()` trap this port exists to contain, so the probe refuses exactly where the search
+would.
+
+`compute_thermochemistry` was briefly a second no-key tool, and resolving that is what produced the
+primitive set. See "Why `compute_thermochemistry` is not here".
 
 ## What every result carries that Chemclaw3's did not
 
 **`calc_version`, always — and `calc_key`, the full
-`calc_type@calc_version:input_hash:params_hash` string, on eight of the nine.**
+`calc_type@calc_version:input_hash:params_hash` string, on all but `predict_logd`.**
 
 `calc_version` is assembled from things that live only in this process:
 
@@ -154,7 +223,7 @@ programs distributed through conda-forge and distribution packages rather than P
 `pyproject.toml` has no way to express them and the `python:3.11-slim` base carries neither.
 
 This is a speed limit, not a capability gap, and the reason is that `tblite` — which *does* ship
-manylinux wheels — carries the same GFN1/GFN2 Hamiltonians in-process. Everything the nine tools do
+manylinux wheels — carries the same GFN1/GFN2 Hamiltonians in-process. Everything the xTB tools do
 runs on it: single points, properties, Fukui indices, the L-BFGS-B optimizer over tblite's analytic
 gradient, the finite-difference Hessian, and both pKa branches. Chemclaw3's own deployment resolves
 to `tblite` too, for the same reason, so **the numbers and the `calc_version` strings this server
@@ -181,73 +250,95 @@ Open-shell species always route in-process regardless, because the `xtb` 6.6.1 b
 is OOM-killed in that build and GFN2 without a spin-polarization term does not stabilize an open
 shell at all — measured, it put triplet O₂ *above* singlet.
 
-## Cost, and why the timeout is 900 s
+## Cost: this server is allowed to be slow, and not allowed to be stateful
 
-This is the only server in the fleet where a single call can take minutes. `props` answers from a
-dict; `chem` draws an SVG; a cold `compute_thermochemistry` here is 6N + 1 GFN2 single points with a
-geometry optimization in front of it.
+`props` answers from a dict; a CREST search here can run for hours. **Duration is not the property
+this fleet promises** — statelessness is, and `docs/adding-a-server.md` now says so rather than
+naming a number.
 
-**It therefore breaks the fleet's "anything over ~20 s is a durable job" rule, on purpose, and the
-exception is bounded rather than argued away.** Three things hold; a slow tool with none of them is
-still a durable job:
+What that buys and what it costs:
 
-1. a **hard input bound** refuses what would run away — `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150), with
-   a message naming Chemclaw3's durable QM job path, which is the route that *does* exist for those
-   molecules;
-2. the manifest states the real budget (`request_timeout: 900`) instead of inheriting the fleet's
-   habitual 30 s and timing out mid-calculation;
-3. the tool docstring tells the model what it is asking for, so an expensive call is a decision
-   rather than a routine follow-up to an energy.
+- `request_timeout: 900` in the manifest, against the fleet's habitual 30, because a cold geometry
+  optimisation on a drug-sized molecule is measured at 38 s (ibuprofen, 33 atoms, 24 steps) and a
+  CREST search is far longer. A budget that states the real cost beats one that kills a calculation
+  three quarters of the way through.
+- `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) bounds the one primitive whose cost is quadratic in the
+  input, and its refusal names Chemclaw3's durable QM job path — the route that *does* exist.
+- **Nothing is cached in this process**, deliberately. That is what `calculation_key` is for: the
+  caller checks its own store and only reaches a compute tool on a miss.
+- Every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts
+  the hop for all fifteen that dispatch one. One call on the event loop would stop every other
+  connected turn on this process for its whole duration — which, here, could be an hour.
 
-**There is no cache in this process**, and that is what `calculation_key` is for: the caller checks
-its own store first and only reaches a compute tool on a miss. `compute_thermochemistry` is the one
-tool that cannot be looked up that way, so it is also the one whose cost is paid every time — which
-is exactly why its input bound is the tightest thing on this list.
-
-Every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts the
-hop for all ten — `calculation_key` included, because it embeds a 3D geometry and, if a client uses
-it before every compute, it is the most frequently called tool here. One call on the event loop
-would stop every other connected turn on this process for its whole duration.
+**What would make something belong on the other side of the seam**: wanting to persist anything.
+A job record, a resumable checkpoint, a progress channel, a partial-result cache. None exists here,
+and three things that would have needed one were left in Chemclaw3 rather than built —
+`progress.py`'s callback, the thermochemistry refinement loop, and the sweep half of a relaxed scan.
 
 The image pins `OMP_NUM_THREADS=1` (and the BLAS equivalents). LAPACK and tblite's OpenMP each size
 themselves to the *node* rather than to the container's CPU limit and then fight each other;
 concurrency belongs at the request level, where the server can see it. Raise it deliberately, on a
 pod sized for it.
 
-## What was dropped in the port, and why
+## The Hessian on the wire
 
-| Dropped | Reason |
+`compute_hessian` returns matrices, and they are the only payload here big enough to need a decision.
+
+**Format: base64-encoded `.npy`.** Three reasons, in order: it round-trips float64 **exactly**
+where a JSON array of decimal literals does not (and a format that lost the last few bits would put
+a silent error into every frequency derived from it); it is self-describing about shape and dtype,
+so a truncated payload fails to load rather than reshaping into something plausible; and it is
+byte-for-byte what Chemclaw3's `calculation_artifacts` table already stores, so a caller can put the
+bytes straight into its artifact store without a second serialization to disagree about.
+
+**Ceiling: ~2.2 MB, bounded by the atom cap.** At the default `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` of
+150 the matrix is 450×450 float64 — 1.62 MB raw, 2.16 MB base64 (measured, not estimated) — and the
+dipole derivatives add 450×3 = 10.8 kB. That is above `mcp_server_kit.DEFAULT_MAX_REQUEST_BYTES`
+(1 MB), which caps *requests* and so does not apply to a response — but it is the number to check a
+proxy against. The ceiling falls quadratically with the cap; `tests/test_engine.py` asserts both.
+
+Exactly one of `dipole_derivatives_npy` and `ir_intensities` is populated, and which one says which
+backend ran: the in-process path collects dipole derivatives as it displaces, the `xtb` binary
+computes intensities itself. Both are what a caller needs to derive an IR spectrum; neither is a
+spectrum, because the normal-mode projection and the RRHO arithmetic stayed in Chemclaw3.
+
+## What was left behind, and why
+
+| Left in Chemclaw3 | Reason |
 | --- | --- |
-| `store.py`, `postgres_store.py`, `postgres_artifacts.py`, `artifacts.py` | The calculation cache and the artifact store. Only `CalculationKey` + `CALCULATION_EPOCH` came across, as `engine/key.py`. |
-| `calibration.py` | The prediction/measurement ledger. It is a Postgres table and its six tools stay in Chemclaw3. |
-| every `run_cached_*` wrapper | Each became its uncached body plus a key in the result. |
-| `xtb_hessian`'s persistence half | `HessianResult`, `_pack`/`_unpack`, `_load`, `_persist`, `run_cached_hessian` — all store operations. `compute_hessian` returns the matrix instead of `(matrix, blobs_to_store)`. |
-| `xtb_cli`'s artifact capture | It read the run's `hessian`/`vibspectrum` files out of the tempdir for a blob store that does not exist here. |
-| `geometry.py` | A cross-method "good geometry" pointer, written into the store on every optimization miss. |
-| `crest_cli.py`, `XtbSpec`'s `CrestSpec` | CREST runs the conformer-ensemble and host–guest tasks, which are durable jobs and stayed behind. Keeping the spec would put `crest --version` into a version string for a program that never runs — the exact thing `calc_version`'s own rule forbids. |
-| `complexes.py`, `conformers.py`, `reaction.py`, `xtb_scan.py`, `specs.py`, `results.py`, `activities.py`, `workflows.py`, `worker.py` | The durable-job half of the bundle. |
-| `solvents.require_supported_solvents` | A durable-job *precondition*. The table and the message came across; the check moved into `XtbSpec`'s validator, which is what puts it in front of both backends. |
+| `store.py`, `postgres_*.py`, `artifacts.py`, `calibration.py`, every `run_cached_*` | The cache, the artifact store and the calibration ledger. Only `CalculationKey` + `CALCULATION_EPOCH` came across, as `engine/key.py`. |
+| `xtb_thermo.py` and the `compute_thermochemistry` tool | A composite whose key names its own output. See "Why `compute_thermochemistry` is not here". |
+| `reaction.py` | Pure composition over primitives already exposed — per-species optimise + Hessian, stoichiometric sums, a formula-balance check. |
+| `xtb_scan.run_scan`'s sweep | A loop. The point is here; the profile arithmetic and the point cap are the caller's. |
+| `conformers.py` / `complexes.py` arithmetic | Boltzmann populations, conformational entropy, the interaction-energy subtraction. All arithmetic over what the primitives return. |
+| `progress.py` | A progress callback needs somewhere to report to, and that is job state. |
+| `specs.py`, `activities.py`, `workflows.py`, `worker.py`, `results.py` | The Temporal half of the bundle. |
+| `authz.expensive_actions` (`expensive: true` on the ensemble jobs) | An authorization decision about a person. A tool server has no basis to make one, and this one does not try. |
+| `geometry.py` | A cross-method "good geometry" pointer, written into the store on every optimisation miss. |
 | `uncertainty`'s ledger-facing half | `Estimate`, `structural_domain` and `CalculationDomainError` are here because `SolubilityResult.estimate` and every domain refusal are made of them; nothing that reads residuals is. |
 | the bundle's `skills:` key | A skill is architecture layer 3 in Chemclaw3 and this fleet has no equivalent seam. |
 
-Two behaviours moved *into* the calculators when their cached wrappers were deleted, so the uncached
-entry points cannot be taken wrongly: `predict_pka` canonicalizes its SMILES itself (atom order
-steers the seeded embedding, so computing on the caller's spelling would make the value depend on
-which spelling arrived first), and `compute_descriptor_profile` does the same.
+Things that were **added** rather than ported, each because the seam needed them:
 
-Two things were **added** rather than ported. `calculation_key` is the larger one, and it exists
-because `cached_compute` takes the key as an argument — see above. The smaller: `XtbSpec` refuses a
-solvent ALPB has no parameters for, at construction.
-Chemclaw3 caught that in a job precondition before a workflow started; without it here, "2-MeTHF" —
-among the commonest process solvents, and one GFN2-xTB has no parameters for — would surface as
-tblite's "String value for epsilon was not found among database of solvents", or minutes later
-inside a subprocess.
+- `calculation_key` — `cached_compute` takes the key as an argument, so a key that only arrives on
+  the result cannot serve a lookup.
+- `embed_structure` and `combine_structures` — a caller cannot build a `Structure` itself without
+  re-deriving `structure_id`, which is the divergence this whole design removes.
+- `Structure.structure_id` became a `computed_field`. As a plain property it did not serialize at
+  all, so a geometry crossing the wire arrived without its content address. Caught by the wire test,
+  not by any unit test.
+- `XtbSpec` refuses a solvent ALPB has no parameters for, at construction. Chemclaw3 catches that in
+  a durable-job precondition, which does not exist here.
+
+And two behaviours moved *into* the calculators when their cached wrappers were deleted, so the
+uncached entry points cannot be taken wrongly: `predict_pka` and `compute_descriptor_profile`
+canonicalise their own SMILES.
 
 ## Running it
 
 ```sh
 make run-calc                      # 127.0.0.1:8860, token defaults to `dev-token`
-uv run pytest servers/calc -q      # ~12 s; every tool is exercised on a real SCF
+uv run pytest servers/calc -q      # ~17 s; every tool is exercised on a real SCF
 ```
 
 `engine/` <- `tools.py` <- `app.py`, one-way. `tests/test_engine.py` imports no transport;

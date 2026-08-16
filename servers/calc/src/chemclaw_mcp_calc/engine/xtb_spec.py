@@ -17,11 +17,8 @@ distribution versions, a Hamiltonian-revision constant, and — when the backend
 binary — `xtb --version`. None of those exist on a Chemclaw3 pod after the split. Every tool here
 therefore returns the string rather than leaving it to be re-derived.
 
-**Dropped in the port: `CrestSpec`.** It exists in Chemclaw3 for the conformer-ensemble and
-host-guest-complex tasks, which are not among the nine tools ported here, and its whole content is
-"key on crest's build instead of the engine's". Carrying it would put `crest_cli.binary_version()`
-into a file no served tool reaches — a claim that a program runs when it does not, which is the
-exact defect `calc_version`'s own rule forbids.
+**`CrestSpec` is here because crest now runs here.** Its whole content is "key on crest's build
+instead of the engine's", which is the same rule stated for a different program: name what ran.
 """
 
 from __future__ import annotations
@@ -30,14 +27,14 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, Field, field_validator
 
-from chemclaw_mcp_calc.engine import xtb_cli
+from chemclaw_mcp_calc.engine import crest_cli, xtb_cli
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import CalculationKey
 from chemclaw_mcp_calc.engine.solvents import require_supported_solvent
 from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb_engine import engine_version
 
-__all__ = ["Backend", "XtbSpec", "XtbTask", "backend_version", "resolve_backend"]
+__all__ = ["Backend", "CrestSpec", "XtbSpec", "XtbTask", "backend_version", "resolve_backend"]
 
 # Which implementation runs a task. `tblite` is the in-process library; `xtb` is the binary, which
 # carries ANCopt and GFN-FF.
@@ -69,11 +66,14 @@ def backend_version(backend: Backend) -> str:
 # electrons) for the condensed Fukui indices; `opt` relaxes to a minimum; `hess` is the Hessian and
 # the thermochemistry over it.
 #
-# Chemclaw3's own literal additionally carries `scan`, `conformers` and `complex`. Those are not
-# ported — the tools that used them are not among the nine — and the values are left out rather than
-# declared-and-unreachable, because a `calc_type` this server can emit but never compute would be a
-# `xtb.scan@...` key naming a calculation nobody ran.
-XtbTask = Literal["sp", "properties", "fukui", "opt", "hess"]
+# `conformers` and `complex` are crest's (`CrestSpec` below); the rest are xTB's.
+#
+# Chemclaw3's own literal additionally carries `scan`, and that one is deliberately absent: a scan
+# is a *sweep*, and this server exposes only its point — which is an ordinary constrained `opt` and
+# keys as one, so a scan point computed here and a hand-written constrained relaxation of the same
+# geometry share a cache row rather than sitting in two. A `xtb.scan@...` key would name a
+# calculation this server never runs.
+XtbTask = Literal["sp", "properties", "fukui", "opt", "hess", "conformers", "complex"]
 
 
 class XtbSpec(BaseModel):
@@ -186,3 +186,45 @@ class XtbSpec(BaseModel):
             },
             params=self.model_dump(exclude=self.unkeyed_fields()),
         )
+
+
+class CrestSpec(XtbSpec):
+    """Base of the specs whose work is done by `crest`, not by `engine`.
+
+    Two things are wrong for a CREST search if it inherits `XtbSpec` unchanged, and both are key
+    defects rather than cosmetic ones.
+
+    **CREST's own build would be in no key.** `calc_version` names the tblite/xtb build, so
+    upgrading crest — the program that actually produced the ensemble — would serve every stored
+    ensemble unchanged.
+
+    **`engine` would be inherited but never honoured.** A search calls `crest_cli.run` whatever it
+    says, so a spec could be keyed as `tblite` while crest did the work — which `for_structure`
+    made routine rather than hypothetical, because it rewrites `engine` to `tblite` for any
+    open-shell input.
+
+    So `engine` is dropped from this key and `for_structure` is a no-op. Note what the second one
+    means and does not mean: an open-shell CREST search is **not** protected by the
+    spin-polarization fallback, because there is nowhere to fall back to — crest has no in-process
+    equivalent. That is a real limitation of radical conformer searches, and it is stated instead of
+    hidden behind a key that claimed tblite had run.
+
+    **What the drop is not: a claim that backends do not belong in keys.** It is the same rule
+    `XtbSpec.calc_version` states, applied to a spec whose numbers all come from crest — name what
+    ran. A subclass that *does* run `engine` therefore has to put it back, and `ComplexSpec` in
+    `crest_search` is one.
+    """
+
+    def for_structure(self, structure: Structure) -> Self:
+        """No-op: there is no second backend to fall back to (see the class docstring)."""
+        return self
+
+    def calc_version(self) -> str:
+        """Keyed on crest's build, because crest is what runs.
+
+        Answers `"absent"` where the binary is missing — which is this image today and Chemclaw3's
+        too. That string never reaches a stored row, because every caller refuses before computing
+        (`crest_search.require_crest`); it is visible only if someone asks for the *identity* of a
+        search that cannot run, and `calculation_key` refuses that for the same reason.
+        """
+        return f"{self.method}+crest-{crest_cli.binary_version()}"

@@ -215,6 +215,63 @@ async def test_the_probe_refuses_a_mistyped_argument_rather_than_keying_somethin
         assert "does not take 'solvant'" in str(result.content)
 
 
+async def test_the_primitive_chain_composes_over_the_wire(running_server: str) -> None:
+    """The integration the durable jobs will actually run: embed, relax, differentiate.
+
+    Every step of it crosses MCP as JSON, and two things about that only fail here. A `Structure`
+    round-trips as a nested object and has to survive being sent *back in* as an argument — a
+    coordinate lost to float formatting would change its `structure_id` and silently key a different
+    geometry. And the Hessian is base64 `.npy`, megabytes of it at drug scale, so this is where the
+    payload is proven to arrive intact rather than truncated.
+    """
+    import base64
+    import io
+
+    import numpy as np
+
+    async with _session(running_server) as session:
+        embedded = await session.call_tool("embed_structure", {"smiles": "O"})
+        assert embedded.isError is False, embedded.content
+        assert embedded.structuredContent is not None
+        structure = embedded.structuredContent
+        assert structure["structure_id"].startswith("st_")
+
+        relaxed = await session.call_tool("relax_structure", {"structure": structure})
+        assert relaxed.isError is False, relaxed.content
+        assert relaxed.structuredContent is not None
+        minimum = relaxed.structuredContent["structure"]
+        # The optimised geometry carries the key of the calculation that produced it, so lineage
+        # survives the hop rather than having to be reattached by the caller.
+        assert minimum["origin"] == relaxed.structuredContent["calc_key"]
+
+        hessian = await session.call_tool("compute_hessian", {"structure": minimum})
+        assert hessian.isError is False, hessian.content
+        assert hessian.structuredContent is not None
+        payload = hessian.structuredContent
+        matrix = np.load(io.BytesIO(base64.b64decode(payload["hessian_npy"])), allow_pickle=False)
+        assert matrix.shape == (9, 9)
+        assert np.allclose(matrix, matrix.T)
+        assert payload["dipole_derivatives_npy"] is not None
+        assert payload["structure_id"] == minimum["structure_id"]
+
+
+async def test_a_crest_primitive_refuses_by_name_across_the_wire(running_server: str) -> None:
+    """The absent binary reaches the caller as a sentence, not as "an internal error occurred".
+
+    `connector_app` replaces every non-`ValueError` with a generic notice, so this is the check that
+    the refusal is worded rather than swallowed — and it matters more than usual because the fix is
+    an operator action (ship the binary) that the message has to name.
+    """
+    async with _session(running_server) as session:
+        embedded = await session.call_tool("embed_structure", {"smiles": "CCO"})
+        assert embedded.structuredContent is not None
+        result = await session.call_tool(
+            "search_conformer_ensemble", {"structure": embedded.structuredContent}
+        )
+        assert result.isError is True
+        assert "crest" in str(result.content)
+
+
 async def test_a_domain_refusal_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """The measured failure this contract exists for, checked end to end.
 
