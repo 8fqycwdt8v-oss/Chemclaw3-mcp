@@ -57,7 +57,7 @@ from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb_cli import CliError, _from_xyz, _safe, _to_xyz, run_isolated
 
 # What to search for. Each is a different CREST run mode over the same machinery.
-# Searches over **one** molecule. Separate from the union below because the agent-facing
+# Searches over **one** molecule. Separate from the union below because the
 # ensemble tool takes exactly these — a complex search needs a second molecule, so it is a
 # different tool rather than a fifth option on this one.
 EnsembleSearch = Literal["conformers", "tautomers", "protomers", "deprotomers"]

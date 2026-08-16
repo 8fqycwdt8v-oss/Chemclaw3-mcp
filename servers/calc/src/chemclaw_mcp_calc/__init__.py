@@ -1,7 +1,7 @@
 """`calc` — the fast local calculators (GFN2-xTB, pKa, solubility, logD, descriptors), over MCP.
 
 Three layers, and the import direction is one-way: `engine/` (tblite, RDKit, scipy, and the version
-and key derivations) <- `tools.py` (the MCP surface the agent reads) <- `app.py` (the FastAPI
+and key derivations) <- `tools.py` (the MCP surface Chemclaw3 calls) <- `app.py` (the FastAPI
 transport).
 
 Ported from Chemclaw3's own in-tree `calc` connector. It is a **partial replacement**, and the word

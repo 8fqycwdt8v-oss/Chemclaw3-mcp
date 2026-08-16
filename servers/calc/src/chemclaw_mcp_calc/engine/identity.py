@@ -49,7 +49,7 @@ server embeds), not the flat-string format (nobody parses it). One constant.
 
 ## What is covered, and the one tool that is not
 
-Every **calculation** is here — the eight SMILES-in tools an agent calls, and the six
+Every **calculation** is here — the eight backing Chemclaw3's SMILES-in tools, and the six
 structure-in primitives Chemclaw3's activities compose. Three tools are deliberately absent because
 they are not calculations and nothing stores their output: `embed_structure` and
 `combine_structures` build geometries (cheap, pure, and the *input* to a key rather than a keyed

@@ -19,18 +19,35 @@ binary live here, and `xtb_cli.binary_version()` answers `"absent"` rather than 
 deriving the string locally would produce a well-formed value matching zero ledger rows and read as
 `UNCALIBRATED` rather than as an error.
 
-## Two audiences, one surface
+## Two callers, both of them machines
 
 The eight tools above take a SMILES and answer a chemist's question. Below them sit the
 **primitives**: structure-in, structure-out calculations that Chemclaw3's durable-job activities
-compose into reaction energetics, relaxed scans, conformer ensembles and interaction energies. They
-are on the same MCP surface because there is only one, and their docstrings say who they are for —
-an agent answering a question should reach for the eight, not for these.
+compose into reaction energetics, relaxed scans, conformer ensembles and interaction energies.
 
-The split is by *runtime*, not by subject: **Chemclaw3 keeps orchestration and the cache; this
-server holds the physics.** A composite — optimise, take a Hessian, displace along the imaginary
-mode, repeat — is a loop with state whose key names its own output, so it cannot be cached as a
-unit and does not belong here. Its parts each key cleanly and do.
+**No model reads either group.** Chemclaw3 keeps its own `calc` bundle and its own agent-facing tool
+surface, and reaches this server from inside `science/calc/store.py::cached_compute` and from
+Temporal activities — so this manifest never goes on `CHEMCLAW_CONNECTORS_DIR`, which
+`servers/calc/README.md` and `docs/integration.md` already forbid for a different reason (a partial
+surface would win the `calc` name collision and remove six stateful tools and every durable job from
+the agent). The number of tools declared here is therefore invisible to any prompt, and the
+"orchestrator, not chemist" markers on the primitives name **which caller each is written for**, not
+a choice a model is being asked to make.
+
+That the primitives could only ever reach a model by way of that already-forbidden wiring is one
+more consequence of an existing rule rather than a caveat of its own. (Belt and braces if it ever
+came to it: `endpoint.tools` in a bundle manifest is an allowlist, passed to the client as
+`allowed_tools` by `connectors/registry.py`, so a surface *can* be narrowed per tool. That is not
+what makes the count free here — not being on the agent surface at all is.)
+
+The eight nonetheless carry Chemclaw3's model-facing docstrings word for word, and that is
+deliberate: they mirror the tools over there that a model *does* read, so a divergence in what the
+two claim is visible in a diff rather than only in an answer.
+
+The split between the groups is by *runtime*, not by subject: **Chemclaw3 keeps orchestration and
+the cache; this server holds the physics.** A composite — optimise, take a Hessian, displace along
+the imaginary mode, repeat — is a loop with state whose key names its own output, so it cannot be
+looked up before it runs and does not belong here. Its parts each key cleanly and do.
 
 That is why `compute_thermochemistry` is **not** on this server. See `servers/calc/README.md`.
 

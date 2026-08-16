@@ -1,11 +1,15 @@
 # `calc` — the physics behind Chemclaw3's calculators · port 8860
 
-Seventeen tools: **eight** an agent calls with a SMILES, **six** structure-in primitives Chemclaw3's
-durable-job activities compose, and **three** helpers that compute nothing. No cache, no artifact
-store, no calibration ledger, no job records, no resumption, and no network call at any point —
-Chemclaw3 keeps orchestration and the cache; this server holds the physics.
+Seventeen tools, and **no model reads any of them**: Chemclaw3 keeps its own `calc` bundle and its
+own agent-facing surface, and calls this server from inside `cached_compute` and from Temporal
+activities. **Eight** back its SMILES-in tools one for one, **six** are structure-in primitives its
+durable-job activities compose, and **three** are helpers that compute nothing. No cache, no
+artifact store, no calibration ledger, no job records, no resumption, and no network call at any
+point — Chemclaw3 keeps orchestration and the cache; this server holds the physics.
 
-**Eight agent-facing tools**, a SMILES in and a chemist's answer out:
+**Eight tools backing Chemclaw3's own**, a SMILES in and a chemist's answer out. They keep its
+model-facing docstrings word for word, so a divergence between what the two claim shows up in a diff
+rather than only in an answer:
 
 | Tool | What it computes |
 | --- | --- |
@@ -105,6 +109,17 @@ connector would let a *partial* port win the name collision — first directory 
 error** — and take those six tools and every durable job off the agent's surface. The manifest here
 is this repository's own declaration of the served surface, checked against the running server by
 `tests/test_server.py`; it is not an instruction to point Chemclaw3 at it.
+
+**Two things follow from that, and the second is the answer to "isn't seventeen tools a lot?".**
+Because this server is never on the agent's surface, its tool count costs no prompt: the six
+structure-in primitives are addressed by Chemclaw3's activities and would only ever reach a model
+through the wiring the paragraph above already forbids. That is one more consequence of an existing
+rule rather than a caveat of its own — and it is why the primitives live here rather than in a
+second server, which would buy nothing and cost an image, a port and a release cadence.
+
+(Were it ever wired up anyway, `endpoint.tools` is an allowlist that `connectors/registry.py` passes
+to the client as `allowed_tools`, so a surface can be narrowed per tool. Worth knowing; not what
+makes the count free here.)
 
 ## `calculation_key`: why the cache seam needed a tool of its own
 
