@@ -29,8 +29,12 @@ jobs:
       - name: Lint
         run: uv run ruff check . && uv run ruff format --check .
 
+      # `make type` rather than a repeated path list: this step had already drifted — it named
+      # three source trees while the Makefile named four, so `servers/safety/src` was type-checked
+      # locally and not in CI. One list, in the Makefile, is what stops that recurring as servers
+      # are added.
       - name: Types
-        run: uv run mypy packages/mcp_server_kit/src servers/props/src servers/chem/src
+        run: make type
 
       - name: Tests
         run: uv run pytest -q

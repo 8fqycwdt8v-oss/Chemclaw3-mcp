@@ -150,6 +150,75 @@ which this fleet has none of), the `at_least` severity helper the gate was its o
 of, and the bundle's `skills:` key — the `safety-screening` SKILL.md stays in Chemclaw3, which is the
 repository that has a skills layer. See `servers/safety/README.md`.
 
+### `calc` — GFN2-xTB, pKa, solubility, logD and developability descriptors · port 8860 · **built**
+
+The fast local calculators, as nine request/response tools. `compute_xtb_energy` is a GFN2-xTB
+single point; `compute_electronic_properties` reads the same SCF's HOMO/LUMO/gap, dipole, Mulliken
+charges and Wiberg bond orders; `predict_site_reactivity` ranks atoms by condensed Fukui index;
+`optimize_geometry` relaxes to a stationary point of the GFN2 surface; `compute_thermochemistry`
+takes the Hessian on top of it for frequencies, an IR spectrum and ideal-gas RRHO free energy.
+Beside them: the xTB pKa predictor (acids, and aromatic/aryl-nitrogen bases), an ESOL solubility
+baseline with an applicability-domain check, pH-dependent logD, and an RDKit developability panel.
+
+*Tools:* `compute_xtb_energy`, `compute_electronic_properties`, `predict_site_reactivity`,
+`optimize_geometry`, `compute_thermochemistry`, `predict_pka`, `predict_solubility`, `predict_logd`,
+`predict_developability_profile` — all `state_changing`, matching Chemclaw3's own manifest. That
+reads oddly for a stateless server and is still right: `read_only` is a *gate* (the plan gate lets an
+unapproved plan call one), and these are minutes of CPU each with no cache underneath.
+*Offline:* **no vendored dataset at all** — the first server in the fleet with none. Every number is
+computed from tblite's compiled GFN parameters, RDKit's Crippen/QED tables and closed-form
+arithmetic, all of which arrive inside their own wheels. `tests/test_no_egress.py` proves sufficiency
+by running one of each kind of calculation with the guard armed, rather than by pointing at a corpus.
+*Provenance:* **a port of nine of the fifteen tools on Chemclaw3's own in-tree `calc` connector**,
+same names, same arguments, same model-facing docstrings minus every sentence that claimed a result
+was cached.
+
+**This is the one port in the fleet that is not a clean replacement, and the difference is
+load-bearing.** `chem` and `safety` carry their bundle's whole surface, so a name collision swaps one
+implementation for an identical one. Six `calc` tools cannot move — `report_measurement`,
+`calculator_trust`, `calculator_outliers` (the calibration ledger), `find_calculations` (the
+calculation cache), `list_artifacts`/`fetch_artifact` (the artifact store) — nor can any of the
+bundle's durable jobs. Chemclaw3 resolves a collision by first-directory-wins with no error either
+way, so **the supported wiring is the reverse of the other two: Chemclaw3's own connectors directory
+goes first.** See `docs/integration.md`.
+
+**What every result carries that Chemclaw3's did not: `calc_version`, and `calc_key` — the full
+`calc_type@calc_version:input_hash:params_hash` string — on eight of the nine.** The cache stayed
+behind but its addressing had to travel, because those strings are assembled from the installed
+`tblite`/`rdkit` distribution versions, a Hamiltonian-revision constant, an `xtb --version`
+subprocess, and (for pKa) seven calibration settings — none of which exist on a Chemclaw3 pod after
+the split. It is not a convenience: `calc_version` is the primary key of the calibration ledger
+(`predictions`, unique on `(calc_type, calc_version, input_hash)`, matched exactly with no version
+pooling), and `xtb_cli.binary_version()` returns the literal string `"absent"` rather than raising —
+so a client deriving it locally would produce a well-formed string matching zero rows, and
+`calculator_trust("pka")` would confidently report `UNCALIBRATED`. Silent, not loud.
+`tests/test_calc_version.py` asserts the field on all nine tools; `tests/test_key_contract.py` pins
+the hash, the epoch and the key format against literal strings taken from Chemclaw3.
+
+**Three things to know before touching it:**
+
+- **`xtb` and `crest` are not in the image and cannot be**, being compiled Fortran distributed
+  through conda-forge rather than PyPI. This costs the ANCopt speedup (~7-9x on 76-118 atoms) and
+  GFN-FF, and nothing else: `tblite` carries the same Hamiltonians in-process and Chemclaw3's own
+  deployment resolves to it too, so the numbers and the version strings are unchanged by the port —
+  verified by deriving both from the two trees on the same package versions. `engine/xtb_cli.py` is
+  ported in full; installing the binary is one image layer and the `auto` default finds it.
+- **Three definitions are copied from Chemclaw3 and must not drift**: `stable_hash`,
+  `CalculationKey`/`CALCULATION_EPOCH`, and `require_canonical_smiles`. Unlike `chem`'s and
+  `safety`'s copies of the last one, these *do* derive keys, so a divergence produces a key
+  addressing a row that does not exist. Each is pinned by a contract test. `CALCULATION_EPOCH` in
+  particular is a source constant in **both** repositories and moves in both or in neither.
+- **Configuration is the fourth place the two sides must agree.** `engine/config.py` uses Chemclaw3's
+  env prefix and field names exactly, because seven of those values are *inside* the pKa version
+  string. Tuning a calibration on one side only produces ledger rows nothing reconciles.
+
+**What was dropped in the port:** the calculation cache and artifact store (`store.py`,
+`postgres_*.py`, `artifacts.py`), the calibration ledger (`calibration.py`), every `run_cached_*`
+wrapper, `geometry.py`'s cross-method pointer, `crest_cli.py` with `CrestSpec`, and the whole
+durable-job half of the bundle (`complexes`, `conformers`, `reaction`, `xtb_scan`, `specs`,
+`results`, `activities`, `workflows`, `worker`). See `servers/calc/README.md` for the full table and
+for the two behaviours that moved *into* the calculators when their cached wrappers were deleted.
+
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic
@@ -273,9 +342,12 @@ and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 
 ## Tranche 2 — Compound identity and reference data
 
+*Port note:* 8860 was this tranche's first slot and is now taken by the built `calc` server above, so
+`nomenclature` moved to 8864. The block is still 8860+; only the free slots shifted.
+
 | Server | Port | Status | Tools (proposed) | Offline source |
 | --- | --- | --- | --- | --- |
-| `nomenclature` | 8860 | proposed | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN (MIT), runs locally. Zero licence risk and the best value-to-effort ratio in the catalogue — a strong queue-jumper. |
+| `nomenclature` | 8864 | proposed | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN (MIT), runs locally. Zero licence risk and the best value-to-effort ratio in the catalogue — a strong queue-jumper. |
 | `pubchem` | 8861 | proposed | `resolve_identifier`, `compound_properties`, `synonyms`, `cross_references` | A vendored PubChem subset; PubChem's own data is public domain. |
 | `chembl` | 8862 | proposed | `search_by_structure`, `bioactivities`, `target_lookup` | A ChEMBL slice. **CC-BY-SA — attribution obligations; needs a licence review before it is built.** |
 | `solidform` | 8863 | proposed | `search_structures`, `unit_cell`, `simulate_powder_pattern`, `polymorph_precedent` | Crystallography Open Database (CC0) + pymatgen. The CSD is commercial and out of scope. |

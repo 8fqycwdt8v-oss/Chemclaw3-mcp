@@ -17,6 +17,13 @@ variance between servers should be in what they compute, not in how they are sha
 4. **Decide whether any tool can exceed ~20 s.** If so it is a Chemclaw3 durable job, declared as a
    `jobs:` entry, and the pull request touches both repositories.
 
+   `calc` is the one server that answers this with "sometimes, deliberately", and what makes that
+   allowed is the shape of the exception rather than an appeal to convenience: the expensive tool
+   (`compute_thermochemistry`) has a **hard input bound** that refuses anything past it and names the
+   durable path as the alternative, the manifest's `request_timeout` states the real budget instead
+   of the fleet's habitual 30 s, and the tool docstring tells the model what it is asking for. A slow
+   tool with none of those three is still a durable job. See `servers/calc/README.md`.
+
 ## The files
 
 ```
@@ -47,6 +54,15 @@ ln -s ../../servers/<name>/connector.yaml manifests/<name>/connector.yaml
 ```
 
 ## The dataset
+
+**A server with no dataset is possible and `calc` is the first one** — every number it returns is
+computed from its dependencies' own compiled parameters (tblite's GFN Hamiltonians, RDKit's Crippen
+and QED tables) rather than read from a corpus, so there is no `data/` and no `test_dataset.py`. The
+obligation does not disappear with the file; it moves. What replaces "validate the corpus against
+itself" is **proving the computation needs nothing from outside the process**, which
+`servers/calc/tests/test_no_egress.py` does by running one of each kind of calculation with the
+egress guard armed. The failure being ruled out is the one a numerical library can produce: fetching
+parameters, model weights or a licence check on first use.
 
 `data/dataset.json` needs all six fields — `name`, `version`, `licence`, `retrieved_from`,
 `description`, `sha256` — and `load_dataset` refuses without them. Compute the checksum with

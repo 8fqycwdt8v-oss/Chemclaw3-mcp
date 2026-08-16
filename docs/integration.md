@@ -69,6 +69,63 @@ intended behaviour, and the thing to check when a `chem` or `safety` answer arri
 servers cannot have produced. There is no configuration in which both are reachable: one name, one
 URL key, one winner.
 
+### `calc` collides the same way and must be wired the *opposite* way round
+
+**`servers/calc/` is not a complete port of Chemclaw3's `calc` bundle**, and the difference decides
+the configuration. Nine of that bundle's fifteen tools moved; six could not, because they *are* the
+state this fleet's servers do not have:
+
+| Only Chemclaw3 serves it | What it is |
+| --- | --- |
+| `report_measurement`, `calculator_trust`, `calculator_outliers` | the calibration ledger — predictions reconciled against measurements |
+| `find_calculations` | a query over the calculation cache |
+| `list_artifacts`, `fetch_artifact` | the content-addressed artifact store |
+| every `jobs:` entry | solvent screens, conformer ensembles, reaction energetics, relaxed scans, host–guest complexes, on Temporal |
+
+The name is still `calc`, so first-directory-wins applies exactly as above — and putting this
+fleet's `manifests/` first would remove all six of those and every durable calc job from the agent's
+surface, **with no error**. So for `calc` the supported order is the reverse:
+
+```sh
+export CHEMCLAW_CONNECTORS_DIR="$CHEMCLAW_OWN:/path/to/Chemclaw3-mcp/manifests"   # in-tree wins
+```
+
+That keeps the full `calc` bundle and gives up this server for it, which is the right default. The
+two orders cannot be mixed within one process — the path is global, not per connector — so a
+deployment that wants this fleet's `chem` and `safety` *and* Chemclaw3's full `calc` copies the
+individual `connector.yaml` files it wants into one directory rather than chaining the two.
+
+**Running compute-only, deliberately.** Put this fleet first and the nine tools answer from
+`servers/calc/` instead:
+
+```sh
+export CHEMCLAW_CONNECTORS_DIR="/path/to/Chemclaw3-mcp/manifests:$CHEMCLAW_OWN"
+export CHEMCLAW_CONNECTOR_URLS='{"calc":"http://127.0.0.1:8860/mcp"}'
+export CHEMCLAW_CALC_TOKEN=dev-token
+```
+
+What that costs is above; what it buys is a calculator that scales on its own and takes `tblite` out
+of the chat service's image. **What it does not cost is the ability to cache or calibrate the
+results**, and that is the deliberate part of the design: every result carries `calc_version`, and
+eight of the nine carry `calc_key` — the full `calc_type@calc_version:input_hash:params_hash` string
+the calculation *would* be stored under. A caller holding those can write the cache row and the
+ledger row itself.
+
+**Do not re-derive either on the Chemclaw3 side.** Both are assembled from the installed `tblite`
+and `rdkit` distribution versions, a Hamiltonian-revision constant, an `xtb --version` subprocess
+and seven pKa calibration settings — none of which a Chemclaw3 pod has after the split. The
+reconstruction does not fail loudly: `xtb_cli.binary_version()` returns the literal string
+`"absent"` when the binary is missing, so the string comes out well-formed, matches zero rows in
+`predictions`, and `calculator_trust("pka")` reports `UNCALIBRATED` — a confident answer about a
+calibration that is merely unreachable.
+
+**One environment variable set is shared by both sides and has to match.** `servers/calc` reads
+Chemclaw3's own `CHEMCLAW_*` calculator settings under Chemclaw3's own field names — notably
+`CHEMCLAW_XTB_METHOD`, `CHEMCLAW_XTB_ENGINE`, `CHEMCLAW_PKA_SOLVENT`, the four
+`CHEMCLAW_PKA_*_CALIBRATION_*` constants, `CHEMCLAW_PKA_UNCERTAINTY`,
+`CHEMCLAW_PKA_BASE_UNCERTAINTY` and `CHEMCLAW_SOLUBILITY_RMSE_LOG` — because those values are
+*inside* the version strings. Tune one on one side only and the ledger rows stop meeting.
+
 **`safety` needs one extra thing that is not a connector.** Chemclaw3's in-tree bundle ships
 `skills/safety-screening/SKILL.md`, the judgment about which of the three tools answers which
 question and how to report what comes back, and a skill is architecture layer 3 over there rather
@@ -122,4 +179,7 @@ which is the point of this repository existing separately.
 | Every MCP call returns 401 | The token env var is unset or differs between the two pods. It fails closed by design. |
 | The server accepts connections then hangs on the first call | The MCP session manager is not running — the mount-does-not-run-a-lifespan trap. `connector_app` handles it; a hand-rolled transport does not. |
 | Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. |
+| `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | This fleet's `manifests/` is ahead of Chemclaw3's own directory and its partial `calc` port won the name. Put the in-tree directory first — see above. |
+| `calculator_trust("pka")` says `UNCALIBRATED` with n=0 on a calculator that has residuals | A `calc_version` was re-derived instead of read off the result, or the two sides' `CHEMCLAW_PKA_*` settings differ. The ledger matches the version exactly and does not pool. |
+| An xTB tool call times out | Nothing is cached on this server. A cold `compute_thermochemistry` is 6N+1 single points; the manifest allows 900 s for that reason. |
 | `connector-validate` fails on `auth` | A non-loopback URL with `mode: none`. Declare bearer. |

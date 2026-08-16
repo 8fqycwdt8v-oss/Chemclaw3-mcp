@@ -1,0 +1,201 @@
+"""The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
+
+Everything else in this directory tests functions. This tests the *deployment surface* — and it is
+the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
+
+- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
+- a bearer credential the serving side never checked;
+- a manifest that claimed a tool surface the server did not have.
+
+Two things here are specific to `calc`. First, **`calc_version` and `calc_key` have to survive the
+wire**: they are ordinary pydantic fields rather than computed ones, but the tools return them
+through `model_copy(update=...)` projections, and a field dropped there would pass every unit test
+and arrive absent at the only consumer that matters. Second, **a domain refusal has to arrive as a
+readable message**: `CalculationDomainError` is a `ValueError` precisely so `connector_app` passes
+it through, and the aliphatic-amine explanation is the capability — a chemist told "internal error"
+would try the next substrate instead of measuring it.
+"""
+
+from __future__ import annotations
+
+import socket
+import threading
+import time
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import httpx
+import pytest
+import uvicorn
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from mcp_server_kit.testing import assert_manifest_matches
+
+TOKEN = "test-token-for-calc"
+MANIFEST = Path(__file__).resolve().parents[1] / "connector.yaml"
+
+
+def _free_port() -> int:
+    """An ephemeral loopback port, released immediately for uvicorn to claim."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+@pytest.fixture(scope="module")
+def running_server() -> Iterator[str]:
+    """Run the real app under uvicorn on loopback, and yield its base URL.
+
+    Module-scoped because a server start is the expensive part of this file. The bearer token is set
+    in the environment the same way a deployment sets it, so the auth path under test is the
+    deployed one rather than a stub.
+    """
+    import os
+
+    os.environ["CHEMCLAW_CALC_TOKEN"] = TOKEN
+    from chemclaw_mcp_calc.app import app
+
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(f"{base}/healthz", timeout=1.0).status_code == 200:
+                break
+        except httpx.HTTPError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - only reached if the app never becomes ready
+        pytest.fail("the calc server did not become ready within 30 s")
+    yield base
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def test_healthz_answers_and_names_the_server(running_server: str) -> None:
+    """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did.
+
+    Which also means the `on_start` hook was reached: `connector_app` starts it inside the same
+    lifespan, so a server that could not schedule its version resolution would not be answering.
+    """
+    response = httpx.get(f"{running_server}/healthz", timeout=5.0)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "server": "calc"}
+
+
+def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
+    """A Prometheus scrape has no identity and the exposition carries counts only."""
+    response = httpx.get(f"{running_server}/metrics", timeout=5.0)
+    assert response.status_code == 200
+    assert "python_info" in response.text
+
+
+def test_the_mcp_surface_refuses_an_unauthenticated_caller(running_server: str) -> None:
+    """Chemclaw3's own `calc` bundle declares `auth: {mode: none}`; across a network it cannot."""
+    response = httpx.post(
+        f"{running_server}/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers={"accept": "application/json, text/event-stream"},
+        timeout=5.0,
+    )
+    assert response.status_code == 401
+
+
+@asynccontextmanager
+async def _session(base: str) -> AsyncIterator[ClientSession]:
+    """An initialised MCP session against the running server, carrying the bearer token.
+
+    The token rides on a caller-supplied httpx client because that is how this version of the MCP
+    client takes headers — which also means the credential is exercised on the real path rather than
+    injected past it.
+    """
+    async with (
+        httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,
+        streamable_http_client(f"{base}/mcp", http_client=http_client) as (rx, tx, _),
+        ClientSession(rx, tx) as session,
+    ):
+        await session.initialize()
+        yield session
+
+
+async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) -> None:
+    """The handshake plus a tool call — the shape of every turn Chemclaw3 will run through here."""
+    async with _session(running_server) as session:
+        listed = await session.list_tools()
+        names = sorted(tool.name for tool in listed.tools)
+        assert "compute_xtb_energy" in names
+
+        result = await session.call_tool("compute_xtb_energy", {"smiles": "CCO"})
+        assert result.isError is False
+        assert result.structuredContent is not None
+        assert result.structuredContent["total_energy_hartree"] < 0
+
+        # The manifest is a claim about this surface; here is where the claim is checked against the
+        # server that is actually running.
+        assert_manifest_matches(MANIFEST, names)
+
+
+async def test_the_version_and_the_key_survive_the_wire(running_server: str) -> None:
+    """The one field this whole port exists to deliver, asserted on the payload rather than in code.
+
+    A `model_copy(update=...)` that dropped it, or a response model that stopped inheriting `Keyed`,
+    would be green in every unit test and absent exactly here — at the consumer. And the consumer
+    cannot rebuild it: `calc_version` is assembled from the tblite/RDKit builds and any `xtb` binary
+    installed *in this image*, and `xtb_cli.binary_version()` answers `"absent"` rather than
+    raising, so a client-side reconstruction is well-formed, matches zero calibration-ledger rows,
+    and reads as `UNCALIBRATED` instead of as an error.
+    """
+    async with _session(running_server) as session:
+        for tool, arguments in (
+            ("compute_xtb_energy", {"smiles": "CCO"}),
+            ("predict_pka", {"smiles": "CC(=O)O"}),
+            ("predict_solubility", {"smiles": "CCO"}),
+            # The two that project through `model_copy`/`OptimizationSummary.of` on the way out.
+            ("predict_site_reactivity", {"smiles": "CCO", "top_n": 3}),
+            ("optimize_geometry", {"smiles": "O"}),
+        ):
+            result = await session.call_tool(tool, arguments)
+            assert result.isError is False, f"{tool}: {result.content}"
+            assert result.structuredContent is not None
+            payload = result.structuredContent
+            assert payload["calc_version"], f"{tool} arrived with no calc_version"
+            assert payload["calc_key"].startswith(f"{payload['calc_key'].split('@')[0]}@"), tool
+            assert payload["calc_version"] in payload["calc_key"], (
+                f"{tool}: the key on the wire does not carry the version reported beside it"
+            )
+
+
+async def test_a_domain_refusal_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
+    """The measured failure this contract exists for, checked end to end.
+
+    `predict_pka`'s aliphatic-amine explanation names the Spearman -0.17 correlation and tells the
+    chemist to measure the value instead. In a live Chemclaw3 run it reached the model as an opaque
+    "Error: Function failed"; the answer then guessed the reason and presented the guess as a fact
+    about system behaviour. `CalculationDomainError` subclasses `ValueError` for exactly this, and
+    `connector_app` replaces every *other* exception with a generic notice.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool("predict_pka", {"smiles": "C1CCNCC1"})
+        assert result.isError is True
+        assert "Spearman -0.17" in str(result.content)
+
+
+async def test_an_unparameterised_solvent_is_refused_by_name(running_server: str) -> None:
+    """The measured case is 2-MeTHF, and the refusal has to carry the alternative.
+
+    Chemclaw3 caught this in a durable job's *precondition*, before a workflow started. There are no
+    durable jobs here, so the check moved into `XtbSpec`'s validator — and this is where that move
+    is verified to still produce a message the model can act on rather than tblite's "String value
+    for epsilon was not found among database of solvents".
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool(
+            "compute_electronic_properties",
+            {"smiles": "CCO", "solvent": "2-methyltetrahydrofuran"},
+        )
+        assert result.isError is True
+        assert "tetrahydrofuran" in str(result.content)

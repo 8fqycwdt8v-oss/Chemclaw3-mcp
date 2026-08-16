@@ -1,0 +1,59 @@
+# The `calc` server as one rootless image. Less boring than the other three, for one reason: this
+# server's answers are *computed* rather than looked up, so what it carries is a numerical stack —
+# tblite's compiled GFN Hamiltonians, RDKit, and scipy's LAPACK — instead of a data directory.
+#
+# **On the `xtb` and `crest` binaries.** They are not installed here and cannot be installed by a
+# Python dependency: both are compiled Fortran programs distributed through conda-forge and
+# distribution packages rather than PyPI. Their absence is not a gap in the capability — `tblite`
+# carries the same GFN1/GFN2 Hamiltonians in-process, and Chemclaw3's own deployment resolves to
+# `tblite` too — it costs the ANCopt speedup on large molecules (measured ~7-9x on 76-118 atoms) and
+# GFN-FF. `xtb_cli.is_available()` is False, `XtbSpec.resolve_backend()` picks `tblite`, and every
+# `calc_version` says so. An operator who wants the binary adds a layer here and sets nothing: the
+# `auto` default finds it on PATH, and the version string moves to record that it did. See
+# `README.md`.
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY servers/calc /build/servers/calc
+
+# Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
+# which is also what the tests import. RDKit, tblite, scipy and numpy all ship manylinux wheels, so
+# nothing is compiled here and no Fortran toolchain is needed in this stage.
+RUN python -m pip install --no-cache-dir --upgrade pip build \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels ./packages/mcp_server_kit ./servers/calc
+
+FROM python:3.11-slim
+
+# A fixed high UID rather than a name: OpenShift assigns an arbitrary UID from the namespace range,
+# and the process must own nothing it needs to write.
+ARG UID=1001
+RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+
+COPY --from=build /wheels /wheels
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit chemclaw-mcp-calc \
+    && rm -rf /wheels
+
+USER ${UID}
+EXPOSE 8860
+
+# The egress guard is armed on import and is left at its default. `MCP_EGRESS_ALLOW` is not set here,
+# and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside this file
+# denies egress at the network layer regardless.
+ENV MCP_EGRESS_GUARD=on
+
+# The whole image is one process on one event loop, and the numerical stack underneath is threaded:
+# LAPACK and tblite's OpenMP will each size themselves to the *node*, not to the container's CPU
+# limit, and then fight each other. One thread per library, with concurrency coming from the request
+# level (`asyncio.to_thread`) where the server can actually see it. Raise deliberately, on a pod
+# sized for it.
+ENV OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
+# The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8860/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_calc.app:app", "--host", "0.0.0.0", "--port", "8860"]

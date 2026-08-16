@@ -226,9 +226,10 @@ this.
 | 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
 | 8858 | `chem` | built (port of Chemclaw3's own `chem` bundle — see below) |
 | 8859 | `safety` | built (port of Chemclaw3's own `safety` bundle — see below) |
+| 8860 | `calc` | built (port of **nine of the fifteen tools** on Chemclaw3's own `calc` bundle — see below) |
 | 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
 | 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
-| 8860+ | compound identity & data | proposed |
+| 8861+ | compound identity & data | proposed |
 | 8870+ | safety, tox & regulatory | proposed |
 | 8880+ | literature & IP | proposed |
 | 8890+ | spectra & analytics | proposed |
@@ -246,7 +247,7 @@ question — the failure its own `connectors/README.md` records as two live defi
 
 | Already in Chemclaw3 | Where |
 | --- | --- |
-| xTB energies, pKa, logD, solubility, thermochemistry, the calibration ledger | `calc` |
+| ~~xTB energies, pKa, logD, solubility, thermochemistry~~ · **the calibration ledger, the calculation cache, the artifact store and every durable calc job remain Chemclaw3's** | now `servers/calc/` — *partly*; see below |
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
 | ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
@@ -258,13 +259,25 @@ Before proposing a tool, check `MODULES.md` and the table above. Overlap that is
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
 because per-record ORD retrieval is already `eln-ord` plus `rxnfp`.
 
-**Two rows of that table have left it: `chem` is now `servers/chem/` and `safety` is now
+**Two rows of that table have left it outright: `chem` is now `servers/chem/` and `safety` is now
 `servers/safety/`.** A capability moving out of Chemclaw3 is the one sanctioned way off this list,
 and it is only sanctioned when the move is a *replacement*: same manifest `name`, same tools, same
 arguments, so exactly one of the two can be addressed (`CHEMCLAW_CONNECTOR_URLS` is keyed by name,
 and `CHEMCLAW_CONNECTORS_DIR` gives the first directory the collision). A port that renamed itself
 would leave both live, which is the duplication this section exists to prevent. See
 `servers/chem/README.md` and `servers/safety/README.md`.
+
+**`calc` is the third row and the one that did *not* leave cleanly, which is why it is struck
+through only in part.** `servers/calc/` carries nine of that bundle's fifteen tools — the
+request/response compute — and six cannot follow, because they *are* the state: the calibration
+ledger (`report_measurement`, `calculator_trust`, `calculator_outliers`), the calculation cache
+(`find_calculations`) and the artifact store (`list_artifacts`, `fetch_artifact`), plus every
+`jobs:` entry. So this is a partial replacement carrying the same name, and the collision resolves
+the **opposite** way from the other two: Chemclaw3's own connectors directory goes *first*, or the
+agent silently loses six tools and every durable calc job. The compensation for splitting a cache
+from its calculator is that every result carries `calc_version` and `calc_key` — see
+`servers/calc/README.md`, which explains why re-deriving either on the Chemclaw3 side fails
+silently rather than loudly.
 
 A port leaves things behind, and what it leaves behind is part of the argument. Both of these did:
 `chem` dropped Chemclaw3's `standardize` pipeline because none of its tools asked the compound
@@ -283,6 +296,7 @@ make check           # lint + mypy --strict + the whole suite (what CI runs)
 make offline-run     # the same suite with the network namespace taken away
 make run-props       # the reference server on 127.0.0.1:8850
 make run-safety      # one per server; see the Makefile for the full list
+make run-calc        # the heaviest one — a tool call here can be minutes, not milliseconds
 ```
 
 - Python ≥ 3.11, `uv` workspace, `ruff` (line length 100), `mypy --strict`.

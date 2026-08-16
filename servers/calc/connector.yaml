@@ -1,0 +1,94 @@
+# The `calc` bundle's *compute half*, as Chemclaw3 reads it.
+#
+# This is a connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): drop this
+# directory onto a path in `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+#
+# ############################################################################################
+# # READ THIS BEFORE PUTTING THIS DIRECTORY FIRST ON `CHEMCLAW_CONNECTORS_DIR`.              #
+# ############################################################################################
+#
+# It carries the **same name** as Chemclaw3's own in-tree `calc` bundle, and unlike `chem` and
+# `safety` it is **not a complete replacement for it**. Chemclaw3 resolves a bundle-name collision by
+# first directory on `CHEMCLAW_CONNECTORS_DIR` (`connectors/registry.py::_bundle_dirs`, "first dir
+# wins") — with no error either way — so listing this fleet's `manifests/` ahead of Chemclaw3's own
+# connectors directory silently removes everything the in-tree bundle serves that is **not** listed
+# below:
+#
+#   report_measurement · find_calculations · list_artifacts · fetch_artifact ·
+#   calculator_trust · calculator_outliers   … and every `jobs:` entry (solvent screens,
+#   conformer ensembles, reaction energetics, relaxed scans, host-guest complexes).
+#
+# Those are stateful — the calculation cache, the artifact store, the calibration ledger and the
+# Temporal queues — and a server in this fleet is by construction none of those things. The name is
+# nonetheless `calc`, because this repository requires the directory, the package suffix, the
+# manifest `name` and the `CHEMCLAW_CONNECTOR_URLS` key to be one string
+# (`tests/test_fleet.py::test_the_name_is_one_string_used_four_times`).
+#
+# **So the supported wiring is the reverse of `chem`'s and `safety`'s**: keep Chemclaw3's own
+# connectors directory *first* and this one second, and the in-tree bundle keeps answering. Putting
+# this one first is a deliberate choice to run compute-only, and `docs/integration.md` spells out
+# what is lost.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.calc.url` in the Helm chart — hosting is a deployment
+# fact and does not belong in a manifest.
+name: calc
+description: >-
+  Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic
+  properties, condensed Fukui site reactivity, geometry optimization and RRHO thermochemistry with an
+  IR spectrum; plus the xTB pKa predictor, an ESOL aqueous-solubility baseline, pH-dependent logD and
+  an RDKit developability panel. Every result carries the `calc_version` that produced it — and, where
+  the calculation is keyable, the full `calc_type@calc_version:input_hash:params_hash` string — because
+  those are assembled from the tblite/RDKit builds and any xtb binary installed *here* and cannot be
+  re-derived by a caller. No calculation cache, no artifact store, no calibration ledger, no durable
+  jobs, and no network call at any point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8860/mcp
+  health_url: http://127.0.0.1:8860/healthz
+  # **Wider than every other manifest in this fleet, and not by habit.** Chemclaw3's own `calc`
+  # bundle allowed 30 s, which suited a connector whose repeats were served from a Postgres cache.
+  # Nothing is cached here, so a cold `compute_thermochemistry` on a drug-sized molecule pays the
+  # full 6N single points every time — minutes, not milliseconds. 900 s is the bound that stops a
+  # mute connector hanging a turn; the tool's own docstring is what stops a model asking for one
+  # casually, and `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` is what refuses the ones that would blow past it.
+  request_timeout: 900
+  # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here and
+  # refuse it the moment a deployment points this at a real host — and a manifest whose auth mode
+  # changes with its address is one whose serving side gets it wrong. The token env var is the same
+  # name on both sides: Chemclaw3 reads it to send, `app.py` reads it to verify.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_CALC_TOKEN
+  tools:
+    - compute_xtb_energy
+    - compute_electronic_properties
+    - predict_site_reactivity
+    - optimize_geometry
+    - compute_thermochemistry
+    - predict_pka
+    - predict_solubility
+    - predict_logd
+    - predict_developability_profile
+  # **All nine `state_changing`, matching Chemclaw3's own manifest exactly**, and the classification
+  # is kept rather than revisited even though nothing here writes anything any more.
+  #
+  # It reads oddly for a stateless server and it is still right. `read_only` is not a claim about
+  # side effects; it is a gate — the plan gate lets an *unapproved* plan call a `read_only` tool.
+  # These are the expensive calculations, minutes of CPU each with no cache underneath, and the
+  # reason to make a chemist approve the plan before they run has if anything got stronger since the
+  # cache stopped absorbing repeats. Reclassifying one would also silently widen what an unapproved
+  # plan may do on the Chemclaw3 side, which is a decision that belongs in an ADR over there rather
+  # than in a port's manifest.
+  state_changing:
+    - compute_xtb_energy
+    - compute_electronic_properties
+    - predict_site_reactivity
+    - optimize_geometry
+    - compute_thermochemistry
+    - predict_pka
+    - predict_solubility
+    - predict_logd
+    - predict_developability_profile

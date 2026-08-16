@@ -16,6 +16,13 @@ still being believed. `servers/<name>/tests/test_server.py` checks the manifest 
 running server actually advertises; that check is only meaningful if there is exactly one manifest.
 
 Earlier directories win a name collision in Chemclaw3's discovery, so putting this directory first
-lets a bundle here override a shipped one. That is a real capability and a real footgun: a server
-named `chem` here would silently replace Chemclaw3's own. Names in `MODULES.md` are chosen not to
-collide.
+lets a bundle here override a shipped one. That is a real capability and a real footgun, and **three
+entries here use it on purpose** — `chem`, `safety` and `calc` all carry the name of a Chemclaw3
+bundle. The first two are complete ports, so the override swaps one implementation for an identical
+one and the order of `CHEMCLAW_CONNECTORS_DIR` is a free choice.
+
+**`calc` is not, and it is the one to be careful with.** It carries nine of that bundle's fifteen
+tools; the six that stay behind are the calibration ledger, the calculation cache and the artifact
+store, plus every durable calc job. Putting this directory first therefore removes them from the
+agent's surface **with no error** — so unless compute-only is what you want, Chemclaw3's own
+connectors directory goes first. `docs/integration.md` has both environments and what each costs.
