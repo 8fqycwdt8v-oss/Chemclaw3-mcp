@@ -77,7 +77,12 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """Uvicorn accepts connections only after the lifespan ran, so a 200 means it did."""
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "server": "rxnpredict"}
+    # `revision` is part of the probe payload since the handshake started carrying the
+    # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
+    # for a test process, which is not built from a Containerfile — that the *image*
+    # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
+    # fills is a provenance record that quietly says nothing.
+    assert response.json() == {"status": "ok", "server": "rxnpredict", "revision": "unknown"}
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
