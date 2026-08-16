@@ -14,8 +14,33 @@ variance between servers should be in what they compute, not in how they are sha
 3. **Claim a name and a port in `MODULES.md`,** in this same pull request. The name is used four
    times and they must match: directory, package suffix, manifest `name:`, and the key Chemclaw3
    addresses it by.
-4. **Decide whether any tool can exceed ~20 s.** If so it is a Chemclaw3 durable job, declared as a
-   `jobs:` entry, and the pull request touches both repositories.
+4. **Decide whether the tool is request/response or orchestration.** This used to read "decide
+   whether any tool can exceed ~20 s", and that was the wrong question — duration is not the
+   property this fleet promises. `servers/calc` runs CREST searches that take hours.
+
+   The property is **statelessness**: a tool takes its arguments, computes, and returns. It holds no
+   job record, offers no resumption, and if it is interrupted the caller simply calls again. A
+   *composite* — optimise, take a Hessian, displace along the imaginary mode, repeat — is a loop
+   with state, and the giveaway is that **its key names its own output**, so a caller cannot ask
+   "have I computed this?" before running it. That belongs in Chemclaw3 as a durable job; its
+   *parts* belong here, each separately keyed.
+
+   `compute_thermochemistry` is the worked example and it went both ways before it settled: it was
+   ported, found to be underivable, nearly deleted outright, and finally **decomposed** —
+   `relax_structure` + `compute_hessian` here, the RRHO partition functions and the refinement loop
+   in Chemclaw3. The measurement that decided it: repeating thermochemistry in Chemclaw3 costs
+   0.007 s against 0.816 s cold for ethanol and 0.012 s against 3.273 s for ethyl acetate, two
+   orders of magnitude that come entirely from the *nested* caches. Shipping the composite would
+   have converted every repeat into a full recompute; decomposed, every one of those hits still
+   hits.
+
+   So a slow tool is fine and a stateful one is not. What a slow tool owes the fleet:
+
+   - a **bound on its input** so the cost cannot run away unpriced;
+   - a `request_timeout` in its manifest that states the real budget rather than inheriting a
+     habitual one and dying mid-calculation;
+   - a docstring that tells the model what it is asking for;
+   - and a `calculation_key`-style probe, if a caller is expected to cache it.
 
 ## The files
 
@@ -47,6 +72,15 @@ ln -s ../../servers/<name>/connector.yaml manifests/<name>/connector.yaml
 ```
 
 ## The dataset
+
+**A server with no dataset is possible and `calc` is the first one** — every number it returns is
+computed from its dependencies' own compiled parameters (tblite's GFN Hamiltonians, RDKit's Crippen
+and QED tables) rather than read from a corpus, so there is no `data/` and no `test_dataset.py`. The
+obligation does not disappear with the file; it moves. What replaces "validate the corpus against
+itself" is **proving the computation needs nothing from outside the process**, which
+`servers/calc/tests/test_no_egress.py` does by running one of each kind of calculation with the
+egress guard armed. The failure being ruled out is the one a numerical library can produce: fetching
+parameters, model weights or a licence check on first use.
 
 `data/dataset.json` needs all six fields — `name`, `version`, `licence`, `retrieved_from`,
 `description`, `sha256` — and `load_dataset` refuses without them. Compute the checksum with

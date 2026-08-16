@@ -208,15 +208,28 @@ call a tool and what to pass it. Write them for a chemist:
 
 ## Cost, and where a slow tool belongs
 
-A tool call is inside a conversation turn. **Anything that can take more than ~20 s is a Chemclaw3
-durable job, not a synchronous tool** — declared as a `jobs:` entry in the manifest, run on the
-bundle's Temporal queue. `retro` is the first server that will need this; `props` needs none of it.
+A tool call is inside a conversation turn, so most of this fleet is milliseconds: `props` is a dict
+lookup and a bisection, `chem` draws an SVG.
 
-CPU-bound work goes through `asyncio.to_thread`. `props` is synchronous *because it is measured to
-be trivial* — a dict lookup and a bisection — not as a house style. Chemclaw3's `chem` connector
-pushes RDKit work to a thread because 2D-coordinate generation holds the GIL for tens of
-milliseconds and flattened its throughput under load. A server that starts doing real work revisits
-this.
+**The rule is not a duration, though, and stating it as one was a mistake this repository made and
+corrected.** `servers/calc` runs geometry optimisations that take a minute and CREST searches that
+take hours. What the fleet promises is **statelessness**: a server takes its arguments, computes,
+and returns. No job record, no resumption, no progress channel — if a call is interrupted the caller
+calls again, and durability belongs to Temporal on the Chemclaw3 side.
+
+So the question for a new capability is not "how long", it is **request/response or orchestration**.
+A composite — optimise, take a Hessian, displace along the imaginary mode, repeat — is a loop with
+state, and the structural giveaway is that *its key names its own output*, so nobody can ask "have I
+computed this already?" before running it. That belongs in Chemclaw3 as a durable job. Its **parts**
+belong here, each separately keyed, and the caller composes them. `servers/calc` is the worked
+example: it exposes `relax_structure`, `compute_hessian`, `scan_point` and the CREST searches as
+primitives, and Chemclaw3's activities assemble thermochemistry, scan profiles, reaction energetics
+and interaction energies out of them — caching one row per primitive instead of one per job.
+
+What a slow tool still owes the fleet: a bound on its input so the cost cannot run away unpriced, a
+`request_timeout` stating the real budget, a docstring that tells the model what it is asking for,
+and a `calculation_key`-style probe if the caller is expected to cache it. See
+`docs/adding-a-server.md`.
 
 ## Ports
 
@@ -226,9 +239,10 @@ this.
 | 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
 | 8858 | `chem` | built (port of Chemclaw3's own `chem` bundle — see below) |
 | 8859 | `safety` | built (port of Chemclaw3's own `safety` bundle — see below) |
+| 8860 | `calc` | built (the physics behind Chemclaw3's `calc` bundle, as keyed primitives — a **backend**, not a connector; see below) |
 | 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
 | 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
-| 8860+ | compound identity & data | proposed |
+| 8861+ | compound identity & data | proposed |
 | 8870+ | safety, tox & regulatory | proposed |
 | 8880+ | literature & IP | proposed |
 | 8890+ | spectra & analytics | proposed |
@@ -246,7 +260,7 @@ question — the failure its own `connectors/README.md` records as two live defi
 
 | Already in Chemclaw3 | Where |
 | --- | --- |
-| xTB energies, pKa, logD, solubility, thermochemistry, the calibration ledger | `calc` |
+| xTB energies, pKa, logD, solubility, thermochemistry — **the tools and the orchestration stay Chemclaw3's; the physics underneath moved.** The calibration ledger, the calculation cache, the artifact store and every durable calc job are wholly Chemclaw3's | `calc`, computing through `servers/calc/`; see below |
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
 | ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
@@ -258,7 +272,7 @@ Before proposing a tool, check `MODULES.md` and the table above. Overlap that is
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
 because per-record ORD retrieval is already `eln-ord` plus `rxnfp`.
 
-**Two rows of that table have left it: `chem` is now `servers/chem/` and `safety` is now
+**Two rows of that table have left it outright: `chem` is now `servers/chem/` and `safety` is now
 `servers/safety/`.** A capability moving out of Chemclaw3 is the one sanctioned way off this list,
 and it is only sanctioned when the move is a *replacement*: same manifest `name`, same tools, same
 arguments, so exactly one of the two can be addressed (`CHEMCLAW_CONNECTOR_URLS` is keyed by name,
@@ -266,14 +280,25 @@ and `CHEMCLAW_CONNECTORS_DIR` gives the first directory the collision). A port t
 would leave both live, which is the duplication this section exists to prevent. See
 `servers/chem/README.md` and `servers/safety/README.md`.
 
-A port leaves things behind, and what it leaves behind is part of the argument. Both of these did:
-`chem` dropped Chemclaw3's `standardize` pipeline because none of its tools asked the compound
-question, and `safety` dropped the `kg-validate` hazard gate because a gate on a knowledge graph in
-a git repository is not something a tool server can have. **A skill is the other thing that does not
-travel** — Chemclaw3's `safety` bundle ships `skills/safety-screening/SKILL.md`, which is the
-judgment about what its three answers mean, and a skill is architecture layer 3 over there while
-this fleet has no equivalent seam. Ported manifests therefore declare no `skills:`, and whoever
-wires the server up keeps the skill reachable on the Chemclaw3 side.
+**`calc` is the third row and it left in a different way, which is why it is struck through only in
+part.** Chemclaw3 keeps its `calc` bundle and all fifteen of its tools; what moved is the *physics
+underneath* — exposed here as `servers/calc/`, a **backend** Chemclaw3 calls from inside
+`science/calc/store.py::cached_compute` on a cache miss, not a connector it dials. Putting this
+fleet's `manifests/` on `CHEMCLAW_CONNECTORS_DIR` would let a partial surface win the name collision
+and remove the calibration ledger, the calculation cache, the artifact store and every durable job
+from the agent's surface, with no error.
+
+`cached_compute` takes the key as an *argument*, so a key that only arrives on the result would be
+unusable there — which is why that server serves `calculation_key`, returning the identity of a
+calculation before it runs. That is what makes the split honest: Chemclaw3 never derives a key, so
+the only thing the two repositories must keep in step is the value of `CALCULATION_EPOCH`.
+
+**And it is why that server ships primitives rather than composites.** A calculation whose key names
+its own *output* is a loop with state, and a loop with state is a durable job — so
+`compute_thermochemistry` is not there, while `relax_structure`, `compute_hessian`, `scan_point` and
+the two CREST searches are, each separately keyed. Chemclaw3's activities assemble thermochemistry,
+scan profiles, reaction energetics and interaction energies from them, and cache one row per
+primitive instead of one per job. See `servers/calc/README.md` and `docs/integration.md`.
 
 ## Working in this repository
 
@@ -283,6 +308,7 @@ make check           # lint + mypy --strict + the whole suite (what CI runs)
 make offline-run     # the same suite with the network namespace taken away
 make run-props       # the reference server on 127.0.0.1:8850
 make run-safety      # one per server; see the Makefile for the full list
+make run-calc        # the heaviest one — a call here can be minutes or hours, deliberately
 ```
 
 - Python ≥ 3.11, `uv` workspace, `ruff` (line length 100), `mypy --strict`.

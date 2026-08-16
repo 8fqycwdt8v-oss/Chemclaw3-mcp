@@ -1,0 +1,44 @@
+[project]
+name = "chemclaw-mcp-calc"
+version = "0.1.0"
+description = "MCP server: GFN2-xTB energies, properties, geometries and thermochemistry, plus pKa, solubility, logD and developability descriptors."
+requires-python = ">=3.11"
+# The heaviest dependency closure in this fleet, and every entry is load-bearing:
+#
+# - `tblite` is the GFN semiempirical Hamiltonian, in-process. It ships manylinux wheels and needs no
+#   Fortran toolchain at install time, which is what makes this server buildable at all — and its
+#   *distribution version* is half of every `calc_version` this server emits.
+# - `rdkit` parses, canonicalizes, embeds the 3D geometry and computes the Crippen/QED descriptors.
+#   Its version is the other half of `calc_version`, for the good reason that a new RDKit shifts the
+#   seeded ETKDG embedding and therefore every energy computed on it.
+# - `scipy` is L-BFGS-B (over tblite's analytic gradient) and the null-space projection that
+#   separates a molecule's vibrations from its translations and rotations.
+# - `numpy` is declared rather than inherited: three engine modules index and reshape arrays
+#   directly, and >=2.0 is what tblite's and scipy's wheels resolve to here.
+#
+# **`xtb` and `crest` are not here and cannot be.** They are compiled Fortran programs distributed
+# through conda-forge and distribution packages, not PyPI, so a Python dependency cannot express
+# them; the image therefore ships without them and `xtb_cli.is_available()` is False. See
+# `README.md` — this costs speed on large molecules and nothing else, because tblite carries the
+# same Hamiltonians.
+dependencies = [
+    "mcp-server-kit",
+    "numpy>=2.0",
+    "rdkit>=2024.3.1",
+    "scipy>=1.11",
+    "tblite>=0.7.0",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_calc"]
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

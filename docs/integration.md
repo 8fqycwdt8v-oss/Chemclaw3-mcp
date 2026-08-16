@@ -77,6 +77,126 @@ Keep that SKILL.md reachable on the Chemclaw3 side when this server wins the col
 are deterministic and have no opinion, and losing the skill loses the half that says what an empty
 result does not mean.
 
+### `calc` is not a connector Chemclaw3 dials — it is a backend behind `cached_compute`
+
+**Do not put this fleet's `manifests/` on `CHEMCLAW_CONNECTORS_DIR` for `calc`.** That is the whole
+difference between this server and the two above, and getting it wrong is silent: the name collides,
+first-directory-wins applies, and Chemclaw3's own `calc` bundle would lose six tools and every
+durable job to a partial port.
+
+Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moves is the *computation*
+underneath them, its durable jobs included: this server is called from inside
+`science/calc/store.py::cached_compute`,
+as a client, on a miss.
+
+```python
+hit = await store.get(key)  # the key is an argument — so it is needed *before* the compute
+if hit is not None:
+    return hit.result, True
+result = await compute()
+```
+
+That signature is the thing that shapes the whole integration, and it is why this server serves a
+tenth tool nobody in a conversation should call:
+
+```
+identity = await remote.calculation_key(tool, arguments)   # cheap: canonicalise, embed, hash
+hit      = await store.get(identity.key)                   # the four fields, ready to use
+if hit is None:
+    payload = await remote.<tool>(**arguments)             # the SCF, only on a miss
+    await store.put(StoredResult(key=identity.key, result=payload))
+```
+
+One cheap round trip on a hit instead of a calculation; two calls on a miss, which is noise beside
+minutes of CPU. The compute result carries the same `calc_key` string, so asserting it against
+`identity.calc_key` is a free check that both sides agree.
+
+Six `calc` tools have no computation to move at all, because they *are* the state — and they stay
+exactly where they are, unaffected:
+
+| Stays entirely in Chemclaw3 | What it is |
+| --- | --- |
+| `report_measurement`, `calculator_trust`, `calculator_outliers` | the calibration ledger — predictions reconciled against measurements |
+| `find_calculations` | a query over the calculation cache |
+| `list_artifacts`, `fetch_artifact` | the content-addressed artifact store |
+| every `jobs:` entry | the Temporal workflows. Their *activities* now call this server's primitives; the orchestration, the retries and the durability stay put. |
+
+### Composing a durable job out of primitives
+
+The jobs' engines were re-cut rather than moved whole, because a composite's key names its own
+output and cannot be looked up before it runs. Thermochemistry is the worked example:
+
+```python
+opt_key = await remote.calculation_key("relax_structure", {"structure": geometry})
+relaxed = await cached(opt_key, lambda: remote.relax_structure(structure=geometry))
+hess_key = await remote.calculation_key("compute_hessian", {"structure": relaxed["structure"]})
+hessian = await cached(hess_key, lambda: remote.compute_hessian(structure=relaxed["structure"]))
+thermo = rrho(hessian, relaxed["structure"], symmetry_number, temperature)  # local, pure Python
+```
+
+Both halves cache. That matters more than it looks: repeating `compute_thermochemistry` in Chemclaw3
+today costs **0.007 s against 0.816 s** cold for ethanol and **0.012 s against 3.273 s** for ethyl
+acetate — two orders of magnitude, entirely from the nested `xtb.opt`/`xtb.hess` entries. Shipping
+the composite as one remote tool would have converted every repeat into a full recompute; composed,
+every one of those hits still hits.
+
+The same shape applies to the rest:
+
+| Job | Composition |
+| --- | --- |
+| relaxed scan | `scan_point` per value — the sweep, the relative energies and the point cap are the caller's. The points were already independent: `run_scan` drives each from the input geometry rather than the previous one. |
+| conformer ensemble | one `search_conformer_ensemble`, then Boltzmann populations and conformational entropy locally. |
+| interaction energy | `embed_structure` ×2 → `relax_structure` ×2 → `combine_structures` → `search_binding_modes` → `relax_structure` on the best mode → subtract. Six cached rows instead of one, so changing the separation no longer re-relaxes both monomers. |
+| reaction energetics / solvent screen | per-species `relax_structure` + `compute_hessian`, then stoichiometric sums. No new primitive was needed — it is composition all the way down. |
+
+**`sample_conformers` and `compute_interaction_energy` are `expensive: true` in Chemclaw3's own
+manifest, feeding `authz.expensive_actions`. That gate stays there** and is deliberately not
+reproduced here: it is an authorization decision about a person, which a tool server has no basis to
+make.
+
+**The `crest` binary is in neither environment today.** The two ensemble primitives refuse by name
+rather than degrading, and they refuse identically wherever they run — so nothing that previously
+worked has stopped. Adding the binary to this server's image is what turns them on.
+
+**What the manifest here is for, then.** `servers/calc/connector.yaml` is this repository's own
+declaration of the served surface — every tool classified, checked against the running server by
+`tests/test_server.py`, and the thing a reviewer reads. It is not an instruction to register the
+server as a Chemclaw3 connector, and `manifests/calc/` exists because this repository requires one
+per server rather than because Chemclaw3 should point at it.
+
+**Never derive a key on the Chemclaw3 side.** `calc_version` is assembled from the installed
+`tblite` and `rdkit` distribution versions, a Hamiltonian-revision constant, an `xtb --version`
+subprocess and seven pKa calibration settings — none of which a Chemclaw3 pod has after the split.
+The reconstruction does not fail loudly: `xtb_cli.binary_version()` returns the literal string
+`"absent"` when the binary is missing, so the string comes out well-formed, matches zero rows in
+`predictions`, and `calculator_trust("pka")` reports `UNCALIBRATED` — a confident answer about a
+calibration that is merely unreachable. `calculation_key` exists so that nobody has to.
+
+**One tool returns no key, and says why.** `predict_logd` never had one — Chemclaw3 did not cache
+logD, because its expensive half is already a cached pKa, and the caveat names that pKa's key.
+
+**The two CREST searches refuse to be keyed without their binary**, on purpose:
+`CrestSpec.calc_version()` answers `crest-absent` rather than raising, so a key *is* derivable with
+no crest and would name a program that cannot run. The probe refuses exactly where the search would.
+
+### What the two repositories must still keep in step
+
+Because Chemclaw3 never derives a key, the list is short — one constant:
+
+- **`CALCULATION_EPOCH`.** It is a source constant in both repositories, folded into every
+  `params_hash`, and bumped when a ChemClaw-side change makes an already-written row wrong. Chemclaw3
+  still builds keys for its own in-tree calculators, so the two live in one table and must agree.
+  Bump it in both repositories in the same change, or in neither.
+
+Three things that used to be on this list are **not**, and that is the point of `calculation_key`
+rather than a happy accident:
+
+- *The calculator settings.* `CHEMCLAW_PKA_*`, `CHEMCLAW_XTB_*` and `CHEMCLAW_SOLUBILITY_RMSE_LOG`
+  are interpolated into version strings — but only this server reads them, so tuning a calibration
+  here changes the version everywhere it appears, consistently, with nothing to keep in sync.
+- *The RDKit build.* `structure_id` is a hash of an embedded geometry, and only this server embeds.
+- *The flat key format.* `calculation_key` returns the four fields, so nothing parses the string.
+
 ### Checking it is really connected
 
 ```sh
@@ -114,6 +234,12 @@ ConfigMap and prepend it to `CHEMCLAW_CONNECTORS_DIR`, or copy the `connector.ya
 Chemclaw3's own image at build time. The ConfigMap route keeps the two release cycles independent,
 which is the point of this repository existing separately.
 
+**`calc` deploys like the rest and is registered like none of them.** Same image, same NetworkPolicy,
+same bearer Secret in both pods under `CHEMCLAW_CALC_TOKEN` — but its `connector.yaml` must **not**
+reach `CHEMCLAW_CONNECTORS_DIR`, because Chemclaw3 addresses this server from inside `cached_compute`
+rather than as a connector. If `manifests/` is mounted as a ConfigMap, mount it without `calc/`, or
+copy the individual files that belong there instead.
+
 ## Failure modes worth knowing
 
 | Symptom | Cause |
@@ -122,4 +248,8 @@ which is the point of this repository existing separately.
 | Every MCP call returns 401 | The token env var is unset or differs between the two pods. It fails closed by design. |
 | The server accepts connections then hangs on the first call | The MCP session manager is not running — the mount-does-not-run-a-lifespan trap. `connector_app` handles it; a hand-rolled transport does not. |
 | Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. |
+| `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | This fleet's `manifests/` was put on `CHEMCLAW_CONNECTORS_DIR` and its partial `calc` port won the name collision. It does not belong there: `calc` is a backend behind `cached_compute`, not a connector Chemclaw3 dials. |
+| Every calculation recomputes; the cache never hits | The key was derived locally instead of read from `calculation_key`, or the two `CALCULATION_EPOCH` constants have drifted. The parts `store.get` needs come back from that tool ready to use — nothing on the Chemclaw3 side should be assembling one. |
+| `calculator_trust("pka")` says `UNCALIBRATED` with n=0 on a calculator that has residuals | A `calc_version` was re-derived rather than read off the result. The ledger matches it exactly and does not pool versions, so a locally-built string — which comes out well-formed, because `binary_version()` answers `"absent"` rather than raising — matches nothing. |
+| An xTB call takes minutes | Nothing is cached *on this server*. That is what `calculation_key` plus Chemclaw3's own store is for; a cold `compute_thermochemistry` is 6N+1 single points, and the manifest allows 900 s for it. |
 | `connector-validate` fails on `auth` | A non-loopback URL with `mode: none`. Declare bearer. |

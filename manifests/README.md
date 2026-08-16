@@ -16,6 +16,16 @@ still being believed. `servers/<name>/tests/test_server.py` checks the manifest 
 running server actually advertises; that check is only meaningful if there is exactly one manifest.
 
 Earlier directories win a name collision in Chemclaw3's discovery, so putting this directory first
-lets a bundle here override a shipped one. That is a real capability and a real footgun: a server
-named `chem` here would silently replace Chemclaw3's own. Names in `MODULES.md` are chosen not to
-collide.
+lets a bundle here override a shipped one. That is a real capability and a real footgun, and **two
+entries here use it on purpose** — `chem` and `safety` are complete ports carrying their bundle's
+name, so the override swaps one implementation for an identical one.
+
+**`calc` is a third entry carrying a Chemclaw3 bundle's name, and it must *not* be registered this
+way.** It holds the physics behind that bundle's calculators and durable jobs — as individually
+keyed primitives — and is called from inside Chemclaw3's own `cached_compute` as a backend, not
+dialled as a connector. Putting this
+directory on `CHEMCLAW_CONNECTORS_DIR` would let a partial port win the name and take the
+calibration ledger, the calculation cache, the artifact store and every durable calc job off the
+agent's surface — **with no error**. Its manifest lives here because this repository requires one
+per server and `tests/test_server.py` checks it against the running surface, not because Chemclaw3
+should point at it. See `docs/integration.md`.

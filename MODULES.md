@@ -150,6 +150,80 @@ which this fleet has none of), the `at_least` severity helper the gate was its o
 of, and the bundle's `skills:` key — the `safety-screening` SKILL.md stays in Chemclaw3, which is the
 repository that has a skills layer. See `servers/safety/README.md`.
 
+### `calc` — the physics behind Chemclaw3's calculators · port 8860 · **built**
+
+Seventeen tools in three groups, none of them on any agent's surface — Chemclaw3 keeps its own
+`calc` tools and calls this server from inside `cached_compute` and from Temporal activities.
+**Eight** back its SMILES-in tools one for one: GFN2-xTB single-point
+energy, electronic properties, condensed Fukui site reactivity, geometry optimisation, the xTB pKa
+predictor, an ESOL solubility baseline with an applicability-domain check, pH-dependent logD and an
+RDKit developability panel. **Six** structure-in primitives Chemclaw3's durable-job activities
+compose — `relax_structure`, `compute_properties_at`, `compute_hessian`, `scan_point`,
+`search_conformer_ensemble`, `search_binding_modes`. **Three** helpers that compute nothing:
+`embed_structure`, `combine_structures` and `calculation_key`.
+
+*Offline:* **no vendored dataset at all** — the first server in the fleet with none. Every number is
+computed from tblite's compiled GFN parameters, RDKit's Crippen/QED tables and closed-form
+arithmetic, all of which arrive inside their own wheels. `tests/test_no_egress.py` proves sufficiency
+by running one of each kind of calculation with the guard armed, rather than by pointing at a corpus.
+*Provenance:* **a port of the physics behind Chemclaw3's own in-tree `calc` connector** — its
+request/response tools with their names, arguments and model-facing docstrings intact, plus the
+compute half of its durable jobs re-cut as primitives.
+
+**The seam is the thing to understand: Chemclaw3 keeps orchestration and the cache, this server
+holds the physics.** It is *not* a connector Chemclaw3 dials — it is called from inside
+`science/calc/store.py::cached_compute` as a backend on a miss, and registering it on
+`CHEMCLAW_CONNECTORS_DIR` would let it win the `calc` name collision and take the calibration
+ledger, the calculation cache, the artifact store and every durable job off the agent's surface,
+with no error. See `docs/integration.md`.
+
+**`cached_compute` takes the key as an *argument*, so a key that only arrives on the result cannot
+serve the lookup.** Hence `calculation_key`, which answers what a calculation would be stored under
+before running it — cheaply (canonicalise, embed, hash; no SCF, asserted by making every route
+through `Calculator` raise) and as the four fields `store.get` takes rather than a string to parse.
+Every result also carries `calc_version` and `calc_key`, and `tests/test_calculation_key.py` asserts
+the two agree for every tool. Why it must be derived here: those strings come from the installed
+`tblite`/`rdkit` versions, a Hamiltonian-revision constant, an `xtb --version` subprocess and seven
+pKa calibration settings — none of which a Chemclaw3 pod has — and a local reconstruction would not
+fail loudly, because `xtb_cli.binary_version()` answers `"absent"` rather than raising.
+
+**This server may be slow and may not be stateful, and that replaced the fleet's ~20 s expectation.**
+A CREST search runs for hours. What the fleet actually promises is that a tool takes its arguments,
+computes and returns — no job record, no resumption, no progress channel. The structural test is
+whether a calculation's key can be derived from its arguments: if it can, it is a primitive and
+belongs here; if it names an output, it is a loop with state and stays in Chemclaw3.
+
+**`compute_thermochemistry` is the worked example, and it is *not* on this server.** Its key names
+the geometry its refinement loop settled on — an output — so `calculation_key` could not derive one,
+and the measurement made the cost concrete: repeating it in Chemclaw3 costs 0.007 s against 0.816 s
+cold for ethanol and 0.012 s against 3.273 s for ethyl acetate, two orders of magnitude coming
+entirely from the nested `xtb.opt`/`xtb.hess` caches. Shipping it uncacheable would have converted
+every repeat into a full recompute. Chemclaw3 assembles it instead from `relax_structure` +
+`compute_hessian` + its own RRHO partition functions, and every part of that caches. The same
+argument decomposed the scan (point, not sweep), the conformer ensemble (search, not populations)
+and the interaction energy (search + three relaxations, not one composite); `reaction.py` contributed
+no new primitive at all, being pure composition over ones already exposed.
+
+**Four things to know before touching it:**
+
+- **`xtb` and `crest` are not in the image and cannot be**, being compiled Fortran distributed
+  through conda-forge rather than PyPI. For `xtb` that costs the ANCopt speedup (~7-9x on 76-118
+  atoms) and GFN-FF and nothing else — `tblite` carries the same Hamiltonians in-process, and
+  Chemclaw3's own deployment resolves to it too, so the numbers and the version strings are
+  unchanged by the port. For `crest` it means the two ensemble primitives **refuse**, by name — and
+  `crest` is absent from Chemclaw3's environment too, so nothing that worked before has stopped.
+- **The Hessian crosses the wire as base64 `.npy`**, which round-trips float64 exactly and is
+  byte-for-byte what Chemclaw3's artifact store holds. The ceiling is ~2.2 MB, bounded quadratically
+  by `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS`.
+- **Three definitions are copied from Chemclaw3**: `stable_hash`, `CalculationKey`/
+  `CALCULATION_EPOCH`, and `require_canonical_smiles`. Because Chemclaw3 never derives a key, **only
+  `CALCULATION_EPOCH` has to agree** across the two repositories — it is a source constant in both
+  and moves in both or in neither. The calculator settings and the RDKit build do not, since only
+  this server reads them and only this server embeds.
+- **`Structure.structure_id` is a `computed_field`, not a property.** A plain property does not
+  serialize, so a geometry crossing the wire arrived without its content address — and re-deriving
+  one client-side is the divergence this design removes. Caught by the wire test, not a unit test.
+
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic
@@ -273,9 +347,12 @@ and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 
 ## Tranche 2 — Compound identity and reference data
 
+*Port note:* 8860 was this tranche's first slot and is now taken by the built `calc` server above, so
+`nomenclature` moved to 8864. The block is still 8860+; only the free slots shifted.
+
 | Server | Port | Status | Tools (proposed) | Offline source |
 | --- | --- | --- | --- | --- |
-| `nomenclature` | 8860 | proposed | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN (MIT), runs locally. Zero licence risk and the best value-to-effort ratio in the catalogue — a strong queue-jumper. |
+| `nomenclature` | 8864 | proposed | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN (MIT), runs locally. Zero licence risk and the best value-to-effort ratio in the catalogue — a strong queue-jumper. |
 | `pubchem` | 8861 | proposed | `resolve_identifier`, `compound_properties`, `synonyms`, `cross_references` | A vendored PubChem subset; PubChem's own data is public domain. |
 | `chembl` | 8862 | proposed | `search_by_structure`, `bioactivities`, `target_lookup` | A ChEMBL slice. **CC-BY-SA — attribution obligations; needs a licence review before it is built.** |
 | `solidform` | 8863 | proposed | `search_structures`, `unit_cell`, `simulate_powder_pattern`, `polymorph_precedent` | Crystallography Open Database (CC0) + pymatgen. The CSD is commercial and out of scope. |
