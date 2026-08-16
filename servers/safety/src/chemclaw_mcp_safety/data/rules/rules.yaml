@@ -212,13 +212,34 @@ incompatible_pairs:
     # atoms, so the X2 form (correct for an organic azide) silently never fires on a salt — the
     # exact failure this table's header warns about, found by testing against parsed molecules.
     left: "[N;X1-]=[N;X2+]=[N;X1-]"
-    right: "[CH2](Cl)Cl"
+    # Every chlorinated methane, because the explanation below already names "di- and
+    # triazidomethane" and the geminal-CH2 form could only ever produce the first: chloroform is
+    # the *source* of triazidomethane and screened clean under a rule whose own words covered it.
+    # Enumerated rather than written as "a carbon with two chlorines", so a substrate's gem-dichloro
+    # centre — an ordinary functional group — does not fire a rule about solvent choice.
+    right: "[$([CH2](Cl)Cl),$([CH](Cl)(Cl)Cl),$([CX4](Cl)(Cl)(Cl)Cl)]"
     severity: high
     explanation: >-
       An azide salt together with dichloromethane forms di- and triazidomethane, which are
       explosive and shock-sensitive and have caused documented laboratory detonations. Substitute
       the solvent (MeCN, DMF or 2-MeTHF are the usual choices) rather than controlling for it.
     citation: "Peet & Weber, Chem. Eng. News 1988, 66(31), 2; Bretherick's, 8th ed., diazidomethane"
+
+  - id: saline-hydride-with-chlorinated-solvent
+    # `hydride-with-dipolar-aprotic`'s left arm *verbatim*, pinned equal in `tests/test_pairs.py`.
+    #
+    # **A separate rule rather than a wider `complex-hydride-…`,** because they are two reagent
+    # classes and an id that named one while matching both would be the kind of claim this table
+    # exists to avoid. NaH, LiH, KH and CaH2 are saline hydrides; the rule beside this one opens on
+    # `[AlH4-]`/`[BH4-]` and so never fired on any of them — sodium hydride in dichloromethane, a
+    # documented runaway, screened clean while lithium aluminium hydride in the same flask did not.
+    left: "[H-]"
+    right: "[$([CX4](Cl)Cl),$([CX4](Cl)[CX4]Cl)]"
+    severity: medium
+    explanation: >-
+      Saline hydrides (NaH, LiH, KH, CaH2) react exothermically, and on scale violently, with
+      chlorinated solvents. Use an ethereal solvent (THF, 2-MeTHF, Et2O).
+    citation: "Bretherick's Handbook of Reactive Chemical Hazards, 8th ed., metal hydrides"
 
   - id: hydride-with-dipolar-aprotic
     left: "[H-]"
@@ -231,7 +252,24 @@ incompatible_pairs:
     citation: "Buckley et al., Org. Process Res. Dev. 2021, 25, 587 (NaH/DMF thermal runaway)"
 
   - id: peroxide-with-ketone
-    left: "[OX2H][OX2H]"
+    # **The documented exception to "a pair arm is its structural twin verbatim", and it was found
+    # by trying to obey that rule.** The two-coordinate-only form `[OX2H][OX2H]` meant
+    # `Na2O2 + acetone` raised only `peroxide` — the flag saying *this is an oxidiser* fired and the
+    # one saying *do not do this* did not — which reads as the same half-fix `oxidizer-with-reductant`
+    # describes above. But setting this arm to the `peroxide` rule's SMARTS then fires on
+    # di-tert-butyl peroxide with acetone, which is not this hazard at all.
+    #
+    # The two motifs are genuinely different and merely overlap. `peroxide` alerts on the O-O bond
+    # as an energetic motif, which a dialkyl peroxide has. This rule is about *forming* acetone
+    # peroxide, which needs a source of HO-OH: hydrogen peroxide, its salts, its alkali adducts. A
+    # dialkyl peroxide is the product of that chemistry, not a reagent for it, and flagging it here
+    # would be the broad pattern this table's header refuses.
+    #
+    # So the arm is the HOOH-source union, measured against parsed molecules rather than reasoned
+    # about: it fires on H2O2, Na2O2 in both its ionic and covalent spellings, and NaOOH, and stays
+    # silent on di-tert-butyl peroxide and tert-butyl hydroperoxide. Both halves are pinned in
+    # `tests/test_pairs.py`.
+    left: "[$([OX2H][OX2H]),$([OX2H][OX1-]),$([OX1-][OX1-]),$([#3,#11,#19][OX2][OX2][#3,#11,#19]),$([#3,#11,#19][OX2][OX2H])]"
     right: "[#6][CX3](=[OX1])[#6]"
     severity: high
     explanation: >-
