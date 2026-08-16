@@ -32,6 +32,16 @@ EXPOSE 8859
 # this file denies egress at the network layer regardless.
 ENV MCP_EGRESS_GUARD=on
 
+# The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
+# carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
+# caller learns which build answered without a second endpoint. Left unsupplied it reports
+# `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the
+# field and its test both present and no build ever setting the variable. So `tests/test_fleet.py`
+# asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
+# nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
+ARG CHEMCLAW_REVISION=unknown
+ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}
+
 # The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8859/healthz').status==200 else 1)"

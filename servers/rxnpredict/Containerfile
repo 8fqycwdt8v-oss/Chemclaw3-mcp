@@ -49,6 +49,16 @@ ENV HF_HOME=/opt/models/hf \
     MCP_EGRESS_GUARD=on \
     CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models
 
+# The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
+# carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
+# caller learns which build answered without a second endpoint. Left unsupplied it reports
+# `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the
+# field and its test both present and no build ever setting the variable. So `tests/test_fleet.py`
+# asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
+# nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
+ARG CHEMCLAW_REVISION=unknown
+ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}
+
 # Longer start period than a light server's: the first probe must not fire while a T5 checkpoint is
 # still being read off disk into memory.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s \

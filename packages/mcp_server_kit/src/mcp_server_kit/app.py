@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any
@@ -109,6 +110,40 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     manager.call_tool = call_tool
 
 
+def server_revision() -> str:
+    """The build this process is, or `"unknown"` — the one place that decides.
+
+    Read from `MCP_SERVER_REVISION`, which the Containerfile sets from a build argument the release
+    pipeline fills with the commit. `"unknown"` rather than a raise, because a server that refuses
+    to start when it cannot name its own build is strictly worse than one that starts and says so —
+    the same judgement `on_start` already makes.
+
+    **The default is a real answer, and that is the trap this has to avoid.** Chemclaw3 shipped
+    exactly this field (D-057) and it read `"unknown"` for eight months, because the field, the
+    column and the test all existed and no build ever set the variable (REV-17, fixed by D-140).
+    So `tests/test_fleet.py` asserts the *Containerfile* passes it through, not merely that this
+    function reads it — a value nothing supplies is a provenance record that quietly says nothing.
+    """
+    return os.environ.get("MCP_SERVER_REVISION", "") or "unknown"
+
+
+def _stamp_revision(server: FastMCP) -> None:
+    """Put this build's revision where MCP already carries a server version.
+
+    **The handshake is the seam, and it costs nothing.** `initialize()` returns `serverInfo`
+    (`{name, version}`) on every session a client opens, so a caller learns which build answered
+    without a second endpoint, a second round trip, or a field on every tool result. Left alone the
+    version reports the *MCP SDK's* release — 1.29.0 — which is a true fact about the wrong thing
+    and would read as provenance to anyone who did not check.
+
+    `FastMCP.__init__` takes no `version`, though the lowlevel `Server` it wraps does, so this
+    assigns through `_mcp_server`. That is a private attribute and therefore a real coupling: it is
+    asserted directly in `tests/test_fleet.py`, which names this function, so an upstream rename
+    turns a test red here rather than silently reverting every server to reporting the SDK version.
+    """
+    server._mcp_server.version = server_revision()
+
+
 def connector_app(
     server: FastMCP,
     *,
@@ -137,6 +172,7 @@ def connector_app(
     Returns:
         A FastAPI app exposing `GET /healthz`, `GET /metrics`, and the MCP endpoint at `/mcp`.
     """
+    _stamp_revision(server)
     _sanitize_tool_errors(server, name=name)
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
@@ -170,7 +206,7 @@ def connector_app(
         completed, so this route answering *is* the evidence that the session manager is running.
         A separate `/readyz` could only assert the same fact twice.
         """
-        return {"status": "ok", "server": name}
+        return {"status": "ok", "server": name, "revision": server_revision()}
 
     @app.get("/metrics")
     async def metrics() -> Response:
