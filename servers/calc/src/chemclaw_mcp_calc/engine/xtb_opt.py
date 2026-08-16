@@ -27,7 +27,7 @@ from scipy.optimize import OptimizeResult, minimize
 from chemclaw_mcp_calc.engine import anc, xtb_cli
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import Keyed
-from chemclaw_mcp_calc.engine.structure import Structure
+from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb_engine import (
     HARTREE_TO_KCAL,
     Calculator,
@@ -36,7 +36,13 @@ from chemclaw_mcp_calc.engine.xtb_engine import (
 )
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 
-__all__ = ["OptSpec", "OptimizationResult", "OptimizationSummary", "optimize_structure"]
+__all__ = [
+    "OptSpec",
+    "OptimizationResult",
+    "OptimizationSummary",
+    "optimization_inputs",
+    "optimize_structure",
+]
 
 
 class OptSpec(XtbSpec):
@@ -143,6 +149,17 @@ class OptimizationSummary(Keyed):
             max_gradient=result.max_gradient,
             displacement_rms_angstrom=result.displacement_rms_angstrom,
         )
+
+
+def optimization_inputs(smiles: str, solvent: str | None = None) -> tuple[OptSpec, Structure]:
+    """The settings and the *starting* geometry `optimize_geometry` relaxes — see `xtb.sp_inputs`.
+
+    `multiplicity=None` reads the SMILES' own explicit radical electrons instead of assuming a
+    closed shell, which is what lets a radical be optimized at all — and what makes `OptSpec`'s
+    open-shell fallback to the in-process backend fire, so the key names tblite rather than the
+    configured binary.
+    """
+    return OptSpec(solvent=solvent), structure_from_smiles(smiles, multiplicity=None, optimize=True)
 
 
 def optimize_structure(spec: OptSpec, structure: Structure) -> OptimizationResult:

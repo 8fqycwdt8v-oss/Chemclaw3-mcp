@@ -1,37 +1,35 @@
-# The `calc` bundle's *compute half*, as Chemclaw3 reads it.
-#
-# This is a connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): drop this
-# directory onto a path in `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+# The `calc` server's declared tool surface.
 #
 # ############################################################################################
-# # READ THIS BEFORE PUTTING THIS DIRECTORY FIRST ON `CHEMCLAW_CONNECTORS_DIR`.              #
+# # THIS MANIFEST DOES NOT GO ON `CHEMCLAW_CONNECTORS_DIR`.                                  #
 # ############################################################################################
 #
-# It carries the **same name** as Chemclaw3's own in-tree `calc` bundle, and unlike `chem` and
-# `safety` it is **not a complete replacement for it**. Chemclaw3 resolves a bundle-name collision by
-# first directory on `CHEMCLAW_CONNECTORS_DIR` (`connectors/registry.py::_bundle_dirs`, "first dir
-# wins") — with no error either way — so listing this fleet's `manifests/` ahead of Chemclaw3's own
-# connectors directory silently removes everything the in-tree bundle serves that is **not** listed
-# below:
+# `chem` and `safety` are connectors Chemclaw3 dials (D-2026-08-09-a-connector-we-do-not-run):
+# drop their directory on the path and the capability appears with no core edit. **This one is
+# not.** Chemclaw3 keeps its own `calc` bundle and all fifteen of its tools; what moved here is
+# the *computation* behind nine of them, and Chemclaw3 calls this server from inside
+# `science/calc/store.py::cached_compute` as a backend on a cache miss.
+#
+# The name is nonetheless `calc`, because this repository requires the directory, the package
+# suffix, the manifest `name` and the addressing key to be one string
+# (`tests/test_fleet.py::test_the_name_is_one_string_used_four_times`). So registering this
+# directory as a connector would let a *partial* port win a name collision — first directory wins,
+# with no error either way — and silently remove everything the in-tree bundle serves that is not
+# listed below:
 #
 #   report_measurement · find_calculations · list_artifacts · fetch_artifact ·
 #   calculator_trust · calculator_outliers   … and every `jobs:` entry (solvent screens,
 #   conformer ensembles, reaction energetics, relaxed scans, host-guest complexes).
 #
-# Those are stateful — the calculation cache, the artifact store, the calibration ledger and the
-# Temporal queues — and a server in this fleet is by construction none of those things. The name is
-# nonetheless `calc`, because this repository requires the directory, the package suffix, the
-# manifest `name` and the `CHEMCLAW_CONNECTOR_URLS` key to be one string
-# (`tests/test_fleet.py::test_the_name_is_one_string_used_four_times`).
+# Those are the calculation cache, the artifact store, the calibration ledger and the Temporal
+# queues — state, which a server in this fleet is by construction not.
 #
-# **So the supported wiring is the reverse of `chem`'s and `safety`'s**: keep Chemclaw3's own
-# connectors directory *first* and this one second, and the in-tree bundle keeps answering. Putting
-# this one first is a deliberate choice to run compute-only, and `docs/integration.md` spells out
-# what is lost.
+# **What this file is for**, then: it is this repository's own declaration of the served surface,
+# every tool classified exactly once, checked against the running server by `tests/test_server.py`.
+# It is what a reviewer reads and what a deployment's tooling can validate. `docs/integration.md`
+# has the wiring.
 #
-# The URL below is the loopback dev default. A cluster address is set per deployment, by
-# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.calc.url` in the Helm chart — hosting is a deployment
-# fact and does not belong in a manifest.
+# The URL below is the loopback dev default; a deployment supplies the address.
 name: calc
 description: >-
   Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic
@@ -63,6 +61,7 @@ endpoint:
     mode: bearer
     token_env: CHEMCLAW_CALC_TOKEN
   tools:
+    - calculation_key
     - compute_xtb_energy
     - compute_electronic_properties
     - predict_site_reactivity
@@ -72,16 +71,22 @@ endpoint:
     - predict_solubility
     - predict_logd
     - predict_developability_profile
-  # **All nine `state_changing`, matching Chemclaw3's own manifest exactly**, and the classification
-  # is kept rather than revisited even though nothing here writes anything any more.
+  # **`calculation_key` is the one `read_only` tool here, and the split is the whole classification
+  # argument in miniature.** `read_only` is not a claim about side effects; it is a gate — the plan
+  # gate lets an *unapproved* plan call a `read_only` tool. Asking "would this calculation be a cache
+  # hit?" costs a canonicalisation, an embedding and two hashes, runs no SCF, and is exactly the kind
+  # of thing a chemist wants answerable *before* deciding whether to approve the work.
+  read_only:
+    - calculation_key
+  # **The nine compute tools stay `state_changing`, matching Chemclaw3's own manifest exactly**, and
+  # the classification is kept rather than revisited even though nothing here writes anything.
   #
-  # It reads oddly for a stateless server and it is still right. `read_only` is not a claim about
-  # side effects; it is a gate — the plan gate lets an *unapproved* plan call a `read_only` tool.
-  # These are the expensive calculations, minutes of CPU each with no cache underneath, and the
-  # reason to make a chemist approve the plan before they run has if anything got stronger since the
-  # cache stopped absorbing repeats. Reclassifying one would also silently widen what an unapproved
-  # plan may do on the Chemclaw3 side, which is a decision that belongs in an ADR over there rather
-  # than in a port's manifest.
+  # It reads oddly for a stateless server and it is still right, by the same gate argument in the
+  # other direction: these are minutes of CPU each with no cache underneath, and the reason to make a
+  # chemist approve the plan before they run has if anything got stronger since the cache stopped
+  # absorbing repeats. Reclassifying one would also silently widen what an unapproved plan may do on
+  # the Chemclaw3 side, which is a decision that belongs in an ADR over there rather than in a port's
+  # manifest.
   state_changing:
     - compute_xtb_energy
     - compute_electronic_properties

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -42,6 +43,7 @@ from chemclaw_mcp_calc.engine.descriptors import (
     DescriptorProfile,
     compute_descriptor_profile,
 )
+from chemclaw_mcp_calc.engine.identity import CalculationIdentity, calculation_identity
 from chemclaw_mcp_calc.engine.logd import LogdInput, LogdResult
 from chemclaw_mcp_calc.engine.logd import predict_logd as _predict_logd
 from chemclaw_mcp_calc.engine.pka import PkaInput, PkaResult
@@ -56,13 +58,17 @@ from chemclaw_mcp_calc.engine.solubility import (
 )
 from chemclaw_mcp_calc.engine.structure import structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb import XtbInput, XtbResult, run_xtb
-from chemclaw_mcp_calc.engine.xtb_opt import OptimizationSummary, OptSpec, optimize_structure
+from chemclaw_mcp_calc.engine.xtb_opt import (
+    OptimizationSummary,
+    OptSpec,
+    optimization_inputs,
+    optimize_structure,
+)
 from chemclaw_mcp_calc.engine.xtb_props import (
     ElectronicProperties,
     FukuiMode,
     SiteReactivityResult,
 )
-from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 from chemclaw_mcp_calc.engine.xtb_thermo import ThermochemistryResult, ThermoSpec, relax_to_minimum
 
 server = FastMCP("calc")
@@ -70,6 +76,7 @@ server = FastMCP("calc")
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "calculation_key",
     "compute_electronic_properties",
     "compute_thermochemistry",
     "compute_xtb_energy",
@@ -109,6 +116,36 @@ async def resolve_calculator_versions() -> None:
         logger.warning("could not resolve the xTB backend at startup: %s", exc)
         return
     logger.info("calc server resolved its calculator version: %s", version)
+
+
+@server.tool()
+async def calculation_key(tool: str, arguments: dict[str, Any]) -> CalculationIdentity:
+    """Return what a calculation *would* be stored under, without running it. Cheap; no SCF.
+
+    **This tool is for the caller's cache, not for a chemist.** It answers "have I already computed
+    this?" so a client holding a calculation store can look the answer up before paying for it —
+    every other tool here is minutes of CPU with nothing cached underneath, so the difference
+    between one cheap round trip and one full calculation is the whole point.
+
+    An agent answering a chemist's question should call the compute tool directly. Every compute
+    result already carries `calc_version` and `calc_key`, so nothing here has to be called first.
+
+    Args:
+        tool: The name of the compute tool whose identity you want — one of the nine on this server.
+        arguments: The arguments you would pass to it. `smiles` is required; everything else takes
+            that tool's own default. An argument name the tool does not take is **refused rather
+            than ignored**, because ignoring one would return the key of a different calculation and
+            the lookup would then hit a real answer to a question nobody asked.
+
+    Returns:
+        `calc_version` always; `key` (the four fields a store lookup takes) and `calc_key` (the same
+        identity as one flat string) where the key is derivable from the arguments; `structure_id`
+        for the calculations that run on a geometry; and `caveat` explaining the absence for the two
+        that have no key — `predict_logd`, which was never cached, and `compute_thermochemistry`,
+        whose key names the relaxed geometry its refinement loop settles on and is therefore an
+        output of the calculation rather than a function of its arguments.
+    """
+    return await asyncio.to_thread(calculation_identity, tool, arguments)
 
 
 @server.tool()
@@ -212,8 +249,7 @@ async def compute_electronic_properties(
     """
 
     def _run() -> ElectronicProperties:
-        structure = xtb_props.property_structure(smiles)
-        return xtb_props.compute_properties(XtbSpec(task="properties", solvent=solvent), structure)
+        return xtb_props.compute_properties(*xtb_props.properties_inputs(smiles, solvent))
 
     return await asyncio.to_thread(_run)
 
@@ -254,8 +290,7 @@ async def predict_site_reactivity(
     """
 
     def _run() -> SiteReactivityResult:
-        structure = xtb_props.property_structure(smiles)
-        result = xtb_props.compute_fukui(XtbSpec(task="fukui"), structure, mode)
+        result = xtb_props.compute_fukui(*xtb_props.fukui_inputs(smiles), mode)
         limit = top_n if top_n > 0 else settings.xtb_fukui_top_n
         return result.model_copy(update={"sites": result.sites[:limit]})
 
@@ -288,8 +323,7 @@ async def optimize_geometry(smiles: str, solvent: str | None = None) -> Optimiza
     """
 
     def _run() -> OptimizationSummary:
-        structure = structure_from_smiles(smiles, multiplicity=None, optimize=True)
-        return OptimizationSummary.of(optimize_structure(OptSpec(solvent=solvent), structure))
+        return OptimizationSummary.of(optimize_structure(*optimization_inputs(smiles, solvent)))
 
     return await asyncio.to_thread(_run)
 

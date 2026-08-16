@@ -25,7 +25,14 @@ from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import CalculationKey, Keyed
 from chemclaw_mcp_calc.engine.uncertainty import Estimate, structural_domain
 
-__all__ = ["CALC_TYPE", "SolubilityInput", "SolubilityResult", "calc_version", "predict_solubility"]
+__all__ = [
+    "CALC_TYPE",
+    "SolubilityInput",
+    "SolubilityResult",
+    "cache_key",
+    "calc_version",
+    "predict_solubility",
+]
 
 CALC_TYPE = "solubility"
 
@@ -110,6 +117,20 @@ def calc_version() -> str:
     )
 
 
+def cache_key(job: SolubilityInput) -> CalculationKey:
+    """The versioned identity of predicting `job`'s solubility.
+
+    Its own function, and the only place this key is assembled, so `predict_solubility` and
+    `identity.calculation_identity` cannot disagree about what a caller should look the answer up
+    under. Cheap by construction: a canonicalisation and two hashes, no descriptors.
+    """
+    return CalculationKey.build(
+        calc_type=CALC_TYPE,
+        calc_version=calc_version(),
+        inputs={"smiles": require_canonical_smiles(job.smiles)},
+    )
+
+
 def predict_solubility(job: SolubilityInput) -> SolubilityResult:
     """Predict aqueous solubility for one molecule.
 
@@ -124,11 +145,7 @@ def predict_solubility(job: SolubilityInput) -> SolubilityResult:
     if mol is None:
         raise ValueError(f"invalid SMILES: {job.smiles!r}")
     log_s, uncertainty = _MODEL.predict(mol)
-    key = CalculationKey.build(
-        calc_type=CALC_TYPE,
-        calc_version=calc_version(),
-        inputs={"smiles": require_canonical_smiles(job.smiles)},
-    )
+    key = cache_key(job)
     # The domain check runs on the molecule ESOL was actually handed. It cannot be inferred from the
     # result: a salt and its free base give different predictions and the same result shape, and the
     # whole point is that the second one is not merely less accurate but undefined.

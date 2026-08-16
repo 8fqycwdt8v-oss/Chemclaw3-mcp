@@ -16,13 +16,15 @@ still being believed. `servers/<name>/tests/test_server.py` checks the manifest 
 running server actually advertises; that check is only meaningful if there is exactly one manifest.
 
 Earlier directories win a name collision in Chemclaw3's discovery, so putting this directory first
-lets a bundle here override a shipped one. That is a real capability and a real footgun, and **three
-entries here use it on purpose** — `chem`, `safety` and `calc` all carry the name of a Chemclaw3
-bundle. The first two are complete ports, so the override swaps one implementation for an identical
-one and the order of `CHEMCLAW_CONNECTORS_DIR` is a free choice.
+lets a bundle here override a shipped one. That is a real capability and a real footgun, and **two
+entries here use it on purpose** — `chem` and `safety` are complete ports carrying their bundle's
+name, so the override swaps one implementation for an identical one.
 
-**`calc` is not, and it is the one to be careful with.** It carries nine of that bundle's fifteen
-tools; the six that stay behind are the calibration ledger, the calculation cache and the artifact
-store, plus every durable calc job. Putting this directory first therefore removes them from the
-agent's surface **with no error** — so unless compute-only is what you want, Chemclaw3's own
-connectors directory goes first. `docs/integration.md` has both environments and what each costs.
+**`calc` is a third entry carrying a Chemclaw3 bundle's name, and it must *not* be registered this
+way.** It serves the computation behind nine of that bundle's fifteen tools and is called from
+inside Chemclaw3's own `cached_compute` as a backend, not dialled as a connector. Putting this
+directory on `CHEMCLAW_CONNECTORS_DIR` would let a partial port win the name and take the
+calibration ledger, the calculation cache, the artifact store and every durable calc job off the
+agent's surface — **with no error**. Its manifest lives here because this repository requires one
+per server and `tests/test_server.py` checks it against the running surface, not because Chemclaw3
+should point at it. See `docs/integration.md`.

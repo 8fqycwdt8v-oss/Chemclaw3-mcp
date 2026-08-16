@@ -26,6 +26,7 @@ __all__ = [
     "CALC_TYPE",
     "DescriptorInput",
     "DescriptorProfile",
+    "cache_key",
     "calc_version",
     "compute_descriptor_profile",
 ]
@@ -72,6 +73,20 @@ def calc_version() -> str:
     return f"rdkit-{version('rdkit')}"
 
 
+def cache_key(job: DescriptorInput) -> CalculationKey:
+    """The versioned identity of `job`'s descriptor panel — the only place this key is assembled.
+
+    Read by both `compute_descriptor_profile` and `identity.calculation_identity`, so the string a
+    caller looks the answer up under and the string the answer comes back carrying are one
+    definition rather than two that agree today.
+    """
+    return CalculationKey.build(
+        calc_type=CALC_TYPE,
+        calc_version=calc_version(),
+        inputs={"smiles": require_canonical_smiles(job.smiles)},
+    )
+
+
 def compute_descriptor_profile(job: DescriptorInput) -> DescriptorProfile:
     """Compute the developability descriptor panel for one molecule.
 
@@ -100,11 +115,7 @@ def compute_descriptor_profile(job: DescriptorInput) -> DescriptorProfile:
     violations = sum([mw > 500, clogp > 5, hbd > 5, hba > 10])
     veber_pass = rotatable <= 10 and tpsa <= 140
 
-    key = CalculationKey.build(
-        calc_type=CALC_TYPE,
-        calc_version=calc_version(),
-        inputs={"smiles": canonical},
-    )
+    key = cache_key(DescriptorInput(smiles=canonical))
     return DescriptorProfile(
         calc_version=key.calc_version,
         calc_key=key.as_str(),

@@ -15,36 +15,81 @@ server takes a SMILES, computes, and returns.
 | `predict_solubility` | Aqueous log S from the ESOL (Delaney 2004) baseline, with a domain check. |
 | `predict_logd` | pH-dependent logD, for singly-ionisable molecules only. |
 | `predict_developability_profile` | MW, cLogP, TPSA, H-bond counts, sp3 fraction, QED, Ro5/Veber flags. |
+| `calculation_key` | What a calculation *would* be stored under — without running it. |
 
-## Read this before wiring it up: the collision is not a clean replacement
+## Read this first: it is a backend, not a connector Chemclaw3 dials
 
-`chem` and `safety` are *complete* ports — same name, same tools, so putting this fleet's
-`manifests/` first on `CHEMCLAW_CONNECTORS_DIR` swaps one implementation for an identical one.
-**This server is not that.** Chemclaw3's in-tree `calc` bundle serves fifteen tools plus a set of
-durable jobs; nine of them are here and six are not:
+`chem` and `safety` are complete ports, so registering them on `CHEMCLAW_CONNECTORS_DIR` swaps one
+implementation for an identical one. **This server is different, and putting it on that path is
+wrong.**
 
-| Stays in Chemclaw3 | Why it cannot move |
+Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moved here is the *computation*
+behind nine of them; the other six have no computation to move, because they **are** the state:
+
+| Stays entirely in Chemclaw3 | What it is |
 | --- | --- |
-| `report_measurement`, `calculator_trust`, `calculator_outliers` | The calibration ledger — a Postgres table of predictions reconciled against measurements. |
-| `find_calculations` | A query over the calculation cache. |
-| `list_artifacts`, `fetch_artifact` | The content-addressed artifact store. |
-| every `jobs:` entry (solvent screens, conformer ensembles, reaction energetics, relaxed scans, host–guest complexes) | Temporal-queued durable work, which a stateless tool server is by construction not. |
+| `report_measurement`, `calculator_trust`, `calculator_outliers` | the calibration ledger |
+| `find_calculations` | a query over the calculation cache |
+| `list_artifacts`, `fetch_artifact` | the content-addressed artifact store |
+| every `jobs:` entry | solvent screens, conformer ensembles, reaction energetics, relaxed scans, host–guest complexes, on Temporal |
 
-Chemclaw3 resolves a bundle-name collision by *first directory wins*, with no error either way, so
-listing this fleet's `manifests/` first silently removes all six of those and every job. **The
-supported wiring is therefore the reverse of `chem`'s and `safety`'s**: keep Chemclaw3's own
-connectors directory first. `docs/integration.md` has the exact environment.
+The name is still `calc`, because this repository requires the directory, the package suffix and the
+manifest `name` to be one string (`tests/test_fleet.py`). So registering this directory as a
+connector would let a *partial* port win the name collision — first directory wins, **with no
+error** — and take those six tools and every durable job off the agent's surface. The manifest here
+is this repository's own declaration of the served surface, checked against the running server by
+`tests/test_server.py`; it is not an instruction to point Chemclaw3 at it.
 
-The name is nonetheless `calc`, because this repository requires the directory, the package suffix,
-the manifest `name` and the `CHEMCLAW_CONNECTOR_URLS` key to be one string
-(`tests/test_fleet.py::test_the_name_is_one_string_used_four_times`). The hazard is handled by
-saying so rather than by renaming.
+## `calculation_key`: why the cache seam needed a tenth tool
+
+Chemclaw3 calls this server from inside `science/calc/store.py::cached_compute`:
+
+```python
+hit = await store.get(key)  # <- the key is an argument, so it is needed BEFORE the compute
+if hit is not None:
+    return hit.result, True
+result = await compute()
+```
+
+Returning `calc_version`/`calc_key` **on the result** is necessary and not sufficient: on a cache hit
+there is no result to read them off. The only other way to fill that argument would be for Chemclaw3
+to derive the key locally — which is exactly the silent divergence the split exists to remove.
+
+So the server answers the same question one round trip earlier:
+
+```python
+identity = await remote.calculation_key(tool, arguments)   # cheap: canonicalise, embed, hash
+hit      = await store.get(identity.key)                   # the four fields, ready to use
+if hit is None:
+    payload = await remote.<tool>(**arguments)             # the SCF, only on a miss
+    await store.put(StoredResult(key=identity.key, result=payload))
+```
+
+One cheap round trip on a hit instead of a calculation; two calls on a miss, which is noise beside
+minutes of CPU. `identity.key` is returned as the four fields `store.get` takes rather than a string
+to parse — `calc_version` legitimately contains both `@` and `:` (`esol-delaney@2004/…`,
+`cal-0.28733:-29.3116`), so a caller splitting the flat form is one delimiter from a key that misses
+forever. The flat `calc_key` comes back beside it, and the compute result carries the same string, so
+asserting the two against each other is a free check that both paths agree.
+`tests/test_calculation_key.py` asserts exactly that property for every tool, which is what the whole
+design rests on. "Cheap" is asserted too: every route through `Calculator` is made to raise and all
+nine identities still come back.
+
+**Two tools return no key, and say why in a `caveat` rather than by omission.** `predict_logd` never
+had one — Chemclaw3 did not cache logD, because its expensive half is already a cached pKa and
+Crippen LogP is sub-millisecond. `compute_thermochemistry`'s key names the geometry its refinement
+loop *finally settled on*, which is an output: the loop optimises, takes a Hessian, and displaces
+along the imaginary mode and repeats when the optimiser lands on a rotational saddle (which an
+ordinary ester does). Chemclaw3's own `compute_thermochemistry` was not a single cached calculation
+either — its economy came from the nested `xtb.opt` and `xtb.hess` entries, and the split has moved
+those inside one remote call. The optimisation's key is deliberately *not* offered as a stand-in: it
+would usually miss, and where Chemclaw3 happened to hold an `xtb.hess` row for that unrefined
+geometry it would be a hit on the wrong answer.
 
 ## What every result carries that Chemclaw3's did not
 
 **`calc_version`, always — and `calc_key`, the full
-`calc_type@calc_version:input_hash:params_hash` string, on eight of the nine.** This is the reason
-the port exists in the shape it does, and it is worth being precise about.
+`calc_type@calc_version:input_hash:params_hash` string, on eight of the nine.**
 
 `calc_version` is assembled from things that live only in this process:
 
@@ -68,11 +113,7 @@ than raising**. So the reconstruction would be well-formed, would match zero led
 calibration that is merely unreachable. Silent, not loud, which is why it is a returned field and a
 test (`tests/test_calc_version.py`) rather than a convention.
 
-The one tool with `calc_key: null` is `predict_logd`, and that is faithful: Chemclaw3 never cached
-logD (the expensive half was already memoized as a pKa, and Crippen LogP is sub-millisecond), so
-there is no key derivation to port. It carries `pka_calc_key` instead, which *is* addressable.
-
-### The three duplications, and where the copies must agree
+### The three copied definitions — and the one that still has to agree
 
 Neither repository may import the other, so three definitions are copied. Each has a test pinning it
 against literal strings taken from Chemclaw3:
@@ -83,21 +124,28 @@ against literal strings taken from Chemclaw3:
 | `engine/key.py` — `CalculationKey`, `CALCULATION_EPOCH` | `chemclaw/science/calc/store.py` | `tests/test_key_contract.py` |
 | `engine/chem.py` — `require_canonical_smiles` | `chemclaw/core/chem.py` | `tests/test_canonicalization_contract.py` |
 
-`CALCULATION_EPOCH` deserves the extra sentence: it is a **source constant in both repositories**,
-bumped when a ChemClaw-side change makes an already-written row wrong. It is not this server's to
-move unilaterally — the rows it partitions live over there — so a change to it is a change in both
-repositories in the same pull request.
+**But only one of them actually has to *agree* across the two repositories, and that is what
+`calculation_key` bought.** Because Chemclaw3 never derives a key — it receives the four fields
+`store.get` takes — the copies here are the sole producer of every key this server's answers are
+addressed by. Self-consistency is enough for three of the four; the exception is:
 
-`engine/structure.py`'s `structure_id` is the fourth thing that must not drift, and it is a copy in
-the same sense: round the coordinates to `xtb_geometry_decimals` first, then `stable_hash` over
-`{elements, positions, charge, multiplicity}`, excluding `smiles` and `origin`. It is the
-`input_hash` of every `xtb.*` key.
+- **`CALCULATION_EPOCH`.** A source constant in both repositories, folded into every `params_hash`,
+  bumped when a ChemClaw-side change makes an already-written row wrong. Chemclaw3 still builds keys
+  for its own in-tree calculators, so the two live in one table and must match. Bump it in both in
+  the same change, or in neither.
 
-**Configuration is the fourth place the two sides have to agree**, and it is the easiest to get
-wrong because nothing fails. `engine/config.py` uses Chemclaw3's env prefix and Chemclaw3's field
-names exactly — `CHEMCLAW_PKA_UNCERTAINTY`, `CHEMCLAW_XTB_METHOD`, `CHEMCLAW_XTB_ENGINE` — because
-seven of those values are *inside* the pKa version string. A deployment that tuned a calibration
-here and not there would produce ledger rows nothing reconciles.
+Three things that would otherwise be on that list are **not**:
+
+- *The calculator settings.* `engine/config.py` uses Chemclaw3's env prefix and field names —
+  `CHEMCLAW_PKA_UNCERTAINTY`, `CHEMCLAW_XTB_METHOD`, `CHEMCLAW_XTB_ENGINE` — because an operator
+  configuring both should not need a second vocabulary. Seven of those values are *inside* the pKa
+  version string, but only this server reads them, so tuning a calibration here moves the version
+  everywhere it appears, consistently.
+- *The RDKit build.* `structure_id` is a hash of an embedded geometry, and only this server embeds.
+  (The derivation itself must stay put: round the coordinates to `xtb_geometry_decimals` first, then
+  `stable_hash` over `{elements, positions, charge, multiplicity}`, excluding `smiles` and `origin`.
+  It is the `input_hash` of every `xtb.*` key.)
+- *The flat key format.* `calculation_key` returns the four fields, so nothing parses the string.
 
 ## The `xtb` and `crest` binaries: not in this image
 
@@ -135,31 +183,31 @@ shell at all — measured, it put triplet O₂ *above* singlet.
 
 ## Cost, and why the timeout is 900 s
 
-**This server breaks the fleet's "anything over ~20 s is a durable job" rule, on purpose, and the
-exception is bounded rather than argued away.** `compute_thermochemistry` on a drug-sized molecule
-is minutes. What makes it a tool here anyway is that all three of the following hold; a slow tool
-with none of them is still a durable job:
+This is the only server in the fleet where a single call can take minutes. `props` answers from a
+dict; `chem` draws an SVG; a cold `compute_thermochemistry` here is 6N + 1 GFN2 single points with a
+geometry optimization in front of it.
 
-1. a **hard input bound** refuses what would run away — `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150),
-   with a message naming Chemclaw3's durable QM job path, which is the route that *does* exist for
-   those molecules;
+**It therefore breaks the fleet's "anything over ~20 s is a durable job" rule, on purpose, and the
+exception is bounded rather than argued away.** Three things hold; a slow tool with none of them is
+still a durable job:
+
+1. a **hard input bound** refuses what would run away — `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150), with
+   a message naming Chemclaw3's durable QM job path, which is the route that *does* exist for those
+   molecules;
 2. the manifest states the real budget (`request_timeout: 900`) instead of inheriting the fleet's
    habitual 30 s and timing out mid-calculation;
 3. the tool docstring tells the model what it is asking for, so an expensive call is a decision
    rather than a routine follow-up to an energy.
 
-The seven other tools are seconds or less. This is the only server in the fleet where a single call
-can take minutes. `props` answers from a
-dict; `chem` draws an SVG; a `compute_thermochemistry` here is 6N + 1 GFN2 single points with a
-geometry optimization in front of it, and **there is no cache underneath it any more** — Chemclaw3's
-connector could serve a repeat for free and this one cannot. Three consequences, all deliberate:
+**There is no cache in this process**, and that is what `calculation_key` is for: the caller checks
+its own store first and only reaches a compute tool on a miss. `compute_thermochemistry` is the one
+tool that cannot be looked up that way, so it is also the one whose cost is paid every time — which
+is exactly why its input bound is the tightest thing on this list.
 
-- the manifest's `request_timeout` is 900 s rather than the fleet's usual 30;
-- `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) refuses what would blow past it, with a message pointing at
-  Chemclaw3's durable QM job path — the route that *does* exist for those;
-- every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts
-  the hop for all nine. One call on the event loop would stop every other connected turn on this
-  process for its whole duration.
+Every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts the
+hop for all ten — `calculation_key` included, because it embeds a 3D geometry and, if a client uses
+it before every compute, it is the most frequently called tool here. One call on the event loop
+would stop every other connected turn on this process for its whole duration.
 
 The image pins `OMP_NUM_THREADS=1` (and the BLAS equivalents). LAPACK and tblite's OpenMP each size
 themselves to the *node* rather than to the container's CPU limit and then fight each other;
@@ -187,7 +235,9 @@ entry points cannot be taken wrongly: `predict_pka` canonicalizes its SMILES its
 steers the seeded embedding, so computing on the caller's spelling would make the value depend on
 which spelling arrived first), and `compute_descriptor_profile` does the same.
 
-One check was **added**: `XtbSpec` refuses a solvent ALPB has no parameters for, at construction.
+Two things were **added** rather than ported. `calculation_key` is the larger one, and it exists
+because `cached_compute` takes the key as an argument — see above. The smaller: `XtbSpec` refuses a
+solvent ALPB has no parameters for, at construction.
 Chemclaw3 caught that in a job precondition before a workflow started; without it here, "2-MeTHF" —
 among the commonest process solvents, and one GFN2-xTB has no parameters for — would surface as
 tblite's "String value for epsilon was not found among database of solvents", or minutes later

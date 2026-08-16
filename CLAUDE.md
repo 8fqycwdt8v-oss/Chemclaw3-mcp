@@ -226,7 +226,7 @@ this.
 | 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
 | 8858 | `chem` | built (port of Chemclaw3's own `chem` bundle — see below) |
 | 8859 | `safety` | built (port of Chemclaw3's own `safety` bundle — see below) |
-| 8860 | `calc` | built (port of **nine of the fifteen tools** on Chemclaw3's own `calc` bundle — see below) |
+| 8860 | `calc` | built (the compute behind nine of Chemclaw3's `calc` tools — a **backend**, not a connector; see below) |
 | 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
 | 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
 | 8861+ | compound identity & data | proposed |
@@ -247,7 +247,7 @@ question — the failure its own `connectors/README.md` records as two live defi
 
 | Already in Chemclaw3 | Where |
 | --- | --- |
-| ~~xTB energies, pKa, logD, solubility, thermochemistry~~ · **the calibration ledger, the calculation cache, the artifact store and every durable calc job remain Chemclaw3's** | now `servers/calc/` — *partly*; see below |
+| xTB energies, pKa, logD, solubility, thermochemistry — **the tools stay Chemclaw3's; the computation behind nine of them moved.** The calibration ledger, the calculation cache, the artifact store and every durable calc job are wholly Chemclaw3's | `calc`, computing through `servers/calc/`; see below |
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
 | ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
@@ -267,17 +267,23 @@ and `CHEMCLAW_CONNECTORS_DIR` gives the first directory the collision). A port t
 would leave both live, which is the duplication this section exists to prevent. See
 `servers/chem/README.md` and `servers/safety/README.md`.
 
-**`calc` is the third row and the one that did *not* leave cleanly, which is why it is struck
-through only in part.** `servers/calc/` carries nine of that bundle's fifteen tools — the
-request/response compute — and six cannot follow, because they *are* the state: the calibration
-ledger (`report_measurement`, `calculator_trust`, `calculator_outliers`), the calculation cache
-(`find_calculations`) and the artifact store (`list_artifacts`, `fetch_artifact`), plus every
-`jobs:` entry. So this is a partial replacement carrying the same name, and the collision resolves
-the **opposite** way from the other two: Chemclaw3's own connectors directory goes *first*, or the
-agent silently loses six tools and every durable calc job. The compensation for splitting a cache
-from its calculator is that every result carries `calc_version` and `calc_key` — see
-`servers/calc/README.md`, which explains why re-deriving either on the Chemclaw3 side fails
-silently rather than loudly.
+**`calc` is the third row and it did not leave the same way, which is why it is struck through only
+in part.** `servers/calc/` carries the *computation* behind nine of that bundle's fifteen tools; six
+cannot follow, because they **are** the state — the calibration ledger (`report_measurement`,
+`calculator_trust`, `calculator_outliers`), the calculation cache (`find_calculations`) and the
+artifact store (`list_artifacts`, `fetch_artifact`) — nor can any `jobs:` entry.
+
+**So it is not registered as a connector at all**, and that is the difference to internalise:
+Chemclaw3 keeps its `calc` bundle and all fifteen tools, and calls this server from inside
+`science/calc/store.py::cached_compute` as a backend on a miss. Putting this fleet's `manifests/`
+on `CHEMCLAW_CONNECTORS_DIR` would let a partial port win the name collision and remove six tools
+and every durable job from the agent's surface, with no error.
+
+`cached_compute` takes the key as an *argument*, so a key that only arrives on the result would be
+unusable there — which is why this server serves a tenth tool, `calculation_key`, returning the
+identity of a calculation before it runs. That is what makes the split honest: Chemclaw3 never
+derives a key, so the only thing the two repositories must keep in step is the value of
+`CALCULATION_EPOCH`. See `servers/calc/README.md` and `docs/integration.md`.
 
 A port leaves things behind, and what it leaves behind is part of the argument. Both of these did:
 `chem` dropped Chemclaw3's `standardize` pipeline because none of its tools asked the compound

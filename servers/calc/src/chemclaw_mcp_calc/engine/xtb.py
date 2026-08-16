@@ -21,7 +21,7 @@ from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb_engine import gfn2_energy
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 
-__all__ = ["XtbInput", "XtbResult", "run_xtb"]
+__all__ = ["XtbInput", "XtbResult", "run_xtb", "sp_inputs"]
 
 
 class XtbInput(BaseModel):
@@ -84,6 +84,17 @@ def _sp_structure(smiles: str, charge: int) -> Structure:
     return structure_from_smiles(smiles, charge=charge, optimize=True)
 
 
+def sp_inputs(job: XtbInput) -> tuple[XtbSpec, Structure]:
+    """The settings and the geometry one single point runs on — the pair its *identity* is made of.
+
+    Extracted so `run_xtb` and `identity.calculation_identity` read the same definition rather than
+    two agreeing copies. The key is derived from exactly this pair, so a change to either — the
+    task, the solvent, the embedding policy — moves the key for both paths at once, and
+    `tests/test_calculation_key.py` proves they still agree.
+    """
+    return XtbSpec(task="sp"), _sp_structure(job.smiles, job.charge)
+
+
 def run_xtb(job: XtbInput) -> XtbResult:
     """Compute a GFN2-xTB single-point energy for one molecule.
 
@@ -93,4 +104,4 @@ def run_xtb(job: XtbInput) -> XtbResult:
     to an energy that can be hundreds of kcal/mol off. Those checks live in `structure.Structure`,
     so every xTB task inherits them identically.
     """
-    return _energy(XtbSpec(task="sp"), _sp_structure(job.smiles, job.charge))
+    return _energy(*sp_inputs(job))

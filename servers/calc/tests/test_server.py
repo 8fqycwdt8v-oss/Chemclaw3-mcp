@@ -169,6 +169,52 @@ async def test_the_version_and_the_key_survive_the_wire(running_server: str) -> 
             )
 
 
+async def test_the_cache_probe_round_trips_and_matches_the_compute_it_precedes(
+    running_server: str,
+) -> None:
+    """The integration this server exists for, exercised over the wire it will actually run on.
+
+    Chemclaw3 calls `calculation_key`, looks the four fields up in its own store, and only reaches a
+    compute tool on a miss. Both halves have to survive MCP serialization for that to work: `key` is
+    a *nested model*, so it arrives as an object rather than a string, and it has to reconstruct the
+    same flat identity the compute tool then stamps on its result. A unit test would not see a
+    nesting the transport flattened or dropped.
+    """
+    async with _session(running_server) as session:
+        probe = await session.call_tool(
+            "calculation_key", {"tool": "predict_solubility", "arguments": {"smiles": "CCO"}}
+        )
+        assert probe.isError is False, probe.content
+        assert probe.structuredContent is not None
+        key = probe.structuredContent["key"]
+        assert set(key) == {"calc_type", "calc_version", "input_hash", "params_hash"}
+        assert key["calc_type"] == "solubility"
+
+        computed = await session.call_tool("predict_solubility", {"smiles": "CCO"})
+        assert computed.isError is False
+        assert computed.structuredContent is not None
+        assert computed.structuredContent["calc_key"] == probe.structuredContent["calc_key"]
+        assert computed.structuredContent["calc_version"] == probe.structuredContent["calc_version"]
+
+
+async def test_the_probe_refuses_a_mistyped_argument_rather_than_keying_something_else(
+    running_server: str,
+) -> None:
+    """The refusal that keeps a cache honest, checked where a caller will meet it.
+
+    A silently ignored `solvant` would return the *gas-phase* key, the caller's lookup would hit a
+    real row, and a solvated question would be answered by an unsolvated calculation with nothing
+    anywhere saying so. `ValueError` is what makes the message reach the caller verbatim.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool(
+            "calculation_key",
+            {"tool": "optimize_geometry", "arguments": {"smiles": "CCO", "solvant": "water"}},
+        )
+        assert result.isError is True
+        assert "does not take 'solvant'" in str(result.content)
+
+
 async def test_a_domain_refusal_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """The measured failure this contract exists for, checked end to end.
 

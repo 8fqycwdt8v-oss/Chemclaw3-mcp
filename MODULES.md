@@ -164,7 +164,10 @@ baseline with an applicability-domain check, pH-dependent logD, and an RDKit dev
 `optimize_geometry`, `compute_thermochemistry`, `predict_pka`, `predict_solubility`, `predict_logd`,
 `predict_developability_profile` — all `state_changing`, matching Chemclaw3's own manifest. That
 reads oddly for a stateless server and is still right: `read_only` is a *gate* (the plan gate lets an
-unapproved plan call one), and these are minutes of CPU each with no cache underneath.
+unapproved plan call one), and these are minutes of CPU each with no cache underneath. Plus
+`calculation_key`, the tenth and the only `read_only` one: it returns what a calculation *would* be
+stored under, without running it, which is what lets the caller's cache answer "have I already
+computed this?" before paying for it.
 *Offline:* **no vendored dataset at all** — the first server in the fleet with none. Every number is
 computed from tblite's compiled GFN parameters, RDKit's Crippen/QED tables and closed-form
 arithmetic, all of which arrive inside their own wheels. `tests/test_no_egress.py` proves sufficiency
@@ -173,27 +176,36 @@ by running one of each kind of calculation with the guard armed, rather than by 
 same names, same arguments, same model-facing docstrings minus every sentence that claimed a result
 was cached.
 
-**This is the one port in the fleet that is not a clean replacement, and the difference is
-load-bearing.** `chem` and `safety` carry their bundle's whole surface, so a name collision swaps one
-implementation for an identical one. Six `calc` tools cannot move — `report_measurement`,
-`calculator_trust`, `calculator_outliers` (the calibration ledger), `find_calculations` (the
-calculation cache), `list_artifacts`/`fetch_artifact` (the artifact store) — nor can any of the
-bundle's durable jobs. Chemclaw3 resolves a collision by first-directory-wins with no error either
-way, so **the supported wiring is the reverse of the other two: Chemclaw3's own connectors directory
-goes first.** See `docs/integration.md`.
+**This is the one server in the fleet that is not a connector Chemclaw3 dials, and the difference is
+load-bearing.** `chem` and `safety` carry their bundle's whole surface, so registering them on
+`CHEMCLAW_CONNECTORS_DIR` swaps one implementation for an identical one. Six `calc` tools cannot
+move — `report_measurement`, `calculator_trust`, `calculator_outliers` (the calibration ledger),
+`find_calculations` (the calculation cache), `list_artifacts`/`fetch_artifact` (the artifact store) —
+nor can any of the bundle's durable jobs. So Chemclaw3 keeps its `calc` bundle and all fifteen tools,
+and calls this server from inside `science/calc/store.py::cached_compute` as a **backend on a miss**.
+Registering it as a connector would let a partial port win the name collision and remove those six
+tools and every durable job from the agent's surface, with no error. See `docs/integration.md`.
 
-**What every result carries that Chemclaw3's did not: `calc_version`, and `calc_key` — the full
-`calc_type@calc_version:input_hash:params_hash` string — on eight of the nine.** The cache stayed
-behind but its addressing had to travel, because those strings are assembled from the installed
-`tblite`/`rdkit` distribution versions, a Hamiltonian-revision constant, an `xtb --version`
-subprocess, and (for pKa) seven calibration settings — none of which exist on a Chemclaw3 pod after
-the split. It is not a convenience: `calc_version` is the primary key of the calibration ledger
+**The cache stayed behind, so its addressing had to travel — in both directions.** Every result
+carries `calc_version` and (on eight of the nine) `calc_key`, the full
+`calc_type@calc_version:input_hash:params_hash` string. But `cached_compute` takes the key as an
+*argument*, so a key that arrives only on the result cannot serve the lookup — hence
+`calculation_key`, which answers the same question one round trip earlier and cheaply (canonicalise,
+embed, hash; no SCF, asserted by making every path through `Calculator` raise).
+
+Why it must be derived here at all: those strings are assembled from the installed `tblite`/`rdkit`
+distribution versions, a Hamiltonian-revision constant, an `xtb --version` subprocess, and (for pKa)
+seven calibration settings — none of which exist on a Chemclaw3 pod after the split. And a local
+reconstruction would not fail loudly: `calc_version` is the primary key of the calibration ledger
 (`predictions`, unique on `(calc_type, calc_version, input_hash)`, matched exactly with no version
-pooling), and `xtb_cli.binary_version()` returns the literal string `"absent"` rather than raising —
-so a client deriving it locally would produce a well-formed string matching zero rows, and
-`calculator_trust("pka")` would confidently report `UNCALIBRATED`. Silent, not loud.
-`tests/test_calc_version.py` asserts the field on all nine tools; `tests/test_key_contract.py` pins
-the hash, the epoch and the key format against literal strings taken from Chemclaw3.
+pooling), and `xtb_cli.binary_version()` returns the literal string `"absent"` rather than raising,
+so the string comes out well-formed, matches zero rows, and `calculator_trust("pka")` reports
+`UNCALIBRATED`. Silent, not loud.
+
+`tests/test_calculation_key.py` asserts that the key derived up front is the key the compute tool
+stamps on its result, for every tool — the property the whole design rests on.
+`tests/test_calc_version.py` asserts the field on all nine; `tests/test_key_contract.py` pins the
+hash, the epoch and the key format against literal strings taken from Chemclaw3.
 
 **Three things to know before touching it:**
 
@@ -203,14 +215,19 @@ the hash, the epoch and the key format against literal strings taken from Chemcl
   deployment resolves to it too, so the numbers and the version strings are unchanged by the port —
   verified by deriving both from the two trees on the same package versions. `engine/xtb_cli.py` is
   ported in full; installing the binary is one image layer and the `auto` default finds it.
-- **Three definitions are copied from Chemclaw3 and must not drift**: `stable_hash`,
+- **Three definitions are copied from Chemclaw3**: `stable_hash`,
   `CalculationKey`/`CALCULATION_EPOCH`, and `require_canonical_smiles`. Unlike `chem`'s and
-  `safety`'s copies of the last one, these *do* derive keys, so a divergence produces a key
-  addressing a row that does not exist. Each is pinned by a contract test. `CALCULATION_EPOCH` in
-  particular is a source constant in **both** repositories and moves in both or in neither.
-- **Configuration is the fourth place the two sides must agree.** `engine/config.py` uses Chemclaw3's
-  env prefix and field names exactly, because seven of those values are *inside* the pKa version
-  string. Tuning a calibration on one side only produces ledger rows nothing reconciles.
+  `safety`'s copies of the last one, these *do* derive keys, and each is pinned by a contract test.
+  But because Chemclaw3 never derives a key itself — `calculation_key` hands it the four fields
+  `store.get` takes — **only `CALCULATION_EPOCH` actually has to agree across the two repositories**,
+  and it does because Chemclaw3 still keys its own in-tree calculators into the same table. It is a
+  source constant in both and moves in both or in neither.
+- **The calculator settings do *not* have to agree**, and that is a consequence of the same design
+  rather than a coincidence. `engine/config.py` uses Chemclaw3's env prefix and field names because
+  an operator configuring both should not have to learn a second vocabulary — but seven of those
+  values are inside the pKa version string, and only this server reads them, so tuning a calibration
+  here moves the version everywhere it appears, consistently. Same for the RDKit build under
+  `structure_id`: only this server embeds.
 
 **What was dropped in the port:** the calculation cache and artifact store (`store.py`,
 `postgres_*.py`, `artifacts.py`), the calibration ledger (`calibration.py`), every `run_cached_*`

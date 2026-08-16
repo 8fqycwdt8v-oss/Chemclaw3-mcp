@@ -63,6 +63,15 @@ CASES: list[tuple[str, Any, str, Callable[[], Awaitable[Any]]]] = [
         "compute_descriptor_profile",
         lambda: tools.predict_developability_profile("CCO"),
     ),
+    # Not a calculation, and still a hop: it canonicalises, embeds a 3D geometry and hashes it,
+    # which is synchronous RDKit — tens of milliseconds, and the *most* frequently called tool here
+    # if a client is using it to check its cache before every compute.
+    (
+        "calculation_key",
+        tools,
+        "calculation_identity",
+        lambda: tools.calculation_key("compute_xtb_energy", {"smiles": "CCO"}),
+    ),
 ]
 
 

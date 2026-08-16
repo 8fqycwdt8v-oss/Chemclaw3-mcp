@@ -85,7 +85,10 @@ async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
     rather than being silently unchecked.
     """
     results = await _every_tool_result()
-    served = {tool.name for tool in await tools.server.list_tools()}
+    # `calculation_key` is excluded by name rather than by forgetting it: it returns an identity
+    # rather than a computed value, so it has a `calc_version` and nothing to compute one *for*.
+    # Naming it here is what keeps the rest of the assertion a closed set.
+    served = {tool.name for tool in await tools.server.list_tools()} - {"calculation_key"}
     assert set(results) == served, (
         "a tool is served that this test does not exercise (or vice versa); every compute "
         "tool must be checked for calc_version, and the served surface is the list that decides"

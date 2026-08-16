@@ -41,6 +41,8 @@ __all__ = [
     "SiteReactivityResult",
     "compute_fukui",
     "compute_properties",
+    "fukui_inputs",
+    "properties_inputs",
     "property_structure",
     "ranked_for",
 ]
@@ -280,6 +282,26 @@ def property_structure(smiles: str) -> Structure:
     describe a force-field geometry, which is what `structure_id` records.
     """
     return structure_from_smiles(smiles, optimize=True)
+
+
+def properties_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:
+    """The settings and the geometry `compute_properties` runs on — see `xtb.sp_inputs` for why.
+
+    The solvent is validated here, at spec construction, so an unparameterised name is refused
+    before any geometry is embedded — which also means `calculation_identity` refuses it for the
+    same reason and with the same message as the compute path.
+    """
+    return XtbSpec(task="properties", solvent=solvent), property_structure(smiles)
+
+
+def fukui_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:
+    """The settings and the geometry `compute_fukui` runs on.
+
+    `mode` is deliberately absent: the three single points do not depend on it — it only chooses the
+    sort — so it is not part of the calculation's identity. That is the same split Chemclaw3's cache
+    made, and it is what lets a caller ask for a second ranking without a second calculation.
+    """
+    return XtbSpec(task="fukui", solvent=solvent), property_structure(smiles)
 
 
 def ranked_for(result: SiteReactivityResult, mode: FukuiMode) -> SiteReactivityResult:
