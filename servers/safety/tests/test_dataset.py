@@ -366,3 +366,42 @@ def test_the_reagent_table_is_what_makes_a_structure_reach_an_ich_row() -> None:
     """
     assert reagents.resolve_compound_name("C1CCOC1") is not None
     assert ich.impurity_limit("C1CCOC1").limit is not None
+
+
+def test_the_peroxide_ketone_arm_is_deliberately_not_its_structural_twin() -> None:
+    """The exception to the two tests above, pinned so nobody "fixes" it back into a false flag.
+
+    The obvious generalisation of those tests — *a pair rule named after a structural rule must
+    embed its SMARTS* — was written, run, and found to be wrong here. Setting this arm to the
+    `peroxide` rule's pattern makes `di-tert-butyl peroxide + acetone` raise a rule about forming
+    acetone peroxide, which that combination cannot do.
+
+    The motifs overlap and are not the same. `peroxide` alerts on the O-O bond as an energetic
+    motif; this rule needs a source of HO-OH, and a dialkyl peroxide is the *product* of that
+    chemistry rather than a reagent for it. So the invariant those two tests state is real for the
+    rules they name and does not generalise by id, and this asserts the difference on purpose —
+    equality here would be a regression, not a repair.
+
+    What replaces the generalisation is the file header's own instruction, applied per widening: a
+    molecule pinned on each side, in `tests/test_pairs.py`.
+    """
+    structural = next(r.smarts for r in RULES.structural if r.id == "peroxide")
+    arm = next(r.left for r in RULES.incompatible_pairs if r.id == "peroxide-with-ketone")
+    assert arm != structural
+    assert "OX2H" in arm, "the arm must still require a hydroxyl-bearing (or salt) peroxide"
+
+
+def test_the_two_hydride_pair_rules_recognise_the_same_reagent_class() -> None:
+    """Two pair rules about one reagent class, differing only in the solvent they pair it against.
+
+    `hydride-with-dipolar-aprotic` and `saline-hydride-with-chlorinated-solvent` are the same
+    reagents in two flasks. Their left arms must be the same string for the reason every other twin
+    here must: a widening applied to one is a widening the other silently does not get, and the
+    result is a screen that flags NaH in DMSO and clears it in dichloromethane.
+
+    Not covered by the id-derived check above, because neither is a *structural* rule — which is
+    itself the point. The invariant is about two rules screening one motif, not about where either
+    of them happens to live in the table.
+    """
+    arms = {rule.id: rule.left for rule in RULES.incompatible_pairs}
+    assert arms["saline-hydride-with-chlorinated-solvent"] == arms["hydride-with-dipolar-aprotic"]
