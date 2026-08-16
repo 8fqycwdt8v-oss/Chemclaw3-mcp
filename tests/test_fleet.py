@@ -270,3 +270,66 @@ def test_every_server_builds_a_wheel_that_carries_its_data() -> None:
             f"{server.name} ships {in_wheel} of its {on_disk} data files; a server whose corpus "
             "is missing answers 'nothing matched' for every input, which reads as a clean result"
         )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_image_can_name_the_build_it_is(server: Path) -> None:
+    """Every Containerfile threads a build argument into `MCP_SERVER_REVISION`.
+
+    `mcp_server_kit.app.server_revision` reads that variable and stamps it onto the `initialize()`
+    handshake's `serverInfo.version` and onto `/healthz`, which is how Chemclaw3's audit row learns
+    *which build of which server* computed a number — the provenance hole that opened the moment
+    the chemistry left that repository and started shipping on its own cadence.
+
+    **This asserts the supply, not the read**, and that distinction is the whole reason the test
+    exists. Chemclaw3 shipped this exact field once (D-057) and it read `"unknown"` for eight
+    months: the function, the column and the test were all present and correct, and no build ever
+    set the variable. A default that is a plausible answer cannot fail loudly, so the only place
+    the omission is visible is here, in the file that would have had to supply it.
+    """
+    text = (server / "Containerfile").read_text(encoding="utf-8")
+    assert "ARG CHEMCLAW_REVISION" in text, (
+        f"{server.name}/Containerfile declares no CHEMCLAW_REVISION build argument, so every "
+        "image it builds reports its revision as 'unknown'"
+    )
+    assert "ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}" in text, (
+        f"{server.name}/Containerfile takes a revision argument and never puts it in the "
+        "environment, which is the only place the server reads it"
+    )
+
+
+def test_the_revision_reaches_the_handshake_and_the_probe() -> None:
+    """The other half: the value an image supplies is the one a client and a probe see.
+
+    Kept in the fleet file rather than in one server's, because it is a claim about `connector_app`
+    — every server's front door — and asserting it once per server would be five copies of one
+    fact. It reaches through `FastMCP._mcp_server`, a private attribute, deliberately: `FastMCP`
+    takes no `version`, so that coupling is real and an upstream rename must turn this red rather
+    than silently reverting the whole fleet to reporting the MCP SDK's own release number.
+    """
+    from fastapi.testclient import TestClient
+    from mcp.server.fastmcp import FastMCP
+    from mcp_server_kit.app import connector_app
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("MCP_SERVER_REVISION", "abc1234")
+        served = FastMCP("probe")
+        app = connector_app(served, name="probe")
+        options = served._mcp_server.create_initialization_options()
+        with TestClient(app) as client:
+            probed = client.get("/healthz").json()
+
+    assert options.server_version == "abc1234", (
+        "the initialize() handshake reports "
+        f"{options.server_version!r}; a client cannot tell which build answered"
+    )
+    assert probed == {"status": "ok", "server": "probe", "revision": "abc1234"}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delenv("MCP_SERVER_REVISION", raising=False)
+        bare = FastMCP("probe")
+        connector_app(bare, name="probe")
+        assert bare._mcp_server.create_initialization_options().server_version == "unknown", (
+            "an unstamped build must say so rather than report the MCP SDK's version, which is a "
+            "true fact about the wrong thing"
+        )

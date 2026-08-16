@@ -223,11 +223,27 @@ app Deployment and no Service from Chemclaw3's chart.
 
 On this side, each server ships:
 
-- a rootless image built from `servers/<name>/Containerfile`;
+- a rootless image built from `servers/<name>/Containerfile`, **built with
+  `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`** — see below;
 - `servers/<name>/deploy/networkpolicy.yaml` — default-deny egress, ingress from the Chemclaw3 pod
   and the Prometheus scraper only;
 - the bearer token as a plain Secret mounted into **both** pods under the same variable name
   (`CHEMCLAW_PROPS_TOKEN` for `props`): Chemclaw3 reads it to send, the server reads it to verify.
+
+### The revision is a build argument, and forgetting it is silent
+
+Chemclaw3's audit row records the *orchestrator's* commit. Since the chemistry moved here, the
+process that computed a number ships on this repository's cadence instead, and that column no longer
+names it. So `MCP_SERVER_REVISION` rides the `initialize()` handshake: `connector_app` stamps it onto
+`serverInfo.version`, which every client already reads when it opens a session, and onto `/healthz`
+for a probe that has no session. No extra endpoint, no extra round trip, no field on every result.
+
+The build argument is the whole supply chain, and an image built without it answers `"unknown"`
+rather than failing — which is precisely how Chemclaw3's own revision field stayed empty for eight
+months with its function, its column and its test all present and correct. `tests/test_fleet.py`
+therefore asserts the `ARG`/`ENV` pair in each Containerfile, not merely that the server reads the
+variable. A pipeline that drops the `--build-arg` is the one remaining way to get `"unknown"`, and
+it is visible: `curl .../healthz` says so.
 
 The manifest directory has to be readable by the Chemclaw3 pod. Either mount `manifests/` as a
 ConfigMap and prepend it to `CHEMCLAW_CONNECTORS_DIR`, or copy the `connector.yaml` files into
