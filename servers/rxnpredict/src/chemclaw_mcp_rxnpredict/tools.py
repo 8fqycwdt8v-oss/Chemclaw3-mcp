@@ -27,6 +27,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
+from chemclaw_mcp_rxnpredict.engine.base_doubles import register_requested
 from chemclaw_mcp_rxnpredict.engine.config import get_settings
 from chemclaw_mcp_rxnpredict.engine.meta.aggregator import (
     aggregate_conditions,
@@ -57,6 +58,12 @@ server = FastMCP("rxnpredict")
 # Import every predictor module once, here, so `list_available_models` is truthful from the first
 # request and a missing optional dependency is a recorded reason rather than a stack trace.
 discover_predictors()
+
+# Then register any deterministic doubles the configuration named. After discovery, never before:
+# a real predictor of the same name must win, and `register_requested` skips names already in the
+# registry. This is what gives `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a` a working tool
+# surface with no model weights; with no double named, it registers nothing.
+register_requested()
 
 
 def _safe_canon_reactants(smiles: str) -> str:
