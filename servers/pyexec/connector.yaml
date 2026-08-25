@@ -1,0 +1,41 @@
+# The `pyexec` bundle, as Chemclaw3 reads it.
+#
+# A connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): there is no
+# `server/` half in the Chemclaw3 tree, only this manifest and an address. Drop this directory onto
+# a path in `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit — which is also
+# the point of building it here. Chemclaw3's own `agent/scratchpad.py` withholds deepagents'
+# `execute` verb, correctly, because the two sandboxes that framework ships are a third-party
+# content egress and an unrestricted local shell. This is neither, and it needs none of that seam.
+name: pyexec
+description: >-
+  Run a short Python analysis in a bounded, offline child process: numpy, pandas, scipy and RDKit,
+  plus the arithmetic, container, text and date parts of the standard library. For the work between
+  tool calls — fitting a curve to returned points, aggregating a table, converting units,
+  canonicalising a structure, checking a mass balance. Data goes in as a JSON dict and comes back as
+  whatever the program assigns to `result`; there is no filesystem, no network and no state between
+  calls. Not a data source: it computes over what the caller gives it and knows nothing itself.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8899/mcp
+  health_url: http://127.0.0.1:8899/healthz
+  # The wall clock inside the sandbox is 20s, so this must be comfortably above it: a request
+  # timeout below the run's own bound would abandon the call while the child was still doing the
+  # work, and the caller would learn nothing about why. The sandbox's own limit is the one that
+  # should fire, because it is the one that reports a reason.
+  request_timeout: 30
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_PYEXEC_TOKEN
+  tools:
+    - run_python
+  # `read_only`, and this is a deliberate reading rather than a technicality. The tool writes
+  # nothing, persists nothing, and has no effect that outlives the call: the child's working
+  # directory is deleted before the tool returns, and `open` is not in its builtins, so there is no
+  # door to anything else. What the classification decides is whether the agent may use it while
+  # building the plan a human is asked to approve — and an analysis that cannot run until after
+  # approval is an analysis that cannot inform it. "Which of these two routes has the lower E-factor"
+  # is a question that has to be answerable *before* somebody signs off on one of them.
+  read_only:
+    - run_python

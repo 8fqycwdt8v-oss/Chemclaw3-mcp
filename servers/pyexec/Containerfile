@@ -1,0 +1,54 @@
+# The `pyexec` server as one rootless image.
+#
+# Unlike every other image in this fleet, this one exists to run a caller's program — so the two
+# hardening choices below are load-bearing rather than hygiene, and the deployment must add the
+# third:
+#
+#   * the process is unprivileged and owns nothing it needs to write;
+#   * the scientific stack is installed at build time, so a run never fetches anything;
+#   * the pod should mount the root filesystem read-only with an emptyDir on /tmp — the sandbox's
+#     working directory is a `tempfile.TemporaryDirectory` under TMPDIR and needs nothing else.
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY servers/pyexec /build/servers/pyexec
+
+# Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
+# which is also what the tests import.
+RUN python -m pip install --no-cache-dir --upgrade pip build \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels ./packages/mcp_server_kit ./servers/pyexec
+
+FROM python:3.11-slim
+
+# A fixed high UID rather than a name: OpenShift assigns an arbitrary UID from the namespace range,
+# and the process must own nothing it needs to write.
+ARG UID=1001
+RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+
+COPY --from=build /wheels /wheels
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit chemclaw-mcp-pyexec \
+    && rm -rf /wheels
+
+USER ${UID}
+EXPOSE 8899
+
+# The egress guard is armed on import and left at its default. `MCP_EGRESS_ALLOW` is not set here,
+# and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside this file
+# denies egress at the network layer regardless, and for this server that policy is the control that
+# matters most.
+ENV MCP_EGRESS_GUARD=on
+
+# The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
+# carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
+# caller learns which build answered without a second endpoint. The release pipeline passes
+# `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
+ARG CHEMCLAW_REVISION=unknown
+ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}
+
+# The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8899/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_pyexec.app:app", "--host", "0.0.0.0", "--port", "8899"]

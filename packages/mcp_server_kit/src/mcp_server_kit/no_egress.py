@@ -10,12 +10,23 @@ on the first two, which makes it worse than no check: it reports a clean scan.
 
 `socket` is on the list even though it is stdlib and the guard patches it, because a server here has
 no legitimate reason to hold one — and a module that imports it can also un-patch the guard.
+
+**`exempt` exists for exactly one shape, and it is narrower than it looks.** That last sentence is a
+statement about code running *in the server process*. `servers/pyexec` ships a file that never
+does: `engine/runner.py` is executed as a script in a disposable child, and it imports `socket` in
+order to replace `connect` with a refusal — the opposite of egress, and unreachable from the process
+this scan protects. The alternative was measured and rejected: arming this kit's own guard in the
+child means importing `mcp_server_kit`, which costs **730 ms** against a 13 ms bare interpreter,
+paid on every analysis. So a server may name files whose network import is the disabling one, and
+owes a test proving that is all it is — `servers/pyexec/tests/test_no_egress.py` is the pattern.
+Exempting anything else is a decision to argue in the pull request that does it.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 __all__ = ["FORBIDDEN_MODULES", "assert_no_egress_sources", "host_literals", "network_imports"]
@@ -80,18 +91,26 @@ def host_literals(source: Path) -> list[str]:
     return _URL.findall(source.read_text(encoding="utf-8"))
 
 
-def assert_no_egress_sources(*roots: Path) -> None:
+def assert_no_egress_sources(*roots: Path, exempt: Iterable[Path] = ()) -> None:
     """Assert no `.py` file under `roots` imports a network client or names a remote host.
 
     Args:
         roots: Package directories to scan — a server passes its own `src/<package>`.
+        exempt: Files to skip, resolved before comparison. For the one shape described in this
+            module's docstring: a file that runs in a child process and imports a network module in
+            order to disable it. A server that passes anything here owes a test proving that is what
+            the file does; an exemption without one is an unchecked claim, which is the failure this
+            whole scan exists to prevent.
 
     Raises:
         AssertionError: naming the file and what was found in it.
     """
+    skipped = {path.resolve() for path in exempt}
     offences: list[str] = []
     for root in roots:
         for source in sorted(root.rglob("*.py")):
+            if source.resolve() in skipped:
+                continue
             for module in network_imports(source):
                 offences.append(f"{source}: imports {module}")
             for host in host_literals(source):

@@ -225,6 +225,44 @@ no new primitive at all, being pure composition over ones already exposed.
   serialize, so a geometry crossing the wire arrived without its content address — and re-deriving
   one client-side is the divergence this design removes. Caught by the wire test, not a unit test.
 
+## Platform — capability that is not a chemistry data source
+
+One entry, and its own heading because it does not belong in a tranche. Every other server here
+answers a chemistry question from a corpus. This one answers no question at all: it runs the
+caller's arithmetic. It is grouped apart so the tranche structure keeps meaning what it says, and
+its port is taken from the top of the block for the same reason.
+
+### `pyexec` — a bounded, offline Python analysis sandbox · port 8899 · **built**
+
+One tool, `run_python(code, data)`. Runs a short program in a disposable child process with numpy,
+pandas, scipy and RDKit importable, and returns whatever it assigned to `result`. For the work
+between tool calls — fitting a curve to points another tool returned, aggregating a table,
+converting units, canonicalising a structure, checking a mass balance. Classified `read_only`,
+because it writes nothing and an analysis that cannot run until after a plan is approved is an
+analysis that cannot inform it.
+
+*Offline:* **no vendored dataset, and no corpus to be sufficient.** What "offline" means here is
+stronger and narrower than elsewhere in the fleet: the child holds no credential, has no filesystem
+door (`open` is not in its builtins), cannot import a network module, and cannot connect through a
+reference to one that a library already holds. `tests/test_no_egress.py` proves the last of those by
+reaching for a connection from inside the sandbox rather than by pointing at a table.
+
+*Provenance:* first-party, and built to answer a question Chemclaw3 had left open. Its
+`agent/scratchpad.py` withholds deepagents' `execute` verb, correctly — the two sandboxes that
+framework ships are a third-party content egress and an unrestricted local shell. Neither refusal is
+an argument against execution, and meanwhile numpy, pandas, scipy and RDKit sit installed in the
+agent's own process with no way for it to reach them. This server is the way to reach them that does
+not need the verb.
+
+**The one thing to understand before editing it: half its controls are a boundary and half are
+not.** The import guard and the withheld builtins are defence in depth and porous by construction;
+the process, the hard rlimits, the built-not-filtered environment and the empty `egress:` are what
+hold. `servers/pyexec/README.md` states which is which, and that division is the design.
+
+---
+
+## Tranche 1, continued
+
 ### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic
