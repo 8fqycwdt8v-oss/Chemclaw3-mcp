@@ -5,7 +5,14 @@ the authoritative port registry: claim the next free port here in the same pull 
 the server.
 
 **Status** is one of `built`, `next` (agreed, queued), or `proposed` (in the catalogue, not yet
-argued through). **Offline** says what the server reads, because production has no egress — see
+argued through).
+
+**A catalogue entry is a claim about what is available, and claims go stale.** Three rows were
+re-derived against 2026 releases on 2026-08-25 — `nomenclature`, `admet` and `retro` — and each
+says so inline. One of the three came back the *opposite* of what prompted the check, which is the
+argument for doing it against sources rather than from memory. Re-derive on the same trigger the
+consuming repository uses for its upstream register: whenever a dependency or a licence assumption
+here is bumped. **Offline** says what the server reads, because production has no egress — see
 `CLAUDE.md`, "No egress. Ever."
 
 Nothing here duplicates a Chemclaw3 capability; the exclusion list is in `CLAUDE.md`.
@@ -300,6 +307,14 @@ A server already exists for this, written for chemclaw2, and it covers far more 
 ever proposed. Building a second would be the duplication this catalogue exists to prevent — see
 "Adopted from the chemclaw2 fleet" below. What remains is integration work.
 
+**Re-derived 2026-08-25, and the conclusion is unchanged.** 2026 brought reasoning-model
+retrosynthesis — RetroReasoner, Retro-R1, and a line of work arguing that top-*k* accuracy is the
+wrong metric for an LLM proposing routes. None of that changes this row: the entry was already
+*adopted*, the existing server is the thing to integrate, and swapping its engine is a decision for
+whoever owns it rather than a reason to build a second one here. What the 2026 work does change is
+what "integrated" should eventually mean — a route needs a *strategy* rationale a chemist can argue
+with, not a ranked list — and that is a note for the integration, not a new server.
+
 ### `rxnsearch` — reaction precedent statistics · port 8855 · proposed
 
 *Proposed tools:* `conditions_for_transformation`, `yield_distribution`, `reagent_frequency`,
@@ -391,7 +406,7 @@ and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 
 | Server | Port | Status | Tools (proposed) | Offline source |
 | --- | --- | --- | --- | --- |
-| `nomenclature` | 8864 | proposed | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN (MIT), runs locally. Zero licence risk and the best value-to-effort ratio in the catalogue — a strong queue-jumper. |
+| `nomenclature` | 8864 | **next** | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN 2.8.0 (MIT), runs locally. **Re-derived 2026-08-25 and promoted to `next`:** `py2opsin` (MIT, PyPI) bundles the OPSIN jar in the wheel and has *zero Python dependencies*, so the whole corpus arrives at `pip install` time and the no-egress story needs no vendoring step at all — the only image cost is a JRE (Java 8+). Still the best value-to-effort ratio here, and now with a concrete route. |
 | `pubchem` | 8861 | proposed | `resolve_identifier`, `compound_properties`, `synonyms`, `cross_references` | A vendored PubChem subset; PubChem's own data is public domain. |
 | `chembl` | 8862 | proposed | `search_by_structure`, `bioactivities`, `target_lookup` | A ChEMBL slice. **CC-BY-SA — attribution obligations; needs a licence review before it is built.** |
 | `solidform` | 8863 | proposed | `search_structures`, `unit_cell`, `simulate_powder_pattern`, `polymorph_precedent` | Crystallography Open Database (CC0) + pymatgen. The CSD is commercial and out of scope. |
@@ -403,7 +418,7 @@ and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 | `ghs` | 8870 | proposed | `hazard_classification`, `h_and_p_statements`, `pictograms`, `exposure_limits` | PubChem LCSS extract + ECHA C&L. **GESTIS forbids transfer into other information systems — do not vendor it.** |
 | `reactivity` | 8871 | proposed | `screen_incompatibilities`, `reactive_group_of`, `gas_generation_risk` | NOAA CAMEO Chemicals reactivity matrix (US Government, public domain). |
 | `regdocs` | 8872 | proposed | `search_guidance`, `cite_passage`, `limit_lookup` | Vendored ICH (Q3A/Q3C/Q3D/M7/Q7/Q11) and FDA nitrosamine/NDSRI guidance, chunked and cited. |
-| `admet` | 8873 | proposed | `predict_admet_panel`, `tox_alerts` | Local open models (ADMET-AI / DeepChem). ADMETlab 3.0 has an API but is a hosted service — excluded by the no-egress rule. |
+| `admet` | 8873 | proposed | `predict_admet_panel`, `tox_alerts` | Local open models (ADMET-AI / DeepChem, trained on 41 TDC datasets). ADMETlab 3.0 has an API but is a hosted service — excluded by the no-egress rule. **Re-derived 2026-08-25: Boltz-2 does not replace this**, and the suggestion that it might was wrong. Boltz-2 is MIT and excellent, but it is a co-folding structure-and-binding-affinity model — protein-ligand — and ADMET is a secondary capability of its atom-level representations. A property panel and a binding-affinity predictor are two servers, and only the first is a process-chemistry question. |
 
 ## Tranche 4 — Literature and IP
 
