@@ -239,3 +239,27 @@ def test_nothing_survives_between_runs() -> None:
     assert first.error is None
     second = run("result = 'leaked' in dir()", limits=_fast())
     assert json.loads(second.result_json or "null") is False
+
+
+def test_the_traceback_holds_only_the_callers_frames() -> None:
+    """A traceback must name the caller's program and nothing about this server.
+
+    Two things at once. It is what a caller can act on — `runner.py`'s `exec` frame is noise they
+    cannot fix. And an unfiltered traceback prints this server's absolute source paths into a
+    result a model reads and may quote into an answer, which tells a chemist where the sandbox
+    lives for no benefit to either of them.
+    """
+    outcome = run("def inner():\n    return 1 / 0\n\n\nresult = inner()", limits=_fast())
+    assert outcome.error is not None
+    assert outcome.error.count("<analysis>") == 2  # the module frame and `inner`
+    assert "runner.py" not in outcome.error
+    assert "chemclaw_mcp_pyexec" not in outcome.error
+    assert outcome.error.rstrip().endswith("ZeroDivisionError: division by zero")
+
+
+def test_a_syntax_error_returns_the_message_without_a_frame_list() -> None:
+    """Nothing ran, so there are no frames — and the message is still the whole fix."""
+    outcome = run("result = (", limits=_fast())
+    assert outcome.error is not None
+    assert "SyntaxError" in outcome.error
+    assert "runner.py" not in outcome.error

@@ -317,6 +317,31 @@ def _truncate(text: str, cap: int) -> tuple[str, bool]:
     return (text[:cap], True) if len(text) > cap else (text, False)
 
 
+def _caller_traceback(failure: BaseException) -> str:
+    """The traceback, with this runner's own frames removed.
+
+    Two reasons, and the second is the one that made this a change rather than a preference. It is
+    **clearer**: the caller wants the line in their own program, and `runner.py`'s `exec` frame is
+    noise they cannot act on. And it is **narrower**: an unfiltered traceback prints this server's
+    absolute source paths into a tool result that a model reads and may quote into an answer —
+    telling a caller where the sandbox lives is not a capability anybody asked for.
+
+    A frame is the caller's when it was compiled under `ANALYSIS_FILENAME`, which nothing else in
+    this process is. When none are — a `SyntaxError` fails before any frame exists — the exception
+    line alone is returned, which is exactly what a caller needs to fix it.
+    """
+    frames = [
+        frame
+        for frame in traceback.extract_tb(failure.__traceback__)
+        if frame.filename == ANALYSIS_FILENAME
+    ]
+    lines = (
+        ["Traceback (most recent call last):\n", *traceback.format_list(frames)] if frames else []
+    )
+    lines.extend(traceback.format_exception_only(type(failure), failure))
+    return "".join(lines)
+
+
 def main(argv: list[str]) -> int:
     """Read the payload, run the program, write the result.
 
@@ -345,8 +370,8 @@ def main(argv: list[str]) -> int:
         compiled = compile(payload["code"], ANALYSIS_FILENAME, "exec")
         with redirect_stdout(out), redirect_stderr(err):
             exec(compiled, namespace)  # Running it is the whole capability.
-    except BaseException:  # A program's own failure is data, `SystemExit` included.
-        error = traceback.format_exc(limit=6)
+    except BaseException as failure:  # A program's own failure is data, `SystemExit` included.
+        error = _caller_traceback(failure)
 
     stdout, out_cut = _truncate(out.getvalue() + err.getvalue(), int(limits["stdout_chars"]))
     encoded, result_cut = _dumps(namespace.get("result"), limits)
