@@ -17,6 +17,7 @@ members = [
     "chemclaw-mcp-chem",
     "chemclaw-mcp-props",
     "chemclaw-mcp-pyexec",
+    "chemclaw-mcp-rxnlabel",
     "chemclaw-mcp-rxnpredict",
     "chemclaw-mcp-safety",
     "chemclaw3-mcp",
@@ -549,6 +550,42 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "chemclaw-mcp-rxnlabel"
+version = "0.1.0"
+source = { editable = "servers/rxnlabel" }
+dependencies = [
+    { name = "mcp-server-kit" },
+    { name = "rdkit" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pyyaml" },
+]
+models = [
+    { name = "rxn-insight" },
+    { name = "rxnmapper" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "rdkit", specifier = ">=2024.3" },
+    { name = "rxn-insight", marker = "extra == 'models'", specifier = ">=0.1.2" },
+    { name = "rxnmapper", marker = "extra == 'models'", specifier = ">=0.4" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+provides-extras = ["models", "dev"]
+
+[[package]]
 name = "chemclaw-mcp-rxnpredict"
 version = "0.1.0"
 source = { editable = "servers/rxnpredict" }
@@ -681,6 +718,7 @@ dev = [
     { name = "chemclaw-mcp-chem" },
     { name = "chemclaw-mcp-props" },
     { name = "chemclaw-mcp-pyexec" },
+    { name = "chemclaw-mcp-rxnlabel" },
     { name = "chemclaw-mcp-rxnpredict" },
     { name = "chemclaw-mcp-safety" },
     { name = "httpx" },
@@ -703,6 +741,7 @@ dev = [
     { name = "chemclaw-mcp-chem", editable = "servers/chem" },
     { name = "chemclaw-mcp-props", editable = "servers/props" },
     { name = "chemclaw-mcp-pyexec", editable = "servers/pyexec" },
+    { name = "chemclaw-mcp-rxnlabel", editable = "servers/rxnlabel" },
     { name = "chemclaw-mcp-rxnpredict", editable = "servers/rxnpredict" },
     { name = "chemclaw-mcp-safety", editable = "servers/safety" },
     { name = "httpx", specifier = ">=0.27" },

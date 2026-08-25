@@ -1,0 +1,71 @@
+# The `rxnlabel` server as one rootless image.
+#
+# Not boring, and the interesting part is the bake. This server's optional `models` extra carries
+# RXNMapper — a transformer whose library downloads its checkpoint on first use — and the fleet's
+# hard rule is that no server makes an outbound call at request time. So the weights are pulled
+# during the build, into the image, and the NetworkPolicy beside this file then denies egress
+# entirely: if the bake ever silently fails, the mapper cannot reach the internet to paper over it
+# and reports itself absent instead, which `labeller_version` carries and `app.py` logs.
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY servers/rxnlabel /build/servers/rxnlabel
+
+# Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
+# which is also what the tests import.
+RUN python -m pip install --no-cache-dir --upgrade pip build \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels ./packages/mcp_server_kit ./servers/rxnlabel
+
+FROM python:3.11-slim
+
+# A fixed high UID rather than a name: OpenShift assigns an arbitrary UID from the namespace range,
+# and the process must own nothing it needs to write (it writes nothing).
+ARG UID=1001
+RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+
+COPY --from=build /wheels /wheels
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit chemclaw-mcp-rxnlabel \
+    && rm -rf /wheels
+
+# The models, and then their weights. `--extra-index-url` for the CPU build of torch: this server
+# does inference on a handful of reactions at a time in a background drain, and a CUDA closure is
+# ~2 GB of image for a GPU no pod in this fleet has.
+RUN python -m pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        "rxnmapper>=0.4" "rxn-insight>=0.1.2"
+
+# **The bake.** Constructing an `RXNMapper` is what pulls the checkpoint, so doing it here at build
+# time is what puts the weights in the image. It is also the check: a build whose model cannot be
+# constructed fails here, loudly, rather than shipping an image that reports `mapper@absent` in
+# production and silently labels the whole corpus at a coarser resolution.
+RUN python -c "from rxnmapper import RXNMapper; RXNMapper(); print('rxnmapper weights baked')"
+
+# Rxn-INSIGHT's SMIRKS ship inside its wheel, so there is nothing to fetch — but importing it once
+# here fails the build on a broken install for the same reason.
+RUN python -c "from rxn_insight.reaction import Reaction; print('rxn-insight importable')"
+
+USER ${UID}
+EXPOSE 8865
+
+# The egress guard is armed on import and is left at its default. `MCP_EGRESS_ALLOW` is not set
+# here, and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside
+# this file denies egress at the network layer regardless.
+ENV MCP_EGRESS_GUARD=on
+
+# The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
+# carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
+# caller learns which build answered without a second endpoint. Left unsupplied it reports
+# `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the
+# field and its test both present and no build ever setting the variable. So `tests/test_fleet.py`
+# asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
+# nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
+ARG CHEMCLAW_REVISION=unknown
+ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}
+
+# The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8865/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_rxnlabel.app:app", "--host", "0.0.0.0", "--port", "8865"]

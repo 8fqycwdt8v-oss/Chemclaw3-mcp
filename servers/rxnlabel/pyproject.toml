@@ -1,0 +1,40 @@
+[project]
+name = "chemclaw-mcp-rxnlabel"
+version = "0.1.0"
+description = "MCP server: reaction and per-species representations with role assignment, and named-reaction classification."
+requires-python = ">=3.11"
+# RDKit is the floor: canonicalisation, the SMARTS role rules, scaffolds and functional groups all
+# come from it, and without it this server has nothing to say.
+#
+# The two model dependencies are **optional on purpose**, and this is the same call `rxnpredict`
+# makes for its predictors. RXNMapper is a transformer and drags torch behind it; installing it in
+# every developer's checkout and in CI to run a SMARTS test would cost gigabytes for nothing. The
+# server degrades instead of failing: without them it still assigns roles and computes
+# representations, `labeller_version` records which components were present, and the rows labelled
+# without them go stale the moment a deployment installs them. That last part is what makes the
+# degradation safe rather than silent — see `engine/version.py`.
+dependencies = [
+    "mcp-server-kit",
+    "rdkit>=2024.3",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+# The full image installs this. `Containerfile` bakes the RXNMapper weights at build time, because
+# the fleet rule is that no server makes an outbound call at request time and RXNMapper downloads
+# its checkpoint on first use.
+models = [
+    "rxnmapper>=0.4",
+    "rxn-insight>=0.1.2",
+]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_rxnlabel"]
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

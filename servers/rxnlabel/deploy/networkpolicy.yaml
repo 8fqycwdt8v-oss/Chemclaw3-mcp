@@ -1,0 +1,50 @@
+# Default-deny egress for the `rxnlabel` server — the layer that makes "no outbound calls" true even
+# if every line of Python in this repository were wrong.
+#
+# `policyTypes` names both directions, and `egress:` is an **empty list rather than an absent key**.
+# That difference is the whole object: an absent `egress` key with `Egress` in `policyTypes` means
+# "deny all", and so does an empty list, but only the empty list says so on purpose where a reader
+# can see it. Removing `Egress` from `policyTypes` would silently restore unrestricted outbound
+# traffic while the file still looked like a network policy.
+#
+# `tests/test_deploy.py` asserts this shape, in both directions, because a chart nobody verifies is
+# a chart that drifts — which is the failure Chemclaw3 recorded when its own deploy README described
+# components the entrypoint had not known about for months.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chemclaw-mcp-rxnlabel
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-rxnlabel
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-rxnlabel
+  policyTypes:
+    - Ingress
+    - Egress
+  # Two callers, and no third. The agent's front door opens MCP sessions; Prometheus scrapes
+  # `/metrics`. Neither needs anything else to reach this pod.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: chemclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8865
+  # Deliberately empty, and here it is load-bearing rather than merely tidy. This server carries a
+  # transformer whose library downloads its checkpoint on first use; the image bakes those weights
+  # at build time precisely so that never happens at request time, and this is what makes that true
+  # even if the bake silently failed. Not even DNS is permitted — a server that never dials a host
+  # never needs to look one up, and a DNS hole is the usual way a "default-deny" egress policy
+  # quietly stops being one.
+  #
+  # The visible consequence of a broken bake is therefore a mapper that fails to construct, which
+  # `engine/version.py` reports as `mapper@absent` and `app.py` logs as a warning at startup — a
+  # loud, correct degradation instead of a pod reaching the internet from a cluster that forbids it.
+  egress: []
