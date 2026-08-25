@@ -1,0 +1,33 @@
+[project]
+name = "chemclaw-mcp-pyexec"
+version = "0.1.0"
+description = "MCP server: run a short Python analysis in a bounded, offline child process."
+requires-python = ">=3.11"
+# Four scientific libraries, and each one is here because the tool's whole value is that a chemist's
+# analysis can reach it. That is the argument this file is supposed to carry: `props` states that a
+# heavy dependency must be argued in the pull request that adds it, and these are the argument —
+# numpy and pandas for tables and arithmetic, scipy for fitting and statistics, RDKit for structures.
+# Nothing else. In particular there is no plotting library: an image cannot cross the JSON boundary
+# this server returns through, so shipping one would add ~100 MB to the image for no reachable
+# capability.
+dependencies = [
+    "mcp-server-kit",
+    "uvicorn[standard]>=0.32",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scipy>=1.11",
+    "rdkit>=2024.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_pyexec"]
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

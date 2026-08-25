@@ -1,7 +1,7 @@
 # The gate. `make check` is what CI runs; nothing here needs a cluster, a database or a network.
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src
 
 .PHONY: help
 help: ## Show this help.
@@ -58,6 +58,10 @@ run-chem: ## Run the chem server on its dev port with a dev token.
 run-safety: ## Run the safety server on its dev port with a dev token.
 	CHEMCLAW_SAFETY_TOKEN=$${CHEMCLAW_SAFETY_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_safety.app:app --host 127.0.0.1 --port 8859
+
+run-pyexec: ## Run the pyexec analysis sandbox on its dev port with a dev token.
+	CHEMCLAW_PYEXEC_TOKEN=$${CHEMCLAW_PYEXEC_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_pyexec.app:app --host 127.0.0.1 --port 8899
 
 .PHONY: run-calc
 run-calc: ## Run the calc server on its dev port with a dev token.

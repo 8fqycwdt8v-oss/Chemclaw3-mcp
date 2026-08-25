@@ -1,0 +1,46 @@
+# Default-deny egress for the `pyexec` server.
+#
+# For every other server in this fleet this file is the layer that makes "no outbound calls" true
+# even if every line of Python were wrong. Here it is more than that: this server runs a program a
+# language model wrote, so this policy is the control that holds when the in-process guards — an
+# allowlisted `__import__`, a neutered socket module — are treated as what they are, which is
+# defence in depth rather than a boundary. Read `servers/pyexec/README.md` before relaxing anything
+# in this file.
+#
+# `policyTypes` names both directions, and `egress:` is an **empty list rather than an absent key**.
+# That difference is the whole object: an absent `egress` key with `Egress` in `policyTypes` means
+# "deny all", and so does an empty list, but only the empty list says so on purpose where a reader
+# can see it. Removing `Egress` from `policyTypes` would silently restore unrestricted outbound
+# traffic while the file still looked like a network policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chemclaw-mcp-pyexec
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-pyexec
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-pyexec
+  policyTypes:
+    - Ingress
+    - Egress
+  # Two callers, and no third. The agent's front door opens MCP sessions; Prometheus scrapes
+  # `/metrics`. Neither needs anything else to reach this pod.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: chemclaw
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8899
+  # Deliberately empty, and not even DNS. A server that never dials a host never needs to look one
+  # up, and a DNS hole is the usual way a "default-deny" egress policy quietly stops being one —
+  # here it would also be the one channel a hostile program could exfiltrate through without ever
+  # opening a TCP connection.
+  egress: []
