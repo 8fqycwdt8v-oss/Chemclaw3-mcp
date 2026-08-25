@@ -67,6 +67,42 @@ surface was *mounted* — and a mount bypasses the enclosing app's dependencies,
 guarded the REST routes and not `/mcp`. Here it is ASGI middleware, and `tests/test_server.py`
 asserts the 401. See `servers/rxnpredict/README.md` for the full list.
 
+### `rxnlabel` — reaction and species representations, roles, and named reactions · port 8865 · **built**
+
+What is this reaction made of, and what is it called? Atom-maps a reaction and decides what every
+species was doing — starting material, product, reagent, solvent, catalyst, **ligand**, **base**,
+additive — then computes each species' canonical form, Bemis-Murcko scaffold and functional groups,
+and classifies the reaction from 527 curated SMIRKS.
+
+The last two roles are the point. The vocabulary an ELN column or a patent extractor uses has five
+values and contains neither, so "which ligand was used" is unanswerable from a recorded reaction —
+and it is most of what a chemist asks. Deciding them needs the *reaction*, not the molecule:
+triphenylphosphine is a ligand in a Suzuki and a stoichiometric reagent in a Mitsunobu, and only the
+rest of the flask distinguishes them.
+
+*Tools:* `labeller_version`, `represent_reaction`, `name_reaction`, `represent_reactions`,
+`name_reactions` — all `read_only`. The batch pair is what a corpus-labelling drain calls: a
+multi-million-row corpus at one round trip per reaction is a multi-million round trips.
+*Offline:* RXNMapper's checkpoint is pulled during the build, and the NetworkPolicy then denies
+egress — so a failed bake degrades loudly instead of a pod reaching the internet from a cluster
+that forbids it. Rxn-INSIGHT's SMIRKS ship in its wheel; the role rules and the functional-group
+vocabulary are source in this repository.
+*Optional by design:* both models are a `models` extra, because RXNMapper drags torch behind it and
+a developer's checkout should not pay gigabytes to run a SMARTS test. Without them the server still
+assigns roles and computes representations, and `labeller_version` records which components were
+present — so rows labelled without one go stale the moment a deployment installs it, and the corpus
+repairs itself.
+*Not mounted on Chemclaw3's `CHEMCLAW_CONNECTORS_DIR`*, deliberately: these are internal primitives
+for a background drain, and mounting the manifest would put them in the agent's prompt as tools to
+choose between — the call `core/config/calculators.py` makes for the calculation server. Chemclaw3
+addresses it through `rxnlabel_server_url` and `rxnlabel_server_token_env`.
+*Port note:* 8865 rather than a tranche-1 slot, because 8850-8856 are all claimed by this
+catalogue's own proposals and taking a proposed server's port silently is what
+`test_the_catalogue_claims_no_port_a_server_contradicts` exists to prevent. It sits next to
+`nomenclature` at 8864 for no reason other than that 8865 was the first free number.
+It is the complement of the proposed `rxnsearch` (8855): that one *counts* precedent, this one is
+what makes a corpus countable in the first place.
+
 ### `chem` — bench chemistry over RDKit · port 8858 · **built**
 
 What do I weigh out, what is this compound, what does it look like, and how green is this route.

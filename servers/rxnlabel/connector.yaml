@@ -1,0 +1,53 @@
+# The `rxnlabel` bundle, as Chemclaw3 reads it.
+#
+# **Chemclaw3 does not mount this manifest, deliberately**, and that makes it the odd one in this
+# directory. `core/config/calculators.py` states the rule for the calculation server and it applies
+# unchanged here: putting an internal primitive's manifest on `CHEMCLAW_CONNECTORS_DIR` puts its
+# tools into the agent's prompt as things to choose between, and nothing in a conversation should be
+# picking `represent_reactions` off a tool list. Chemclaw3 reaches this server through plain
+# configuration read by one client module — `rxnlabel_server_url` and `rxnlabel_server_token_env` —
+# and the caller is a background drain.
+#
+# So this file exists for two other readers: this repository's own dev harness, which starts the
+# fleet from these manifests, and a person who wants to know what the server serves without reading
+# `tools.py`.
+name: rxnlabel
+description: >-
+  Reaction and per-species representations with role assignment, and named-reaction classification.
+  Atom-maps a reaction (RXNMapper), decides what each species was doing — starting material,
+  product, reagent, solvent, catalyst, ligand, base, additive — from the slot it was written in,
+  the atom map, and structure rules that consult the rest of the flask, and computes each species'
+  canonical form, Bemis-Murcko scaffold and functional groups. Classifies the reaction into a named
+  reaction and class from 527 curated SMIRKS (Rxn-INSIGHT). Pure and stateless: no store, no
+  durable state, and no network call at any point — the model weights are baked into the image.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8865/mcp
+  health_url: http://127.0.0.1:8865/healthz
+  # Generous, because a batch of 500 reactions through a transformer is the point of the batch
+  # tools. Chemclaw3's own client bound (`rxnlabel_server_timeout_seconds`, 120 s) is the one that
+  # matters on the calling side; this is the manifest's claim for a harness that reads it.
+  request_timeout: 180
+  # Bearer even though the shipped URL is loopback, for the reason `props` records: a manifest
+  # whose auth mode changes with its address is one whose serving side gets it wrong. The variable
+  # is the same name on both sides — Chemclaw3 reads it to send, `app.py` reads it to verify.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_RXNLABEL_TOKEN
+  tools:
+    - labeller_version
+    - represent_reaction
+    - name_reaction
+    - represent_reactions
+    - name_reactions
+  # Everything is a pure function of its arguments. There is no store here to change: the labels
+  # this server computes are stored by its *caller*, in Chemclaw3's reaction-label index, which is
+  # what makes staleness a query there rather than state here.
+  read_only:
+    - labeller_version
+    - represent_reaction
+    - name_reaction
+    - represent_reactions
+    - name_reactions

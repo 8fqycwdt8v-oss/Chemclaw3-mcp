@@ -12,6 +12,7 @@ dev = [
     "mcp-server-kit",
     "chemclaw-mcp-props",
     "chemclaw-mcp-rxnpredict",
+    "chemclaw-mcp-rxnlabel",
     "chemclaw-mcp-chem",
     "chemclaw-mcp-safety",
     "chemclaw-mcp-calc",
@@ -37,6 +38,7 @@ members = ["packages/*", "servers/*"]
 mcp-server-kit = { workspace = true }
 chemclaw-mcp-props = { workspace = true }
 chemclaw-mcp-rxnpredict = { workspace = true }
+chemclaw-mcp-rxnlabel = { workspace = true }
 chemclaw-mcp-chem = { workspace = true }
 chemclaw-mcp-safety = { workspace = true }
 chemclaw-mcp-calc = { workspace = true }
