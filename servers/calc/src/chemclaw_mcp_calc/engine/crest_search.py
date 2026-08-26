@@ -164,6 +164,15 @@ def combine_structures(first: Structure, second: Structure, separation: float) -
     second — so a caller wanting A-with-B and B-with-A to be one calculation orders the pair first
     with `ordered_pair`.
     """
+    if first.uhf or second.uhf:
+        raise ValueError(
+            "combining two structures where either is open-shell is refused: the pair's spin state "
+            f"is a chemical decision, not arithmetic. Two doublets (here: multiplicities "
+            f"{first.multiplicity} and {second.multiplicity}) are a singlet or a triplet, and this "
+            "function has no basis to pick one — every energy computed on the pair, and the "
+            "interaction energy built from them, would be the chosen surface's. Relax and search "
+            "the monomers separately, or open a spec that states the multiplicity and keys on it"
+        )
     left = np.array(first.positions)
     right = np.array(second.positions)
     left = left - left.mean(axis=0)
@@ -174,8 +183,12 @@ def combine_structures(first: Structure, second: Structure, separation: float) -
         elements=[*first.elements, *second.elements],
         positions=[*left.tolist(), *right.tolist()],
         charge=first.charge + second.charge,
-        # Two closed shells make a closed shell; an open-shell monomer is rejected by `Structure`
-        # itself rather than silently mis-assigned here.
+        # Two closed shells make a closed shell, which is the only case that reaches here: an
+        # open-shell monomer is refused above. It used to say `Structure` did that refusing, and
+        # `Structure` does no such thing — it validates a *declared* multiplicity against the
+        # electron count, which is exactly what makes the open-shell path work everywhere else here.
+        # So two doublets silently became a triplet, chosen by this arithmetic identity and by
+        # nobody, and the whole interaction-energy chain downstream was computed on that surface.
         multiplicity=first.multiplicity + second.multiplicity - 1,
         smiles=f"{first.smiles}.{second.smiles}",
     )

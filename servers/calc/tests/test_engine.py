@@ -280,6 +280,34 @@ def test_the_hessian_payload_size_is_bounded_by_the_atom_cap() -> None:
     assert len(pack_array(np.zeros((3 * limit // 2, 3 * limit // 2)))) < len(encoded) / 3
 
 
+def test_the_hessian_carries_the_gradient_that_says_whether_it_is_a_minimum() -> None:
+    """A Hessian differentiates whatever geometry it is handed, so it has to say which one.
+
+    `OptimizationResult` guarantees convergence and raises otherwise; the Hessian has no such
+    contract and must not pretend to one — a transition state and a scan point are legitimate
+    subjects. What it can do is hand back the evidence, and the evidence already exists: the
+    undisplaced `evaluate_point` computes the analytic gradient and used to discard it.
+
+    Why it matters that this travels: Chemclaw3's `thermo._vibrational` skips every mode with
+    `wavenumber <= 0`, so an MMFF geometry's spurious modes produce a ZPE, a thermal correction and
+    an entropy that all look entirely ordinary. A geometry displaced along a *soft, positively
+    curved* direction produces no imaginary mode at all and is invisible to the `is_minimum` check;
+    the gradient is what separates the two cases.
+    """
+    embedded = structure_from_smiles("O", optimize=True)
+    relaxed = optimize_structure(OptSpec(), embedded).structure
+
+    at_minimum = compute_hessian(HessianSpec(), relaxed)
+    assert at_minimum.max_gradient is not None
+    assert at_minimum.max_gradient <= settings.xtb_opt_gradient_tolerance
+
+    # The same molecule one optimisation earlier: a real geometry, and not a stationary point of
+    # this surface. Nothing refuses it — the number is what tells the caller.
+    at_embedding = compute_hessian(HessianSpec(), embedded)
+    assert at_embedding.max_gradient is not None
+    assert at_embedding.max_gradient > at_minimum.max_gradient
+
+
 def test_a_molecule_over_the_atom_limit_is_refused_and_says_where_to_go() -> None:
     """The refusal names Chemclaw3's durable job path, because this server has none of its own."""
     # Two over the limit rather than one, because an odd number of hydrogens is an odd number of
@@ -339,6 +367,25 @@ def test_combining_two_molecules_starts_them_apart_and_sums_their_charges() -> N
     left = np.array(pair.positions[: len(water.elements)])
     right = np.array(pair.positions[len(water.elements) :])
     assert np.linalg.norm(left[:, None, :] - right[None, :, :], axis=-1).min() > 1.5
+
+
+def test_combining_two_open_shell_monomers_is_refused_rather_than_coupled_high_spin() -> None:
+    """Two doublets are a singlet or a triplet, and arithmetic does not get to choose.
+
+    `multiplicity = first + second - 1` is the high-spin coupling, applied silently: two methyl
+    radicals came back as a triplet, and every energy in the chain that follows —
+    `search_binding_modes`, then the three-`relax_structure` interaction-energy subtraction on the
+    Chemclaw3 side — was computed on that surface and reported as *the* interaction energy of the
+    pair. The low-spin state was never considered and nothing in the payload said so.
+
+    The comment beside it claimed `Structure` rejects an open-shell monomer. It does not: it
+    validates a declared multiplicity against the electron count, which is exactly what makes the
+    open-shell path work everywhere else here.
+    """
+    methyl = structure_from_smiles("[CH3]", multiplicity=None)
+    assert methyl.multiplicity == 2
+    with pytest.raises(ValueError, match="spin state"):
+        combine_structures(methyl, methyl, 3.5)
 
 
 def test_the_pair_is_ordered_so_a_with_b_and_b_with_a_are_one_calculation() -> None:

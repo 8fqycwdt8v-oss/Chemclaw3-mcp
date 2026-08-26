@@ -31,6 +31,7 @@ from difflib import get_close_matches
 __all__ = [
     "ALPB_SOLVENTS",
     "SUGGESTED_SOLVENTS",
+    "canonical_solvent",
     "did_you_mean",
     "is_supported",
     "require_supported_solvent",
@@ -111,6 +112,41 @@ SUGGESTED_SOLVENTS = (
     "hexane",
 )
 
+# The spellings tblite treats as one solvent, mapped onto the one this server keys and sends.
+#
+# **Derived by measurement, not by reading the names.** `tests/test_solvents.py` computes the probe
+# molecule's ALPB energy for every entry in `ALPB_SOLVENTS` and asserts that each alias gives its
+# canonical member's energy *exactly* — which is what makes merging two cache rows into one safe
+# rather than plausible. The measurement is also what keeps `octanol` and `woctanol` apart: dry and
+# wet octanol differ in the seventh decimal and are two solvents, however alike the names look.
+#
+# Why it is needed at all: the name is hashed into `params_hash`, so `"water"`, `"Water"`,
+# `" water"` and `"h2o"` were four cache rows for one calculation — and on this server's cost
+# profile a repeat is minutes to hours, not milliseconds.
+#
+# The canonical member is the spelling `xtb --alpb` documents, because a spec's solvent is sent to
+# **both** backends and only tblite's acceptance is probed here; picking the name the binary's own
+# documentation uses is what keeps the canonicalisation from becoming a refusal on the other one.
+_CANONICAL = {
+    "h2o": "water",
+    "mecn": "acetonitrile",
+    "carbondisulfide": "cs2",
+    "chloroform": "chcl3",
+    "diethylether": "ether",
+    "dimethylformamide": "dmf",
+    "dimethylsulfoxide": "dmso",
+    "ethyl acetate": "ethylacetate",
+    "furan": "furane",
+    "tetrahydrofuran": "thf",
+    "dichlormethane": "ch2cl2",
+    "dichloromethane": "ch2cl2",
+    "methylenechloride": "ch2cl2",
+    "n-hexan": "hexane",
+    "n-hexane": "hexane",
+    "nhexan": "hexane",
+    "nhexane": "hexane",
+}
+
 # How many spelling suggestions a single unknown name earns. Three is the point where the list stops
 # reading as "did you mean this?" and starts reading as a second menu — `SUGGESTED_SOLVENTS` is
 # already the menu, and the message carries both.
@@ -142,6 +178,26 @@ def did_you_mean(name: str) -> str:
     """
     close = get_close_matches(_normalize(name), sorted(ALPB_SOLVENTS), n=_MAX_SUGGESTIONS)
     return f" (did you mean {', '.join(close)}?)" if close else ""
+
+
+def canonical_solvent(name: str) -> str:
+    """The one spelling this server keys and computes `name` under. Refuses an unsupported name.
+
+    Two spellings of one solvent are one calculation, so they must be one cache key. The membership
+    test has always been case- and whitespace-insensitive "because tblite is"; what was missing is
+    that the *value* kept on the spec — hashed into `params_hash` and sent to `--alpb` — was the
+    caller's original string, so the key distinguished inputs the calculation does not.
+
+    Idempotent by construction: a canonical member maps to itself, which is what lets a spec be
+    rebuilt from a spec's own value without drifting.
+
+    Raises:
+        ValueError: `require_supported_solvent`'s message, because canonicalising an unknown name
+            must not become a second and quieter way to accept one.
+    """
+    require_supported_solvent(name)
+    normalized = _normalize(name)
+    return _CANONICAL.get(normalized, normalized)
 
 
 def require_supported_solvent(name: str | None) -> None:

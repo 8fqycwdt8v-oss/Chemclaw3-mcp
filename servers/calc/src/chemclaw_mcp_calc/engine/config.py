@@ -49,12 +49,16 @@ class CalcSettings(BaseSettings):
     xtb_engine: Literal["auto", "tblite", "xtb"] = "auto"
     xtb_binary: str = "xtb"
     # Numerical accuracy passed to the binary (xtb's `--acc`; lower is tighter) and the wall-clock
-    # ceiling on one invocation.
+    # ceiling on one invocation. **`xtb_cli_accuracy` is the default of `XtbSpec.accuracy`**, so it
+    # is in the key of every calculation the binary runs: it scales the SCF and integral thresholds
+    # that produce the numbers being stored. The timeout is not keyed and must not be — it decides
+    # whether an answer comes back, not what it is.
     xtb_cli_accuracy: float = 1.0
     xtb_cli_timeout_seconds: int = 3600
     # xtb's optimization convergence level. "vtight" (2e-4 Hartree/Bohr) is the first one that
     # satisfies `xtb_opt_gradient_tolerance`; the default "normal" stops around 1e-3 and the
-    # geometry is then rejected by our own check, which wastes the run.
+    # geometry is then rejected by our own check, which wastes the run. The default of
+    # `OptSpec.opt_level`, and keyed there: it is where the binary's relaxation stops.
     xtb_cli_opt_level: str = "vtight"
     # Threads for the binary and its OpenMP runtime. 0 leaves xtb's own default, which uses the
     # machine — correct for a dedicated pod, and worth measuring before changing: pinning to 1 cost
@@ -88,6 +92,11 @@ class CalcSettings(BaseSettings):
     # model cannot see — bends and torsions, which on ibuprofen is 37% of them. Not a safety floor:
     # it is the stand-in for the missing terms, and the true Hessian's median curvature is ~0.4.
     # Swept against measured step counts, it optimizes near 1.0 and turns over by 1.5.
+    #
+    # The default of `OptSpec.curvature_floor`, and keyed there because it **moves the answer**:
+    # measured on ethanol, 1.0 and 0.005 relax to different geometries and different energies, and a
+    # geometry is what every downstream key is derived from. It was read from `settings` inside the
+    # optimizer loop, which put it in no key at all.
     xtb_anc_curvature_floor: float = 1.0
     # Central-difference step for the Hessian, in Angstrom. Small enough that the harmonic
     # approximation holds, large enough that the gradient difference is well above the SCF's own
@@ -98,6 +107,28 @@ class CalcSettings(BaseSettings):
     # named the durable QM job path as the alternative, and this server has no durable path — so
     # the message says so instead of naming a route that does not exist from here.
     xtb_hessian_max_atoms: int = 150
+    # Atom ceiling for **any** structure this server will accept, enforced by `Structure` itself so
+    # every task inherits it exactly as it inherits the electron-count check. The Hessian's own cap
+    # above is the tighter, per-tool bound inside this one.
+    #
+    # Not a promise that 500 atoms is affordable — `xtb_inline_timeout_seconds` is what prices the
+    # work. This refuses the inputs whose *allocation* alone takes the process down before any clock
+    # could run: a JSON body under the 1 MB cap holds ~42,000 atoms, at which the ANC
+    # preconditioner's dense (3N, 3N) model Hessian asks for 127 GB. Measured here, that matrix and
+    # its eigendecomposition — rebuilt once per optimization leg — cost 3.6 s at 120 atoms, 11.6 s
+    # at 240, and 32.9 s at 510 for 18.7 MB, so 500 is where one leg's preconditioner alone is still
+    # under a minute.
+    xtb_max_atoms: int = 500
+    # Wall-clock ceiling (seconds) on one in-process calculation — the optimizer's leg loop and the
+    # finite-difference Hessian, which is what the shipped image runs for every `opt` and `hess`
+    # (`CHEMCLAW_XTB_ENGINE=tblite`). The two timeouts above bound a *subprocess* and so bound
+    # nothing on that path.
+    #
+    # 900 s because that is `connector.yaml`'s `request_timeout`: without this the manifest bounded
+    # the caller's wait and not the work, and cancelling the awaiting coroutine does not stop the
+    # worker thread — so a caller that gave up left the CPU burning, and its retry started a second
+    # burn beside the first. Raise it deliberately, on a deployment whose caller waits longer.
+    xtb_inline_timeout_seconds: float = 900.0
     # **CREST sampling temperature, and the only survivor of the thermochemistry block.** It keeps
     # Chemclaw3's name and value because it keeps Chemclaw3's *meaning*: it is passed to `crest
     # --temp`, so it changes what the search samples and therefore belongs in an ensemble's key. The
