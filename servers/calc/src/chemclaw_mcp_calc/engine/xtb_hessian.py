@@ -37,6 +37,7 @@ import numpy as np
 from pydantic import Field
 
 from chemclaw_mcp_calc.engine import xtb_cli
+from chemclaw_mcp_calc.engine.budget import Deadline
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb_engine import AU_TO_DEBYE, evaluate_point, make_calculator
@@ -76,22 +77,36 @@ class Hessian:
 
     matrix: np.ndarray
     electronic_energy_hartree: float
+    # Largest absolute gradient component at the undisplaced geometry, in Hartree/Angstrom — the
+    # evidence that this geometry is (or is not) a stationary point. `None` on the binary backend,
+    # which reports no gradient beside its Hessian and would need a second run to produce one.
+    #
+    # It is evidence rather than a gate on purpose: a Hessian at a transition state or a scan point
+    # is a legitimate request, so this module differentiates what it is given and says what it was.
+    # The caller is what cannot tell today: Chemclaw3's `thermo._vibrational` drops every mode with
+    # `wavenumber <= 0`, so an unrelaxed geometry yields a ZPE, a thermal correction and an entropy
+    # that all look entirely ordinary — and a geometry displaced along a soft, positively curved
+    # direction shows no imaginary mode at all, so `is_minimum` cannot see it either.
+    max_gradient: float | None = None
     ir_intensities: np.ndarray | None = None
     dipole_derivatives: np.ndarray | None = None
 
 
 def _finite_difference(
     spec: HessianSpec, structure: Structure
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Central-difference Hessian and dipole derivatives at `structure`'s geometry.
 
-    Returns `(hessian, dipole_derivatives, energy)` — the Hessian in Hartree/Angstrom^2, shape
-    (3N, 3N), the dipole derivatives in Debye/Angstrom, shape (3N, 3), and the electronic energy at
-    the undisplaced geometry.
+    Returns `(hessian, dipole_derivatives, energy, max_gradient)` — the Hessian in
+    Hartree/Angstrom^2, shape (3N, 3N), the dipole derivatives in Debye/Angstrom, shape (3N, 3), the
+    electronic energy at the undisplaced geometry, and the largest absolute component of the
+    analytic gradient there.
 
     **The energy comes back from here because this function already holds the calculator.** The
     caller used to build a *second* calculator over the same system to get it — a second Hamiltonian
-    assembly, measured at 2 per Hessian against 1 now.
+    assembly, measured at 2 per Hessian against 1 now. **The gradient comes back for the opposite
+    reason**: it was already computed by the undisplaced `evaluate_point` below and thrown away, and
+    it is the exact quantity that separates "this is a minimum" from "this is a force-field guess".
 
     Cost is 6N + 1 single points: the gradient is analytic, so only *first* derivatives need
     differencing. The Hessian is symmetrized afterwards — central differences of an exact gradient
@@ -111,8 +126,13 @@ def _finite_difference(
     hessian = np.zeros((size, size))
     dipole_derivatives = np.zeros((size, 3))
     step = spec.displacement_angstrom
-    energy, _, _ = evaluate_point(calc, positions)
+    deadline = Deadline(settings.xtb_inline_timeout_seconds)
+    energy, gradient, _ = evaluate_point(calc, positions)
     for index in range(size):
+        # Between displacements, which is the finest granularity there is: a single point is not
+        # interruptible, and 6N + 1 of them at the 150-atom cap is ~25 minutes against a caller that
+        # gives up at 900 s and a worker thread that does not stop when it does.
+        deadline.check("Hessian")
         shifted = positions.copy().ravel()
         shifted[index] += step
         _, gradient_plus, dipole_plus = evaluate_point(calc, shifted.reshape(-1, 3))
@@ -120,7 +140,8 @@ def _finite_difference(
         _, gradient_minus, dipole_minus = evaluate_point(calc, shifted.reshape(-1, 3))
         hessian[index] = (gradient_plus.ravel() - gradient_minus.ravel()) / (2 * step)
         dipole_derivatives[index] = (dipole_plus - dipole_minus) * AU_TO_DEBYE / (2 * step)
-    return 0.5 * (hessian + hessian.T), dipole_derivatives, energy
+    max_gradient = float(np.max(np.abs(gradient)))
+    return 0.5 * (hessian + hessian.T), dipole_derivatives, energy, max_gradient
 
 
 def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
@@ -132,8 +153,14 @@ def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
     number remains an explicit input and the quasi-RRHO treatment is identical whichever backend
     ran, which is what keeps free energies from the two comparable.
 
-    Raises `ValueError` above `settings.xtb_hessian_max_atoms`: the in-process cost is 6N single
-    points, and blocking an agent turn for minutes is a worse failure than refusing. **The refusal
+    **Returns the gradient at the undisplaced geometry beside the matrix**, because this function
+    accepts a non-stationary geometry deliberately — a transition state and a scan point are both
+    legitimate subjects — and the caller otherwise has no way to tell one from an unrelaxed
+    embedding. It costs nothing: the number is already computed.
+
+    Raises `ValueError` above `settings.xtb_hessian_max_atoms`, and again if the in-process run
+    exceeds `settings.xtb_inline_timeout_seconds`: the cost is 6N single points, and blocking an
+    agent turn for minutes is a worse failure than refusing. **The refusal
     is worded differently here than in Chemclaw3**, which named the durable QM job path as the
     alternative — this server has no durable path, and pointing at one that does not exist from here
     would send a chemist looking for a route nobody can take.
@@ -144,18 +171,26 @@ def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
             f"{settings.xtb_hessian_max_atoms}: the cost is 6N single points and a tool call runs "
             "inside a conversation turn. Submit it through Chemclaw3's durable QM job path instead"
         )
-    if spec.for_structure(structure).engine == "xtb":
-        outcome = xtb_cli.run(structure, task="hess", method=spec.method, solvent=spec.solvent)
+    resolved = spec.for_structure(structure)
+    if resolved.engine == "xtb":
+        outcome = xtb_cli.run(
+            structure,
+            task="hess",
+            method=resolved.method,
+            solvent=resolved.solvent,
+            accuracy=resolved.accuracy,
+        )
         return Hessian(
             matrix=np.asarray(outcome.hessian),
             electronic_energy_hartree=outcome.energy_hartree,
             ir_intensities=np.asarray(outcome.ir_intensities),
         )
 
-    matrix, dipole_derivatives, energy = _finite_difference(spec, structure)
+    matrix, dipole_derivatives, energy, max_gradient = _finite_difference(spec, structure)
     return Hessian(
         matrix=matrix,
         electronic_energy_hartree=energy,
+        max_gradient=max_gradient,
         dipole_derivatives=dipole_derivatives,
     )
 

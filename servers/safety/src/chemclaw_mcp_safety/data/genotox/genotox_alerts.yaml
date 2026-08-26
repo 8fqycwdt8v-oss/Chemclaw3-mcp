@@ -108,8 +108,25 @@ structural:
     motif: alpha,beta-Unsaturated carbonyl (Michael acceptor)
     explanation: >-
       An activated alkene conjugated to a carbonyl — a soft electrophile that can alkylate
-      nucleophilic DNA bases. Acrylates, acrylamides, enones and vinyl sulfones all match; the
-      alert is common enough in ordinary chemistry that it is a prompt to assess, never a finding.
+      nucleophilic DNA bases. Acrylates, acrylamides and enones all match; the alert is common
+      enough in ordinary chemistry that it is a prompt to assess, never a finding. The other
+      common activating group is a sulfonyl, which is the separate `vinyl-sulfone` row below.
+    citation: "Benigni & Bossa, Chem. Rev. 2011, 111, 2507"
+
+  - id: vinyl-sulfone
+    # An alkene *on* the sulfonyl sulfur, which is what activates it. Its own row rather than a
+    # widened `michael-acceptor`: the two motifs are named separately in the alert set, a chemist
+    # reading a flag needs to know which electrophile is present, and a union pattern would report
+    # both under a name that says carbonyl. An allylic sulfone (C=C-C-S) does not match, and a
+    # saturated sulfone is ordinary chemistry.
+    smarts: "[CX3]=[CX3][SX4](=[OX1])=[OX1]"
+    motif: Vinyl sulfone / vinyl sulfonamide (Michael acceptor)
+    explanation: >-
+      An alkene directly on a sulfonyl group — a soft electrophile that can alkylate nucleophilic
+      DNA bases, the same conjugate-addition chemistry as the row above with a sulfonyl doing the
+      activating instead of a carbonyl. Vinyl sulfones, vinyl sulfonamides and vinyl sulfonate
+      esters are deliberate covalent warheads and cross-linking reagents, so the motif reaching a
+      process is rarely an accident; the alert is a prompt to assess, never a finding.
     citation: "Benigni & Bossa, Chem. Rev. 2011, 111, 2507"
 
 # Pairs checked across a reaction's components: an alert about a *formation route* rather than

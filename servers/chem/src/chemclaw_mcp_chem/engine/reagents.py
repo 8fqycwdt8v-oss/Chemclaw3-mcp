@@ -10,9 +10,11 @@ but the rule (`CLAUDE.md`, "No egress. Ever."). It is also the right design on i
 reagents a process-chemistry group uses daily are a small, stable, high-value set, and a table is
 deterministic, reviewable in a pull request, and citable.
 
-Resolution is **conservative**: an unknown name returns no match rather than a guess. Fabricating a
-structure from a name is the one failure worse than the gap — a wrong structure propagates silently
-into a calculation, a search, and eventually a chemist's batch record.
+Resolution is **conservative**: an unknown name returns no match rather than a guess, and a name
+that reads as two different substances is refused outright rather than resolved to one of them (see
+`_AMBIGUOUS_FORMULAS`). Fabricating a structure from a name is the one failure worse than the gap —
+a wrong structure propagates silently into a calculation, a search, and eventually a chemist's batch
+record.
 
 The corpus is `data/records.csv`, one row per substance, ported from Chemclaw3's
 `chemclaw.core.reagents`. Its three indices are built once on first use and fail loudly rather than
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from mcp_server_kit import Dataset, load_dataset, read_records
 from pydantic import BaseModel
@@ -34,11 +37,18 @@ from chemclaw_mcp_chem.engine.chem import InvalidSmilesError, require_canonical_
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 __all__ = [
+    "ResolutionSource",
     "ResolvedCompound",
     "dataset",
     "density_of",
     "resolve_compound_name",
 ]
+
+
+# How an identity was established. A `Literal` rather than a bare `str` because the charge table
+# carries it onto every row as provenance, and a third value nobody declared would arrive there as
+# an attribution a reader cannot check.
+ResolutionSource = Literal["synonym", "smiles"]
 
 
 class ResolvedCompound(BaseModel):
@@ -49,7 +59,40 @@ class ResolvedCompound(BaseModel):
     name: str
     # How the identity was established, so a caller (and the agent) can weigh it: `synonym` is the
     # curated table, `smiles` means the query already was a structure.
-    source: str
+    source: ResolutionSource
+
+
+# **The tokens that are a formula to a chemist and a different substance to RDKit.** Each row is
+# `written -> (what a chemist means, its structure, what the SMILES parser reads instead)`, and each
+# was checked against the installed RDKit rather than reasoned about: these are exactly the
+# formula-shaped strings that parse. `CO2`, `SO2`, `H2O` and `NH3` are not here because they do not
+# parse at all, which is why the gap looked honest — only the holes that happen to parse fail
+# silently.
+#
+# The harm is not hypothetical and it is not small. `stoichiometry_table` with `reagents=["CO"]`
+# returned a complete charge table with an empty `unresolved`, naming methanol at MW 32.042 and
+# instructing 30.61 g to be weighed out for a gas whose MW is 28.010 — and `green_metrics` built
+# from that `mass_g` column inherited it.
+#
+# So this is a refusal rather than a resolution, per the fleet's "refuse rather than approximate":
+# only the caller knows which reading was meant, and a `ValueError` reaches the model verbatim.
+_AMBIGUOUS_FORMULAS: dict[str, tuple[str, str, str]] = {
+    "CO": ("carbon monoxide", "[C-]#[O+]", "methanol"),
+    "NO": ("nitric oxide", "[N]=O", "hydroxylamine"),
+    "CN": ("cyanide", "[C-]#N", "methylamine"),
+    # Every single-element token of the SMILES organic subset: a chemist writes the element and
+    # the parser reads its hydride.
+    "B": ("boron", "[B]", "borane"),
+    "C": ("carbon", "[C]", "methane"),
+    "N": ("nitrogen", "N#N", "ammonia"),
+    "O": ("oxygen", "O=O", "water"),
+    "P": ("phosphorus", "[P]", "phosphine"),
+    "S": ("sulfur", "[S]", "hydrogen sulfide"),
+    "F": ("fluorine", "FF", "hydrogen fluoride"),
+    "Cl": ("chlorine", "ClCl", "hydrogen chloride"),
+    "Br": ("bromine", "BrBr", "hydrogen bromide"),
+    "I": ("iodine", "II", "hydrogen iodide"),
+}
 
 
 def _normalize(name: str) -> str:
@@ -137,6 +180,10 @@ def resolve_compound_name(name: str) -> ResolvedCompound | None:
     if lookup is not None:
         smiles, display = lookup
         return ResolvedCompound(query=name, smiles=smiles, name=display, source="synonym")
+    # After the curated table and before the parser, so a reviewed spelling always decides and
+    # only the strings nobody has ruled on are refused. Case-sensitive on the query as typed,
+    # because that is what tells an element symbol from a name.
+    _refuse_an_ambiguous_formula(name)
     # A caller may already hold a structure; accepting it here means one entry point for "give me
     # the canonical form of whatever the chemist typed". The strict canonicalizer is essential: a
     # lenient one returns its input unparsed, which would resolve every unknown name to itself as
@@ -150,6 +197,29 @@ def resolve_compound_name(name: str) -> ResolvedCompound | None:
         smiles=canonical,
         name=by_structure.get(canonical, name),
         source="smiles",
+    )
+
+
+def _refuse_an_ambiguous_formula(name: str) -> None:
+    """Refuse a token that reads as one substance to a chemist and another to the SMILES parser.
+
+    Both readings are named, and so is the structure of the one the parser will not give you, so
+    the caller can say which was meant in a form that cannot be misread. The alternative is what
+    this used to do: resolve it to the parser's reading, with a confident display name and
+    `source="smiles"`, and let a mass reach a batch record.
+
+    Raises:
+        ValueError: `name` is one of the reviewed formula/SMILES collisions.
+    """
+    reading = _AMBIGUOUS_FORMULAS.get(name.strip())
+    if reading is None:
+        return
+    meant, structure, parsed_as = reading
+    raise ValueError(
+        f"{name.strip()!r} is ambiguous: a chemist writes it for {meant}, and as a SMILES it is "
+        f"{parsed_as}. Pass the structure you mean — {structure} for {meant} — or the name for "
+        f"{parsed_as}. Resolving it either way would put a molecular weight nobody chose into a "
+        "charge table."
     )
 
 

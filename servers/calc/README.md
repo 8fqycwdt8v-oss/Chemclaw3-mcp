@@ -313,8 +313,19 @@ What that buys and what it costs:
   optimisation on a drug-sized molecule is measured at 38 s (ibuprofen, 33 atoms, 24 steps) and a
   CREST search is far longer. A budget that states the real cost beats one that kills a calculation
   three quarters of the way through.
-- `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) bounds the one primitive whose cost is quadratic in the
-  input, and its refusal names Chemclaw3's durable QM job path — the route that *does* exist.
+- **Two bounds on the input and one on the clock**, because the Hessian's cap was not the only
+  quadratic cost and `request_timeout` bounds the caller's wait rather than the work:
+  - `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) bounds the primitive whose cost is 6N single points.
+  - `CHEMCLAW_XTB_MAX_ATOMS` (500) bounds **every** structure, on `Structure` itself so each
+    primitive inherits it. The optimizer is the other quadratic one: its ANC preconditioner builds a
+    dense (3N, 3N) model Hessian and eigendecomposes it *once per leg* — measured here at 3.6 s for
+    120 atoms, 11.6 s for 240 and 32.9 s for 510, and at the ~42,000 atoms a body under the 1 MB cap
+    can carry, a 127 GB allocation that takes the process down with every other connected turn.
+  - `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` (900, the manifest's own budget) bounds the in-process
+    optimisation and Hessian loops, checked per gradient and per displacement. The two subprocess
+    timeouts do not cover those paths, and they are the paths this image runs; cancelling the
+    awaiting coroutine does not stop the worker thread, so without this a caller that gave up left
+    the CPU burning and its retry started a second burn beside the first.
 - **Nothing is cached in this process**, deliberately. That is what `calculation_key` is for: the
   caller checks its own store and only reaches a compute tool on a miss.
 - Every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts
@@ -352,6 +363,16 @@ Exactly one of `dipole_derivatives_npy` and `ir_intensities` is populated, and w
 backend ran: the in-process path collects dipole derivatives as it displaces, the `xtb` binary
 computes intensities itself. Both are what a caller needs to derive an IR spectrum; neither is a
 spectrum, because the normal-mode projection and the RRHO arithmetic stayed in Chemclaw3.
+
+**`max_gradient_hartree_per_angstrom` travels beside them**, and it is the only thing in the payload
+that says whether the eigenvalues mean frequencies. This primitive differentiates whatever geometry
+it is handed — a transition state and a scan point are legitimate subjects, so it does not refuse a
+non-stationary one — and the number costs nothing, because the undisplaced single point computes the
+analytic gradient anyway and used to discard it. It matters because the failure it exposes is
+silent: Chemclaw3's `thermo._vibrational` drops every mode with `wavenumber <= 0`, so a Hessian on an
+unrelaxed embedding yields a ZPE, a thermal correction and an entropy that all look ordinary, and a
+geometry displaced along a soft, positively curved direction shows no imaginary mode for
+`is_minimum` to catch. `None` on the binary backend, which reports no gradient beside its Hessian.
 
 ## What was left behind, and why
 

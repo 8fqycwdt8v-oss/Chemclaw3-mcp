@@ -18,13 +18,14 @@ it — so lineage survives the removal of the thing that used to persist it.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
 import numpy as np
 from pydantic import Field
 from scipy.optimize import OptimizeResult, minimize
 
 from chemclaw_mcp_calc.engine import anc, xtb_cli
+from chemclaw_mcp_calc.engine.budget import Deadline
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import Keyed
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
@@ -67,8 +68,45 @@ class OptSpec(XtbSpec):
     # in the key: measured on ethanol, 0.35 and 0.05 relax to different geometries and different
     # energies — and a structure id is what every downstream key is built from.
     trust_radius: float = Field(default_factory=lambda: settings.xtb_opt_trust_radius, gt=0)
+    # Curvature (Hartree/Angstrom^2) the ANC preconditioner assumes for the directions its pairwise
+    # model cannot see. Here for the same reason as `trust_radius`, and it was the same defect:
+    # `anc.basis` read it from `settings` inside the loop, so it was in no key at all. Measured on
+    # ethanol, 1.0 and 0.005 relax to different geometries and different energies, and on a floppy
+    # substrate the two floors can settle in different basins — at which point a shared cache row
+    # serves one configuration another's conformer.
+    curvature_floor: float = Field(default_factory=lambda: settings.xtb_anc_curvature_floor, gt=0)
+    # The convergence level passed to `xtb --opt`, which is where the binary's relaxation stops.
+    # Keyed only when the binary is what runs (`unkeyed_fields`), because the in-process path stops
+    # on `gradient_tolerance` instead and never sees this.
+    opt_level: str = Field(default_factory=lambda: settings.xtb_cli_opt_level, min_length=1)
     # Indices of atoms held at their input positions. Empty for a free optimization.
     frozen_atoms: tuple[int, ...] = ()
+
+    def for_structure(self, structure: Structure) -> Self:
+        """Also resolve the backend a *constrained* optimization really runs on.
+
+        Frozen atoms are expressible as optimizer bounds and not as an xtb flag without a control
+        file, so `_optimize_with_binary` has always handed them straight to the Cartesian path. That
+        fallback happened *after* the key was derived, so a scan point on a deployment with the
+        binary was stored under a `calc_version` naming a program that had not run — the defect
+        `_FIXED_BACKEND` describes for the fixed-backend tasks, in a third place, and the reason
+        `curvature_floor` can be keyed by backend at all: the resolved engine has to be the truth.
+        """
+        if self.frozen_atoms and self.engine == "xtb":
+            # Idempotent: the copy's engine is no longer the binary, so this arm runs once.
+            return self.model_copy(update={"engine": "tblite"}).for_structure(structure)
+        return super().for_structure(structure)
+
+    def unkeyed_fields(self) -> set[str]:
+        """The two optimizer knobs are keyed on the backend that reads them, and only that one.
+
+        `curvature_floor` is the in-process preconditioner's; `opt_level` is ANCopt's. Each is inert
+        on the other backend, and `engine` is already resolved by the time `cache_key` asks — so
+        neither can be excluded on a spec whose declared engine is not the one that will run.
+        """
+        unkeyed = super().unkeyed_fields()
+        unkeyed.add("opt_level" if self.engine != "xtb" else "curvature_floor")
+        return unkeyed
 
 
 class OptimizationResult(Keyed):
@@ -170,9 +208,10 @@ def optimize_structure(spec: OptSpec, structure: Structure) -> OptimizationResul
     spin-polarization term its energy needs.
 
     The `xtb` binary optimizes in approximate normal coordinates (ANCopt) and is 9-11x faster on
-    drug-sized molecules than the Cartesian L-BFGS below it. The in-process path is the fallback for
-    a deployment without the binary — **which is the shipped image here** — and the two are keyed
-    separately because they do not produce identical geometries.
+    drug-sized molecules than the Cartesian L-BFGS below it. The in-process path is what the shipped
+    image takes all the same — it installs the binary and pins `CHEMCLAW_XTB_ENGINE=tblite`, so
+    adding it did not re-key anything — and the two are keyed separately because they do not produce
+    identical geometries.
 
     Raises `ValueError` if the gradient is still above `spec.gradient_tolerance` after
     `spec.max_steps` — with the numbers, so the caller can tell "nearly there" from "this geometry
@@ -202,6 +241,7 @@ def _preconditioned_leg(
     vectors: np.ndarray,
     scale: np.ndarray,
     max_iterations: int,
+    deadline: Deadline,
 ) -> tuple[np.ndarray, int]:
     """Run L-BFGS-B once in the preconditioned basis; return the geometry and its cost.
 
@@ -223,6 +263,9 @@ def _preconditioned_leg(
     reached = {"max_gradient": float("inf")}
 
     def objective(step: np.ndarray) -> tuple[float, np.ndarray]:
+        # Per gradient rather than per leg: `max_steps` bounds iterations, and one iteration on a
+        # large substrate is unbounded in seconds — so a leg is exactly what an outer check misses.
+        deadline.check("geometry optimization")
         energy, gradient, _ = evaluate_point(calc, to_cartesian(step).reshape(-1, 3))
         free_gradient = gradient.ravel()[free_mask]
         reached["max_gradient"] = float(np.max(np.abs(free_gradient)))
@@ -276,6 +319,10 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
     region and the convergence test both stay in Cartesian space, where they mean something
     physical.
     """
+    # A budget rather than a spec field, deliberately: it decides whether an answer comes back, not
+    # what the answer is, so keying on it would fork the cache every time a deployment gave itself
+    # more time. See `budget.Deadline` for why the transport cannot hold this clock instead.
+    deadline = Deadline(settings.xtb_inline_timeout_seconds)
     numbers, positions = structure.arrays()
     frozen = np.zeros(len(numbers), dtype=bool)
     if spec.frozen_atoms:
@@ -321,9 +368,9 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
         # depends on the distances, and a leg can move them enough to matter. It costs one O(N^2)
         # assembly and one eigendecomposition — negligible against the SCFs the leg is about to run.
         origin = current.copy()
-        vectors, scale = anc.basis(numbers, origin.reshape(-1, 3), free_mask)
+        vectors, scale = anc.basis(numbers, origin.reshape(-1, 3), free_mask, spec.curvature_floor)
         current, iterations = _preconditioned_leg(
-            calc, spec, origin, free_mask, vectors, scale, spec.max_steps - steps
+            calc, spec, origin, free_mask, vectors, scale, spec.max_steps - steps, deadline
         )
         steps += iterations
         energy, gradient, _ = evaluate_point(calc, current.reshape(-1, 3))
@@ -375,9 +422,12 @@ def _optimize_with_binary(spec: OptSpec, structure: Structure) -> OptimizationRe
     satisfies `spec.gradient_tolerance`, and a backend that converged to its own looser threshold
     must not quietly weaken that. It costs one gradient evaluation.
 
-    Frozen atoms fall back to the Cartesian path — pinning coordinates is expressible as optimizer
-    bounds but not as an xtb flag without writing a control file, which is exactly the input surface
-    `xtb_cli` refuses to have.
+    Frozen atoms never arrive here: pinning coordinates is expressible as optimizer bounds but not
+    as an xtb flag without writing a control file, which is exactly the input surface `xtb_cli`
+    refuses to have — so `OptSpec.for_structure` resolves a constrained spec to `tblite` before
+    dispatch. The fallback used to live *here*, after the key had been derived, which is how a
+    constrained optimization came to be stored under a `calc_version` naming the binary that had
+    not run.
 
     **GFN-FF is verified on its own surface**, because there is no other honest option: tblite has
     no force field, so re-evaluating the geometry in-process would test a GFN-FF minimum against a
@@ -385,13 +435,13 @@ def _optimize_with_binary(spec: OptSpec, structure: Structure) -> OptimizationRe
     geometry is simply not a stationary point. Measured, an octane relaxed by GFN-FF carries a GFN2
     max-gradient of 1.3e-2 against this module's 5e-4 target.
     """
-    if spec.frozen_atoms:
-        return _optimize_with_library(spec, structure)
     outcome = xtb_cli.run(
         structure,
         task="opt",
         method=spec.method,
         solvent=spec.solvent,
+        accuracy=spec.accuracy,
+        opt_level=spec.opt_level,
         max_cycles=spec.max_steps,
     )
     if outcome.structure is None:

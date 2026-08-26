@@ -323,7 +323,8 @@ not need the verb.
 
 **The one thing to understand before editing it: half its controls are a boundary and half are
 not.** The import guard and the withheld builtins are defence in depth and porous by construction;
-the process, the hard rlimits, the built-not-filtered environment and the empty `egress:` are what
+the process, the hard rlimits, the built-not-filtered environment together with the undumpable
+parent that keeps the *server's own* environment out of `/proc`, and the empty `egress:` are what
 hold. `servers/pyexec/README.md` states which is which, and that division is the design.
 
 ---

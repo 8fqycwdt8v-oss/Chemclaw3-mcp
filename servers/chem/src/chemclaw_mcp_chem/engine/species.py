@@ -112,7 +112,20 @@ class Topology(BaseModel):
     ionisable_acidic_sites: int
     ionisable_basic_sites: int
     mobile_proton_sites: int
-    tautomer_count: int
+    tautomer_count: int | None = Field(
+        default=None,
+        description=(
+            "How many tautomers the enumeration reached, or **null** when there are more than the "
+            "cap. Null rather than the cap itself: `64` reported as a count is indistinguishable "
+            "from an exact 64, and a reader comparing two molecules on this field would be "
+            "comparing a real number with a ceiling. Above 1 — and null is above 1 — resolve the "
+            "form before computing anything else about the molecule."
+        ),
+    )
+    tautomer_count_saturated: bool = Field(
+        default=False,
+        description="True when the count above is null because the enumeration hit its cap.",
+    )
 
 
 # The three routes an ICH Q1A forced-degradation study covers. Named as a type rather than left
@@ -168,6 +181,31 @@ def _ordered_unique(parent: str, found: list[str]) -> list[str]:
     return result
 
 
+def _without_erased_twins(species: list[str]) -> list[str]:
+    """Drop any member that differs from an earlier one only by an erased stereocentre.
+
+    RDKit's `TautomerEnumerator` strips stereochemistry from a centre the transformation touches,
+    so `C[C@H](O)C(C)=O` emits both `CC(=O)[C@H](C)O` and `CC(=O)C(C)O`. Those are two strings and
+    one compound-with-and-without-a-specification, and `_ordered_unique` compares strings — so the
+    keto form survived twice, and `rank_species`, which populates over exactly the list it is
+    given, embedded it twice and split its population against the genuinely different tautomers.
+
+    The *first* spelling wins, which is the specified one: the parent leads the list, so the
+    member that carries the claim is kept and the erased twin is what goes. That an alpha centre
+    epimerises through the enol is real chemistry — it is just not a second tautomer.
+    """
+    kept: list[str] = []
+    seen_flat: set[str] = set()
+    for member in species:
+        mol = Chem.MolFromSmiles(member)
+        flat = member if mol is None else str(Chem.MolToSmiles(mol, isomericSmiles=False))
+        if flat in seen_flat:
+            continue
+        seen_flat.add(flat)
+        kept.append(member)
+    return kept
+
+
 def _refuse_past(count: int, cap: int, what: str, smiles: str) -> None:
     """Raise when an enumeration exceeded its bound, saying what to do instead.
 
@@ -195,7 +233,7 @@ def enumerate_tautomer_set(smiles: str) -> SpeciesSet:
     enumerator = rdMolStandardize.TautomerEnumerator()
     enumerator.SetMaxTautomers(MAX_TAUTOMERS + 1)
     found = [_canonical(taut) for taut in enumerator.Enumerate(mol)]
-    species = _ordered_unique(parent, found)
+    species = _without_erased_twins(_ordered_unique(parent, found))
     _refuse_past(len(species), MAX_TAUTOMERS, "tautomers", smiles)
     return SpeciesSet(smiles=species, count=len(species), parent=parent)
 
@@ -330,7 +368,15 @@ def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
     # Two `type: ignore`s, and one below in `describe_molecule`: all the same `rdkit-stubs` gap
     # that `engine/chem.py` records for `Descriptors.MolWt` — the stub marks these untyped, and
     # the ignore is about the stub rather than a claim about the call.
-    options = StereoEnumerationOptions(onlyUnassigned=True, unique=True, maxIsomers=0)  # type: ignore[no-untyped-call]
+    # **`maxIsomers` bounds the work, and `_refuse_past` below bounds the answer.** They are not the
+    # same bound and only the second used to exist: the enumerator ran unlimited (`maxIsomers=0`)
+    # and the whole 2^n set was materialised before the cap was consulted, so refusing a 16-centre
+    # molecule — an 82-character string — cost 28 s of GIL-holding CPU in a worker thread nothing
+    # can cancel, past this server's own 30 s request budget. One past the cap is what makes the
+    # refusal fire on exactly the same molecules as before, at 0.06 s.
+    options = StereoEnumerationOptions(  # type: ignore[no-untyped-call]
+        onlyUnassigned=True, unique=True, maxIsomers=MAX_STEREOISOMERS + 1
+    )
     found = [
         _canonical(isomer)
         for isomer in EnumerateStereoisomers(mol, options=options)  # type: ignore[no-untyped-call]
@@ -442,11 +488,13 @@ def describe_molecule(smiles: str) -> Topology:
     # the enumeration: "is this molecule tautomeric at all" is the question the calling skill says
     # to ask before paying for a resolution, and no count of heteroatoms answers it.
     try:
-        tautomers = len(enumerate_tautomer_set(smiles).smiles)
+        tautomers: int | None = len(enumerate_tautomer_set(smiles).smiles)
     except ValueError:
-        # Past the cap is emphatically tautomeric; reporting the cap rather than failing keeps this
-        # tool free and total, which is the property its callers rely on.
-        tautomers = MAX_TAUTOMERS
+        # Past the cap is emphatically tautomeric; answering rather than failing keeps this tool
+        # free and total, which is the property its callers rely on. But the cap is not a count —
+        # a molecule with 195 tautomers reported as having 64 invites a comparison with a molecule
+        # that really has 64 — so the answer is "more than the cap" and says so in two fields.
+        tautomers = None
     return Topology(
         smiles=_canonical(mol),
         atom_count=mol.GetNumAtoms(onlyExplicit=False),
@@ -460,5 +508,6 @@ def describe_molecule(smiles: str) -> Topology:
         ionisable_acidic_sites=len(_sites(mol, _ACIDIC)),
         ionisable_basic_sites=len(_sites(mol, _BASIC)),
         mobile_proton_sites=len(_sites(mol, _ACIDIC)) + len(_sites(mol, _BASIC)),
+        tautomer_count_saturated=tautomers is None,
         tautomer_count=tautomers,
     )

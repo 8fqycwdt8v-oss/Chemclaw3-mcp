@@ -52,8 +52,15 @@ control exists in order to be pointed at.
 **The boundary is the process and the deployment**, and it holds even granting a complete escape
 from everything in this file: a separate process killed by process group on a wall clock, hard
 resource limits a non-root process cannot raise back, an environment built from an allowlist so no
-credential is in it, a working directory deleted when the call returns, a rootless container with a
+credential is in it *and* a parent that has made itself undumpable so its own environment cannot be
+read back out of `/proc`, descriptors that lead nowhere the child can spend the server's memory
+through, a per-call working directory deleted when the call returns, a rootless container with a
 read-only root filesystem, and a NetworkPolicy with an empty `egress:` list.
+
+Each of those is a claim about a mechanism, and two of them were false until an audit executed the
+escape rather than reading about it: the allowlisted environment said nothing about the *parent's*,
+and the output cap said nothing about fd 1. `README.md` records what the boundary covers and — the
+half that matters more — what it does not.
 """
 
 from __future__ import annotations

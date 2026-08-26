@@ -27,7 +27,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from rdkit import Chem
 
-from chemclaw_mcp_chem.engine.chem import require_molecule
+from chemclaw_mcp_chem.engine.chem import require_canonical_smiles, require_molecule
 
 __all__ = ["MAX_CLEAVAGES", "BondCleavage", "CleavageSet", "enumerate_cleavages"]
 
@@ -69,7 +69,12 @@ class BondCleavage(BaseModel):
     atoms: list[int] = Field(
         min_length=2,
         max_length=2,
-        description="The two atom indices, into the canonical molecule this tool returns.",
+        description=(
+            "The two atom indices, into `parent` with hydrogens made explicit — that is, into "
+            "`Chem.AddHs(Chem.MolFromSmiles(parent))`, so a hydrogen's index is past the heavy "
+            "count. Not into the SMILES the caller wrote: the enumeration is done on the "
+            "canonical form, which is the only molecule this tool hands back."
+        ),
     )
     bond: str = Field(
         min_length=1,
@@ -216,9 +221,13 @@ def enumerate_cleavages(smiles: str, mode: CleavageMode = "homolytic") -> Cleava
         InvalidSmilesError: `smiles` is not a molecule.
         ValueError: more breakable bonds than `MAX_CLEAVAGES`.
     """
-    parsed = require_molecule(smiles)
-    parent = str(Chem.MolToSmiles(parsed))
-    mol = Chem.AddHs(parsed)
+    # **Canonicalised before anything is enumerated, and that is the whole join.** `parent` is the
+    # only molecule the caller receives, so an index derived from the caller's own spelling names a
+    # different atom of it: measured, `OCC` reported `atoms=[0, 1], bond="O-C"`, and atoms 0 and 1
+    # of the returned `CCO` are C0-C1 — really bonded, in range, no error anywhere. That is the
+    # same failure `describe_atom_sites` records for phenol, and the reason it canonicalises first.
+    parent = require_canonical_smiles(smiles)
+    mol = Chem.AddHs(require_molecule(parent))
     # Each atom remembers its own index before fragmentation, which is how a fragment is matched
     # back to the end of the bond it came from. RDKit renumbers within a fragment, so nothing else
     # survives the split.

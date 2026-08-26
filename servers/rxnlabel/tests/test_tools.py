@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 from chemclaw_mcp_rxnlabel import tools
+from chemclaw_mcp_rxnlabel import tools as rxnlabel_tools
 from chemclaw_mcp_rxnlabel.engine import roles, version
 
 BUCHWALD = (
@@ -124,3 +125,90 @@ async def test_naming_reports_a_miss_rather_than_a_placeholder() -> None:
     assert found.confidence is None, "a SMIRKS matched or it did not"
     if found.named_reaction is None:
         assert found.method is None, "a method on an unnamed row would claim a derivation"
+
+
+class TestAReactionIsMappedOnce:
+    """The transformer pass is the cost the batch bound was set against, and it ran twice.
+
+    `_represent` called `roles.assign` — one forward pass, inside `contributing_reactants` — and
+    then called `map_reaction` again for the `mapped_smiles` field, on the same string. At
+    `MAX_BATCH=500` that is 1000 passes for 500 reactions, so the bound is set against half the
+    real cost and Chemclaw3's 120 s client budget is spent on a result already computed.
+    """
+
+    def test_ten_reactions_are_ten_mapper_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+
+        def counted(reaction_smiles: str) -> str | None:
+            calls.append(reaction_smiles)
+            return None
+
+        monkeypatch.setattr(rxnlabel_tools.mapping, "map_reaction", counted)
+        requests = [
+            rxnlabel_tools.ReactionRequest(
+                id=str(index),
+                reaction_smiles="Brc1ccccc1.OB(O)c1ccccc1>>c1ccc(-c2ccccc2)cc1",
+                species=["Brc1ccccc1"],
+            )
+            for index in range(10)
+        ]
+        answers = rxnlabel_tools._represent(requests)
+        assert len(answers) == 10
+        assert len(calls) == 10, f"in: 10 reactions  out: {len(calls)} map_reaction calls"
+
+
+class TestAPartialAnswerSaysSo:
+    """A species RDKit cannot read is dropped from the canonical reaction, and that must be said.
+
+    The skipping is argued and right — an OCR artefact should not lose the other forty-nine
+    species. What was wrong is that the loss was invisible: `reaction_smiles` came back as a
+    complete-looking two-reactant reaction, and a later "how many reactions used three components"
+    query over the stored form is quietly wrong forever, because the input was never recorded as
+    partial.
+    """
+
+    def test_an_unreadable_component_is_named_rather_than_silently_dropped(self) -> None:
+        reaction = "Brc1ccccc1.THIS_IS_NOT_SMILES.OB(O)c1ccccc1>>c1ccc(-c2ccccc2)cc1"
+        answer = rxnlabel_tools._represent(
+            [rxnlabel_tools.ReactionRequest(id="1", reaction_smiles=reaction, species=[])]
+        )[0]
+        assert answer.reaction_smiles == "Brc1ccccc1.OB(O)c1ccccc1>>c1ccc(-c2ccccc2)cc1"
+        assert answer.unreadable_species == ["THIS_IS_NOT_SMILES"], (
+            f"in: {reaction}  out: {answer.reaction_smiles} with "
+            f"unreadable_species={answer.unreadable_species}"
+        )
+
+    def test_a_species_that_was_asked_about_and_could_not_be_read_is_named_too(self) -> None:
+        """`functional_groups=[]` reads as "carries none", so unreadable ones must be said."""
+        answer = rxnlabel_tools._represent(
+            [
+                rxnlabel_tools.ReactionRequest(
+                    id="1",
+                    reaction_smiles="CCO>>CC=O",
+                    species=["CCO", "CCO (2 vol)"],
+                )
+            ]
+        )[0]
+        assert "CCO (2 vol)" in answer.unreadable_species
+        assert answer.species[0].functional_groups == ["alcohol"]
+
+    def test_a_complete_reaction_names_nothing(self) -> None:
+        answer = rxnlabel_tools._represent(
+            [rxnlabel_tools.ReactionRequest(id="1", reaction_smiles="CCO>>CC=O", species=["CCO"])]
+        )[0]
+        assert answer.unreadable_species == []
+
+
+class TestALabelCarriesTheLabellerThatMadeIt:
+    """Every tool that produces a label stamps it, because the stamp is what decides staleness.
+
+    The batch tools carried `version` and the single-reaction ones did not, so a label kept from
+    `represent_reaction` went in unstamped — never re-labelled when the mapper arrives — or was
+    paired with a separate `labeller_version` round trip that raced it.
+    """
+
+    async def test_the_single_reaction_tools_stamp_their_answers(self) -> None:
+        stamp = (await rxnlabel_tools.labeller_version()).version
+        represented = await rxnlabel_tools.represent_reaction("CCO>>CC=O")
+        named = await rxnlabel_tools.name_reaction("CCO>>CC=O")
+        assert (represented.version, named.version) == (stamp, stamp)

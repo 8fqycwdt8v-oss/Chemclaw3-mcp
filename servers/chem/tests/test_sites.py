@@ -8,6 +8,8 @@ table said.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
 from chemclaw_mcp_chem.engine.sites import SCOPES, describe_atom_sites, site_handle
@@ -16,13 +18,13 @@ from rdkit import Chem
 
 def _by_atom(smiles: str) -> dict[int, object]:
     """Every site of `smiles`, keyed by each atom index it covers."""
-    return {atom: site for site in describe_atom_sites(smiles) for atom in site.atoms}
+    return {atom: site for site in describe_atom_sites(smiles).sites for atom in site.atoms}
 
 
 def test_a_site_is_a_symmetry_class_not_an_atom() -> None:
     """Phenol has four kinds of ring carbon, not six, and toluene likewise."""
     for smiles, expected in (("Oc1ccccc1", 5), ("Cc1ccccc1", 5), ("c1ccccc1", 1)):
-        assert len(describe_atom_sites(smiles)) == expected, smiles
+        assert len(describe_atom_sites(smiles).sites) == expected, smiles
 
     sites = _by_atom("Oc1ccccc1")
     assert sites[2] is sites[6], "the two ortho carbons are one site"
@@ -51,7 +53,7 @@ def test_pyridine_is_numbered_from_its_nitrogen() -> None:
 
 def test_a_two_heteroatom_ring_gets_a_distance_and_no_classical_name() -> None:
     """Pyrimidine is numbered, not related — *meta* would mix two conventions that disagree."""
-    sites = describe_atom_sites("Clc1ccnc(Cl)n1")
+    sites = describe_atom_sites("Clc1ccnc(Cl)n1").sites
     assert all(site.ring_position is None for site in sites), "no ortho/meta/para in an azine"
     placed = [site for site in sites if site.ring_bonds_from_reference is not None]
     # Every ring atom but the reference itself, which has no relationship to state to itself.
@@ -80,7 +82,9 @@ def test_resonance_equivalent_atoms_are_two_sites_and_are_distinguishable() -> N
     different answers spelled identically.
     """
     oxygens = [
-        site for site in describe_atom_sites("c1ccccc1[N+](=O)[O-]") if site.kind == "nitro_oxygen"
+        site
+        for site in describe_atom_sites("c1ccccc1[N+](=O)[O-]").sites
+        if site.kind == "nitro_oxygen"
     ]
     assert len(oxygens) == 2
     assert oxygens[0].label != oxygens[1].label
@@ -100,13 +104,13 @@ def test_every_label_identifies_exactly_one_site() -> None:
         "c1ccccc1[N+](=O)[O-]",
         "Oc1ccccc1",
     ):
-        labels = [site.label for site in describe_atom_sites(smiles)]
+        labels = [site.label for site in describe_atom_sites(smiles).sites]
         assert len(labels) == len(set(labels)), smiles
 
 
 def test_a_ring_fusion_is_not_a_substituent() -> None:
     """Naphthalene has three kinds of carbon, and none of them bears a substituent."""
-    sites = describe_atom_sites("c1ccc2ccccc2c1")
+    sites = describe_atom_sites("c1ccc2ccccc2c1").sites
     assert len(sites) == 3
     assert {len(site.atoms) for site in sites} == {2, 4}
     assert all(site.ring_position is None for site in sites), "alpha/beta, not ortho/para"
@@ -122,11 +126,11 @@ def test_hydrogens_are_reported_on_their_carbon_with_a_calculators_numbering() -
         if atom.GetAtomicNum() == 1:
             expected.setdefault(atom.GetNeighbors()[0].GetIdx(), []).append(atom.GetIdx())
 
-    for site in describe_atom_sites(smiles):
+    for site in describe_atom_sites(smiles).sites:
         assert site.hydrogens == sorted(
             index for atom in site.atoms for index in expected.get(atom, [])
         )
-    assert not any(site.element == "H" for site in describe_atom_sites(smiles))
+    assert not any(site.element == "H" for site in describe_atom_sites(smiles).sites)
 
 
 def test_the_methyl_of_toluene_is_one_site_carrying_three_hydrogens() -> None:
@@ -163,7 +167,7 @@ def test_the_kinds_a_chemoselectivity_question_turns_on_are_distinguished(
     Asserted by kind rather than by atom index, because the index is the canonical form's and
     pinning it here would be pinning RDKit's canonicalisation instead of the classification.
     """
-    matching = [site for site in describe_atom_sites(smiles) if site.kind == kind]
+    matching = [site for site in describe_atom_sites(smiles).sites if site.kind == kind]
     assert len(matching) == 1, f"{smiles}: expected exactly one {kind}, got {len(matching)}"
     assert matching[0].element == element
 
@@ -180,7 +184,7 @@ def test_scopes_are_questions_not_a_partition() -> None:
     """A beta carbon carrying hydrogens is both an electrophilic carbon and a C-H site."""
     beta = _by_atom("C=CC(=O)N(C)C")[0]
     assert {"electrophilic_carbons", "ch_sites", "all"} <= set(beta.scopes)
-    for site in describe_atom_sites("Oc1ccccc1"):
+    for site in describe_atom_sites("Oc1ccccc1").sites:
         assert "all" in site.scopes
         assert set(site.scopes) <= set(SCOPES)
 
@@ -191,7 +195,9 @@ def test_scope_selection_finds_the_answer_top_n_buries() -> None:
     The measured failure this replaces: over all 13 atoms the para carbon ranks 6th and both meta
     carbons rank below four hydrogens, so truncation returns the wrong rows however large it is.
     """
-    ring = [site for site in describe_atom_sites("Oc1ccccc1") if "ring_carbons" in site.scopes]
+    ring = [
+        site for site in describe_atom_sites("Oc1ccccc1").sites if "ring_carbons" in site.scopes
+    ]
     assert len(ring) == 4
     assert sum(len(site.atoms) for site in ring) == 6
     assert {site.ring_position for site in ring} == {"ipso", "ortho", "meta", "para"}
@@ -208,12 +214,13 @@ def test_a_rewritten_smiles_gives_the_same_sites_and_the_same_indices() -> None:
     """
     writings = ("CC(=O)Nc1ccccc1", "O=C(C)Nc1ccccc1", "c1ccc(NC(C)=O)cc1")
     handles = [
-        {site.label: site.site_id for site in describe_atom_sites(smiles)} for smiles in writings
+        {site.label: site.site_id for site in describe_atom_sites(smiles).sites}
+        for smiles in writings
     ]
     assert handles[0] == handles[1] == handles[2]
 
     indices = [
-        {site.label: tuple(site.atoms) for site in describe_atom_sites(smiles)}
+        {site.label: tuple(site.atoms) for site in describe_atom_sites(smiles).sites}
         for smiles in writings
     ]
     assert indices[0] == indices[1] == indices[2]
@@ -224,7 +231,7 @@ def test_the_indices_are_the_ones_a_calculator_will_use() -> None:
     for writing in ("Oc1ccccc1", "c1ccccc1O", "c1cc(O)ccc1"):
         canonical = Chem.MolFromSmiles(Chem.CanonSmiles(writing))
         expected = [atom.GetIdx() for atom in canonical.GetAtoms() if atom.GetSymbol() == "O"]
-        oxygen = next(site for site in describe_atom_sites(writing) if site.element == "O")
+        oxygen = next(site for site in describe_atom_sites(writing).sites if site.element == "O")
         assert oxygen.atoms == expected, writing
 
 
@@ -253,8 +260,8 @@ def test_the_handle_is_bound_to_the_rdkit_build() -> None:
 
 def test_two_runs_and_two_writings_list_the_same_sites_in_the_same_order() -> None:
     """Order is part of the contract: a caller joining on position must not need to sort first."""
-    assert [site.site_id for site in describe_atom_sites("Oc1ccccc1")] == [
-        site.site_id for site in describe_atom_sites("Oc1ccccc1")
+    assert [site.site_id for site in describe_atom_sites("Oc1ccccc1").sites] == [
+        site.site_id for site in describe_atom_sites("Oc1ccccc1").sites
     ]
 
 
@@ -263,3 +270,101 @@ def test_an_invalid_smiles_is_refused_rather_than_approximated() -> None:
     for bad in ("", "CCO junk", "not-a-molecule"):
         with pytest.raises(InvalidSmilesError):
             describe_atom_sites(bad)
+
+
+class TestTheIndicesSayWhichMoleculeTheyNumber:
+    """Numbering from the canonical form is right; not returning it made the numbers unusable.
+
+    `describe_atom_sites` canonicalises first — the join with every calculator in this family — and
+    then handed back indices against a molecule the caller does not have and cannot derive from
+    this tool's output. Measured on 2,5-dichloropyridine written `c1cc(Cl)ncc1Cl`: the site named
+    "the ortho aromatic carbon bearing the leaving group" is atom 4, and atom 4 of the string the
+    chemist typed is the ring **nitrogen** — which is what `render_structure` highlights when the
+    model does what that tool's docstring teaches.
+    """
+
+    @pytest.mark.parametrize("written", ["c1cc(Cl)ncc1Cl", "c1ccccc1O", "c1ccc(NC(C)=O)cc1", "OCC"])
+    def test_every_site_addresses_an_atom_of_the_returned_molecule(self, written: str) -> None:
+        """Element by element, against the one string the caller receives."""
+        found = describe_atom_sites(written)
+        mol = Chem.MolFromSmiles(found.smiles)
+        for site in found.sites:
+            for index in site.atoms:
+                assert mol.GetAtomWithIdx(index).GetSymbol() == site.element, (
+                    f"in: {written}  out: smiles={found.smiles}, {site.label} at atom {index} — "
+                    f"which is {mol.GetAtomWithIdx(index).GetSymbol()} there, not {site.element}"
+                )
+
+    def test_the_spelling_the_chemist_typed_numbers_a_different_atom(self) -> None:
+        """The measurement kept as a test: why the molecule has to travel with the sites."""
+        found = describe_atom_sites("c1cc(Cl)ncc1Cl")
+        assert found.smiles == "Clc1ccc(Cl)nc1"
+        typed = Chem.MolFromSmiles("c1cc(Cl)ncc1Cl")
+        returned = Chem.MolFromSmiles(found.smiles)
+        assert (returned.GetAtomWithIdx(4).GetSymbol(), typed.GetAtomWithIdx(4).GetSymbol()) == (
+            "C",
+            "N",
+        )
+
+
+class TestTheMoleculeIsCanonicalisedOncePerCallAndNotOncePerAtom:
+    """`site_handle` canonicalised the whole molecule twice on every call, once per atom.
+
+    Two whole-molecule passes — `CanonicalRankAtoms` and `MolToSmiles` — per atom is quadratic in a
+    server with no size bound anywhere: measured on a straight-chain alkane, 100 atoms was 0.18 s,
+    300 was 3.57 s, 600 was 18.46 s, and 1000 did not finish. Both are advertised to the model as
+    "Free: a graph operation, no calculation, no cache", and both run in an uncancellable worker
+    thread past the manifest's own 30 s budget.
+    """
+
+    def test_a_six_hundred_atom_molecule_is_still_a_graph_operation(self) -> None:
+        smiles = "C" * 600
+        started = time.perf_counter()
+        found = describe_atom_sites(smiles)
+        elapsed = time.perf_counter() - started
+        assert found.count > 0
+        assert elapsed < 3.0, (
+            f"in: a {len(smiles)}-atom alkane  out: {found.count} sites in {elapsed:.2f} s"
+        )
+
+    def test_hoisting_the_canonical_view_leaves_the_handle_byte_identical(self) -> None:
+        """The one-shot form and the form the enumeration uses must mint the same name.
+
+        A handle is content-addressed and is carried between turns, so a handle that changed with
+        *how it was computed* would silently stop resolving — which is the failure the RDKit
+        version in its payload exists to make loud.
+        """
+        for smiles in ("Oc1ccccc1", "CC(=O)Nc1ccccc1", "Clc1ccc(Cl)nc1"):
+            found = describe_atom_sites(smiles)
+            mol = Chem.MolFromSmiles(found.smiles)
+            for site in found.sites:
+                assert site.site_id == site_handle(mol, site.atoms[0]), (
+                    f"in: {smiles}  out: {site.label} has two names"
+                )
+
+
+class TestAnIsotopicHydrogenIsNotAHeteroatom:
+    """`MolFromSmiles` keeps an isotopically-labelled hydrogen as an explicit atom in the graph.
+
+    So `[2H]` became a site of `kind="heteroatom"` labelled "the heteroatom" — in a module that
+    promises "every symmetry-distinct **heavy** atom" and "hydrogens are not sites of their own" —
+    and the carbon it hangs off reported `hydrogens=[]`, which is the field the docstring calls the
+    join key for a C-H question. On CD3OH, the substrate of a kinetic-isotope-effect study, the
+    site list names an element that is not there and the abstraction question has no join key.
+    """
+
+    @pytest.mark.parametrize("smiles", ["[2H]c1ccccc1", "C([2H])([2H])([2H])O", "[3H]CC"])
+    def test_a_labelled_hydrogen_is_not_a_site_of_its_own(self, smiles: str) -> None:
+        found = describe_atom_sites(smiles)
+        assert not any(site.element == "H" for site in found.sites), (
+            f"in: {smiles}  out: {[(s.element, s.label) for s in found.sites]}"
+        )
+
+    def test_the_carbon_still_reports_the_hydrogens_it_carries(self) -> None:
+        """A deuterium is a hydrogen on that carbon, and the C-H question is asked about carbon."""
+        found = describe_atom_sites("C([2H])([2H])([2H])O")
+        carbon = next(site for site in found.sites if site.element == "C")
+        assert len(carbon.hydrogens) == 3, (
+            f"in: C([2H])([2H])([2H])O  out: smiles={found.smiles}, "
+            f"{carbon.label} carries hydrogens={carbon.hydrogens}"
+        )

@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field, field_validator
 from chemclaw_mcp_calc.engine import crest_cli, xtb_cli
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import CalculationKey
-from chemclaw_mcp_calc.engine.solvents import require_supported_solvent
+from chemclaw_mcp_calc.engine.solvents import canonical_solvent
 from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb_engine import engine_version
 
@@ -93,8 +93,8 @@ XtbTask = Literal[
 # `fukui` have **no** binary code path (they call `run_singlepoint`/`gfn2_energy` unconditionally),
 # so on such a deployment their `calc_version` named a program that had not run — measured against
 # xtb 6.6.1, and forbidden in as many words by `calc_version`'s own rule below. It was unobservable
-# in the shipped image, which carries no binary, and it would have partitioned the Chemclaw3 cache
-# the first time a deployment added one.
+# while the shipped image pinned `CHEMCLAW_XTB_ENGINE=tblite`, and it would have partitioned the
+# Chemclaw3 cache the first time a deployment switched the engine on.
 #
 # `opt` and `hess` are absent because they genuinely dispatch (`xtb_opt`, `xtb_hessian` branch on
 # `engine`), and so are crest's two, which key on crest's build instead.
@@ -127,13 +127,21 @@ class XtbSpec(BaseModel):
     # backends produce different numbers for the same request, so they are different calculator
     # versions, not different parameters of one.
     engine: Backend = Field(default_factory=resolve_backend)
-    # ALPB implicit solvent name, or None for gas phase.
+    # ALPB implicit solvent name, or None for gas phase. Stored canonicalised, because it is hashed
+    # into `params_hash`: see the validator below.
     solvent: str | None = None
+    # xtb's `--acc` numerical accuracy — the SCF and integral thresholds that produce the numbers a
+    # binary run returns. A spec field rather than a `settings` read inside `xtb_cli.run`, for
+    # `trust_radius`'s reason: it moves the answer, and a setting that moves the answer belongs in
+    # the key. Keyed only where the binary is what runs (`unkeyed_fields`), because tblite has no
+    # equivalent knob and crest is handed none.
+    accuracy: float = Field(default_factory=lambda: settings.xtb_cli_accuracy, gt=0)
 
     @field_validator("solvent")
     @classmethod
     def _solvent_must_be_parameterised(cls, value: str | None) -> str | None:
-        """Refuse a solvent ALPB has no parameters for, here rather than inside the SCF.
+        """Refuse a solvent ALPB has no parameters for, here rather than inside the SCF, and
+        canonicalise the spelling that survives.
 
         **Not in Chemclaw3's copy of this model**, and added deliberately rather than by accident of
         porting. Over there the check is a durable-job *precondition*, evaluated in the chat service
@@ -142,9 +150,16 @@ class XtbSpec(BaseModel):
         solvents" (an implementation detail, not a mistake a chemist can act on) or, on the binary
         backend, minutes later inside a subprocess. The measured case is "2-MeTHF", among the most
         common process solvents there is and not one GFN2-xTB has parameters for.
+
+        **Returning the canonical name is the second half, and it is a cache defect rather than a
+        cosmetic one.** Matching is case- and whitespace-insensitive "because tblite is", but the
+        value kept here is hashed into `params_hash` and sent to `--alpb` — so `"water"`, `"Water"`,
+        `" water"` and `"h2o"` were four cache rows for one calculation, and on this server a repeat
+        is minutes to hours. `canonical_solvent` refuses exactly what `require_supported_solvent`
+        refuses, and the alias groups it merges are measured against tblite rather than assumed
+        (`tests/test_solvents.py`).
         """
-        require_supported_solvent(value)
-        return value
+        return None if value is None else canonical_solvent(value)
 
     def for_structure(self, structure: Structure) -> Self:
         """The spec that will actually run for `structure`, backend included.
@@ -197,18 +212,32 @@ class XtbSpec(BaseModel):
         """
         return f"{self.method}+{self.engine}+{backend_version(self.engine)}"
 
-    @classmethod
-    def unkeyed_fields(cls) -> set[str]:
-        """Fields that must *not* enter `params` — because they are keyed elsewhere.
+    def unkeyed_fields(self) -> set[str]:
+        """Fields that must *not* enter `params` — because they are keyed elsewhere, or inert here.
 
         `task` names the calculation type, and `method`/`engine` are already in `calc_version`, so
         all three would be recorded twice.
+
+        `accuracy` is the second kind: it is `xtb --acc`, and a task the binary does not run cannot
+        be moved by it. `sp`, `properties` and `fukui` are pinned to tblite by `_FIXED_BACKEND`, so
+        for them it is inert in every configuration — and `xtb.sp`'s key is pinned byte-for-byte
+        against Chemclaw3's own derivation in `tests/test_key_contract.py`, which over-keying would
+        break. **An instance method rather than a classmethod for exactly this**: which fields are
+        inert depends on the resolved backend, and `cache_key` resolves before it asks.
+
+        The asymmetry between the two kinds is deliberate and is the rule the whole file states:
+        a false *hit* serves one configuration's number as another's, a false *miss* costs CPU. So a
+        field is excluded only where it provably cannot reach the calculation, never merely because
+        it usually does not.
 
         Overriding this rather than overriding `cache_key` is deliberate: the key derivation stays
         in one place, so a new field is still keyed by construction and *excluding* one is the
         visible, deliberate act rather than the silent default.
         """
-        return {"task", "method", "engine"}
+        unkeyed = {"task", "method", "engine"}
+        if self.engine != "xtb":
+            unkeyed.add("accuracy")
+        return unkeyed
 
     def cache_key(self, structure: Structure) -> CalculationKey:
         """The versioned identity of running this spec on `structure`.
@@ -263,6 +292,15 @@ class CrestSpec(XtbSpec):
     def for_structure(self, structure: Structure) -> Self:
         """No-op: there is no second backend to fall back to (see the class docstring)."""
         return self
+
+    def unkeyed_fields(self) -> set[str]:
+        """`accuracy` goes too: `crest_cli` hands the search no `--acc`, whatever `engine` says.
+
+        `engine` here is inherited and, for a plain ensemble search, not even honoured — so keying
+        on a flag crest never receives would name a knob that cannot move the result, in the one
+        place a repeat costs hours.
+        """
+        return {*super().unkeyed_fields(), "accuracy"}
 
     def calc_version(self) -> str:
         """Keyed on crest's build, because crest is what runs.

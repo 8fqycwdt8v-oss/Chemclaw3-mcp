@@ -8,6 +8,8 @@ worth more than one whose reason is "it seemed important".
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
 from chemclaw_mcp_chem.engine.species import (
@@ -18,6 +20,7 @@ from chemclaw_mcp_chem.engine.species import (
     enumerate_stereoisomer_set,
     enumerate_tautomer_set,
 )
+from rdkit import Chem
 
 # A substrate per transform, and the product each must reach. Written as data because the whole
 # claim of `enumerate_degradants` is that its transforms produce real chemistry — an unmapped
@@ -158,3 +161,105 @@ def test_a_string_that_is_not_a_molecule_is_refused_by_every_enumerator() -> Non
     ):
         with pytest.raises(InvalidSmilesError):
             call("CCO junk")
+
+
+class TestACapBoundsTheWorkAndNotOnlyTheAnswer:
+    """A refusal that costs 28 seconds of CPU is a refusal the caller has already given up on.
+
+    `MAX_STEREOISOMERS` bounded the *output*: the enumerator ran unbounded (`maxIsomers=0`), the
+    whole 2^n set was materialised into a list, and only then was the cap checked. The module
+    docstring makes the 2^n argument itself — "a molecule with 10 unassigned centres is 1024
+    structures" — and then enumerated all of them anyway. Combined with `asyncio.to_thread`, which
+    this repository's `CLAUDE.md` records as uncancellable, and the manifest's own 30 s budget, the
+    caller times out while the pod keeps burning.
+    """
+
+    @staticmethod
+    def _open_centres(count: int) -> str:
+        """A chain with `count` unassigned stereocentres and no symmetry to collapse them.
+
+        The two ends differ deliberately: a methyl at both ends makes the chain its own mirror
+        image, and 2^6 comes back as 36 rather than 64.
+        """
+        return "CCO" + "C(Cl)" * count + "C"
+
+    def test_the_refusal_is_reached_without_enumerating_what_it_refuses(self) -> None:
+        """Sixteen open centres is 65,536 structures and an 82-character string."""
+        smiles = self._open_centres(16)
+        started = time.perf_counter()
+        with pytest.raises(ValueError, match="stereoisomers"):
+            enumerate_stereoisomer_set(smiles)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 5.0, (
+            f"in: {smiles} ({len(smiles)} characters, 16 open centres)  out: the refusal took "
+            f"{elapsed:.2f} s — the enumeration is what the cap exists to avoid paying for"
+        )
+
+    def test_a_set_inside_the_cap_is_still_complete(self) -> None:
+        """The bound must stop the work at the refusal, not clip a legitimate answer.
+
+        Six open centres is 64 structures — exactly `MAX_STEREOISOMERS`, so this is the last set
+        that must come back whole.
+        """
+        smiles = self._open_centres(6)
+        found = enumerate_stereoisomer_set(smiles)
+        assert (found.count, len(set(found.smiles))) == (MAX_STEREOISOMERS, MAX_STEREOISOMERS), (
+            f"in: {smiles}  out: {found.count} isomers, {len(set(found.smiles))} distinct"
+        )
+
+
+class TestATautomerSetDoesNotHoldOneCompoundTwice:
+    """RDKit's enumerator erases stereochemistry at a centre the transformation touches.
+
+    So `C[C@H](O)C(C)=O` comes back as both `CC(=O)[C@H](C)O` (the parent) and `CC(=O)C(C)O` (the
+    parent with the centre erased). Those are two strings and one compound-with-and-without-a-
+    specification, and the de-duplication compares strings. `rank_species` populates over exactly
+    the list it is given, so the keto form is embedded and Boltzmann-populated twice and its
+    reported population is split roughly in half against the genuinely different tautomers.
+
+    (That an alpha centre epimerises through the enol is real chemistry. Reporting the racemised
+    form as a separate *member of the tautomer set* is not.)
+    """
+
+    @pytest.mark.parametrize("smiles", ["C[C@H](O)C(C)=O", "C[C@@H](N)C(=O)O"])
+    def test_a_member_is_not_its_own_stereo_free_twin(self, smiles: str) -> None:
+        found = enumerate_tautomer_set(smiles)
+        flattened = [
+            Chem.MolToSmiles(Chem.MolFromSmiles(member), isomericSmiles=False)
+            for member in found.smiles
+        ]
+        assert len(set(flattened)) == len(flattened), (
+            f"in: {smiles}  out: {found.smiles} — {len(flattened) - len(set(flattened))} member(s) "
+            "differ from another only by a stereocentre the enumerator erased"
+        )
+
+    def test_the_specified_form_is_the_one_that_survives(self) -> None:
+        """The parent is a claim about a centre; the erased twin is the one to drop."""
+        found = enumerate_tautomer_set("C[C@H](O)C(C)=O")
+        assert found.parent in found.smiles
+        assert "CC(=O)C(C)O" not in found.smiles
+
+
+class TestASaturatedCountIsNotAMeasurement:
+    """`tautomer_count` reported the cap as a count, which reads as an exact 64.
+
+    Keeping `describe_topology` total is the right call — it is the free tool everything else is
+    decided against — but a saturated value presented as a measurement lets a reader compare a real
+    number with a ceiling. Measured: a molecule with 195 tautomers was reported as having 64.
+    """
+
+    OLIGOKETONE = "O=C(C)CC(=O)CC(=O)CC(=O)CC(=O)CC(=O)C"
+
+    def test_past_the_cap_the_count_says_it_is_past_the_cap(self) -> None:
+        topology = describe_molecule(self.OLIGOKETONE)
+        assert topology.tautomer_count is None, (
+            f"in: {self.OLIGOKETONE}  out: tautomer_count={topology.tautomer_count}, which reads "
+            "as an exact count and is the cap"
+        )
+        assert topology.tautomer_count_saturated is True
+
+    def test_inside_the_cap_it_is_still_a_number(self) -> None:
+        topology = describe_molecule("CC(=O)CC(C)=O")
+        assert topology.tautomer_count is not None
+        assert topology.tautomer_count > 1
+        assert topology.tautomer_count_saturated is False

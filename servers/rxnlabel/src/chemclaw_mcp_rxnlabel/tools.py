@@ -57,7 +57,9 @@ class SpeciesRepresentation(BaseModel):
         default_factory=list,
         description=(
             "Groups from this server's own vocabulary. Stable across deployments whether or not "
-            "the optional extras are installed, because it is queried by exact name."
+            "the optional extras are installed, because it is queried by exact name. Empty means "
+            "the molecule was read and carries none of them — **unless** this species is named in "
+            "the reaction's `unreadable_species`, which is what tells the two apart."
         ),
     )
 
@@ -66,10 +68,32 @@ class ReactionRepresentation(BaseModel):
     """One reaction: its atom map where there is one, and every species it was asked about."""
 
     id: str
-    reaction_smiles: str = Field(description="The canonical form of the reaction as given.")
+    version: str = Field(
+        description=(
+            "The labeller this answer came from — store it beside the label. Same string "
+            "`labeller_version` returns, carried here so a kept answer can be judged stale "
+            "without a second round trip that may race this one."
+        )
+    )
+    reaction_smiles: str = Field(
+        description=(
+            "The canonical form of the species that could be **read**. A component RDKit cannot "
+            "parse is left out of it and named in `unreadable_species` — see that field."
+        )
+    )
     mapped_smiles: str | None = Field(
         default=None,
         description="Atom-mapped reaction SMILES, or null where no mapper is installed.",
+    )
+    unreadable_species: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Every species string that could not be read, from the reaction and from the list you "
+            "sent — verbatim, so you can see what it was. Empty is the normal case and means the "
+            "reaction above is complete. This is the difference between a partial answer and a "
+            "wrong one: an unreadable species is dropped from `reaction_smiles` and comes back "
+            "with an empty `functional_groups`, which otherwise reads as 'carries none'."
+        ),
     )
     species: list[SpeciesRepresentation] = Field(
         default_factory=list, description="Positional against the species list that was sent."
@@ -80,6 +104,12 @@ class ReactionNaming(BaseModel):
     """One reaction's classification. Every field null where nothing matched."""
 
     id: str
+    version: str = Field(
+        description=(
+            "The labeller this answer came from — store it beside the label, for the reason "
+            "`ReactionRepresentation.version` gives."
+        )
+    )
     named_reaction: str | None = None
     reaction_class: str | None = None
     rxno_id: str | None = Field(
@@ -185,6 +215,10 @@ async def represent_reaction(
     structures and from the rest of the flask (a phosphine is a ligand when there is a metal to
     bind and a stoichiometric reagent when there is not).
 
+    The answer carries the `version` that produced it — store that beside any label you keep — and
+    `unreadable_species`, which names every component RDKit could not parse. Those are dropped from
+    `reaction_smiles`, so an empty `unreadable_species` is what says the reaction came back whole.
+
     Args:
         reaction_smiles: `reactants>agents>products`, agents kept.
         species: The structures to classify, in your order; the answer is positional against it.
@@ -257,23 +291,30 @@ def _version() -> LabellerVersion:
 
 def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]:
     """Represent each reaction, skipping the ones RDKit cannot read."""
+    stamp = _version().version
     answers = []
     for request in reactions:
         canonical = _canonical_reaction(request.reaction_smiles)
         if canonical is None:
             continue
-        assigned = roles.assign(request.reaction_smiles, request.species)
+        # **Mapped once.** `roles.assign` needs the map for the reactant-versus-reagent split and
+        # the answer carries it as a field; deriving it in both places ran the transformer twice
+        # per reaction, which is the cost `MAX_BATCH` was set against.
+        mapped = mapping.map_reaction(request.reaction_smiles)
+        assigned = roles.assign(request.reaction_smiles, request.species, mapped)
         answers.append(
             ReactionRepresentation(
                 id=request.id,
+                version=stamp,
                 reaction_smiles=canonical,
-                mapped_smiles=mapping.map_reaction(request.reaction_smiles),
+                mapped_smiles=mapped,
+                unreadable_species=_unreadable(request),
                 species=[
                     SpeciesRepresentation(
                         smiles=species.canonical_smiles(raw) or raw,
                         role=role,
                         scaffold=species.scaffold(raw),
-                        functional_groups=species.functional_groups(raw),
+                        functional_groups=species.functional_groups(raw) or [],
                     )
                     for raw, role in zip(request.species, assigned, strict=True)
                 ],
@@ -282,8 +323,32 @@ def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]
     return answers
 
 
+def _unreadable(request: ReactionRequest) -> list[str]:
+    """Every species string of this request RDKit could not read, in the order it was written.
+
+    Skipping an unreadable species is right and argued (`roles._canonical_set`): a patent extract's
+    fiftieth species may be an OCR artefact, and losing the other forty-nine over it is the worse
+    answer. **Reporting the loss is the half that was missing** — the canonical reaction came back
+    looking complete, so a later "how many reactions used three components" query over the stored
+    form is quietly wrong, and no version bump repairs it because the input was never recorded as
+    partial. Chemclaw3 states the rule as `D-2026-08-08-a-partial-answer-must-say-so`.
+    """
+    written = [
+        token
+        for slot in request.reaction_smiles.split(">")
+        for token in slot.split(".")
+        if token.strip()
+    ]
+    seen: list[str] = []
+    for token in [*written, *request.species]:
+        if species.canonical_smiles(token) is None and token not in seen:
+            seen.append(token)
+    return seen
+
+
 def _name(reactions: list[NamingRequest]) -> list[ReactionNaming]:
     """Classify each reaction; a miss is a result with null fields, not an omission."""
+    stamp = _version().version
     answers = []
     for request in reactions:
         if _canonical_reaction(request.reaction_smiles) is None:
@@ -292,6 +357,7 @@ def _name(reactions: list[NamingRequest]) -> list[ReactionNaming]:
         answers.append(
             ReactionNaming(
                 id=request.id,
+                version=stamp,
                 named_reaction=found.named_reaction,
                 reaction_class=found.reaction_class,
                 method=found.method,

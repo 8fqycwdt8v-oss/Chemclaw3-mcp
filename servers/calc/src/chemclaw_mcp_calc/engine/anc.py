@@ -7,9 +7,11 @@ optimizer. Two paths cannot use the binary, and on this server there is a third 
   apply the spin-polarization term their energy needs (`XtbSpec.for_structure`);
 - **frozen atoms**, expressible as optimizer bounds but not as an xtb flag without writing
   a control file, which is precisely the input surface `xtb_cli` refuses to have;
-- **an image with no `xtb` binary at all**, which is the shipped default here — see
-  `servers/calc/README.md`. In that deployment the in-process optimizer is not the fallback
-  path, it is the only one, so preconditioning it is not an optimization of a corner case.
+- **a deployment that does not run the binary**, which is the shipped default: the image
+  installs `xtb` and pins `CHEMCLAW_XTB_ENGINE=tblite`, so the binary is available and
+  inactive (see `servers/calc/README.md`). There the in-process optimizer is not the
+  fallback path, it is the only one, so preconditioning it is not an optimization of a
+  corner case.
 
 So the remaining work was never "write an internal-coordinate optimizer to replace
 ANCopt" — it was "make the in-process path stop being the slow one".
@@ -54,7 +56,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.xtb_engine import ANGSTROM_TO_BOHR
 
 # Lindh's parameters, indexed by periodic-table row (H; Li-Ne; Na-Ar and below). `alpha`
@@ -126,7 +127,7 @@ def model_hessian(numbers: np.ndarray, positions: np.ndarray) -> np.ndarray:
 
 
 def basis(
-    numbers: np.ndarray, positions: np.ndarray, free: np.ndarray
+    numbers: np.ndarray, positions: np.ndarray, free: np.ndarray, floor: float
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return `(vectors, scale)` mapping preconditioned steps to Cartesian displacements.
 
@@ -137,8 +138,11 @@ def basis(
 
     `scale` is the inverse square root of the (floored) curvature, which is what turns an
     anisotropic surface into a nearly isotropic one.
+
+    `floor` is an argument rather than a `settings` read, and that is a cache fix rather
+    than a style preference: it is `OptSpec.curvature_floor`, so it reaches the key of the
+    optimization it steers. Read here, it steered the geometry from outside every key.
     """
     hessian = model_hessian(numbers, positions)[np.ix_(free, free)]
     eigenvalues, vectors = np.linalg.eigh(hessian)
-    floor = settings.xtb_anc_curvature_floor
     return vectors, 1.0 / np.sqrt(np.clip(eigenvalues, floor, None))

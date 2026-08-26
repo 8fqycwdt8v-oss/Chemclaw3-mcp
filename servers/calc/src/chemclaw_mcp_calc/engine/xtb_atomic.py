@@ -176,7 +176,10 @@ def compute_surface_potential(spec: XtbSpec, structure: Structure) -> SurfacePot
         method=resolved.method,
         solvent=resolved.solvent,
         surface=xtb_cli.run_surface_potential(
-            structure, method=resolved.method, solvent=resolved.solvent
+            structure,
+            method=resolved.method,
+            solvent=resolved.solvent,
+            accuracy=resolved.accuracy,
         ),
     )
 
@@ -206,7 +209,13 @@ def compute_atomic_descriptors(spec: XtbSpec, structure: Structure) -> AtomicDes
         CliError: the run failed or produced no property table.
     """
     resolved = _require_binary_backend(spec, structure)
-    result = xtb_cli.run(structure, task="sp", method=resolved.method, solvent=resolved.solvent)
+    result = xtb_cli.run(
+        structure,
+        task="sp",
+        method=resolved.method,
+        solvent=resolved.solvent,
+        accuracy=resolved.accuracy,
+    )
     if not result.atomic_rows:
         raise xtb_cli.CliError(
             "xtb produced no per-atom property table, so there is nothing to report"

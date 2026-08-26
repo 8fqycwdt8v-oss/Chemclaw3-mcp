@@ -34,7 +34,7 @@ from chemclaw_mcp_chem.engine import stoichiometry
 from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
 from chemclaw_mcp_chem.engine.depiction import render_svg
 from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
-from chemclaw_mcp_chem.engine.sites import Site, describe_atom_sites
+from chemclaw_mcp_chem.engine.sites import SiteSet, describe_atom_sites
 from chemclaw_mcp_chem.engine.species import (
     DegradantSet,
     SpeciesSet,
@@ -62,11 +62,20 @@ async def resolve_compound(name: str) -> ResolvedCompound | None:
     in the known set rather than guessing a structure, because a wrong structure would silently
     corrupt every downstream calculation and search.
 
+    **A formula that is also a valid SMILES is refused, not resolved.** `CO`, `NO`, `CN` and every
+    bare element symbol read as one substance to a chemist and another to the parser — `CO` is
+    carbon monoxide and is the SMILES for methanol — so the error names both readings and you pass
+    the structure you meant. Only you know which it was; guessing put 30.61 g of methanol into a
+    carbonylation charge list.
+
     Args:
         name: What the chemist wrote — a trivial name, an abbreviation, or a SMILES string.
 
     Returns:
         The canonical structure with the name it was recognised as, or `None` if unknown.
+
+    Raises:
+        ValueError: the name is one of the reviewed formula/SMILES collisions above.
     """
     # An unrecognised name falls through to an RDKit canonicalisation attempt, so this is not the
     # dictionary lookup it looks like.
@@ -111,7 +120,10 @@ async def stoichiometry_table(
     Returns:
         One row per species with its molar amount and the mass to weigh out, and for solvents the
         density and the volume to measure. Reagent names that cannot be resolved are listed in
-        `unresolved` and carry no row — never a guessed mass. A solvent that cannot be resolved, or
+        `unresolved` and carry no row — never a guessed mass. A species whose name is both a
+        formula and a SMILES (`CO`, `NO`, a bare element) is an error rather than an `unresolved`
+        entry, because the two readings differ in molecular weight. A solvent that cannot be
+        resolved, or
         whose density is not on file, is an error instead: a silently dropped solvent looks like a
         complete table while flattering every mass metric derived from it.
     """
@@ -168,9 +180,16 @@ async def render_structure(smiles: str, highlight_atoms: list[int] | None = None
     which they can check the choice before a scan is paid for. Saying "the amide C-N" is a claim;
     the picture is the evidence.
 
+    **An index is only an atom of the string you pass here.** Pass the *same* SMILES the indices
+    came from: `enumerate_torsions` numbers the string it was given, while `describe_sites` numbers
+    the canonical form and returns it as `smiles` — pass that one. An index that addresses a
+    different spelling is still in range, so the highlight lands on some other atom and looks like
+    confirmation.
+
     Args:
         smiles: A molecule SMILES, or a reaction SMILES (`reactants>>products`).
-        highlight_atoms: Atom indices to mark, and the bonds between them. Molecules only.
+        highlight_atoms: Atom indices to mark, and the bonds between them. Molecules only, and
+            numbered as `smiles` numbers them.
 
     Returns:
         An inline SVG document.
@@ -204,17 +223,22 @@ async def enumerate_torsions(smiles: str) -> list[Torsion]:
         same however the molecule is written — carry it, not the indices, when a later turn asks
         about "the same bond". `atoms` is the dihedral to scan and `period_degrees` is the range a
         scan has to cover; `equivalent_bonds` names the copies that need no separate scan. Ring
-        bonds are not listed, because driving one is a ring pucker rather than a rotation. A
-        `kind="top"` entry — a methyl or tert-butyl rotation — is listed with **no** dihedral
-        atoms: it is a real rotation, and the reason to show it is that the rotatable-bond
-        descriptor everyone reaches for reports zero for toluene, but its dihedral needs a
-        hydrogen and its energy is already carried by the free-rotor treatment of the low modes.
+        bonds are not listed, because driving one is a ring pucker rather than a rotation.
+
+        Two kinds carry **no** dihedral atoms, because the rotating end holds only hydrogens and a
+        hydrogen index means something only inside one explicit-H numbering. They are not the same
+        answer. `kind="top"` is a methyl or tert-butyl rotation, and its energy really is already
+        carried by the free-rotor treatment of the low modes — the reason to list it at all is that
+        the rotatable-bond descriptor everyone reaches for reports zero for toluene. `kind="xh"` is
+        an O-H, S-H or N-H rotation: acetamide's amide N-H is 16-18 kcal/mol and acetic acid's
+        syn/anti O-H is 5-6, neither is in the low modes, and neither can be scanned from here.
+        Say it is not answered rather than that it is accounted for.
     """
     return await asyncio.to_thread(enumerate_torsion_candidates, smiles)
 
 
 @server.tool()
-async def describe_sites(smiles: str) -> list[Site]:
+async def describe_sites(smiles: str) -> SiteSet:
     """Name every atom of a molecule, so a per-atom number can be reported as a *position*.
 
     **Call this before, or alongside, any per-atom calculation** — site reactivity, partial charges,
@@ -236,7 +260,13 @@ async def describe_sites(smiles: str) -> list[Site]:
         smiles: The molecule, as SMILES.
 
     Returns:
-        One entry per symmetry-distinct heavy atom. `site_id` is a handle that stays the same
+        `smiles` — the canonical form the indices below are numbered against, which is **not** the
+        string you passed unless you already had it canonical. Pass that one to `render_structure`
+        or to a per-atom calculation; measured on 2,5-dichloropyridine written `c1cc(Cl)ncc1Cl`,
+        the site at atom 4 is an aromatic carbon of the canonical form and the ring nitrogen of the
+        string as typed, and a highlight drawn on the typed string confirms a different atom.
+        Then one `sites` entry per symmetry-distinct heavy atom. `site_id` is a handle that stays
+        the same
         however the molecule is written — carry it, not the indices, when a later turn asks about
         "the same position". `atoms` are the heavy-atom indices of the class and `hydrogens` the
         indices its hydrogens carry once a calculator makes them explicit, which is the join key
@@ -266,7 +296,9 @@ async def describe_topology(smiles: str) -> Topology:
       has one shape and `compute_electronic_properties` on it is already the ensemble answer.
     - **`tautomer_count` of 1** means there is no tautomer question; resolving it would rank a set
       of one. Above 1, resolve the form *before* computing anything else about the molecule,
-      because every downstream number describes whichever form was assumed.
+      because every downstream number describes whichever form was assumed. **Null** means more
+      than the cap, with `tautomer_count_saturated` saying so — it is emphatically tautomeric, and
+      it is not the number 64.
     - **`unassigned_stereocentres` of 0** means a stereoisomer expansion returns one structure.
     - **`ionisable_acidic_sites` and `ionisable_basic_sites`**: one of either means `predict_pka`
       covers the question; both, or several, is the amphoteric/polyprotic case a microspecies
@@ -368,7 +400,9 @@ async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic"
 
     Returns:
         One entry per distinct bond, with fragments whose radical electrons or charges are explicit
-        so the calculation needs no separately declared spin state.
+        so the calculation needs no separately declared spin state. `parent` is the canonical form
+        the molecule was enumerated on, and each `atoms` pair numbers *that* molecule with its
+        hydrogens made explicit — not the SMILES you passed, unless it was already canonical.
     """
     return await asyncio.to_thread(enumerate_cleavages, smiles, mode)
 

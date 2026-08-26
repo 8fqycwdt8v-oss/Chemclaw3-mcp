@@ -25,6 +25,8 @@ from dataclasses import dataclass
 
 from rdkit import Chem
 
+from chemclaw_mcp_rxnlabel.engine.chem import read_molecule
+
 # The transition metals whose presence makes a reaction "catalysed" for the purposes of the ligand
 # rule above, plus the main-group metals that are ordinarily *reagents* rather than catalysts and
 # are deliberately absent (Li, Na, K, Mg, Zn as an organometallic partner). A Grignard is not a
@@ -110,16 +112,32 @@ _LIGAND_SMARTS = (
 # Base motifs, as SMARTS. Ordered by how unambiguous they are; the first match wins.
 _BASE_SMARTS = (
     "[OX1-][CX3](=O)[OX1-]",  # carbonate
-    "[OX2H0-][CX3](=O)[OX2H0]",  # bicarbonate as written by some extractors
+    # Bicarbonate. The pattern here was `[OX2H0-][CX3](=O)[OX2H0]`, which demands an oxygen with
+    # **two** connections and a negative charge — and bicarbonate is `OC(=O)[O-]`, whose anionic
+    # oxygen has one connection while the other carries the proton. It matched no bicarbonate
+    # written any way, so every `NaHCO3` reaction — one of the commonest bases in a Suzuki corpus —
+    # fell through every rule to `additive`, labelled rather than blank and so invisible.
+    "[OX1-][CX3](=O)[OX2H1]",
     "[OH-]",  # hydroxide
     "[H-]",  # hydride: NaH, KH
     "[CX4][O-]",  # alkoxide: NaOMe, KOtBu
     "[F-]",  # fluoride: CsF, TBAF
-    "[PX4](=O)([O-])([O-])[O-]",  # phosphate
+    # Phosphate, at two deprotonations rather than three: K2HPO4 is charged as a base as often as
+    # K3PO4 is, and demanding three `[O-]` excluded it. KH2PO4 — one `[O-]`, a buffer — stays out.
+    "[PX4](=O)([OX1-])[OX1-]",
     "[NX2-]([Si])[Si]",  # silyl amide: LiHMDS, NaHMDS
     "[NX2-]([CX4])[CX4]",  # dialkylamide: LDA
     # Amidine and guanidine superbases: DBU, DBN, TMG, TBD.
     "[NX2]=[CX3]-[NX3]",
+    # Pyridine-type aromatic nitrogen: pyridine, 2,6-lutidine, collidine, DMAP, quinoline. Written
+    # as a whole six-ring with one nitrogen rather than as a bare `[nX2]`, which would also claim
+    # the acidic azoles that sit in the same slot — HOBt is a coupling *additive* and would have
+    # been counted as a base through its benzotriazole.
+    "c1ccncc1",
+    # Imidazole-type: imidazole, N-methylimidazole, benzimidazole — the basic ring nitrogen is the
+    # two-connection one. The two adjacent ring carbons are what keeps the triazoles and tetrazole
+    # out: neither has a c-c bond in the ring.
+    "[nX2]1ccnc1",
     # Tertiary amine with no N-H: triethylamine, Hünig's base, DMAP, N-methylmorpholine. Last,
     # because a tertiary amine is also a great many substrates — which is why this rule is only
     # ever consulted for a species already in the agent slot or already known not to be a
@@ -155,7 +173,7 @@ def is_metal_complex(smiles: str) -> bool:
     catalyst was used. The ferrocene case is the one that costs something — dppf is a *ligand* with
     an iron atom in it — and it is handled by `classify` consulting the ligand rules first.
     """
-    mol = Chem.MolFromSmiles(smiles)
+    mol = read_molecule(smiles)
     if mol is None:
         return False
     return any(atom.GetSymbol() in TRANSITION_METALS for atom in mol.GetAtoms())
@@ -163,7 +181,7 @@ def is_metal_complex(smiles: str) -> bool:
 
 def is_solvent(smiles: str) -> bool:
     """Whether this species is one of the few dozen things a process chemist pours."""
-    mol = Chem.MolFromSmiles(smiles)
+    mol = read_molecule(smiles)
     return mol is not None and Chem.MolToSmiles(mol) in SOLVENTS
 
 
@@ -197,7 +215,7 @@ def _matches_any(smiles: str, patterns: tuple[str, ...]) -> bool:
     because one pattern has a typo is a worse failure than silently narrowing the rules, and the
     server's own tests assert each pattern individually.
     """
-    mol = Chem.MolFromSmiles(smiles)
+    mol = read_molecule(smiles)
     if mol is None:
         return False
     for pattern in patterns:

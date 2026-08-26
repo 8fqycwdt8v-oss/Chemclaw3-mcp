@@ -71,11 +71,26 @@ class Structure(BaseModel):
         Three ways a structure can be wrong are caught here rather than by tblite converging
         something meaningless: mismatched array lengths, a coordinate row that is not 3D, and an
         electron count that cannot produce the declared multiplicity.
+
+        **And one way it can be right and still unaffordable.** The atom ceiling lives here rather
+        than on each tool for the same reason the electron-count check does: four primitives take a
+        structure and the next one will, so a per-tool check is one somebody forgets — and only
+        `compute_hessian` had one. A structure under the 1 MB body cap can carry ~42,000 atoms, at
+        which the optimizer's dense model Hessian asks for 127 GB and takes the whole process with
+        it, every other connected turn included. The refusal names both numbers because the caller's
+        only options are a smaller system or a deployment configured for a larger one.
         """
         if len(self.positions) != len(self.elements):
             raise ValueError(f"{len(self.positions)} positions for {len(self.elements)} elements")
         if any(len(row) != 3 for row in self.positions):
             raise ValueError("every position must have exactly three coordinates")
+        if len(self.elements) > settings.xtb_max_atoms:
+            raise ValueError(
+                f"a structure of {len(self.elements)} atoms exceeds this server's limit of "
+                f"{settings.xtb_max_atoms}: every calculation here is at least one SCF over the "
+                "whole system and runs inside a conversation turn, so a system this size is "
+                "refused rather than started and abandoned"
+            )
         decimals = settings.xtb_geometry_decimals
         # `+ 0.0` normalizes the negative zero that rounding can produce, so two geometrically
         # identical structures cannot differ in their hash by a sign bit.

@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -263,3 +267,219 @@ def test_a_syntax_error_returns_the_message_without_a_frame_list() -> None:
     assert outcome.error is not None
     assert "SyntaxError" in outcome.error
     assert "runner.py" not in outcome.error
+
+
+# --------------------------------------------------------------------------------------------
+# The boundary, granting the escape. Every test below *starts* from a program that already holds
+# `os` — the guard above does not claim to prevent that — and asks what the boundary does next.
+# --------------------------------------------------------------------------------------------
+
+#: A handle on `os` from inside the sandbox. `uuid` is on the allowlist and imports `os` at module
+#: level, which is the porosity `runner.py`'s docstring describes rather than a new hole. These
+#: tests are about what holds *after* an escape, so they take the shortest reliable route to one
+#: instead of the object-graph walk an attacker would write.
+_ESCAPED = "import uuid\nos = uuid.os\n"
+
+#: A fake pod secret, shaped like this server's own bearer token — the variable `app.py` reads.
+_POD_SECRET = "SECRET-BEARER-abc123"
+
+#: The unprivileged uid the stand-in server drops to when the suite runs as root.
+_NOBODY = 65534
+
+#: A stand-in for the pyexec pod, run as a process of its own: it carries a bearer token in its
+#: environment, runs one program through `sandbox.run`, and reports what came back beside what the
+#: run cost it in memory. It cannot be the pytest process, for three separate reasons — that
+#: process's environment is not a pod's, its RSS high-water mark is whatever an earlier test left
+#: there, and when the suite runs as root the sandbox child inherits `CAP_SYS_PTRACE`, which reads
+#: any `/proc/<pid>` whatever the dumpable flag says.
+_STAND_IN_SERVER = """
+import ctypes, json, resource, sys
+
+from chemclaw_mcp_pyexec.engine.limits import Limits
+from chemclaw_mcp_pyexec.engine.sandbox import run
+
+# `prctl(PR_GET_DUMPABLE)` before anything else, and reported: it is what says this stand-in began
+# where a pod begins. A process that had arrived here already sealed — the kernel clears the flag
+# on a credential change — would refuse the read below whatever this server did or did not do.
+dumpable_at_start = ctypes.CDLL(None).prctl(3, 0, 0, 0, 0)
+# The *growth* of the high-water mark, never its value: `execve` carries the forking parent's peak
+# into the new process (the kernel folds the old mm's high-water mark into `signal->maxrss`), so
+# this process starts out reporting whatever pytest happened to be holding — 56 MiB alone and
+# 169 MiB inside the full suite, measured. The difference across one run is this server's own.
+before_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+outcome = run(sys.stdin.read(), limits=Limits(wall_seconds=20.0, cpu_seconds=10))
+print(
+    json.dumps(
+        {
+            "dumpable_at_start": dumpable_at_start,
+            "result_json": outcome.result_json,
+            "stdout": outcome.stdout,
+            "error": outcome.error,
+            "rss_growth_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before_kib,
+        }
+    )
+)
+"""
+
+
+def _a_second_uid_is_reachable() -> bool:
+    """Whether this process can actually become another user, rather than merely look like root.
+
+    `geteuid() == 0` is not the question. `make offline-run` and the `offline` CI lane run the suite
+    under `unshare --user --map-root-user --net`, where the process *is* uid 0 — of a user namespace
+    that maps exactly one uid. `setuid(65534)` there fails with `EINVAL`, inside `preexec_fn`, which
+    `subprocess` reports only as "Exception occurred in preexec_fn".
+
+    So the map is what is read. A single-entry map covering one uid means there is no second user to
+    drop to, and the two tests below are skipped rather than run as root — at root the refusal they
+    assert would be the kernel declining to let `CAP_SYS_PTRACE` be used on a dumpable-cleared
+    process, which is not the control this server added. The `check` lane runs as real root with the
+    full range and proves it there; this is the same rule as the binary-gated skips, written down.
+    """
+    try:
+        entries = [line.split() for line in Path("/proc/self/uid_map").read_text().splitlines()]
+    except OSError:  # pragma: no cover — no procfs; the caller falls back to "cannot drop".
+        return False
+    return any(int(count) > 1 for _inside, _outside, count in entries)
+
+
+#: Skip marker for the two tests that need a second user to be meaningful. Loud, and it says which
+#: environment cannot provide one, because a silently-permanent skip is how a control stops being
+#: checked without anybody deciding that.
+_needs_a_second_uid = pytest.mark.skipif(
+    os.geteuid() == 0 and not _a_second_uid_is_reachable(),
+    reason=(
+        "running as uid 0 of a single-uid user namespace (the `offline` lane's `unshare "
+        "--map-root-user`): there is no unprivileged user to drop to, and as root the assertion "
+        "would test the kernel rather than this server's seal. Proven in the `check` lane."
+    ),
+)
+
+
+def _drop_privileges() -> None:  # pragma: no cover — runs after fork, inside the stand-in server.
+    """Become an unprivileged user, because root reads any `/proc/<pid>` whatever the flag says.
+
+    Nothing here restores the dumpable flag the credential change clears: the `execve` that
+    follows sets it back to 1 for an unprivileged image, which is where the pod's own process
+    lives and what `dumpable_at_start` above asserts rather than assumes.
+    """
+    os.setgroups([])
+    os.setgid(_NOBODY)
+    os.setuid(_NOBODY)
+
+
+def _through_a_stand_in_server(code: str) -> dict[str, Any]:
+    """Run one program through `sandbox.run` in a process standing in for the served pod."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _STAND_IN_SERVER],
+        input=code,
+        env={**os.environ, "CHEMCLAW_PYEXEC_TOKEN": _POD_SECRET},
+        preexec_fn=(
+            _drop_privileges if os.geteuid() == 0 and _a_second_uid_is_reachable() else None
+        ),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr
+    answered: dict[str, Any] = json.loads(completed.stdout)
+    return answered
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<ppid>/environ")
+@_needs_a_second_uid
+def test_an_escaped_program_cannot_read_the_servers_own_environment() -> None:
+    """The child's environment is built from an allowlist; the *parent's* was readable anyway.
+
+    `/proc/<ppid>/environ` is mode 0400 owned by the uid the server runs as — which is the uid the
+    child runs as too, so the only thing between an escaped program and this pod's bearer token,
+    its DSNs and whatever else a deployment injects is the kernel's rule about the *target's*
+    dumpable flag. The stolen values come back to the caller in `result`, an exfiltration channel
+    that the empty-egress NetworkPolicy never sees, so the allowlisted environment on its own is
+    not the boundary the docstrings claim it is.
+    """
+    answered = _through_a_stand_in_server(
+        _ESCAPED + "fd = os.open('/proc/%d/environ' % os.getppid(), os.O_RDONLY)\n"
+        "blob = os.read(fd, 1 << 20).decode('utf-8', 'replace')\n"
+        "os.close(fd)\n"
+        "result = [entry for entry in blob.split(chr(0)) if 'SECRET-BEARER' in entry]\n"
+    )
+    # Two guards against a test that passes for the wrong reason: the stand-in has to have started
+    # unsealed, and the read has to *fail* rather than merely come back without the token in it.
+    assert answered["dumpable_at_start"] == 1, answered
+    assert answered["error"] is not None, answered
+    assert _POD_SECRET not in json.dumps(answered), answered
+
+
+@_needs_a_second_uid
+def test_a_flood_to_the_stdout_descriptor_does_not_grow_the_server() -> None:
+    """The 10,000-character cap is on the runner's own capture; fd 1 goes straight past it.
+
+    A program that reached `os` can `os.write(1, ...)` in a loop, and every byte was read into the
+    *parent's* memory and then discarded — a bound on the child's address space that the server
+    paid for. Measured before this was fixed: 1.5 GB written took the parent's RSS from 39 MiB to
+    3020 MiB, which is an OOM kill of a pod serving every other session, not of the one run.
+    """
+    answered = _through_a_stand_in_server(
+        _ESCAPED + "chunk = b'X' * (1 << 20)\n"
+        "for _ in range(512):\n"
+        "    os.write(1, chunk)\n"
+        "print('the captured channel still answers')\n"
+        "result = 'done'\n"
+    )
+    assert json.loads(answered["result_json"] or "null") == "done", answered["error"]
+    assert "the captured channel still answers" in answered["stdout"]
+    assert answered["rss_growth_kib"] < 64 * 1024, answered["rss_growth_kib"]
+
+
+def test_a_flood_to_the_stderr_descriptor_cannot_come_back_as_the_diagnostic() -> None:
+    """fd 2 is the same hole as fd 1, and it has a second end: the "died quietly" message.
+
+    The parent needs the child's last stderr line to explain a run that wrote no result, and a
+    program that floods fd 2 would otherwise decide how big that explanation is. Writing it to a
+    file inside the scratch directory puts it under the child's own `RLIMIT_FSIZE` — a bound it
+    cannot raise back — and the parent reads a bounded tail rather than the whole stream.
+
+    The refusal reaches the program as `OSError: File too large` rather than killing it, because
+    CPython ignores `SIGXFSZ` so that an over-long write returns `EFBIG` instead. That is the
+    better half of the outcome: the caller is told which bound stopped their program.
+    """
+    outcome = run(
+        _ESCAPED + "chunk = b'X' * (1 << 20)\n"
+        "for _ in range(64):\n"
+        "    os.write(2, chunk)\n"
+        "result = 'done'\n",
+        limits=_fast(),
+    )
+    assert outcome.result_json is None, "the flood was absorbed by the server rather than refused"
+    assert outcome.error is not None
+    assert "File too large" in outcome.error
+    assert len(outcome.error) < 8_000, len(outcome.error)
+
+
+def test_each_call_gets_its_own_scratch_directory_and_leaves_none_behind() -> None:
+    """One directory per call, and it is `HOME`, `TMPDIR` and the working directory at once.
+
+    This is the half of statelessness that the code holds up: what an *escaped* program writes to
+    an absolute path elsewhere in the pod is bounded by the deployment and by nothing here, which
+    is why the README says so rather than promising that nothing survives a call.
+    """
+    first = run(
+        _ESCAPED + "result = [os.getcwd(), os.environ['TMPDIR'], os.environ['HOME']]",
+        limits=_fast(),
+    )
+    second = run(_ESCAPED + "result = os.getcwd()", limits=_fast())
+    working, tmpdir, home = json.loads(first.result_json or "null")
+    assert working == tmpdir == home
+    assert json.loads(second.result_json or "null") != working
+    assert not Path(working).exists()
+    assert not Path(json.loads(second.result_json or "null")).exists()
+
+
+def test_the_scratch_directory_goes_even_when_the_run_is_killed() -> None:
+    """The error path is the one that matters: a killed run must not leave its directory behind."""
+    scratch = Path(tempfile.gettempdir())
+    before = set(scratch.glob("pyexec-*"))
+    outcome = run("while True:\n    pass", limits=_fast(wall_seconds=2.0, cpu_seconds=60))
+    assert outcome.timed_out is True
+    assert set(scratch.glob("pyexec-*")) == before

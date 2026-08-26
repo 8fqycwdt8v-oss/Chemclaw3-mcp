@@ -27,11 +27,17 @@ from pathlib import Path
 
 import pytest
 from chemclaw_mcp_safety.engine import screen as screen_module
-from chemclaw_mcp_safety.engine.genotox import screen_genotoxic_alerts
+from chemclaw_mcp_safety.engine.genotox import (
+    ALERTS_DIR,
+    ALERTS_FILE,
+    AlertTable,
+    screen_genotoxic_alerts,
+)
 from chemclaw_mcp_safety.engine.ich import impurity_limit
 from chemclaw_mcp_safety.engine.screen import (
     MAX_COMPONENTS,
     SafetyRulesError,
+    read_table,
     screen_reaction,
     screen_structure,
 )
@@ -674,7 +680,21 @@ _ALERTS = {
     "alkyl-halide": ("CI", "CC(C)(C)Cl"),  # methyl iodide vs a tertiary chloride
     "alkyl-sulfonate-or-sulfate-ester": ("COS(C)(=O)=O", "CS(=O)(=O)O"),  # MeOMs vs MsOH
     "michael-acceptor": ("NC(=O)C=C", "CCC(N)=O"),  # acrylamide vs propionamide
+    # Phenyl vinyl sulfone vs ethyl phenyl sulfone: the alkene is the alert, not the sulfone.
+    "vinyl-sulfone": ("C=CS(=O)(=O)c1ccccc1", "CCS(=O)(=O)c1ccccc1"),
 }
+
+
+def test_every_structural_alert_has_a_worked_example_and_a_counterexample() -> None:
+    """A row added to the table without a molecule beside it is a row nothing checks.
+
+    The vinyl-sulfone gap below lived in the table because the motif was claimed in an
+    explanation rather than encoded in a pattern, and no test named a molecule that had to
+    match. Tying the parametrisation to the table itself is what makes the next row's absence
+    fail here instead of in a screen.
+    """
+    table = read_table(ALERTS_DIR, ALERTS_FILE, AlertTable)
+    assert {alert.id for alert in table.structural} == set(_ALERTS)
 
 
 @pytest.mark.parametrize(("alert_id", "pair"), sorted(_ALERTS.items()))
@@ -685,6 +705,41 @@ def test_each_alert_fires_on_its_example_and_stays_quiet_on_its_counterexample(
     hit, miss = pair
     assert alert_id in {a.alert_id for a in screen_genotoxic_alerts([hit]).alerts}
     assert alert_id not in {a.alert_id for a in screen_genotoxic_alerts([miss]).alerts}
+
+
+@pytest.mark.parametrize(
+    ("name", "smiles"),
+    [
+        ("phenyl vinyl sulfone", "C=CS(=O)(=O)c1ccccc1"),
+        ("divinyl sulfone", "C=CS(=O)(=O)C=C"),
+        ("ethyl vinyl sulfone", "C=CS(=O)(=O)CC"),
+        ("vinyl sulfonamide", "C=CS(=O)(=O)N"),
+    ],
+)
+def test_a_vinyl_sulfone_raises_an_alkylating_alert(name: str, smiles: str) -> None:
+    """The false negative that mattered most: a claimed motif that no pattern could match.
+
+    `michael-acceptor` requires a carbonyl carbon conjugated to the alkene, so a vinyl sulfone —
+    an electrophilic warhead with no carbonyl anywhere — screened clean while the alert's own
+    explanation told the reader vinyl sulfones matched. A screen that names a motif it cannot
+    see is worse than one that stays silent about it, because the miss reads as a pass.
+    """
+    fired = {alert.alert_id for alert in screen_genotoxic_alerts([smiles]).alerts}
+    assert "vinyl-sulfone" in fired, name
+
+
+@pytest.mark.parametrize(
+    ("name", "smiles"),
+    [
+        ("ethyl phenyl sulfone", "CCS(=O)(=O)c1ccccc1"),  # no alkene at all
+        ("allyl methyl sulfone", "C=CCS(=O)(=O)C"),  # alkene present, not conjugated to the S
+        ("methanesulfonic acid", "CS(=O)(=O)O"),
+    ],
+)
+def test_an_unactivated_sulfone_stays_quiet(name: str, smiles: str) -> None:
+    """Sulfones are ordinary chemistry; only the alkene *on* the sulfonyl is the alert."""
+    fired = {alert.alert_id for alert in screen_genotoxic_alerts([smiles]).alerts}
+    assert "vinyl-sulfone" not in fired, name
 
 
 def test_a_nitrosating_agent_meeting_an_amine_flags_the_formation_route() -> None:
@@ -732,7 +787,7 @@ def test_the_result_says_a_flag_is_an_alert_and_not_a_classification(smiles: lis
 
 
 def test_a_clean_alert_screen_is_not_reported_as_a_negative_prediction() -> None:
-    """An empty result is nine patterns not matching, not a (Q)SAR calling the compound clean."""
+    """An empty result is ten patterns not matching, not a (Q)SAR calling the compound clean."""
     verdict = screen_genotoxic_alerts(["CCO"]).verdict
     assert "not a negative mutagenicity prediction" in verdict
 

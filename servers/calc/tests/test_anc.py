@@ -15,8 +15,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from chemclaw_mcp_calc.engine import anc
+from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
+
+# The floor `OptSpec.curvature_floor` defaults to. An argument to `basis` rather than a `settings`
+# read inside it, because it steers the geometry and therefore belongs in the optimisation's key —
+# so a test of the basis has to say which floor it is testing, exactly as the optimizer now does.
+FLOOR = settings.xtb_anc_curvature_floor
 
 
 def test_the_model_hessian_is_symmetric_and_has_no_net_force() -> None:
@@ -58,7 +64,7 @@ def test_the_basis_spans_only_the_free_coordinates() -> None:
     structure = structure_from_smiles("CCO", optimize=True)
     numbers, positions = structure.arrays()
     free = np.repeat([False, False, True, True, True, True, True, True, True], 3)
-    vectors, scale = anc.basis(numbers, positions, free)
+    vectors, scale = anc.basis(numbers, positions, free, FLOOR)
 
     assert vectors.shape == (int(free.sum()), int(free.sum()))
     assert scale.shape == (int(free.sum()),)
@@ -74,7 +80,7 @@ def test_a_softer_direction_is_allowed_a_longer_step() -> None:
     free = np.ones(3 * len(numbers), dtype=bool)
     hessian = anc.model_hessian(numbers, positions)
     eigenvalues = np.linalg.eigvalsh(hessian[np.ix_(free, free)])
-    _, scale = anc.basis(numbers, positions, free)
+    _, scale = anc.basis(numbers, positions, free, FLOOR)
     # Eigenvalues ascend, so the last is stiffest and must get the smallest scale.
     assert scale[-1] < scale[0]
     assert scale[-1] == pytest.approx(1.0 / np.sqrt(eigenvalues[-1]), rel=1e-6)

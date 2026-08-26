@@ -520,6 +520,10 @@ class HessianPayload(Keyed):
     **Both are what a caller needs to derive an IR spectrum**, and neither is a spectrum: the
     normal-mode projection and the RRHO arithmetic over them stayed in Chemclaw3, because they are
     pure partition functions over what this returns.
+
+    `max_gradient_hartree_per_angstrom` is the evidence that the geometry was a stationary point —
+    see the field comment. Optional rather than required, so a row written before it existed is
+    still a complete row and `CALCULATION_EPOCH` does not have to move for it.
     """
 
     structure_id: str
@@ -527,6 +531,11 @@ class HessianPayload(Keyed):
     solvent: str | None
     atom_count: int
     electronic_energy_hartree: float
+    # Largest absolute gradient component at the geometry that was differentiated. A Hessian
+    # describes the surface *around* a point, and only at a stationary point do its eigenvalues mean
+    # frequencies — so this is what lets a caller assert what it has rather than assume it. `None`
+    # from the `xtb` binary, which reports no gradient beside its Hessian.
+    max_gradient_hartree_per_angstrom: float | None = None
     hessian_npy: str
     dipole_derivatives_npy: str | None = None
     ir_intensities: list[float] | None = None
@@ -615,13 +624,18 @@ async def combine_structures(
     different key, so order the pair canonically first if A-with-B and B-with-A should be one
     calculation.
 
+    **Refuses an open-shell monomer.** Two doublets are a singlet or a triplet, and which one is a
+    chemical decision rather than an arithmetic identity — so a radical pair is refused here instead
+    of being handed the high-spin state silently, with every energy downstream of it computed on a
+    surface nobody chose.
+
     Args:
-        first: The monomer held at the origin.
-        second: The monomer offset along x.
+        first: The monomer held at the origin. Must be closed-shell.
+        second: The monomer offset along x. Must be closed-shell.
         separation_angstrom: Gap between the two bounding spheres.
 
     Returns:
-        The pair as one structure, charges summed and multiplicities combined.
+        The pair as one structure, charges summed, closed-shell.
     """
     return await asyncio.to_thread(
         crest_search.combine_structures, first, second, separation_angstrom
@@ -738,7 +752,16 @@ async def compute_hessian(structure: Structure, solvent: str | None = None) -> H
 
     Cost is 6N + 1 single points in-process — minutes on a drug-sized molecule, and refused above
     `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150 by default) because a tool call that would run for an hour
-    is a durable job. **Nothing is cached here**, so ask `calculation_key` first.
+    is a durable job. A run that gets past that and still exceeds
+    `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` (900 s, the manifest's own budget) is stopped rather than
+    left burning CPU for an answer nobody is waiting for. **Nothing is cached here**, so ask
+    `calculation_key` first.
+
+    **It differentiates whatever geometry it is handed** — a transition state and a scan point are
+    legitimate subjects, so this is not a refusal — and returns
+    `max_gradient_hartree_per_angstrom` beside the matrix so the caller can tell a minimum from an
+    unrelaxed embedding. Frequencies from a non-stationary geometry look entirely ordinary and mean
+    nothing, and a geometry displaced along a soft direction shows no imaginary mode at all.
 
     The arrays are base64-encoded `.npy`, which round-trips float64 exactly and is byte-for-byte
     what Chemclaw3's artifact store already holds. At the 150-atom cap a response is about 2.2 MB.
@@ -749,8 +772,9 @@ async def compute_hessian(structure: Structure, solvent: str | None = None) -> H
         solvent: ALPB implicit solvent name; omit for gas phase.
 
     Returns:
-        The Hessian in Hartree/Angstrom^2, the electronic energy at that geometry, and either the
-        dipole derivatives (in-process backend) or the binary's own per-mode IR intensities.
+        The Hessian in Hartree/Angstrom^2, the electronic energy and the largest gradient component
+        at that geometry, and either the dipole derivatives (in-process backend) or the binary's own
+        per-mode IR intensities.
     """
     spec = HessianSpec(solvent=solvent)
 
@@ -766,6 +790,7 @@ async def compute_hessian(structure: Structure, solvent: str | None = None) -> H
             solvent=resolved.solvent,
             atom_count=len(structure.elements),
             electronic_energy_hartree=hessian.electronic_energy_hartree,
+            max_gradient_hartree_per_angstrom=hessian.max_gradient,
             hessian_npy=pack_array(hessian.matrix),
             dipole_derivatives_npy=(
                 None
@@ -839,9 +864,9 @@ async def search_conformer_ensemble(
     Returns the ensemble and nothing computed from it. Boltzmann populations, conformational entropy
     and the ensemble free-energy correction are arithmetic over the energies and degeneracies here.
 
-    **Requires the `crest` binary, which this image does not ship** — the call refuses, by name,
-    rather than degrading. It is absent from Chemclaw3's environment too, so nothing that worked
-    before has stopped working.
+    **The shipped image carries `crest` 3.0.2, so this runs here.** A deployment that replaced or
+    trimmed that image gets a refusal naming the binary rather than a single-conformer answer
+    dressed up as an ensemble — degrading is the one thing this call will not do.
 
     Args:
         structure: The starting geometry.
@@ -885,8 +910,8 @@ async def search_binding_modes(
     **One mode found is a weak result, not a confident one**: it usually means the search was too
     quick rather than that the pair has a single way to bind.
 
-    **Requires the `crest` binary, which this image does not ship** — see
-    `search_conformer_ensemble`.
+    **The shipped image carries `crest` 3.0.2** — see `search_conformer_ensemble` for what a
+    trimmed image gets instead.
 
     Args:
         structure: The combined pair, from `combine_structures`.

@@ -113,3 +113,50 @@ def test_a_molecule_past_the_cap_refuses_rather_than_ranking_a_subset() -> None:
 def test_a_string_that_is_not_a_molecule_is_refused() -> None:
     with pytest.raises(InvalidSmilesError):
         enumerate_cleavages("CCO junk")
+
+
+class TestTheIndicesAddressTheMoleculeThatIsReturned:
+    """`atoms` and `parent` must describe one molecule, because the caller only receives `parent`.
+
+    This is the failure `describe_atom_sites` records for phenol and `torsion_handle` exists to
+    remove, recurring in the one enumerator that had neither guard: the indices were into
+    `AddHs(<the caller's spelling>)` while `parent` was the canonical SMILES, and the field
+    description claimed the opposite. Chemclaw3's survey copies `atoms` straight into
+    `DissociatedBond.atoms`, which is what the chemist reads beside "this is the weakest bond".
+    """
+
+    @pytest.mark.parametrize(
+        ("written", "canonical"),
+        [
+            ("OCC", "CCO"),
+            ("c1ccc(NC(C)=O)cc1", "CC(=O)Nc1ccccc1"),
+            ("OC(=O)c1ccccc1", "O=C(O)c1ccccc1"),
+        ],
+    )
+    def test_the_bond_name_reads_the_same_in_the_returned_molecule(
+        self, written: str, canonical: str
+    ) -> None:
+        """`enumerate_bond_cleavages("OCC")` reported `atoms=[0, 1], bond="O-C"`, and atoms 0 and 1
+        of the returned `CCO` are C0-C1 — a different bond, really bonded, in range, no error.
+        """
+        found = enumerate_cleavages(written)
+        assert found.parent == canonical, f"in: {written}  out: parent={found.parent}"
+        mol = Chem.AddHs(Chem.MolFromSmiles(found.parent))
+        for entry in found.cleavages:
+            begin, end = (mol.GetAtomWithIdx(index) for index in entry.atoms)
+            read_back = f"{begin.GetSymbol()}-{end.GetSymbol()}"
+            assert mol.GetBondBetweenAtoms(*entry.atoms) is not None, (
+                f"in: {written}  out: parent={found.parent}, atoms={entry.atoms} are not bonded"
+            )
+            assert read_back == entry.bond, (
+                f"in: {written}  out: parent={found.parent}, {entry.bond} at atoms "
+                f"{entry.atoms} — which reads as {read_back} in the molecule that was returned"
+            )
+
+    def test_two_spellings_of_one_compound_give_the_same_indices(self) -> None:
+        """The canonical form is the join, so how the caller wrote it cannot move an index."""
+        first = enumerate_cleavages("OCC")
+        second = enumerate_cleavages("CCO")
+        assert [entry.atoms for entry in first.cleavages] == [
+            entry.atoms for entry in second.cleavages
+        ], f"in: OCC / CCO  out: {first.parent} / {second.parent}"

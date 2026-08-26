@@ -42,6 +42,7 @@ __all__ = [
     "molecular_weight",
     "require_canonical_smiles",
     "require_molecule",
+    "require_whole_string",
 ]
 
 
@@ -81,15 +82,36 @@ def require_molecule(smiles: str) -> Chem.Mol:
     Raises:
         InvalidSmilesError: `smiles` is empty, holds whitespace or non-ASCII, or does not parse.
     """
-    stripped = smiles.strip()
-    if not stripped or any(ch.isspace() for ch in stripped):
-        raise InvalidSmilesError(f"invalid SMILES (empty or contains whitespace): {smiles!r}")
-    if not stripped.isascii():
-        raise InvalidSmilesError(f"invalid SMILES (non-ASCII characters): {smiles!r}")
+    stripped = require_whole_string(smiles)
     mol = Chem.MolFromSmiles(stripped)
     if mol is None or mol.GetNumAtoms() == 0:
         raise InvalidSmilesError(f"invalid SMILES: {smiles!r}")
     return mol
+
+
+def require_whole_string(smiles: str, what: str = "SMILES") -> str:
+    """The stripped string, raising unless every character of it is part of one structure.
+
+    The two checks `require_molecule` makes *before* RDKit sees the string, extracted because the
+    depiction needs them on a **reaction** too and could not get them from `require_molecule`: a
+    reaction branches on `">>"` before any molecule is parsed, so `"CCO>>CC=O CCCCCCBr"` was drawn
+    as `CCO >> CC=O` — the bromide silently gone, the picture well-formed and plausible, and a
+    drawing is the one form in which the model's choice is supposed to become checkable by a human.
+
+    Args:
+        smiles: The string as the caller typed it.
+        what: What the string was meant to be, for the message — a refusal has to say which of the
+            two it was reading, since the caller wrote `">>"` precisely to say.
+
+    Raises:
+        InvalidSmilesError: `smiles` is empty, holds whitespace, or is not printable ASCII.
+    """
+    stripped = smiles.strip()
+    if not stripped or any(ch.isspace() for ch in stripped):
+        raise InvalidSmilesError(f"invalid {what} (empty or contains whitespace): {smiles!r}")
+    if not stripped.isascii():
+        raise InvalidSmilesError(f"invalid {what} (non-ASCII characters): {smiles!r}")
+    return stripped
 
 
 def require_canonical_smiles(smiles: str) -> str:

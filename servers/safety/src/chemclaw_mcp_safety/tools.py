@@ -99,14 +99,14 @@ async def screen_genotoxic_alerts(smiles: list[str]) -> AlertResult:
 
     Matches a committed, cited table of alerts (N-nitroso, nitroaromatic, primary aromatic amine,
     aromatic azo, epoxide, aziridine, mono-functional alkyl halide, alkyl sulfonate/sulfate ester,
-    Michael acceptor) and, across several components, the nitrosamine formation route — a
-    nitrosatable amine meeting a nitrosating agent.
+    alpha,beta-unsaturated carbonyl, vinyl sulfone) and, across several components, the nitrosamine
+    formation route — a nitrosatable amine meeting a nitrosating agent.
 
     **A flag is an alert, not a classification, and you must report it as one.** This system has no
     (Q)SAR pair, no Ames corpus and no expert rule base, so it cannot produce an ICH M7 class, an
     acceptable intake, a purge factor or a mutagenicity prediction — and neither can you. Never
     state one, not even as an illustration. An empty result is equally not a negative prediction:
-    the table is nine alerts long, and absence means nothing in it matched.
+    the table is ten alerts long, and absence means nothing in it matched.
 
     **A SMILES this cannot read in full is refused, not screened**, and the refusal names the
     component's position in the list — one structure per entry, with nothing else in the string.

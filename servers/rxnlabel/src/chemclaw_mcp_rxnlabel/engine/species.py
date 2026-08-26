@@ -19,6 +19,8 @@ from __future__ import annotations
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
+from chemclaw_mcp_rxnlabel.engine.chem import read_molecule
+
 # `(name, SMARTS)`, matched independently — a molecule carries every group it matches, so an
 # N-aryl amide is both "amide" and "aniline". Order is presentation only.
 #
@@ -72,8 +74,8 @@ _COMPILED = tuple(
 
 
 def canonical_smiles(smiles: str) -> str | None:
-    """RDKit's canonical form, or `None` where it cannot be read."""
-    mol = Chem.MolFromSmiles(smiles)
+    """RDKit's canonical form, or `None` unless it can be read **whole** (see `engine/chem.py`)."""
+    mol = read_molecule(smiles)
     return Chem.MolToSmiles(mol) if mol is not None else None
 
 
@@ -84,7 +86,7 @@ def scaffold(smiles: str) -> str | None:
     returns: a solvent has no scaffold, and grouping every acyclic species under `""` would make a
     "which scaffolds appear" roll-up mostly a count of ethanol.
     """
-    mol = Chem.MolFromSmiles(smiles)
+    mol = read_molecule(smiles)
     if mol is None:
         return None
     core = MurckoScaffold.GetScaffoldForMol(mol)
@@ -92,13 +94,18 @@ def scaffold(smiles: str) -> str | None:
     return written or None
 
 
-def functional_groups(smiles: str) -> list[str]:
-    """Every group in the vocabulary this molecule carries, in the vocabulary's own order.
+def functional_groups(smiles: str) -> list[str] | None:
+    """Every group in the vocabulary this molecule carries, or `None` if it could not be read.
 
     Order is the declaration's, not the match's, so two identical structures always produce
     byte-identical arrays — which matters because the array is stored and compared.
+
+    **`None` and `[]` are different answers and were the same one.** An empty list means the
+    molecule was read and carries no group in this vocabulary; a string that could not be read
+    returned the same empty list, and every later "which products carry an aryl halide" query
+    counted that row as a negative rather than as unlabelled.
     """
-    mol = Chem.MolFromSmiles(smiles)
+    mol = read_molecule(smiles)
     if mol is None:
-        return []
+        return None
     return [name for name, query in _COMPILED if mol.HasSubstructMatch(query)]

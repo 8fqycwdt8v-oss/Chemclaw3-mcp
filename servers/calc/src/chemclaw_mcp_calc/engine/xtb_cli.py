@@ -1,12 +1,12 @@
 """The `xtb` binary as a second calculation backend — and the source of half a `calc_version`.
 
-**Read the availability note first.** This server's shipped image does **not** carry the `xtb`
-binary (see `servers/calc/README.md` for why, and what to do about it). With no binary,
-`is_available()` is False, `XtbSpec.resolve_backend()` picks `tblite`, and nothing in this module
-runs — which is exactly the situation Chemclaw3 was already in before the split, so the numbers and
-the `calc_version` strings are unchanged by the port. What the module buys is that a deployment
-*can* add the binary, and when it does, the version string moves to say so **on the side that has
-it**. That is the whole reason it was ported rather than dropped.
+**Read the availability note first.** The shipped image **installs** `xtb` 6.7.1 and then pins
+`CHEMCLAW_XTB_ENGINE=tblite`, so the binary is available and inactive: nothing in this module runs
+until a deployment says so, and `calc_version` therefore does not move on the day the image gained
+it — adding a backend to an image must not silently re-key a cache and a calibration. Where the
+engine *is* switched, or on an image trimmed of the binary, `is_available()` is what decides:
+`XtbSpec.resolve_backend()` picks `tblite` without it, and the version string says which one ran.
+See `servers/calc/README.md` and the `Containerfile`.
 
 `binary_version()` is also the specific trap the port exists to close: it returns the literal string
 `"absent"` rather than raising when the binary is missing. A client deriving `calc_version` locally
@@ -111,7 +111,7 @@ METHOD_FLAGS: dict[str, list[str]] = {
 CliTask = Literal["sp", "opt", "hess", "ohess"]
 
 
-def _task_flags(task: CliTask) -> list[str]:
+def _task_flags(task: CliTask, opt_level: str | None) -> list[str]:
     """The flags for `task`, with the optimization tightness this layer requires.
 
     xtb's default level ("normal") converges to ~1e-3 Hartree/Bohr, which is looser than the
@@ -119,12 +119,17 @@ def _task_flags(task: CliTask) -> list[str]:
     against a 5e-4 target and is then correctly rejected. Asking for a tighter level is the fix;
     loosening the promise would have been the other one, and the promise is what makes the
     finite-difference Hessian on top of it meaningful.
+
+    `opt_level` comes from `OptSpec` rather than from `settings`, because it decides where the
+    relaxation stops and therefore belongs in the key; `None` falls back to the configured default
+    for the tasks that carry no spec of their own.
     """
     if task in ("opt", "ohess"):
         # Config-supplied rather than model-supplied, but checked all the same: the module's stated
         # rule is that *every* value reaching argv is checked, and a rule with a quiet exception is
         # one nobody can rely on when adding the next flag.
-        return [f"--{task}", _safe(settings.xtb_cli_opt_level, "optimization level")]
+        level = opt_level if opt_level is not None else settings.xtb_cli_opt_level
+        return [f"--{task}", _safe(level, "optimization level")]
     return {"sp": [], "hess": ["--hess"]}[task]
 
 
@@ -401,6 +406,7 @@ def run(
     method: str,
     solvent: str | None = None,
     accuracy: float | None = None,
+    opt_level: str | None = None,
     max_cycles: int | None = None,
 ) -> CliResult:
     """Run one `xtb` invocation on `structure` and parse everything it produced.
@@ -410,7 +416,9 @@ def run(
         task: Which run to perform (`sp`, `opt`, `hess`, `ohess`).
         method: GFN parametrization name; must be a key of `METHOD_FLAGS`.
         solvent: ALPB implicit solvent name, or None for gas phase.
-        accuracy: xtb's `--acc` numerical accuracy; None uses the configured default.
+        accuracy: xtb's `--acc` numerical accuracy; None uses the configured default. Callers
+            holding a spec pass `spec.accuracy`, which is what puts it in the key.
+        opt_level: ANCopt convergence level for `opt`/`ohess`; None uses the configured default.
         max_cycles: Optimization cycle cap; None uses the configured default.
 
     Returns:
@@ -426,7 +434,7 @@ def run(
     if not supports(method):
         raise ValueError(f"the xtb backend does not support method {method!r}")
 
-    argv = [path, "input.xyz", *_task_flags(task), *METHOD_FLAGS[method], "--json"]
+    argv = [path, "input.xyz", *_task_flags(task, opt_level), *METHOD_FLAGS[method], "--json"]
     argv += ["--chrg", str(structure.charge), "--uhf", str(structure.uhf)]
     argv += ["--acc", str(accuracy if accuracy is not None else settings.xtb_cli_accuracy)]
     if settings.xtb_cli_threads > 0:
@@ -514,7 +522,7 @@ def _read_atomic_table(log: str, atom_count: int) -> list[AtomicRow]:
 
 
 def run_surface_potential(
-    structure: Structure, *, method: str, solvent: str | None = None
+    structure: Structure, *, method: str, solvent: str | None = None, accuracy: float | None = None
 ) -> SurfacePotential:
     """Compute the molecular electrostatic potential on xtb's surface grid and return its extrema.
 
@@ -524,6 +532,12 @@ def run_surface_potential(
     them would trade a reliable block for an unreliable one. The abort is tolerated for the same
     reason the Hessian path tolerates it — the file is complete, the crash is in xtb's cleanup —
     and the check is the file's existence rather than the exit code.
+
+    **`--acc` is passed here too**, and its absence was a real inconsistency rather than a
+    simplification: the two runs behind `compute_atomic_descriptors` and `compute_surface_potential`
+    are the same Hamiltonian on the same geometry, and only one of them honoured the accuracy knob —
+    so a deployment that tightened it got a tighter panel and an unchanged surface, under keys that
+    both named the setting.
 
     Raises:
         CliError: the binary is absent, timed out, or produced no grid.
@@ -536,6 +550,7 @@ def run_surface_potential(
 
     argv = [path, "input.xyz", *METHOD_FLAGS[method], "--esp"]
     argv += ["--chrg", str(structure.charge), "--uhf", str(structure.uhf)]
+    argv += ["--acc", str(accuracy if accuracy is not None else settings.xtb_cli_accuracy)]
     if solvent is not None:
         argv += ["--alpb", _safe(solvent, "solvent")]
 

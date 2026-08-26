@@ -53,7 +53,7 @@ this as "No rule in the hazard table matched. This is not a safety assessment." 
 never uses a word resembling "safe" — an over-trusted screen is more dangerous than no screen,
 because it converts an absence of knowledge into apparent assurance.
 
-`screen_genotoxic_alerts` returning no alerts is nine patterns not matching, **not** a negative
+`screen_genotoxic_alerts` returning no alerts is ten patterns not matching, **not** a negative
 mutagenicity prediction. This system has no (Q)SAR pair, no Ames corpus and no expert rule base, so
 it cannot produce an ICH M7 class, an acceptable intake or a purge factor.
 
