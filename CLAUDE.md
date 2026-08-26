@@ -273,9 +273,19 @@ question — the failure its own `connectors/README.md` records as two live defi
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
 | ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
-| DFT via Nextflow/HPC | `qm` |
 | Knowledge graph read/write, the PR-gate | core |
 | ELN and ORD ingestion | `ingest/sources` |
+
+**There is no DFT row any more, and its absence is a constraint rather than an opening.** Chemclaw3
+deleted its `qm` bundle, the Nextflow/HPC launcher behind it and `compute_dft_energy` itself
+(`D-2026-08-26-semiempirical-is-the-whole-tier` there): the calculation tier that family runs is
+semiempirical end to end — GFN2-xTB via tblite, and CREST — served from `servers/calc/` in a pod on
+OpenShift or Databricks. So a server proposed here **must not** reintroduce one by the back door: a
+tool that shells out to ORCA, Psi4, Gaussian or NWChem, or that answers from a hosted quantum-chemistry
+API, is not a gap this fleet fills. Both halves of the rule bite — the first needs a cluster nobody
+has, and the second is an outbound call at request time, which the no-egress posture forbids outright.
+Restoring a heavy tier is a decision for Chemclaw3 to take again, in an ADR, before anything is built
+here.
 
 Before proposing a tool, check `MODULES.md` and the table above. Overlap that is deliberate must be
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
