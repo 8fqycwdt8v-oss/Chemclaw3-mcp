@@ -47,7 +47,11 @@ _KINDS: tuple[tuple[TorsionKind, str], ...] = (
     ("ester", "[CX3](=[OX1])[OX2H0]"),
     ("biaryl", "[a]-[a]"),
     ("benzylic", "[a]-[CX4,NX3,OX2]"),
-    ("ether", "[CX4][OX2][CX4]"),
+    # Two atoms, not three. `[CX4][OX2][CX4]` matched the two *carbons* — `_matched_pairs` reads
+    # the first and last matched atom, and those are not bonded to each other — so this kind could
+    # never be assigned and every ether bond came back `alkyl`. The guard keeps an ester's
+    # alkyl-oxygen bond out, since that is an ester rather than an ether.
+    ("ether", "[OX2;!$(O[CX3]=[OX1])][CX4]"),
     ("amine", "[CX4][NX3;!$(N[CX3]=[OX1])]"),
 )
 
@@ -68,7 +72,12 @@ class Torsion(BaseModel):
     bond: list[int] = Field(description="The two atom indices of the bond itself.")
     label: str = Field(description="What a chemist calls this bond.")
     kind: TorsionKind
-    smarts: str = Field(description="The environment that was matched, so the label is checkable.")
+    smarts: str = Field(
+        description=(
+            "The environment this bond was recognised by, so the label is checkable. Empty for a "
+            "kind decided by topology rather than by a pattern — `alkyl`, `conjugated` and `top`."
+        )
+    )
     symmetry_order: int = Field(
         ge=1, description="How many times the profile repeats in a full 360 degree rotation."
     )
@@ -161,7 +170,10 @@ def enumerate_torsion_candidates(smiles: str) -> list[Torsion]:
                 bond=list(bond),
                 label=_label(mol, bond, kind),
                 kind=kind,
-                smarts=dict(_KINDS).get(kind, "[*]-[*]"),
+                # Empty when no pattern matched. It used to report `[*]-[*]`, which matches
+                # everything and so is not the environment this bond was recognised by — a
+                # checkable claim replaced by an unfalsifiable one.
+                smarts=dict(_KINDS).get(kind, ""),
                 symmetry_order=(order := _symmetry_order(mol, bond, classes)),
                 period_degrees=360.0 / order,
                 equivalent_bonds=[list(pair) for pair in sorted(bonds)],
@@ -184,7 +196,19 @@ def _is_candidate(mol: Chem.Mol, bond: Chem.Bond) -> bool:
     begin, end = bond.GetBeginAtom(), bond.GetEndAtom()
     if any(atom.GetAtomicNum() == 1 for atom in (begin, end)):
         return False
-    return not any(_is_linear(atom) for atom in (begin, end))
+    if any(_is_linear(atom) for atom in (begin, end)):
+        return False
+    # **A monovalent end has nothing to rotate.** A chlorine is one atom on the axis, so turning
+    # about C-Cl moves nothing and there is no torsion — but the bond is acyclic, single and
+    # between two heavy atoms, so every other rule here accepts it and `CCCl` listed "the Cl top
+    # on C1". A hydroxyl is the opposite case and must stay: its hydrogen is off-axis, so O-H is a
+    # real rotation, which is why the test is "any substituent at all" rather than "a heavy one".
+    return all(_has_a_substituent(atom, other) for atom, other in ((begin, end), (end, begin)))
+
+
+def _has_a_substituent(atom: Chem.Atom, other: Chem.Atom) -> bool:
+    """Does this end of the bond carry anything besides the bond itself, off the axis?"""
+    return bool(_heavy_neighbours(atom, other.GetIdx())) or atom.GetTotalNumHs() > 0
 
 
 def _is_linear(atom: Chem.Atom) -> bool:
