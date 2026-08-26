@@ -16,10 +16,26 @@ sends `SIGKILL` to the whole group.
 `os.environ` fails the moment somebody adds a variable nobody thought of, and this server runs in a
 pod whose environment carries a bearer token for itself. So the child's environment is assembled
 from an allowlist of five names and contains nothing else — no `CHEMCLAW_*`, no `*_TOKEN`, no DSN.
+
+**And that is only half of it, which is what an escape proved.** A clean child environment says
+nothing about *this* process's, and the two run as the same uid: a program that reached `os` read
+`/proc/<ppid>/environ` and got this pod's bearer token back out through `result` — past the empty
+`egress:` the design leans on, because the answer leaves by the route the caller came in. So the
+parent seals itself before it forks (`_seal_from_children`). The allowlist stays: it is what makes
+the *child* boring, and the seal is what makes the parent unreadable.
+
+**The child's stdout goes nowhere and its stderr goes to a file**, for the same class of reason.
+Reading the child's stdout into this process meant a program writing straight to fd 1 chose how
+much of the server's memory to spend — measured at 1.5 GB written for +2981 MiB of parent RSS,
+which is an OOM kill of every session the pod is serving. Nothing here ever wanted those bytes
+(the runner captures its own output and returns it in `result.json`), and the diagnostic the
+parent does want is one line, so stderr lands in a file inside the scratch directory, where the
+child's own `RLIMIT_FSIZE` bounds it and a tail read bounds what comes back.
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import signal
@@ -40,6 +56,17 @@ _RUNNER = Path(__file__).with_name("runner.py")
 #: `PATH` so the interpreter can be found; the locale pair so text handling is deterministic rather
 #: than inherited. Everything else the child needs is set explicitly in `_environment` below.
 _INHERITED = ("PATH", "LANG", "LC_ALL")
+
+#: `prctl(2)`'s `PR_SET_DUMPABLE`. The number rather than a binding because there is no `prctl` in
+#: the standard library, and a one-constant `ctypes` call is smaller than a dependency.
+_PR_SET_DUMPABLE = 4
+
+#: How much of the child's stderr the parent reads back when a run left no result.
+#:
+#: One line is what `run` reports, so this only has to be long enough to contain it. It is a bound
+#: on this process rather than on the child — the child's `RLIMIT_FSIZE` already bounds the file —
+#: and it is what keeps a program that floods fd 2 from choosing the size of its own error message.
+_STDERR_TAIL_BYTES = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +105,49 @@ def _environment(home: Path) -> dict[str, str]:
     return environment
 
 
+def _seal_from_children() -> None:
+    """Make this process's `/proc` entry unreadable to the child it is about to start.
+
+    `/proc/<pid>/environ` is mode 0400 owned by the uid of the process it describes, and the child
+    runs as that same uid — so "the child's environment holds no credential" was never the whole
+    claim it read as: an escaped program took `os.getppid()` and read this server's bearer token,
+    its DSNs and everything else the deployment injects, then returned them to the caller in
+    `result`. That is exfiltration by the route the request came in on, which the empty-egress
+    NetworkPolicy cannot see.
+
+    `PR_SET_DUMPABLE=0` re-owns `/proc/<pid>/…` to root, so the same-uid child is refused with
+    `EACCES`. It is the portable half of the pair: a PID namespace hides `/proc/<ppid>` outright
+    but needs `CAP_SYS_ADMIN` or an unprivileged user namespace, and a rootless OpenShift pod is
+    promised neither. The one thing it costs is a core dump of this process, which for a process
+    holding a bearer token is not a cost.
+
+    Called per run rather than once at import: it is cheap (a single syscall), it is idempotent,
+    and tying it to the moment a hostile child exists is what keeps it true if this ever runs
+    behind a forking worker. Root is exempt from the rule — `CAP_SYS_PTRACE` reads any `/proc`
+    whatever the flag says — which is one more reason the image ships `USER 1001`.
+    """
+    if not sys.platform.startswith("linux"):  # pragma: no cover — the deployment is Linux.
+        # `/proc/<pid>/environ` is a Linux interface, and so is `prctl`. There is nothing here to
+        # seal on a platform that has neither, and pretending otherwise would be the failure this
+        # function exists to fix, one level up.
+        return
+    if ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "could not make the sandbox's parent process undumpable")
+
+
+def _stderr_tail(path: Path) -> str:
+    """The last `_STDERR_TAIL_BYTES` of the child's stderr, decoded permissively.
+
+    The tail rather than the file: a program that writes to fd 2 in a loop is bounded by its own
+    `RLIMIT_FSIZE` at 16 MiB, and reading 16 MiB in order to quote one line of it would hand that
+    program the parent's memory anyway, which is exactly the bypass this replaced.
+    """
+    with path.open("rb") as source:
+        source.seek(0, os.SEEK_END)
+        source.seek(max(0, source.tell() - _STDERR_TAIL_BYTES))
+        return source.read().decode("utf-8", "replace")
+
+
 def _kill_group(process: subprocess.Popen[bytes]) -> None:
     """SIGKILL the child's whole process group, tolerating a child that has already gone.
 
@@ -113,35 +183,46 @@ def run(code: str, data: dict[str, object] | None = None, limits: Limits | None 
         RuntimeError: The runner itself failed — it could not start, or it wrote nothing. That is a
             defect in this server rather than in the caller's program, and it is not reported as
             one.
+        OSError: This process could not be sealed against the child it is about to start. Refusing
+            to run is the only safe answer: the alternative is a run whose boundary is one control
+            short of what every docstring here says it is.
     """
     bounds = limits or Limits()
+    _seal_from_children()
     with tempfile.TemporaryDirectory(prefix="pyexec-") as scratch:
         home = Path(scratch)
         payload = home / "payload.json"
         result = home / "result.json"
+        diagnostics = home / "stderr.log"
         payload.write_text(
             json.dumps({"code": code, "data": data or {}, "limits": bounds.as_dict()}),
             encoding="utf-8",
         )
 
-        process = subprocess.Popen(
-            # `-I` isolates: no `PYTHON*` environment, no user site-packages, and no script
-            # directory on `sys.path`. `-B` keeps the child from writing bytecode into an image
-            # whose filesystem is read-only anyway.
-            [sys.executable, "-I", "-B", str(_RUNNER), str(payload), str(result)],
-            cwd=scratch,
-            env=_environment(home),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        timed_out = False
-        try:
-            _, stderr = process.communicate(timeout=bounds.wall_seconds)
-        except subprocess.TimeoutExpired:
-            _kill_group(process)
-            _, stderr = process.communicate()
-            timed_out = True
+        with diagnostics.open("wb") as sink:
+            process = subprocess.Popen(
+                # `-I` isolates: no `PYTHON*` environment, no user site-packages, and no script
+                # directory on `sys.path`. `-B` keeps the child from writing bytecode into an image
+                # whose filesystem is read-only anyway.
+                [sys.executable, "-I", "-B", str(_RUNNER), str(payload), str(result)],
+                cwd=scratch,
+                env=_environment(home),
+                # Nothing here reads the child's stdout: what a program printed is captured by the
+                # runner and comes back in `result.json`, so a pipe only offered a program a way to
+                # spend this process's memory. `stderr` is wanted — one line of it, when a run left
+                # no result — and a file inside the scratch directory is where the child's own
+                # `RLIMIT_FSIZE` bounds what it can put there.
+                stdout=subprocess.DEVNULL,
+                stderr=sink,
+                start_new_session=True,
+            )
+            timed_out = False
+            try:
+                process.wait(timeout=bounds.wall_seconds)
+            except subprocess.TimeoutExpired:
+                _kill_group(process)
+                process.wait()
+                timed_out = True
 
         if timed_out:
             return Outcome(
@@ -157,7 +238,7 @@ def run(code: str, data: dict[str, object] | None = None, limits: Limits | None 
             # or crashed. Its stderr is the only evidence and is this server's to explain, not the
             # caller's to read — but the *reason* has to reach them or an answer silently loses a
             # step it thinks it took.
-            detail = stderr.decode("utf-8", "replace").strip().splitlines()
+            detail = _stderr_tail(diagnostics).strip().splitlines()
             tail = detail[-1] if detail else f"exit status {process.returncode}"
             return Outcome(
                 stdout="",

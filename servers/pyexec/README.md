@@ -24,8 +24,8 @@ these two routes has the lower E-factor" has to be answerable before somebody si
 ## What it is not
 
 - **Not a shell.** There is no `subprocess`, no `os`, no command line.
-- **Not a notebook.** Nothing survives a call. A name bound in one run does not exist in the next,
-  so the whole analysis goes in one program.
+- **Not a notebook.** Nothing the tool offers survives a call. A name bound in one run does not
+  exist in the next, so the whole analysis goes in one program.
 - **Not a file tool.** `open` is not in builtins. `data` in and `result` out are the only channels.
 - **Not a data source.** It computes over what the caller gives it and knows nothing itself. A
   number it returns is only as good as the numbers in `data` — cite those, not this.
@@ -57,13 +57,42 @@ the boundary would be a control that exists in order to be pointed at.
 | Killed by **process group** on the wall clock, so children die with it | `engine/sandbox.py` |
 | `RLIMIT_CPU`, `AS`, `FSIZE`, `NOFILE`, `NPROC` — **soft and hard**, so they cannot be raised back | `engine/runner.py` |
 | An environment **built from an allowlist**, so no credential is in it | `engine/sandbox.py` |
-| `python -I -B`, a fresh temp working directory deleted on return, `HOME` inside it | `engine/sandbox.py` |
+| The parent made **undumpable before it forks**, so the child cannot read `/proc/<ppid>/environ` | `engine/sandbox.py` |
+| The child's stdout **discarded** and its stderr written to a file under the child's own `RLIMIT_FSIZE` | `engine/sandbox.py` |
+| `python -I -B`, a per-call temp directory that is `HOME`, `TMPDIR` and the working directory, removed on every path including the kill | `engine/sandbox.py` |
 | Rootless image, and the pod should mount the root filesystem read-only | `Containerfile` |
 | `NetworkPolicy` with an empty `egress:` — not even DNS | `deploy/networkpolicy.yaml` |
 
 The environment is **built rather than filtered** on purpose: deleting known-dangerous names from a
 copy of `os.environ` works until somebody adds a variable nobody thought of, and this pod's
 environment carries a bearer token for this very server.
+
+**A clean child environment was only half of that, and an escape proved it.** Parent and child run
+as the same uid, so `/proc/<ppid>/environ` — mode 0400, owned by that uid — handed a program that
+reached `os` this server's own bearer token, and it came back to the caller inside `result`, which
+is exfiltration by the route the request arrived on and something an empty `egress:` cannot see. So
+the parent sets `PR_SET_DUMPABLE=0` before it forks, which re-owns its `/proc` entry to root and
+refuses the same-uid child with `EACCES`. A PID namespace would hide `/proc/<ppid>` outright and is
+the stronger form, but it needs `CAP_SYS_ADMIN` or an unprivileged user namespace and a rootless
+pod is promised neither. **Root is exempt from the rule** — `CAP_SYS_PTRACE` reads any `/proc` —
+which is one more reason this image ships `USER 1001`.
+
+**The output caps are on the caller's context, not on the server's memory**, and the two were
+confused. `stdout_chars` truncates what the runner captures; a program that reached `os` and wrote
+to fd 1 directly went past it, and every byte was read into *this* process and then discarded —
+1.5 GB written took the parent's RSS to +2981 MiB, which is an OOM kill of every session the pod is
+serving rather than of the one run. Nothing here ever wanted those bytes, so the child's stdout is
+`DEVNULL` and its stderr goes to a file inside the scratch directory, where the child's own
+`RLIMIT_FSIZE` bounds it and the parent reads a 4 KiB tail for the one line it needs.
+
+**What the boundary does not cover, stated rather than implied.** The per-call scratch directory is
+private to a run and is removed on every path, the kill included — but it is not a *confinement*.
+The pod's `/tmp` is an emptyDir shared by every call for the pod's lifetime, and a program that has
+escaped the guard can write an absolute path into it and have a later call read it back (measured;
+bounded by `RLIMIT_FSIZE` per file and by the pod's lifetime). Nothing in this process can close
+that without a mount namespace, so it is written down here instead of being promised away: what
+holds is that each call gets its own directory and leaves none behind, and what bounds the rest is
+the deployment — a read-only root filesystem, the emptyDir's lifetime, and the pod itself.
 
 ## Two design decisions worth knowing before you edit
 
@@ -110,5 +139,5 @@ Defaults are in `engine/limits.py`; every one is a field with its reasoning besi
 
 ```sh
 make run-pyexec                 # 127.0.0.1:8899 with a dev token
-uv run pytest servers/pyexec    # 45 tests, ~10 s
+uv run pytest servers/pyexec    # 52 tests, ~25 s
 ```

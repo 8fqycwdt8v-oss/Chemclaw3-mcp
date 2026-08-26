@@ -161,7 +161,7 @@ async def test_a_clean_screen_arrives_carrying_its_disclaimer(running_server: st
 async def test_a_clean_genotoxicity_screen_says_what_it_is_not(running_server: str) -> None:
     """The same property on the result that hedges hardest, and for a different reason.
 
-    An empty alert list reads as "not mutagenic" — a (Q)SAR conclusion drawn from a nine-row table.
+    An empty alert list reads as "not mutagenic" — a (Q)SAR conclusion drawn from a ten-row table.
     The four things this system cannot produce are named individually in the payload because "expert
     assessment required" on its own did not stop a live run inventing an ICH M7 class and a worked
     purge factor.

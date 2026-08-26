@@ -100,7 +100,7 @@ class AlertResult(BaseModel):
         """What a reader must be told about this result, present on a hit *and* on a miss.
 
         The empty case is the dangerous one: "no alerts" reads as "not mutagenic", which is a (Q)SAR
-        conclusion drawn from a nine-row table. So the miss says what the absence actually means, in
+        conclusion drawn from a ten-row table. So the miss says what the absence actually means, in
         the same words the hit uses about what a flag does not mean.
         """
         if not self.alerts:
