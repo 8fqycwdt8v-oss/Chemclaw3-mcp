@@ -12,7 +12,7 @@ deployment gets from RDKit alone, and the atom map only refines it.
 from __future__ import annotations
 
 import pytest
-from chemclaw_mcp_rxnlabel.engine import agents, roles, species
+from chemclaw_mcp_rxnlabel.engine import agents, mapping, roles, species
 
 BUCHWALD = (
     "Brc1ccccc1.NC1CCCCC1"
@@ -35,8 +35,13 @@ MITSUNOBU = (
 
 
 def _roles_of(reaction: str, structures: list[str]) -> dict[str, str]:
-    """The assigned role of each structure, keyed by the structure."""
-    return dict(zip(structures, roles.assign(reaction, structures), strict=True))
+    """The assigned role of each structure, keyed by the structure.
+
+    Maps the reaction the way the tool surface does — once, and passes the result in — so these
+    tests exercise the call `_represent` actually makes.
+    """
+    mapped = mapping.map_reaction(reaction)
+    return dict(zip(structures, roles.assign(reaction, structures, mapped), strict=True))
 
 
 def test_a_buchwald_separates_ligand_base_solvent_and_catalyst() -> None:
@@ -157,7 +162,7 @@ def test_roles_are_matched_by_structure_and_not_by_position() -> None:
 
 def test_an_unreadable_reaction_yields_unknown_for_everything() -> None:
     """A malformed record labels nothing rather than labelling it wrongly."""
-    assert roles.assign("not a reaction", ["CCO"]) == [roles.UNKNOWN]
+    assert roles.assign("not a reaction", ["CCO"], None) == [roles.UNKNOWN]
 
 
 @pytest.mark.parametrize(("name", "smarts"), species.FUNCTIONAL_GROUPS)
@@ -188,3 +193,95 @@ def test_a_multi_component_species_is_matched_component_wise() -> None:
     assert _roles_of(partial, ["[Fe+2].c1ccc(P(c2ccccc2)[c-]2cccc2)cc1"]) == {
         "[Fe+2].c1ccc(P(c2ccccc2)[c-]2cccc2)cc1": roles.UNKNOWN
     }
+
+
+class TestABaseIsRecognisedByAPatternThatMatchesIt:
+    """A misclassified base is a wrong *count* in a frequency table somebody then quotes.
+
+    The bicarbonate pattern demanded `[OX2H0-]` — an oxygen with two connections *and* a negative
+    charge — and bicarbonate is `OC(=O)[O-]`, whose anionic oxygen has one connection. It matched
+    no bicarbonate written any way, so every `NaHCO3` reaction in a Suzuki corpus fell through to
+    `additive`. The aromatic-nitrogen bases had no rule at all.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "smiles"),
+        [
+            ("sodium bicarbonate", "OC(=O)[O-]"),
+            ("bicarbonate, written anion-first", "[O-]C(=O)O"),
+            ("dipotassium hydrogenphosphate", "O=P([O-])([O-])O"),
+            ("pyridine", "c1ccncc1"),
+            ("2,6-lutidine", "Cc1cccc(C)n1"),
+            ("collidine", "Cc1cc(C)nc(C)c1"),
+            ("N-methylimidazole", "Cn1ccnc1"),
+            ("imidazole", "c1c[nH]cn1"),
+            ("DMAP", "CN(C)c1ccncc1"),
+            # Kept from the rules that already worked, so a widened pattern cannot lose them.
+            ("sodium carbonate", "[O-]C(=O)[O-]"),
+            ("caesium fluoride", "[F-]"),
+            ("potassium tert-butoxide", "CC(C)(C)[O-]"),
+            ("triethylamine", "CCN(CC)CC"),
+        ],
+    )
+    def test_a_base_a_process_chemist_charges_is_classified_as_one(
+        self, name: str, smiles: str
+    ) -> None:
+        assert agents.is_base(smiles), f"in: {smiles} ({name})  out: is_base=False"
+
+    @pytest.mark.parametrize(
+        ("name", "smiles"),
+        [
+            ("HOBt — an additive, and mildly acidic", "On1nnc2ccccc21"),
+            ("1,2,4-triazole", "c1nc[nH]n1"),
+            ("tetrazole", "c1nn[nH]n1"),
+            ("monopotassium phosphate — a buffer, not a base", "O=P([O-])(O)O"),
+            ("benzoic acid", "O=C(O)c1ccccc1"),
+        ],
+    )
+    def test_what_is_not_a_base_is_still_not_one(self, name: str, smiles: str) -> None:
+        """The widened rules must not sweep in the acidic azoles that sit in the same slot."""
+        assert not agents.is_base(smiles), f"in: {smiles} ({name})  out: is_base=True"
+
+    def test_a_bicarbonate_suzuki_names_its_base(self) -> None:
+        """End to end, on the commonest base in the corpus this server was built to label."""
+        reaction = (
+            "COc1ccc(Br)cc1.OB(O)c1ccccc1"
+            ">c1ccc(P(c2ccccc2)c2ccccc2)cc1.OC(=O)[O-].C1CCOC1.[Pd]"
+            ">COc1ccc(-c2ccccc2)cc1"
+        )
+        assigned = _roles_of(reaction, ["OC(=O)[O-]"])
+        assert assigned["OC(=O)[O-]"] == roles.BASE, f"in: OC(=O)[O-]  out: {assigned}"
+
+
+class TestASpeciesIsParsedWholeOrNotAtAll:
+    """RDKit reads `"CCO junk"` as ethanol, and this server eats free text for a living.
+
+    The sister `chem` server has `require_molecule` for exactly this: the parser treats whitespace
+    as the end of the structure and ignores the rest, so a concatenated ELN cell does not fail — it
+    narrows to a *different, smaller molecule* than the caller submitted, and that molecule is what
+    gets stored as the label.
+    """
+
+    @pytest.mark.parametrize(
+        "written", ["CCO junk", "CCO (2 vol)", "CCO\t50 mL", " ", "", "°C", "CCO 2"]
+    )
+    def test_a_string_rdkit_would_truncate_is_not_read(self, written: str) -> None:
+        assert species.canonical_smiles(written) is None, (
+            f"in: {written!r}  out: {species.canonical_smiles(written)!r} — a molecule nobody sent"
+        )
+        assert species.functional_groups(written) is None, (
+            f"in: {written!r}  out: {species.functional_groups(written)!r}"
+        )
+        assert species.scaffold(written) is None
+
+    def test_an_unreadable_species_is_told_apart_from_one_that_carries_no_group(self) -> None:
+        """`[]` meant both "read it, no groups" and "could not read it", and the two are stored
+        the same way — so every "which products carry an aryl halide" query counted an unlabelled
+        row as a negative rather than as unknown.
+        """
+        assert species.functional_groups("CC") == []
+        assert species.functional_groups("$$bogus$$") is None
+
+    def test_a_surrounding_newline_is_still_a_copy_paste_artefact(self) -> None:
+        """Stripped rather than refused, the same call `chem.require_molecule` makes."""
+        assert species.canonical_smiles("\n CCO \n") == "CCO"

@@ -17,6 +17,7 @@ Three groups:
 from __future__ import annotations
 
 import hashlib
+import time
 
 import pytest
 import rdkit
@@ -28,7 +29,7 @@ from chemclaw_mcp_chem.engine.torsions import (
     torsion_handle,
 )
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import AllChem, rdMolDescriptors, rdMolTransforms
 
 
 def _by_kind(smiles: str, kind: str) -> Torsion:
@@ -344,5 +345,212 @@ class TestAMonovalentEndIsNotARotation:
         Which is why the rule is "carries any substituent" rather than "carries a heavy one" — the
         cheaper rule would have taken every alcohol's O-H rotation with the halides.
         """
-        tops = [t for t in enumerate_torsion_candidates("CCO") if t.kind == "top"]
-        assert sorted(t.label for t in tops) == ["the O top on C1", "the methyl top on C1"]
+        rotors = [t for t in enumerate_torsion_candidates("CCO") if not t.atoms]
+        assert sorted(t.label for t in rotors) == [
+            "the O-H rotation on C1",
+            "the methyl top on C1",
+        ]
+
+
+# The step of the relaxed scan below, in degrees. Coarse on purpose: every point is a constrained
+# minimization, and the deviation this test is looking for is the size of a whole barrier rather
+# than a feature that needs resolving.
+_SCAN_STEP_DEGREES = 30.0
+
+# How far apart V(phi) and V(phi + period) may be before the claimed period is not a period, in
+# kcal/mol. The controls below land at 0.0-1.0 and a pyramidal amine at 8.0, so the threshold is
+# not what decides the result.
+_PERIOD_TOLERANCE_KCAL = 1.5
+
+
+def _relaxed_profile(smiles: str, atoms: list[int]) -> dict[float, float]:
+    """A relaxed constrained MMFF scan of one dihedral, in kcal/mol relative to its own minimum.
+
+    **Deliberately not this module's own symmetry reasoning.** `symmetry_order` is derived from
+    RDKit's canonical symmetry classes, so checking it against those classes checks nothing; a force
+    field walks the real potential, and whether that potential repeats is the claim being made.
+
+    Every point is minimized with the dihedral constrained and everything else free, and the walk is
+    made in both directions with the geometry carried forward, taking the lower energy at each
+    angle — a relaxed scan is basin-local, and the two directions leave different basins.
+    """
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(mol, randomSeed=0xC0FFEE)
+    AllChem.MMFFOptimizeMolecule(mol, maxIters=4000)
+    points = int(360.0 / _SCAN_STEP_DEGREES)
+    lowest: dict[float, float] = {}
+    for direction in (1, -1):
+        walk = Chem.Mol(mol)
+        for step in range(points):
+            angle = (direction * step * _SCAN_STEP_DEGREES) % 360.0
+            rdMolTransforms.SetDihedralDeg(walk.GetConformer(), *atoms, angle)
+            field = AllChem.MMFFGetMoleculeForceField(walk, AllChem.MMFFGetMoleculeProperties(walk))
+            field.MMFFAddTorsionConstraint(*atoms, False, angle - 0.05, angle + 0.05, 1.0e6)
+            field.Minimize(maxIts=4000)
+            energy = field.CalcEnergy()
+            lowest[angle] = min(lowest.get(angle, energy), energy)
+    floor = min(lowest.values())
+    return {angle: energy - floor for angle, energy in lowest.items()}
+
+
+def _period_deviation(profile: dict[float, float], period_degrees: float) -> float:
+    """The largest |V(phi) - V(phi + period)| over the profile, in kcal/mol."""
+    points = int(360.0 / _SCAN_STEP_DEGREES)
+    shift = round(period_degrees / _SCAN_STEP_DEGREES)
+    return max(
+        abs(
+            profile[step * _SCAN_STEP_DEGREES]
+            - profile[((step + shift) % points) * _SCAN_STEP_DEGREES]
+        )
+        for step in range(points)
+    )
+
+
+class TestThePeriodIsARotationAndNotAGraphEquivalence:
+    """A period is a claim about the potential, and it is checked against one.
+
+    `symmetry_order` was credited whenever the substituents on one end shared an RDKit canonical
+    symmetry class. That is a **graph** equivalence: on a pyramidal three-coordinate centre — an
+    aliphatic tertiary amine, a phosphine — the lone pair takes the third azimuthal slot, so two
+    constitutionally identical substituents sit ~120 and ~240 degrees apart and no C2 axis exists.
+    The tool reported `period_degrees=180` anyway, and Chemclaw3's `rotation_profile` scans exactly
+    `[0, period)` and weights populations by `symmetry_order` — so half of every tertiary-amine
+    profile was never computed and the Boltzmann average was taken over it.
+    """
+
+    @pytest.mark.parametrize(
+        ("smiles", "kind", "order", "period"),
+        [
+            # The defect: two methyls on a pyramidal nitrogen are one symmetry class and are not
+            # 180 degrees apart.
+            ("CN(C)CC", "amine", 1, 360.0),
+            ("CCN(CC)CC", "amine", 1, 360.0),
+            ("CN(C)CCc1ccccc1", "amine", 1, 360.0),
+            # A phosphine is the same pyramidal centre one row down. Triphenylphosphine is
+            # unaffected, and that is the point: the P contributes 1, the phenyl end still
+            # contributes its own C2, and lcm(2, 1) is 2.
+            ("c1ccc(P(c2ccccc2)c2ccccc2)cc1", "alkyl", 2, 180.0),
+            # Kept, and each for a reason the fix has to preserve: a planar (SP2) amide nitrogen
+            # really is C2, an aromatic ring really is C2, and a methyl really is C3.
+            ("CN(C)C=O", "amide", 2, 180.0),
+            ("CC(=O)N(C)C", "amide", 2, 180.0),
+            ("c1ccc(-c2ccccc2)cc1", "biaryl", 2, 180.0),
+            ("CC(C)(C)c1ccccc1", "benzylic", 6, 60.0),
+            ("Cc1ccccc1", "top", 6, 60.0),
+        ],
+    )
+    def test_only_a_rotation_about_the_axis_shortens_the_scan(
+        self, smiles: str, kind: str, order: int, period: float
+    ) -> None:
+        """Pinned per molecule, because each one is a different reason to credit an axis or not."""
+        torsion = _by_kind(smiles, kind)
+        assert (torsion.symmetry_order, torsion.period_degrees) == (order, period), (
+            f"{smiles}: {torsion.label} claims order {torsion.symmetry_order} "
+            f"(period {torsion.period_degrees}), expected {order} (period {period})"
+        )
+
+    @pytest.mark.parametrize(
+        "smiles",
+        [
+            "c1ccc(-c2ccccc2)cc1",  # a real C2 on both ends: the control that says this measures
+            "O=[N+]([O-])c1ccccc1",  # a real C2 from the ring
+            "C=Cc1ccccc1",  # a real C2 from both
+            "CCCC",  # no symmetry at all
+            "CCOCC",
+            "CN(C)CC",  # the defect: claimed 180, and V(phi) - V(phi+180) is the whole barrier
+            "CCN(CC)CC",
+        ],
+    )
+    def test_the_claimed_period_survives_a_relaxed_force_field_scan(self, smiles: str) -> None:
+        """The independent check: MMFF walks the potential and it must repeat where we say it does.
+
+        A relaxed scan is basin-local, so a rotor whose *other* rotors have to re-orient with it —
+        a tert-butyl's own three methyls — cannot be measured this way and is not in this corpus.
+        That is a limit of the measurement, not of the claim: the pinned expectations above cover
+        those.
+        """
+        for torsion in enumerate_torsion_candidates(smiles):
+            if not torsion.atoms:
+                continue
+            profile = _relaxed_profile(smiles, torsion.atoms)
+            deviation = _period_deviation(profile, torsion.period_degrees)
+            barrier = max(profile.values())
+            assert deviation <= _PERIOD_TOLERANCE_KCAL, (
+                f"in: {smiles}  out: {torsion.label} period={torsion.period_degrees} deg — "
+                f"the relaxed MMFF profile differs by {deviation:.2f} kcal/mol between phi and "
+                f"phi+period on a {barrier:.2f} kcal/mol barrier, so it does not repeat there"
+            )
+
+
+class TestTheCanonicalViewIsComputedOncePerCall:
+    """`torsion_handle` re-canonicalised the whole molecule on every candidate bond.
+
+    The same quadratic shape as `site_handle`, and the same measurement: 300 heavy atoms was 3.37 s
+    and 600 was 18.31 s, for a tool whose docstring says "Free: a graph operation, no calculation,
+    no cache". The caller already had the canonical ranks and threw them away.
+    """
+
+    def test_a_six_hundred_atom_molecule_is_still_a_graph_operation(self) -> None:
+        smiles = "C" * 600
+        started = time.perf_counter()
+        found = enumerate_torsion_candidates(smiles)
+        elapsed = time.perf_counter() - started
+        assert found
+        assert elapsed < 3.0, (
+            f"in: a {len(smiles)}-atom alkane  out: {len(found)} torsions in {elapsed:.2f} s"
+        )
+
+    def test_the_hoisted_handle_is_the_one_shot_handle(self) -> None:
+        """A handle is carried between turns, so it must not depend on how it was computed."""
+        for smiles in ("CC(=O)Nc1ccccc1", "CCOCC", "Cc1ccc(C)cc1"):
+            mol = Chem.MolFromSmiles(smiles)
+            for torsion in enumerate_torsion_candidates(smiles):
+                bond = (torsion.bond[0], torsion.bond[1])
+                assert torsion.torsion_id == torsion_handle(mol, bond), (
+                    f"in: {smiles}  out: {torsion.label} has two names"
+                )
+
+
+class TestAnXHRotorIsNotASymmetricTop:
+    """A methyl's barrier is carried by the free-rotor treatment of the low modes. An O-H's is not.
+
+    Both ended up as `kind="top"` because the test was "does the rotating end carry a *heavy*
+    substituent", and both were then described to the model — here and in Chemclaw3's refusal —
+    as "a methyl or tert-butyl rotation" whose "energetic effect is already in the free-rotor
+    treatment of the low modes". For acetamide's C-N (the most-asked rotational-barrier question in
+    med chem, 16-18 kcal/mol) and acetic acid's syn/anti O-H (5-6 kcal/mol, two genuinely distinct
+    rotamers) that sentence is false, and it is the sentence that decides whether the model reports
+    "not answered" or "already accounted for".
+    """
+
+    @pytest.mark.parametrize(
+        ("smiles", "expected"),
+        [
+            ("CC(=O)N", "xh"),  # acetamide: the amide N-H
+            ("CC(=O)O", "xh"),  # acetic acid: the syn/anti O-H
+            ("Oc1ccccc1", "xh"),  # phenol
+            ("CCO", "xh"),  # ethanol's O-H
+            ("CCS", "xh"),  # a thiol
+            ("Cc1ccccc1", "top"),  # toluene's methyl: a real symmetric top
+            ("CC(C)(C)c1ccccc1", "top"),  # and the tert-butyl's own methyls
+        ],
+    )
+    def test_a_hydrogen_only_end_is_a_top_only_when_it_is_symmetric(
+        self, smiles: str, expected: str
+    ) -> None:
+        kinds = {
+            torsion.kind for torsion in enumerate_torsion_candidates(smiles) if not torsion.atoms
+        }
+        assert expected in kinds, f"in: {smiles}  out: dihedral-less kinds {sorted(kinds)}"
+
+    def test_an_xh_rotor_says_what_it_is_in_words(self) -> None:
+        """The label is what a chemist checks the choice against, so it must not say "top"."""
+        rotor = _by_kind("CC(=O)O", "xh")
+        assert rotor.label == "the O-H rotation on C1", f"in: CC(=O)O  out: {rotor.label!r}"
+
+    def test_the_dihedral_less_rotors_still_sort_last(self) -> None:
+        """Ordering is part of the contract; splitting the kind must not reshuffle a list."""
+        found = enumerate_torsion_candidates("CC(=O)Nc1ccccc1")
+        assert [bool(torsion.atoms) for torsion in found] == sorted(
+            (bool(torsion.atoms) for torsion in found), reverse=True
+        )

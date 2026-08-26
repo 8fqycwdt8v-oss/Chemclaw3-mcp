@@ -16,7 +16,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_chem.engine.chem import molecular_weight
-from chemclaw_mcp_chem.engine.reagents import density_of, resolve_compound_name
+from chemclaw_mcp_chem.engine.reagents import (
+    ResolutionSource,
+    dataset,
+    density_of,
+    resolve_compound_name,
+)
 
 __all__ = ["ChargeRow", "ChargeTable", "GreenMetrics", "charge_table", "green_metrics"]
 
@@ -43,6 +48,14 @@ class ChargeRow(BaseModel):
     # Populated for solvents only — a reagent charged by mass has no volume to measure out.
     density_g_per_ml: float | None = None
     volume_ml: float | None = None
+    # **How this row's identity was established**, which is the fleet's "return provenance with the
+    # answer" applied where it matters most: a charge list is pasted into a batch record, and a
+    # reader cannot otherwise tell a curated table entry (`synonym`) from a structure the caller
+    # typed and this table has never seen (`smiles`). `ResolvedCompound.source`, carried through.
+    source: ResolutionSource
+    # The dataset the density was read from, for the solvent rows that have one. A number a chemist
+    # measures a volume against is not something to hand over unattributed.
+    density_source: str | None = None
 
 
 class ChargeTable(BaseModel):
@@ -97,6 +110,11 @@ def charge_table(
         raise ValueError(f"{len(solvents)} solvents but {len(volumes)} volumes; they must match")
     if basis_mass_g <= 0:
         raise ValueError("basis_mass_g must be positive")
+    if any(equiv <= 0 for equiv in equivalents):
+        # An equivalent count is a quantity, and it was the one quantity nobody checked: a
+        # transposed sign produced a row instructing the chemist to charge -219.65 g, in a table
+        # that otherwise reads as authoritative.
+        raise ValueError("every entry of equivalents must be positive")
     if any(volume <= 0 for volume in volumes):
         raise ValueError("every entry of volumes must be positive")
 
@@ -115,6 +133,7 @@ def charge_table(
             molecular_weight=anchor_mw,
             moles_mmol=basis_mmol,
             mass_g=basis_mass_g,
+            source=anchor.source,
         )
     )
     for reagent, equiv in zip(reagents, equivalents, strict=True):
@@ -133,6 +152,7 @@ def charge_table(
                 molecular_weight=weight,
                 moles_mmol=mmol,
                 mass_g=mmol * weight / 1000.0,
+                source=match.source,
             )
         )
     for solvent, solvent_volumes in zip(solvents, volumes, strict=True):
@@ -172,6 +192,8 @@ def _solvent_row(solvent: str, volumes: float, basis_mass_g: float, basis_mmol: 
         mass_g=mass_g,
         density_g_per_ml=density,
         volume_ml=volume_ml,
+        source=match.source,
+        density_source=dataset().name,
     )
 
 

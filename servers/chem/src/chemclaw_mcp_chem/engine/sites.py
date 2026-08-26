@@ -50,6 +50,7 @@ __all__ = [
     "Site",
     "SiteKind",
     "SiteScope",
+    "SiteSet",
     "describe_atom_sites",
     "site_handle",
 ]
@@ -260,7 +261,12 @@ class Site(BaseModel):
     formal_charge: int
 
 
-def site_handle(mol: Chem.Mol, atom_index: int) -> str:
+def site_handle(
+    mol: Chem.Mol,
+    atom_index: int,
+    classes: list[int] | None = None,
+    written: str | None = None,
+) -> str:
     """A content-addressed name for one symmetry class of `mol`.
 
     The three properties are `torsion_handle`'s, for the same three reasons one dimension down:
@@ -277,16 +283,50 @@ def site_handle(mol: Chem.Mol, atom_index: int) -> str:
     Args:
         mol: The molecule the atom belongs to.
         atom_index: Any atom of the class; every member gives the same handle.
+        classes: The molecule's canonical symmetry classes, if the caller already has them.
+            Omitted, they are computed here. This is not a micro-optimisation: the two
+            whole-molecule passes below are the *whole* cost of naming an atom, and paying them
+            once per atom made a 600-atom molecule 18 s of GIL-holding CPU.
+        written: The molecule's canonical SMILES, on the same terms.
 
     Returns:
         `site_` followed by sixteen hex characters.
     """
-    classes = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
-    payload = f"{rdkit.__version__}|{Chem.MolToSmiles(mol)}|{classes[atom_index]}"
+    if classes is None:
+        classes = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
+    if written is None:
+        written = str(Chem.MolToSmiles(mol))
+    payload = f"{rdkit.__version__}|{written}|{classes[atom_index]}"
     return "site_" + hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
-def describe_atom_sites(smiles: str) -> list[Site]:
+class SiteSet(BaseModel):
+    """One molecule's sites, and the molecule they are numbered against.
+
+    **The molecule travels with the indices, and it has to.** The sites are numbered from the
+    canonical form — that is the join with every calculator in this family — and the caller
+    typically typed something else. Returning a bare list handed back indices into a molecule the
+    caller does not possess and cannot derive from this tool's own output: measured on
+    2,5-dichloropyridine written `c1cc(Cl)ncc1Cl`, the site reported at atom 4 is an aromatic
+    carbon of the canonical `Clc1ccc(Cl)nc1` and the ring **nitrogen** of the string the chemist
+    typed. Nothing raises on that — the index is in range — and `render_structure` will draw the
+    highlight on the nitrogen, offering the confirmation of a different atom.
+
+    Same shape as `CleavageSet` and `SpeciesSet` for the same reason: the parent is stated once.
+    """
+
+    smiles: str = Field(
+        description=(
+            "The canonical SMILES every `atoms` index below numbers. Pass **this** string, not "
+            "the one you typed, to anything that takes those indices — `render_structure`, or a "
+            "per-atom calculation."
+        )
+    )
+    sites: list[Site]
+    count: int
+
+
+def describe_atom_sites(smiles: str) -> SiteSet:
     """Every symmetry-distinct heavy atom of `smiles`, named the way a chemist names it.
 
     Hydrogens are not sites of their own: a C-H question is asked about the carbon and answered on
@@ -302,19 +342,34 @@ def describe_atom_sites(smiles: str) -> list[Site]:
     there, so every per-atom number joined on these indices would be attributed to the wrong atom —
     silently, and in exactly the way this module exists to prevent.
 
+    So the canonical form is returned beside the sites, because a number is only a position if the
+    reader has the molecule it counts in — see `SiteSet`.
+
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
     """
     mol = require_molecule(require_canonical_smiles(smiles))
     with_hydrogens = Chem.AddHs(mol)
     ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=True))
+    # The canonical view, computed once for the whole molecule and handed to every handle below.
+    classes = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
+    written = str(Chem.MolToSmiles(mol))
     matched = {kind: _matched_atoms(mol, pattern) for kind, pattern in _KINDS}
     references = _ring_references(mol, ranks)
-    hydrogens = _hydrogen_indices(with_hydrogens, mol.GetNumAtoms())
+    hydrogens = _hydrogen_indices(with_hydrogens)
 
     by_handle: dict[str, list[int]] = {}
     for atom in mol.GetAtoms():
-        by_handle.setdefault(site_handle(mol, atom.GetIdx()), []).append(atom.GetIdx())
+        # **A hydrogen is never a site, including an isotopically-labelled one.** `MolFromSmiles`
+        # keeps a `[2H]` as an explicit atom in the graph, so it arrived here as a site of
+        # `kind="heteroatom"` labelled "the heteroatom" — in a module that promises every
+        # symmetry-distinct *heavy* atom — while the carbon it hangs off reported no hydrogens at
+        # all. On CD3OH, which is a substrate somebody chose for a C-H/C-D question, that is the
+        # question's own join key missing and an element named that is not there.
+        if atom.GetAtomicNum() == 1:
+            continue
+        handle = site_handle(mol, atom.GetIdx(), classes, written)
+        by_handle.setdefault(handle, []).append(atom.GetIdx())
 
     sites: list[Site] = []
     for handle, members in by_handle.items():
@@ -347,7 +402,8 @@ def describe_atom_sites(smiles: str) -> list[Site]:
             )
         )
     # Sorted so two runs, and two writings, list the same sites in the same order.
-    return _disambiguate(sorted(sites, key=lambda site: site.atoms[0]))
+    ordered = _disambiguate(sorted(sites, key=lambda site: site.atoms[0]))
+    return SiteSet(smiles=written, sites=ordered, count=len(ordered))
 
 
 def _disambiguate(sites: list[Site]) -> list[Site]:
@@ -375,17 +431,23 @@ def _disambiguate(sites: list[Site]) -> list[Site]:
     ]
 
 
-def _hydrogen_indices(with_hydrogens: Chem.Mol, heavy_count: int) -> dict[int, list[int]]:
+def _hydrogen_indices(with_hydrogens: Chem.Mol) -> dict[int, list[int]]:
     """Map each heavy atom to the indices its hydrogens carry once hydrogens are explicit.
 
     Read off the `AddHs` molecule rather than computed from an offset. The arithmetic happens to
     work — `AddHs` preserves the heavy prefix and appends hydrogens in parent order — but that is a
     property of an RDKit implementation, and every calculator in this family numbers atoms by
     calling the same function, so reading the answer is both free and exact.
+
+    **Every hydrogen of that molecule, not only the appended ones.** The filter used to be "index
+    past the heavy count", which is what `AddHs` appends — and an isotopically-labelled hydrogen is
+    written explicitly in the SMILES, so it sits *inside* the heavy prefix and was dropped. CD3OH's
+    methyl carbon therefore reported `hydrogens=[]`, which is the field the docstring calls the
+    join key for a C-H question.
     """
     attached: dict[int, list[int]] = {}
     for atom in with_hydrogens.GetAtoms():
-        if atom.GetAtomicNum() == 1 and atom.GetIdx() >= heavy_count:
+        if atom.GetAtomicNum() == 1 and atom.GetNeighbors():
             attached.setdefault(atom.GetNeighbors()[0].GetIdx(), []).append(atom.GetIdx())
     return attached
 

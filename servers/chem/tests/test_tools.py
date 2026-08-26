@@ -64,6 +64,45 @@ class TestResolveCompound:
         """`None` is a real answer. A guessed structure corrupts everything downstream of it."""
         assert resolve_compound_name(written) is None
 
+    @pytest.mark.parametrize(
+        ("written", "formula_reading", "smiles_reading"),
+        [
+            ("CO", "carbon monoxide", "methanol"),
+            ("NO", "nitric oxide", "hydroxylamine"),
+            ("CN", "cyanide", "methylamine"),
+            ("S", "sulfur", "hydrogen sulfide"),
+            ("B", "boron", "borane"),
+            ("O", "oxygen", "water"),
+        ],
+    )
+    def test_a_formula_that_is_also_a_smiles_is_refused_by_name(
+        self, written: str, formula_reading: str, smiles_reading: str
+    ) -> None:
+        """`CO` is what a chemist writes for a gas and what RDKit reads as methanol.
+
+        Measured before this refusal existed: `stoichiometry_table(basis="Brc1ccccc1",
+        basis_mass_g=100, reagents=["CO"], equivalents=[1.5])` returned a complete table with an
+        empty `unresolved`, naming methanol at MW 32.042 and instructing 30.61 g of a liquid to be
+        weighed out for a gas. Carbon monoxide is 28.010.
+        """
+        with pytest.raises(ValueError, match=formula_reading) as refusal:
+            resolve_compound_name(written)
+        assert smiles_reading in str(refusal.value), (
+            f"in: {written!r}  out: {refusal.value} — the refusal must name both readings, "
+            "since the caller is the one who knows which was meant"
+        )
+
+    def test_the_ambiguity_does_not_reach_a_charge_table(self) -> None:
+        """The failure this refusal exists for, asserted where the mass would have been printed."""
+        with pytest.raises(ValueError, match="carbon monoxide"):
+            charge_table("Brc1ccccc1", 100.0, ["CO"], [1.5], [], [])
+
+    def test_a_curated_spelling_still_wins(self) -> None:
+        """The table decides before the ambiguity does, so a reviewed name is never refused."""
+        match = resolve_compound_name("MeOH")
+        assert match is not None
+        assert (match.smiles, match.name, match.source) == ("CO", "methanol", "synonym")
+
 
 class TestDensity:
     """A density is a fact about a substance, and its absence is load-bearing."""
@@ -234,3 +273,62 @@ class TestDepiction:
         """Refused as a reaction, because the `>>` said that is what it was meant to be."""
         with pytest.raises(InvalidSmilesError, match="reaction"):
             render_svg(written)
+
+
+class TestAQuantityIsPositiveOrItIsRefused:
+    """`charge_table`'s own `Raises` clause promises a `ValueError` when a quantity is not positive.
+
+    `basis_mass_g` and every volume were checked; `equivalents` was not, and an equivalent count is
+    a quantity. Measured: `stoichiometry_table("toluene", 100, ["triethylamine"], [-2.0])` returned
+    a complete table whose reagent row read **-219.65 g** at -2170.6 mmol — a charge list that
+    reads as authoritative. The one guard that would have caught it downstream reports it as a
+    mass-balance problem rather than as the bad input.
+    """
+
+    @pytest.mark.parametrize("equivalents", [[-2.0], [0.0], [1.2, -0.1]])
+    def test_a_non_positive_equivalent_count_is_refused(self, equivalents: list[float]) -> None:
+        reagents = ["triethylamine"] * len(equivalents)
+        with pytest.raises(ValueError, match="equivalents"):
+            charge_table("toluene", 100.0, reagents, equivalents, [], [])
+
+
+class TestAChargeRowSaysWhereItsNumbersCameFrom:
+    """ "Every result carries `source`" is this fleet's rule, and the charge table dropped it.
+
+    A charge list is pasted into a batch record, and "THF, 0.889 g/mL" with no attribution leaves
+    the reader unable to tell a curated table value from a name that resolved only because the
+    string happened to parse as a SMILES.
+    """
+
+    def test_a_named_reagent_and_a_typed_structure_are_told_apart(self) -> None:
+        table = charge_table("toluene", 100.0, ["CCCCCCCCCCCCCCCCCC(=O)O"], [1.0], ["THF"], [5.0])
+        by_role = {row.role: row for row in table.rows}
+        assert by_role["basis"].source == "synonym"
+        assert by_role["reagent"].source == "smiles", (
+            f"in: a typed structure  out: source={by_role['reagent'].source!r}"
+        )
+        assert by_role["solvent"].source == "synonym"
+        assert by_role["solvent"].density_source == "bench-reagents"
+
+
+class TestAReactionDrawingIsTheWholeReaction:
+    """The molecule path refuses embedded whitespace; the reaction path branched before that check.
+
+    `_reaction`'s own docstring records that `"CCO junk>>CC=O"` raises — measured, and true, because
+    RDKit rejects a *reactant* it cannot read. What was never measured is whitespace in the **last**
+    component, which it truncates instead: `"CCO>>CC=O CCCCCCBr"` drew `CCO >> CC=O`, a well-formed
+    and plausible picture of a different reaction, and a drawing is the one form in which the
+    model's choice is supposed to become checkable by a human.
+    """
+
+    @pytest.mark.parametrize(
+        "written",
+        ["CCO>>CC=O CCCCCCBr", "CCO>>CC=O junk", "CCO junk>>CC=O", "CCO>>CC=O\tCCCCCCBr"],
+    )
+    def test_a_truncating_reaction_string_is_refused_rather_than_drawn(self, written: str) -> None:
+        with pytest.raises(InvalidSmilesError):
+            render_svg(written)
+
+    def test_a_reaction_written_properly_still_draws(self) -> None:
+        """Components are separated by a dot, and that one must keep working."""
+        assert render_svg("CCO>>CC=O.CCCCCCBr").startswith("<?xml")

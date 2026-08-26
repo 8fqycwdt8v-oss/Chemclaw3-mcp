@@ -30,7 +30,7 @@ surface releases on its own cadence.
 
 | Tool | Answers |
 | --- | --- |
-| `resolve_compound` | The name a chemist wrote → a canonical structure, or an honest miss. |
+| `resolve_compound` | The name a chemist wrote → a canonical structure, an honest miss, or a refusal where the name reads as two substances (`CO` is carbon monoxide *and* the SMILES for methanol). |
 | `stoichiometry_table` | What to weigh and measure out for a batch, scaled to the basis. |
 | `green_metrics` | E-factor and PMI from the charged masses. |
 | `render_structure` | A molecule or reaction as an inline SVG, optionally with atoms highlighted. |

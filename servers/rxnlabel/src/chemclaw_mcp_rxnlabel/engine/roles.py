@@ -28,6 +28,7 @@ import logging
 from rdkit import Chem
 
 from chemclaw_mcp_rxnlabel.engine import agents, mapping
+from chemclaw_mcp_rxnlabel.engine.chem import read_molecule
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ ADDITIVE = "additive"
 UNKNOWN = "unknown"
 
 
-def assign(reaction_smiles: str, species: list[str]) -> list[str]:
+def assign(reaction_smiles: str, species: list[str], mapped: str | None) -> list[str]:
     """A role for each species, positionally against the list given.
 
     Args:
@@ -56,6 +57,9 @@ def assign(reaction_smiles: str, species: list[str]) -> list[str]:
             than parsed out of the reaction because the caller's ordinals come from its own record
             and the reaction string groups the agents together — the two orders differ on every
             reaction with a solvent, so matching by position would mislabel all of them.
+        mapped: The atom-mapped form from `mapping.map_reaction`, or `None` where there is no
+            mapper. Passed in rather than derived here because the caller stores that string as
+            well, and mapping it in both places ran the transformer twice per reaction.
 
     Returns:
         One role per input species. A species that appears in no slot is `unknown`, which is a real
@@ -67,7 +71,7 @@ def assign(reaction_smiles: str, species: list[str]) -> list[str]:
         return [UNKNOWN] * len(species)
     reactants, agent_slot, products = slots
     context = agents.context_of([*reactants, *agent_slot])
-    contributing = mapping.contributing_reactants(reaction_smiles)
+    contributing = mapping.contributing_reactants(mapped)
     return [_role(s, reactants, agent_slot, products, context, contributing) for s in species]
 
 
@@ -159,9 +163,9 @@ def _canonical(smiles: str) -> str | None:
     standardisation is not this server's, so matching raw strings would fail on the difference
     between two spellings of one molecule and silently return `unknown` for a species that is
     plainly there.
+
+    Read *whole* or not at all (`engine/chem.py`): a truncated parse would put a smaller molecule on
+    one side of that comparison, which is a mismatch dressed as a match.
     """
-    stripped = smiles.strip()
-    if not stripped:
-        return None
-    mol = Chem.MolFromSmiles(stripped)
+    mol = read_molecule(smiles)
     return Chem.MolToSmiles(mol) if mol is not None else None

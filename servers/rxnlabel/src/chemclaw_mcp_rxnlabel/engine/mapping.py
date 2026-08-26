@@ -61,7 +61,7 @@ def map_reaction(reaction_smiles: str) -> str | None:
     return str(mapped) if mapped else None
 
 
-def contributing_reactants(reaction_smiles: str) -> set[str] | None:
+def contributing_reactants(mapped: str | None) -> set[str] | None:
     """The reactants that put at least one atom into a product, as canonical SMILES.
 
     This is the reactant-versus-reagent split — the classical one from Schneider, Lowe, Sayle and
@@ -72,8 +72,15 @@ def contributing_reactants(reaction_smiles: str) -> set[str] | None:
 
     Returns `None` — not an empty set — when no mapper is installed. The distinction matters: an
     empty set means "nothing contributed", which would demote every substrate to a reagent.
+
+    **Takes the mapped reaction rather than mapping it**, because the caller needs that string too
+    and a forward pass is the cost the batch bound is set against: mapping here as well ran the
+    transformer twice per reaction — 1000 passes for a 500-reaction batch — for two identical
+    results.
+
+    Args:
+        mapped: The atom-mapped reaction from `map_reaction`, or `None` where there was no map.
     """
-    mapped = map_reaction(reaction_smiles)
     if mapped is None:
         return None
     parts = mapped.split(">")

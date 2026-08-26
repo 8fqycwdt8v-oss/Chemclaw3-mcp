@@ -15,7 +15,11 @@ from rdkit import Chem
 from rdkit.Chem import Draw, rdChemReactions
 from rdkit.Chem.Draw import rdMolDraw2D
 
-from chemclaw_mcp_chem.engine.chem import InvalidSmilesError, require_molecule
+from chemclaw_mcp_chem.engine.chem import (
+    InvalidSmilesError,
+    require_molecule,
+    require_whole_string,
+)
 
 __all__ = ["RENDER_SIZE_PX", "render_svg"]
 
@@ -48,6 +52,9 @@ def render_svg(smiles: str, highlight_atoms: Sequence[int] | None = None) -> str
         InvalidSmilesError: the string is not a drawable molecule or reaction, or an index does not
             address one of its atoms.
     """
+    # The whole-string guard runs before the reaction branch, not inside `require_molecule` where
+    # only the molecule path would reach it — see `require_whole_string`.
+    smiles = require_whole_string(smiles, "reaction SMILES" if ">>" in smiles else "SMILES")
     if ">>" in smiles:
         if highlight_atoms:
             raise InvalidSmilesError("a reaction drawing takes no atom highlight")
@@ -97,12 +104,12 @@ def _reaction(smiles: str) -> rdChemReactions.ChemicalReaction:
     - **It accepts an empty reaction.** `">>"` parses to zero reactants and zero products and draws
       a blank picture, which is the reaction form of the empty SMILES `require_molecule` refuses.
 
-    The non-ASCII check is the third case and the quiet one: RDKit skips a run of non-ASCII bytes at
-    a component's edges, so `"°C>>CC=O"` parses — as *methane* reacting to acetaldehyde. Prose is
-    what produces that, and a picture of the wrong molecule is worse than an error.
+    The non-ASCII case is the third and the quiet one: RDKit skips a run of non-ASCII bytes at a
+    component's edges, so `"°C>>CC=O"` parses — as *methane* reacting to acetaldehyde. Prose is what
+    produces that, and a picture of the wrong molecule is worse than an error. That check, and the
+    whitespace one beside it, are `require_whole_string`'s and run in `render_svg` before this is
+    called, because they have to hold for the whole reaction rather than per component.
     """
-    if not smiles.isascii():
-        raise InvalidSmilesError(f"invalid reaction SMILES (non-ASCII characters): {smiles!r}")
     try:
         reaction = rdChemReactions.ReactionFromSmarts(smiles, useSmiles=True)
     except ValueError as exc:

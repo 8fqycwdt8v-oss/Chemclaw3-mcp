@@ -32,7 +32,10 @@ from chemclaw_mcp_rxnlabel.engine import mapping, naming
 # **Bump it when either changes**, including a renamed functional group — those names are stored in
 # an array a query compares against by exact match, so a rename that did not bump this would leave
 # a corpus half in one spelling and half in the other, answering neither.
-SERVER_VERSION = "1"
+# 2: the base rules gained bicarbonate (whose pattern matched nothing), the two-deprotonation
+# phosphate and the aromatic-nitrogen bases, and every species is now parsed whole or not at all —
+# all three change stored labels, which is what a bump is for.
+SERVER_VERSION = "2"
 
 _ABSENT = "absent"
 
