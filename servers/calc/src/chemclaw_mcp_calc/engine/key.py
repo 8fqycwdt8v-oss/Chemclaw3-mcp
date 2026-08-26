@@ -65,7 +65,13 @@ __all__ = ["CALCULATION_EPOCH", "CalculationKey", "Keyed"]
 # repositories in the same change, or the two stop addressing the same rows.
 #
 #   1 — introduced.
-CALCULATION_EPOCH = "1"
+#   2 — the per-atom reactivity panel. `SiteReactivityResult` gained the conceptual-DFT global
+#       descriptors and four local ones per site, and `AtomCharge` gained its Wiberg and free
+#       valence. No number that was already stored moved — the same three SCFs run, on the same
+#       geometry — but every row written under epoch 1 is now *incomplete*, and an incomplete row
+#       is exactly what this constant exists to invalidate: the new fields are required, so a
+#       pre-change row cannot come back claiming a panel it never carried.
+CALCULATION_EPOCH = "2"
 
 
 class CalculationKey(BaseModel):

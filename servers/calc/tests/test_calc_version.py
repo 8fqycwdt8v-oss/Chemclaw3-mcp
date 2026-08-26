@@ -40,6 +40,7 @@ from __future__ import annotations
 import re
 
 from chemclaw_mcp_calc import tools
+from chemclaw_mcp_calc.engine import xtb_cli
 from chemclaw_mcp_calc.engine.key import Keyed
 
 # `calc_type@calc_version:input_hash:params_hash`, with the two hashes being 16 hex characters —
@@ -62,6 +63,12 @@ HELPERS = {"embed_structure", "combine_structures", "calculation_key"}
 # `test_calculation_key.py` (the identity) rather than here.
 CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
 
+# The binary-only panel, excluded for the same reason and on the same terms as the CREST pair: it
+# cannot run without an `xtb` this image does not ship. Included the moment one is installed, so a
+# deployment that has the binary really does check it — the refusal path is exercised in
+# `test_reactivity_panel.py`, and the identity in `test_calculation_key.py`.
+BINARY_TOOLS = set() if xtb_cli.is_available() else {"compute_atomic_descriptors"}
+
 
 async def _every_tool_result() -> dict[str, Keyed]:
     """Call every computing tool once and return its result by tool name.
@@ -81,6 +88,11 @@ async def _every_tool_result() -> dict[str, Keyed]:
         "compute_xtb_energy": await tools.compute_xtb_energy(ETHANOL),
         "compute_electronic_properties": await tools.compute_electronic_properties(ETHANOL),
         "predict_site_reactivity": await tools.predict_site_reactivity(ETHANOL),
+        **(
+            {}
+            if not xtb_cli.is_available()
+            else {"compute_atomic_descriptors": await tools.compute_atomic_descriptors(ETHANOL)}
+        ),
         "optimize_geometry": await tools.optimize_geometry("O"),
         "predict_pka": await tools.predict_pka(ACETIC),
         "predict_solubility": await tools.predict_solubility(ETHANOL),
@@ -104,9 +116,15 @@ async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
     growing either is a deliberate act.
     """
     results = await _every_tool_result()
-    # The helpers are excluded by name rather than by forgetting them, and the CREST searches
-    # because no binary is installed — both sets stated, so the remainder is closed.
-    served = {tool.name for tool in await tools.server.list_tools()} - HELPERS - CREST_TOOLS
+    # The helpers are excluded by name rather than by forgetting them, and the CREST searches and
+    # the atomic panel because they need binaries this image does not ship — every set stated, so
+    # the remainder is closed.
+    served = (
+        {tool.name for tool in await tools.server.list_tools()}
+        - HELPERS
+        - CREST_TOOLS
+        - BINARY_TOOLS
+    )
     assert set(results) == served, (
         "a tool is served that this test does not exercise (or vice versa); every compute "
         "tool must be checked for calc_version, and the served surface is the list that decides"

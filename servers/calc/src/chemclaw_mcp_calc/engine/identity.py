@@ -87,6 +87,7 @@ from chemclaw_mcp_calc.engine import (
     pka,
     solubility,
     xtb,
+    xtb_atomic,
     xtb_props,
 )
 from chemclaw_mcp_calc.engine.chem import require_canonical_smiles
@@ -161,6 +162,25 @@ def _site_reactivity(arguments: dict[str, Any]) -> CalculationIdentity:
     arguments through unchanged and must not have to know which of them are keyed.
     """
     return _from_spec("predict_site_reactivity", *xtb_props.fukui_inputs(str(arguments["smiles"])))
+
+
+def _atomic_descriptors(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`compute_atomic_descriptors` — `surface` is accepted and does not enter the key.
+
+    The surface run is a *second*, separately-parameterised invocation whose output rides on the
+    same payload; the atomic panel this key addresses is identical either way. Accepting the
+    argument anyway matters for the reason `_site_reactivity` gives: a caller passes the compute
+    tool's arguments through unchanged and must not have to know which of them are keyed.
+
+    **This derives a key even where no binary is installed**, naming `xtb-absent`, and that is the
+    fleet's existing convention rather than a new one: the two CREST searches do the same. Deriving
+    an identity is not running a calculation, and this probe exists precisely so a caller can ask
+    before committing; the refusal happens in `compute_atomic_descriptors`, where it is actionable.
+    """
+    return _from_spec(
+        "compute_atomic_descriptors",
+        *xtb_atomic.atomic_inputs(str(arguments["smiles"]), _solvent(arguments)),
+    )
 
 
 def _optimize_geometry(arguments: dict[str, Any]) -> CalculationIdentity:
@@ -335,6 +355,10 @@ COMPUTE_TOOLS: dict[str, tuple[frozenset[str], Callable[[dict[str, Any]], Calcul
     "compute_xtb_energy": (frozenset({"smiles", "charge"}), _xtb_energy),
     "compute_electronic_properties": (frozenset({"smiles", "solvent"}), _electronic_properties),
     "predict_site_reactivity": (frozenset({"smiles", "mode", "top_n"}), _site_reactivity),
+    "compute_atomic_descriptors": (
+        frozenset({"smiles", "solvent", "surface"}),
+        _atomic_descriptors,
+    ),
     "optimize_geometry": (frozenset({"smiles", "solvent"}), _optimize_geometry),
     "predict_pka": (frozenset({"smiles"}), _pka),
     "predict_solubility": (frozenset({"smiles"}), _solubility),

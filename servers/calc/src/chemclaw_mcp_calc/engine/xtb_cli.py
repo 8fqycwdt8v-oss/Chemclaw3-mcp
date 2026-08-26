@@ -78,15 +78,17 @@ from pydantic import BaseModel
 
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure
-from chemclaw_mcp_calc.engine.xtb_engine import ANGSTROM_TO_BOHR
+from chemclaw_mcp_calc.engine.xtb_engine import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "METHOD_FLAGS",
+    "AtomicRow",
     "CliError",
     "CliResult",
     "CliTask",
+    "SurfacePotential",
     "binary_path",
     "binary_version",
     "is_available",
@@ -180,6 +182,38 @@ class CliError(RuntimeError):
     """
 
 
+class AtomicRow(BaseModel):
+    """One row of xtb's per-atom property table — the descriptors tblite does not expose.
+
+    Printed by every xtb run under the header `#  Z  covCN  q  C6AA  a(0)`, in the input's atom
+    order. All four are atomic units. `coordination_number` is the fractional *covalent* CN the
+    GFN Hamiltonian uses, `c6_au` the atom's dispersion coefficient and `polarisability_au` its
+    static isotropic polarisability — the last two being what a dispersion or halogen-bonding
+    question is actually about, and neither derivable from anything `tblite.Result` returns.
+    """
+
+    index: int
+    element: str
+    coordination_number: float
+    charge: float
+    c6_au: float
+    polarisability_au: float
+
+
+class SurfacePotential(BaseModel):
+    """The extrema of the molecular electrostatic potential on xtb's own surface grid.
+
+    `minimum` marks the most electron-rich patch (a lone pair, a pi face) and `maximum` the most
+    electron-poor (an acidic hydrogen, a halogen's sigma-hole). Both in kcal/mol, converted at the
+    unit boundary rather than left in Hartree/e, because every published V_s,min a chemist would
+    compare these against is quoted in kcal/mol.
+    """
+
+    minimum_kcal_per_mol: float
+    maximum_kcal_per_mol: float
+    grid_points: int
+
+
 class CliResult(BaseModel):
     """What one `xtb` run produced, in this layer's units.
 
@@ -196,6 +230,7 @@ class CliResult(BaseModel):
     ir_intensities: list[float] | None = None
     cycles: int | None = None
     properties: dict[str, Any] = {}
+    atomic_rows: list[AtomicRow] = []
 
 
 @lru_cache(maxsize=1)
@@ -441,6 +476,109 @@ _REQUIRED_OUTPUTS: dict[CliTask, tuple[str, ...]] = {
 }
 
 
+def _read_atomic_table(log: str, atom_count: int) -> list[AtomicRow]:
+    """Parse xtb's per-atom property table out of its stdout.
+
+    The table is printed under a header containing `covCN` and holds one row per atom, in the
+    input's order: `index  Z  symbol  covCN  q  C6AA  alpha(0)`. Read from the log rather than from
+    `xtbout.json` because the JSON carries none of these four — a fact established by running the
+    binary and reading both, not by reading the documentation.
+
+    Returns an empty list rather than raising when the table is absent or short. A caller that needs
+    these is the one positioned to say so in words a chemist can act on; failing here would turn a
+    missing optional block into a failed calculation.
+    """
+    lines = log.splitlines()
+    header = next((index for index, line in enumerate(lines) if "covCN" in line), None)
+    if header is None:
+        return []
+    rows: list[AtomicRow] = []
+    for line in lines[header + 1 : header + 1 + atom_count]:
+        fields = line.split()
+        if len(fields) != 7:
+            break
+        try:
+            rows.append(
+                AtomicRow(
+                    index=int(fields[0]) - 1,
+                    element=fields[2],
+                    coordination_number=float(fields[3]),
+                    charge=float(fields[4]),
+                    c6_au=float(fields[5]),
+                    polarisability_au=float(fields[6]),
+                )
+            )
+        except ValueError:  # pragma: no cover - a non-numeric row is not a table row
+            break
+    return rows if len(rows) == atom_count else []
+
+
+def run_surface_potential(
+    structure: Structure, *, method: str, solvent: str | None = None
+) -> SurfacePotential:
+    """Compute the molecular electrostatic potential on xtb's surface grid and return its extrema.
+
+    **A second invocation, and deliberately so.** Measured on xtb 6.6.1: a run carrying `--esp`
+    writes `xtb_esp.dat` and then aborts with SIGABRT during teardown, before `xtbout.json` is
+    written. So an `--esp` run cannot also deliver the atomic table's companion JSON, and combining
+    them would trade a reliable block for an unreliable one. The abort is tolerated for the same
+    reason the Hessian path tolerates it — the file is complete, the crash is in xtb's cleanup —
+    and the check is the file's existence rather than the exit code.
+
+    Raises:
+        CliError: the binary is absent, timed out, or produced no grid.
+    """
+    path = binary_path()
+    if path is None:
+        raise CliError(f"the {settings.xtb_binary!r} binary is not installed")
+    if not supports(method):
+        raise ValueError(f"the xtb backend does not support method {method!r}")
+
+    argv = [path, "input.xyz", *METHOD_FLAGS[method], "--esp"]
+    argv += ["--chrg", str(structure.charge), "--uhf", str(structure.uhf)]
+    if solvent is not None:
+        argv += ["--alpb", _safe(solvent, "solvent")]
+
+    with tempfile.TemporaryDirectory(prefix="xtb-esp-") as workdir:
+        directory = Path(workdir)
+        (directory / "input.xyz").write_text(_to_xyz(structure))
+        environment = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+        try:
+            run_isolated(
+                argv, cwd=directory, env=environment, timeout=settings.xtb_cli_timeout_seconds
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CliError(
+                f"xtb --esp timed out after {settings.xtb_cli_timeout_seconds}s"
+            ) from error
+        grid = directory / "xtb_esp.dat"
+        if not grid.exists():
+            raise CliError("xtb --esp produced no surface grid")
+        return _read_surface(grid.read_text())
+
+
+def _read_surface(text: str) -> SurfacePotential:
+    """The extrema of an `xtb_esp.dat` grid, converted to kcal/mol.
+
+    Each line is `x y z potential` — three coordinates in Bohr and the potential in Hartree per
+    electron. Only the fourth column is read: the coordinates locate a patch on a surface this layer
+    has no other use for, and carrying a grid of thousands of points to a model would be a payload
+    nobody can read.
+    """
+    values = [
+        float(fields[3])
+        for line in text.splitlines()
+        if len(fields := line.split()) == 4 and _is_float(fields[3])
+    ]
+    if not values:
+        raise CliError("xtb --esp wrote a surface grid with no potential values")
+    return SurfacePotential(
+        minimum_kcal_per_mol=round(min(values) * HARTREE_TO_KCAL, 3),
+        maximum_kcal_per_mol=round(max(values) * HARTREE_TO_KCAL, 3),
+        grid_points=len(values),
+    )
+
+
 def _produced_everything(directory: Path, task: CliTask) -> bool:
     """Whether the run left every file its task is defined by."""
     return all((directory / name).exists() for name in _REQUIRED_OUTPUTS[task])
@@ -469,6 +607,7 @@ def _collect(directory: Path, structure: Structure, task: CliTask, log: str) -> 
     if energy is None:
         raise CliError("xtb produced no total energy")
     return CliResult(
+        atomic_rows=_read_atomic_table(log, len(structure.elements)),
         energy_hartree=float(energy),
         structure=relaxed,
         hessian=hessian,

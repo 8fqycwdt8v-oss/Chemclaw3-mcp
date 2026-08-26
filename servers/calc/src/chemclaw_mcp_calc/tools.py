@@ -68,7 +68,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from chemclaw_mcp_calc.engine import crest_cli, crest_search, xtb_props
+from chemclaw_mcp_calc.engine import crest_cli, crest_search, xtb_atomic, xtb_props
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.descriptors import (
     DescriptorInput,
@@ -92,6 +92,7 @@ from chemclaw_mcp_calc.engine.solubility import (
 )
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb import XtbInput, XtbResult, run_xtb
+from chemclaw_mcp_calc.engine.xtb_atomic import AtomicDescriptorResult
 from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, pack_array
 from chemclaw_mcp_calc.engine.xtb_hessian import compute_hessian as compute_hessian_engine
 from chemclaw_mcp_calc.engine.xtb_opt import (
@@ -330,6 +331,48 @@ async def predict_site_reactivity(
         result = xtb_props.compute_fukui(*xtb_props.fukui_inputs(smiles), mode)
         limit = top_n if top_n > 0 else settings.xtb_fukui_top_n
         return result.model_copy(update={"sites": result.sites[:limit]})
+
+    return await asyncio.to_thread(_run)
+
+
+@server.tool()
+async def compute_atomic_descriptors(
+    smiles: str, solvent: str | None = None, surface: bool = False
+) -> AtomicDescriptorResult:
+    """Per-atom polarisability, dispersion and multipole descriptors (GFN2-xTB, binary only).
+
+    Answers the questions a partial charge cannot: which atom is **polarisable** (a soft,
+    dispersion-driven or halogen-bonding site), how anisotropic its own electron density is, and —
+    with `surface=True` — where the molecular electrostatic potential is most positive and most
+    negative. A halogen's sigma-hole is invisible to a point charge and shows up here.
+
+    Read it as a per-atom panel, not a ranking. Nothing in it is normalised per molecule, so unlike
+    Fukui indices these values *are* comparable between molecules — an iodine's 33.7 au
+    polarisability is larger than a fluorine's wherever it sits.
+
+    **This tool needs the `xtb` binary and refuses by name when the deployment has none.** It does
+    not approximate: the in-process library exposes no atomic multipoles and no polarisability at
+    all, so there is nothing to fall back to. Use `compute_electronic_properties` for partial
+    charges, bond orders and frontier orbitals, and `predict_site_reactivity` for site rankings —
+    neither needs the binary.
+
+    Args:
+        smiles: The molecule as a SMILES string. Must be closed-shell.
+        solvent: Optional ALPB implicit solvent name; omit for gas phase.
+        surface: Also return the electrostatic-potential extrema on a molecular surface. **Costs a
+            second calculation** — an `--esp` run cannot also produce the atomic multipoles, which
+            was measured rather than assumed.
+
+    Returns:
+        One entry per atom, in the same order `compute_electronic_properties` and
+        `predict_site_reactivity` use, so the panels join on atom index for one structure. Atomic
+        units throughout except the surface extrema, which are kcal/mol.
+    """
+
+    def _run() -> AtomicDescriptorResult:
+        return xtb_atomic.compute_atomic_descriptors(
+            *xtb_atomic.atomic_inputs(smiles, solvent), surface=surface
+        )
 
     return await asyncio.to_thread(_run)
 

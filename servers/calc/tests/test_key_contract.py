@@ -48,7 +48,7 @@ from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 # both sides**, moved only when a ChemClaw-side change makes an already-written row wrong — and it
 # has to move in both repositories in the same change, or the two silently stop addressing the same
 # rows. Bumping it here alone is the failure this line exists to catch.
-CHEMCLAW3_EPOCH = "1"
+CHEMCLAW3_EPOCH = "2"
 
 # (payload, the digest Chemclaw3's `stable_hash` returns for it). Pure: sorted keys, tight
 # separators, SHA-256, first 16 hex characters. Nothing about these may ever change.
@@ -89,10 +89,10 @@ def test_the_flat_key_format_is_the_one_chemclaw3_parses() -> None:
         calc_type="xtb.sp",
         calc_version="GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2",
         input_hash="389b625b3220108a",
-        params_hash="b41312b0cdc59ab7",
+        params_hash="74c818075e77fec2",
     )
     assert key.as_str() == (
-        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:b41312b0cdc59ab7"
+        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:74c818075e77fec2"
     )
 
 
@@ -109,9 +109,9 @@ def test_build_folds_the_epoch_into_params_and_nothing_else() -> None:
         inputs={"smiles": "CCO"},
     )
     assert key.input_hash == "a7d334ebee616d78"
-    assert key.params_hash == "a075a6029c28d314"
+    assert key.params_hash == "3ba6ef80c850abd1"
     assert key.as_str() == (
-        "solubility@esol-delaney@2004/rdkit-2026.3.5/u-0.75:a7d334ebee616d78:a075a6029c28d314"
+        "solubility@esol-delaney@2004/rdkit-2026.3.5/u-0.75:a7d334ebee616d78:3ba6ef80c850abd1"
     )
 
 
@@ -182,5 +182,5 @@ def test_the_whole_key_matches_chemclaw3_on_the_versions_this_test_observes() ->
     structure = _sp_structure("CCO", 0)
     assert structure.structure_id == "st_739a222f45be0c3a"
     assert XtbSpec(task="sp").cache_key(structure).as_str() == (
-        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:b41312b0cdc59ab7"
+        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:74c818075e77fec2"
     )
