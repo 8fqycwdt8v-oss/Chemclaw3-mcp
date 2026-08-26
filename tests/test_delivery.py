@@ -17,6 +17,7 @@ Deliberately not checked: whether any of it works against a registry. Nothing he
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,3 +85,31 @@ def test_the_publish_path_reports_digests_rather_than_tags() -> None:
 def test_dry_run_is_the_default() -> None:
     """First runs happen against real registries."""
     assert "booleanParam(name: 'DRY_RUN', defaultValue: true" in _pipeline()
+
+
+def _shell_as_the_shell_receives_it(block: str) -> str:
+    r"""Resolve a Groovy GString to the text bash is actually handed.
+
+    `${...}` is interpolated by Jenkins before the shell sees anything; `\${...}` and `\$(...)`
+    reach the shell verbatim — that escape is how a pipeline writes a *shell* variable inside an
+    interpolated string, and getting it backwards is the most common way one of these files breaks.
+    """
+    resolved = re.sub(r"(?<!\\)\$\{[^}]*\}", "PLACEHOLDER", block)
+    return resolved.replace("\\$", "$").replace("\\\\", "\\")
+
+
+def test_every_shell_block_in_the_pipeline_parses() -> None:
+    """The one thing about this pipeline that can actually be executed here.
+
+    A Jenkinsfile is checked by no compiler and no linter in this repository, and its shell bodies
+    are strings — so an unbalanced quote is invisible until a run, against a registry. `bash -n`
+    costs milliseconds, and speaks about the text the shell receives rather than the text in
+    the file.
+    """
+    text = _pipeline()
+    blocks = re.findall(r'"""(.*?)"""', text, re.S) + re.findall(r"sh '''(.*?)'''", text, re.S)
+    assert len(blocks) >= 3, f"only {len(blocks)} shell blocks found — the parse has drifted"
+    for block in blocks:
+        script = _shell_as_the_shell_receives_it(block)
+        result = subprocess.run(["bash", "-n"], input=script, capture_output=True, text=True)
+        assert result.returncode == 0, f"a shell block does not parse: {result.stderr.strip()}"
