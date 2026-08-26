@@ -339,18 +339,19 @@ def test_the_pair_is_ordered_so_a_with_b_and_b_with_a_are_one_calculation() -> N
 
 
 def test_a_crest_search_refuses_by_name_when_the_binary_is_absent() -> None:
-    """The honest state of this server today, asserted rather than left to a reader to discover.
+    """Both halves of the binary's presence, asserted against `is_available()` rather than assumed.
 
-    `crest` is in neither this image nor Chemclaw3's, so these refuse identically wherever they run
-    — nothing that previously worked has stopped working. The message says which binary and what is
-    unavailable without it, because "internal error" would send a chemist looking for a different
-    substrate.
+    Written when this image shipped no `crest`, and deliberately written to **invert** the day one
+    did — which has now happened, so the first branch is the live one and the refusal is what a
+    trimmed deployment gets. That inversion is the reason this test survived the change instead of
+    being rewritten: a refusal asserted as permanent would have had to be deleted, and deleting a
+    test is how the assertion quietly stops being made.
 
-    This test **inverts** the day someone ships the binary, which is the intent: a refusal asserted
-    as permanent would be a lie, so it is asserted against `is_available()` instead.
+    The message names the binary and what is unavailable without it, because "internal error" would
+    send a chemist looking for a different substrate.
     """
     water = structure_from_smiles("O", optimize=True)
-    if crest_cli.is_available():  # pragma: no cover - no crest in this image or Chemclaw3's
+    if crest_cli.is_available():
         assert search_ensemble(EnsembleSpec(), water)
         return
     with pytest.raises(ValueError, match="not installed on this server"):

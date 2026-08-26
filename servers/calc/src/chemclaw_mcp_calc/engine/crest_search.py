@@ -17,9 +17,10 @@ that molecule.
 trajectory: the sampling is a single stateful run, its intermediate structures are not answers, and
 there is no point at which half of it is a result. One tool, one key, minutes to hours.
 
-**The binary is absent here and absent in Chemclaw3** (`which crest` is empty on both sides today),
-so these primitives refuse identically wherever they run. That is parity rather than a regression —
-nothing that worked before stops working — and it becomes live when an operator adds the binary.
+**The binary ships in this server's image** (crest 3.0.2, from conda-forge; see the `Containerfile`).
+Chemclaw3's own pods do not have it and do not need it — the searches run here, and its composites
+reach them through this server. Where an operator removes it, these primitives refuse by name rather
+than degrading into a single-conformer answer that looks like an ensemble.
 """
 
 from __future__ import annotations
@@ -110,9 +111,9 @@ def require_crest() -> None:
         return
     raise ValueError(
         f"the {settings.crest_binary!r} binary is not installed on this server, so conformer, "
-        "tautomer, protomer and non-covalent-complex sampling are unavailable. It is absent from "
-        "Chemclaw3's own environment too, so nothing that previously worked has stopped working; "
-        "adding it to this server's image is what turns these on"
+        "tautomer, protomer and non-covalent-complex sampling are unavailable. The shipped image "
+        "carries it, so this deployment has replaced or trimmed that image; restoring the binary "
+        "on PATH is what turns these back on"
     )
 
 

@@ -120,6 +120,12 @@ class CalcSettings(BaseSettings):
     crest_effort: Literal["quick", "normal", "extensive"] = "quick"
     crest_threads: int = 0
     crest_timeout_seconds: int = 14400
+    # Atom ceiling for perceiving an ensemble member's SMILES from its geometry. A protonation or
+    # tautomer search changes the constitution, so the member's identity has to be read off the
+    # coordinates — and bond-order assignment is combinatorial over the conjugated system, so an
+    # unbounded call inside the parse loop is a hang rather than a slow answer. Above this a member
+    # simply travels without a label; nothing else about the ensemble changes.
+    crest_perceive_max_atoms: int = 150
     # xTB-based pKa predictor: pKa from the GFN2-xTB solvated (ALPB) deprotonation energy via a
     # linear calibration pKa = slope*dE + intercept. Defaults fitted over 10 reference O-H acids
     # (R^2 0.93, residual ~1.6 pKa units). **All four are interpolated into `pka.calc_version()`.**
