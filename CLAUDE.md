@@ -127,9 +127,18 @@ when wrong:
 - **Fail closed.** A declared `token_env` whose variable is unset refuses every request. Chemclaw3
   once mounted a secret, recorded the control as enabled, and served every tool to anything that
   could reach the pod, because the serving side never checked.
-- **`X-Chemclaw-Actor/Session/Correlation/Dry-Run` are logged, never trusted.** Authorization
+- **`X-Chemclaw-Actor/Session/Correlation-Id/Dry-Run` are logged, never trusted.** Authorization
   happened in Chemclaw3 before the call was made. A server that gated on one of these headers would
   be trusting an unauthenticated string while looking like it had access control.
+- **The header *names* are a contract, and `tests/test_identity_contract.py` is what holds it.**
+  `HEADER_CORRELATION` read `x-chemclaw-correlation` against a sender writing
+  `X-Chemclaw-Correlation-Id`: lookup is case-insensitive, not suffix-insensitive, so every server
+  in this fleet bound `correlation=""` on every request from the day the header existed. It was
+  invisible only because nothing consumes `current_caller().correlation` yet — the first server to
+  stamp a record with it would have written an empty string into the field that joins this fleet's
+  records to Chemclaw3's audit trail. That test transcribes the *sent* spellings as literals rather
+  than importing this repository's constants, because the two constants agreed with each other and
+  both were wrong about the sender.
 
 ## No egress. Ever. In any environment.
 

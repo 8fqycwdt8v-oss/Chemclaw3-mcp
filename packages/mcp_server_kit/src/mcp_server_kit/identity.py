@@ -22,9 +22,22 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
+# The four names Chemclaw3 stamps, spelled exactly as `chemclaw.connectors.identity` writes them.
+# Lower-cased here only because that is how this repository reads them; HTTP header lookup is
+# case-insensitive, so the case is free and the *rest of the string* is not.
+#
+# `HEADER_CORRELATION` used to read `x-chemclaw-correlation`, against a sender that writes
+# `X-Chemclaw-Correlation-Id`. Header lookup is case-insensitive, not suffix-insensitive, so
+# `headers.get(...)` returned `None` and every server in this fleet bound `correlation=""` — on
+# every request, since the header was introduced. Measured against a running `connector_app`: with
+# the sender's spelling a tool body read `""`, with this file's it read the value. Nothing here
+# consumed `current_caller().correlation` yet, which is the only reason it was invisible; the first
+# server to stamp a record with it would have written an empty string into the one field that joins
+# this fleet's records to Chemclaw3's audit trail. `tests/test_identity_contract.py` is what stops
+# the next rename, and it asserts the *sent* spellings rather than these constants.
 HEADER_ACTOR = "x-chemclaw-actor"
 HEADER_SESSION = "x-chemclaw-session"
-HEADER_CORRELATION = "x-chemclaw-correlation"
+HEADER_CORRELATION = "x-chemclaw-correlation-id"
 HEADER_DRY_RUN = "x-chemclaw-dry-run"
 
 _actor: ContextVar[str] = ContextVar("chemclaw_actor", default="")
