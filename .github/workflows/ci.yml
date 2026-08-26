@@ -4,6 +4,14 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # Re-running the gate against a ref otherwise costs an empty commit or a close-and-reopen, both
+  # of which are things this repository's own review rules forbid — so without this there is no
+  # legitimate way to re-run a gate at all. That is not hypothetical: a `pull_request` run failed
+  # at startup (which GitHub refuses to retry) while the `push` run for the same commit wedged
+  # before it reached the queue (neither cancellable nor re-runnable), leaving the pull request
+  # with no route to a verdict while every other branch's CI drained normally. `Chemclaw3`'s own
+  # ci.yml carries this trigger for the same reason.
+  workflow_dispatch:
 
 # Nothing here needs a cluster, a database, or a network. That is a property of the fleet rather
 # than of the workflow: every server answers from data in its own image, and `offline-check` proves
