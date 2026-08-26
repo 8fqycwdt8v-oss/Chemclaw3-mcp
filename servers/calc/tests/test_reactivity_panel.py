@@ -126,6 +126,20 @@ def test_carbon_uses_close_to_its_four_bonds() -> None:
 # --- Tier 2: the binary-only panel ------------------------------------------------------------
 
 
+def test_the_two_binary_panels_are_keyed_apart() -> None:
+    """One key standing for both would serve a surface request the panel-only row it found.
+
+    The defect this pins: `surface` was a *flag* on the atomic panel and deliberately kept out of
+    its key, so a `surface=True` call hit the row an earlier `surface=False` call wrote and came
+    back with no surface, having run nothing.
+    """
+    atomic = xtb_atomic.atomic_inputs("CCO")
+    surface = xtb_atomic.surface_inputs("CCO")
+    assert atomic[0].cache_key(atomic[1]).as_str() != surface[0].cache_key(surface[1]).as_str()
+    assert atomic[0].cache_key(atomic[1]).calc_type == "xtb.atomic"
+    assert surface[0].cache_key(surface[1]).calc_type == "xtb.surface"
+
+
 def test_the_binary_panel_refuses_by_name_when_the_binary_is_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -156,6 +170,8 @@ def test_an_open_shell_structure_is_refused_rather_than_silently_run_on_tblite(
     radical = structure_from_smiles("C[CH2]", multiplicity=2)
     with pytest.raises(ValueError, match="resolved to 'tblite'"):
         xtb_atomic.compute_atomic_descriptors(XtbSpec(task="atomic", engine="xtb"), radical)
+    with pytest.raises(ValueError, match="resolved to 'tblite'"):
+        xtb_atomic.compute_surface_potential(XtbSpec(task="surface", engine="xtb"), radical)
 
 
 def test_the_atomic_table_parser_reads_a_captured_run() -> None:
@@ -240,10 +256,7 @@ def test_the_calc_version_names_the_binary_that_produced_the_numbers() -> None:
 @_BINARY
 def test_the_surface_has_both_a_positive_and_a_negative_extreme() -> None:
     """Phenol's OH hydrogen is the positive patch and its oxygen lone pair the negative one."""
-    result = xtb_atomic.compute_atomic_descriptors(
-        *xtb_atomic.atomic_inputs("Oc1ccccc1"), surface=True
-    )
-    assert result.surface is not None
+    result = xtb_atomic.compute_surface_potential(*xtb_atomic.surface_inputs("Oc1ccccc1"))
     assert result.surface.maximum_kcal_per_mol > 0 > result.surface.minimum_kcal_per_mol
     assert result.surface.grid_points > 0
 

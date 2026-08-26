@@ -67,7 +67,9 @@ CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
 # cannot run without an `xtb` this image does not ship. Included the moment one is installed, so a
 # deployment that has the binary really does check it — the refusal path is exercised in
 # `test_reactivity_panel.py`, and the identity in `test_calculation_key.py`.
-BINARY_TOOLS = set() if xtb_cli.is_available() else {"compute_atomic_descriptors"}
+BINARY_TOOLS = (
+    set() if xtb_cli.is_available() else {"compute_atomic_descriptors", "compute_surface_potential"}
+)
 
 
 async def _every_tool_result() -> dict[str, Keyed]:
@@ -91,7 +93,10 @@ async def _every_tool_result() -> dict[str, Keyed]:
         **(
             {}
             if not xtb_cli.is_available()
-            else {"compute_atomic_descriptors": await tools.compute_atomic_descriptors(ETHANOL)}
+            else {
+                "compute_atomic_descriptors": await tools.compute_atomic_descriptors(ETHANOL),
+                "compute_surface_potential": await tools.compute_surface_potential(ETHANOL),
+            }
         ),
         "optimize_geometry": await tools.optimize_geometry("O"),
         "predict_pka": await tools.predict_pka(ACETIC),

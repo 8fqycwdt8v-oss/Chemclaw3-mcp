@@ -44,9 +44,12 @@ from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 __all__ = [
     "AtomicDescriptor",
     "AtomicDescriptorResult",
+    "SurfacePotentialResult",
     "atomic_inputs",
     "compute_atomic_descriptors",
+    "compute_surface_potential",
     "require_binary",
+    "surface_inputs",
 ]
 
 
@@ -74,11 +77,11 @@ class AtomicDescriptor(BaseModel):
 
 
 class AtomicDescriptorResult(Keyed):
-    """The binary-only per-atom panel for one geometry, with the surface extrema when asked for.
+    """The binary-only per-atom panel for one geometry.
 
-    `surface` is None when it was not requested, never when it failed — a failed ESP run raises.
     Atom indices match `atoms`' order, which is the structure's, which is the canonical SMILES'
-    heavy atoms followed by their hydrogens.
+    heavy atoms followed by their hydrogens — so this panel joins onto `ElectronicProperties` and
+    `SiteReactivityResult` for the same structure by index.
     """
 
     smiles: str | None
@@ -87,7 +90,26 @@ class AtomicDescriptorResult(Keyed):
     solvent: str | None
     total_energy_hartree: float
     atoms: list[AtomicDescriptor]
-    surface: xtb_cli.SurfacePotential | None = None
+
+
+class SurfacePotentialResult(Keyed):
+    """The electrostatic-potential extrema on a molecular surface, for one geometry.
+
+    **A separate calculation with its own key, not a flag on the panel above**, and the reason is
+    this repository's own primitive rule rather than tidiness. An `--esp` run is a *second* SCF: on
+    xtb 6.6.1 it writes the grid and then aborts during teardown before `xtbout.json` exists, so it
+    cannot also deliver the atomic multipoles. Folding it into `compute_atomic_descriptors` as an
+    argument therefore made one cache row stand for two different payloads — and since the argument
+    could not enter the key without recomputing the panel, a `surface=True` call would have been
+    served the earlier `surface=False` row and returned `surface: null` having run nothing. Two
+    primitives, two keys, and the caller composes.
+    """
+
+    smiles: str | None
+    structure_id: str
+    method: str
+    solvent: str | None
+    surface: xtb_cli.SurfacePotential
 
 
 def require_binary() -> None:
@@ -128,30 +150,62 @@ def atomic_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Str
     return XtbSpec(task="atomic", engine="xtb", solvent=solvent), property_structure(smiles)
 
 
-def compute_atomic_descriptors(
-    spec: XtbSpec, structure: Structure, *, surface: bool = False
-) -> AtomicDescriptorResult:
+def surface_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:
+    """The settings and the geometry `compute_surface_potential` runs on.
+
+    The same geometry `atomic_inputs` and the two tblite per-atom calculators use, so a caller may
+    put a surface extremum beside a polarisability for the same structure without a second
+    embedding — and a different `task`, so the two calculations are two cache rows.
+    """
+    return XtbSpec(task="surface", engine="xtb", solvent=solvent), property_structure(smiles)
+
+
+def compute_surface_potential(spec: XtbSpec, structure: Structure) -> SurfacePotentialResult:
+    """Compute the molecular electrostatic potential and return its extrema.
+
+    Raises:
+        ValueError: the binary is absent, or the spec did not resolve to it.
+        CliError: the run failed or produced no grid.
+    """
+    resolved = _require_binary_backend(spec, structure)
+    return SurfacePotentialResult(
+        calc_version=resolved.calc_version(),
+        calc_key=resolved.cache_key(structure).as_str(),
+        smiles=structure.smiles,
+        structure_id=structure.structure_id,
+        method=resolved.method,
+        solvent=resolved.solvent,
+        surface=xtb_cli.run_surface_potential(
+            structure, method=resolved.method, solvent=resolved.solvent
+        ),
+    )
+
+
+def _require_binary_backend(spec: XtbSpec, structure: Structure) -> XtbSpec:
+    """Resolve `spec` and refuse unless the binary really is what will run it."""
+    require_binary()
+    resolved = spec.for_structure(structure)
+    if resolved.engine != "xtb":
+        raise ValueError(
+            f"this calculation needs the xtb binary; the spec resolved to {resolved.engine!r}. "
+            "An open-shell structure resolves to tblite deliberately — the 6.6.1 binary's "
+            "--spinpol is killed by the OOM killer — so these panels are closed-shell only."
+        )
+    return resolved
+
+
+def compute_atomic_descriptors(spec: XtbSpec, structure: Structure) -> AtomicDescriptorResult:
     """Run the binary once and read every per-atom quantity tblite cannot produce.
 
     Args:
         spec: The settings; its `engine` must resolve to the binary.
         structure: The geometry to compute on.
-        surface: Also compute the electrostatic potential on a molecular surface. **This costs a
-            second SCF** — a measured constraint rather than a design choice, since an `--esp` run
-            on xtb 6.6.1 aborts before writing the JSON the atomic multipoles come from.
 
     Raises:
         ValueError: the binary is absent, or the spec did not resolve to it.
         CliError: the run failed or produced no property table.
     """
-    require_binary()
-    resolved = spec.for_structure(structure)
-    if resolved.engine != "xtb":
-        raise ValueError(
-            f"atomic descriptors need the xtb binary; this spec resolved to {resolved.engine!r}. "
-            "An open-shell structure resolves to tblite deliberately — the 6.6.1 binary's "
-            "--spinpol is killed by the OOM killer — so this panel is closed-shell only."
-        )
+    resolved = _require_binary_backend(spec, structure)
     result = xtb_cli.run(structure, task="sp", method=resolved.method, solvent=resolved.solvent)
     if not result.atomic_rows:
         raise xtb_cli.CliError(
@@ -180,13 +234,6 @@ def compute_atomic_descriptors(
             )
             for row in result.atomic_rows
         ],
-        surface=(
-            xtb_cli.run_surface_potential(
-                structure, method=resolved.method, solvent=resolved.solvent
-            )
-            if surface
-            else None
-        ),
     )
 
 

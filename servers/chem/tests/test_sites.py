@@ -71,6 +71,39 @@ def test_the_snar_discriminator_is_the_flanking_nitrogen_count() -> None:
     assert sorted(site.adjacent_ring_heteroatoms for site in bearing.values()) == [1, 2]
 
 
+def test_resonance_equivalent_atoms_are_two_sites_and_are_distinguishable() -> None:
+    """Symmetry here is topological, so a nitro group's two oxygens do not merge.
+
+    Stated as a test rather than left to be discovered: RDKit ranks the written structure, in which
+    one oxygen is `=O` and the other `[O-]`. What must hold is that the two are never shown under
+    one name — otherwise the skill's "report by label, never by index" instruction produces two
+    different answers spelled identically.
+    """
+    oxygens = [
+        site for site in describe_atom_sites("c1ccccc1[N+](=O)[O-]") if site.kind == "nitro_oxygen"
+    ]
+    assert len(oxygens) == 2
+    assert oxygens[0].label != oxygens[1].label
+
+
+def test_every_label_identifies_exactly_one_site() -> None:
+    """The skill names sites by label and never by index, so a collision is two answers in one.
+
+    The molecules here are the measured collisions: a fused ring where two positions share a
+    relationship to the ring fusion, a substituted naphthalene, and an azine whose two halogens are
+    both ortho to a ring nitrogen.
+    """
+    for smiles in (
+        "c1ccc2ncccc2c1",
+        "Cc1ccc2ccccc2c1",
+        "Clc1ccnc(Cl)n1",
+        "c1ccccc1[N+](=O)[O-]",
+        "Oc1ccccc1",
+    ):
+        labels = [site.label for site in describe_atom_sites(smiles)]
+        assert len(labels) == len(set(labels)), smiles
+
+
 def test_a_ring_fusion_is_not_a_substituent() -> None:
     """Naphthalene has three kinds of carbon, and none of them bears a substituent."""
     sites = describe_atom_sites("c1ccc2ccccc2c1")
@@ -106,26 +139,33 @@ def test_the_methyl_of_toluene_is_one_site_carrying_three_hydrogens() -> None:
 
 
 @pytest.mark.parametrize(
-    ("smiles", "atom", "kind"),
+    ("smiles", "element", "kind"),
     [
-        ("CC(=O)OC", 1, "ester_carbon"),
-        ("CC(=O)NC", 1, "amide_carbon"),
-        ("CC(=O)O", 1, "carboxyl_carbon"),
-        ("CC(C)=O", 1, "carbonyl_carbon"),
-        ("CC#N", 1, "nitrile_carbon"),
-        ("C=CC(=O)N(C)C", 0, "michael_beta_carbon"),
-        ("Clc1ccccc1", 1, "aryl_halide_carbon"),
-        ("CCCl", 1, "halide_carbon"),
-        ("CSC", 1, "thioether_sulfur"),
-        ("CO", 1, "hydroxyl_oxygen"),
-        ("CNC", 1, "amine_nitrogen"),
+        ("CC(=O)OC", "C", "ester_carbon"),
+        ("CC(=O)NC", "C", "amide_carbon"),
+        ("CC(=O)O", "C", "carboxyl_carbon"),
+        ("CC(C)=O", "C", "carbonyl_carbon"),
+        ("CC#N", "C", "nitrile_carbon"),
+        ("C=CC(=O)N(C)C", "C", "michael_beta_carbon"),
+        ("Clc1ccccc1", "C", "aryl_halide_carbon"),
+        ("CCCl", "C", "halide_carbon"),
+        ("CSC", "S", "thioether_sulfur"),
+        ("CO", "O", "hydroxyl_oxygen"),
+        ("CNC", "N", "amine_nitrogen"),
+        ("c1ccccc1[N+](=O)[O-]", "N", "nitro_nitrogen"),
     ],
 )
 def test_the_kinds_a_chemoselectivity_question_turns_on_are_distinguished(
-    smiles: str, atom: int, kind: str
+    smiles: str, element: str, kind: str
 ) -> None:
-    """One `carbonyl_carbon` label for an ester and an amide would make "which first" unsayable."""
-    assert _by_atom(smiles)[atom].kind == kind
+    """One `carbonyl_carbon` label for an ester and an amide would make "which first" unsayable.
+
+    Asserted by kind rather than by atom index, because the index is the canonical form's and
+    pinning it here would be pinning RDKit's canonicalisation instead of the classification.
+    """
+    matching = [site for site in describe_atom_sites(smiles) if site.kind == kind]
+    assert len(matching) == 1, f"{smiles}: expected exactly one {kind}, got {len(matching)}"
+    assert matching[0].element == element
 
 
 def test_the_michael_beta_carbon_is_the_one_distal_from_the_carbonyl() -> None:
@@ -157,8 +197,15 @@ def test_scope_selection_finds_the_answer_top_n_buries() -> None:
     assert {site.ring_position for site in ring} == {"ipso", "ortho", "meta", "para"}
 
 
-def test_a_handle_survives_a_rewritten_smiles() -> None:
-    """The whole point: an index changes with the writing, a handle does not."""
+def test_a_rewritten_smiles_gives_the_same_sites_and_the_same_indices() -> None:
+    """Both halves of the join, over three writings of acetanilide.
+
+    The handle is stable because it hashes a symmetry class rather than an index. The *indices* are
+    stable because this module canonicalises first — which is the half that matters for joining a
+    per-atom number onto a site, since every calculator embeds through the canonical form too.
+    Measured before that fix: phenol written `c1ccccc1O` put the oxygen at index 6 here and index 0
+    in the calculator, so every joined number was attributed to the wrong atom.
+    """
     writings = ("CC(=O)Nc1ccccc1", "O=C(C)Nc1ccccc1", "c1ccc(NC(C)=O)cc1")
     handles = [
         {site.label: site.site_id for site in describe_atom_sites(smiles)} for smiles in writings
@@ -169,7 +216,16 @@ def test_a_handle_survives_a_rewritten_smiles() -> None:
         {site.label: tuple(site.atoms) for site in describe_atom_sites(smiles)}
         for smiles in writings
     ]
-    assert indices[0] != indices[2], "the indices really do differ; that is what is being defended"
+    assert indices[0] == indices[1] == indices[2]
+
+
+def test_the_indices_are_the_ones_a_calculator_will_use() -> None:
+    """The join asserted against RDKit's canonical ordering rather than against this module."""
+    for writing in ("Oc1ccccc1", "c1ccccc1O", "c1cc(O)ccc1"):
+        canonical = Chem.MolFromSmiles(Chem.CanonSmiles(writing))
+        expected = [atom.GetIdx() for atom in canonical.GetAtoms() if atom.GetSymbol() == "O"]
+        oxygen = next(site for site in describe_atom_sites(writing) if site.element == "O")
+        assert oxygen.atoms == expected, writing
 
 
 def test_symmetry_equivalent_atoms_share_one_handle() -> None:

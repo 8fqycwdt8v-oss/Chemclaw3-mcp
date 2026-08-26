@@ -67,7 +67,9 @@ def backend_version(backend: Backend) -> str:
 # the thermochemistry over it.
 #
 # `atomic` is the binary-only per-atom panel: polarisabilities, dispersion coefficients and atomic
-# multipoles — which is a distinct calculation type rather than more of `properties` because it can
+# multipoles; `surface` is the electrostatic potential on a molecular surface, a *second* xtb run
+# and so a second task rather than an argument to the first — which is a distinct calculation type
+# rather than more of `properties` because it can
 # only be produced by one backend and must key on that backend's build.
 #
 # `conformers` and `complex` are crest's (`CrestSpec` below); the rest are xTB's.
@@ -77,7 +79,9 @@ def backend_version(backend: Backend) -> str:
 # keys as one, so a scan point computed here and a hand-written constrained relaxation of the same
 # geometry share a cache row rather than sitting in two. A `xtb.scan@...` key would name a
 # calculation this server never runs.
-XtbTask = Literal["sp", "properties", "fukui", "atomic", "opt", "hess", "conformers", "complex"]
+XtbTask = Literal[
+    "sp", "properties", "fukui", "atomic", "surface", "opt", "hess", "conformers", "complex"
+]
 
 
 # **Which backend a task is allowed to name.** A task either has a binary code path or it does not,
@@ -99,6 +103,7 @@ _FIXED_BACKEND: dict[str, Backend] = {
     "properties": "tblite",
     "fukui": "tblite",
     "atomic": "xtb",
+    "surface": "xtb",
 }
 
 

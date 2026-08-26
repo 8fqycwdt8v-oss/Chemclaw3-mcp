@@ -17,6 +17,16 @@ differ by 0.0088 purely because the planar O-H makes one *syn* and the other *an
 same size as the *ortho*-to-*meta* difference a reader would draw a conclusion from. Grouping is
 what lets the caller report a mean and a spread instead of a spurious ordering.
 
+**Symmetry is topological, and that means resonance-equivalent atoms are *not* merged.** RDKit's
+canonical ranking works on the written structure, so a nitro group's two oxygens come back as two
+sites (one `=O`, one `[O-]`) where a chemist sees one, and a carboxylate's do the same. This is left
+as it is rather than papered over: merging them properly needs the resonance structures, and merging
+them by a heuristic would silently join atoms that a substituted case really does distinguish. What
+the module guarantees instead is that the two are *distinguishable* — `_disambiguate` appends the
+atom index to any label that would otherwise collide — so a reader is never shown one name standing
+for two sites. Treat a split like that the way you treat phenol's two *ortho* carbons: average them
+and use the spread.
+
 **Nothing here calculates anything.** It is the molecular graph and a table of SMARTS, so it is
 free,
 it is `read_only`, and it can be asked *before* a plan is approved — which matters, because "which
@@ -33,7 +43,7 @@ import rdkit
 from pydantic import BaseModel, Field
 from rdkit import Chem
 
-from chemclaw_mcp_chem.engine.chem import require_molecule
+from chemclaw_mcp_chem.engine.chem import require_canonical_smiles, require_molecule
 
 __all__ = [
     "SCOPES",
@@ -63,6 +73,7 @@ SiteKind = Literal[
     "amide_nitrogen",
     "amine_nitrogen",
     "nitro_nitrogen",
+    "nitro_oxygen",
     "carbonyl_oxygen",
     "hydroxyl_oxygen",
     "ether_oxygen",
@@ -115,10 +126,19 @@ _KINDS: tuple[tuple[SiteKind, str], ...] = (
     ("benzylic_carbon", "[CX4][a]"),
     ("aromatic_carbon", "[c]"),
     # Heteroatoms, specific before general.
-    ("nitro_nitrogen", "[NX3](=[OX1])=[OX1]"),
+    # The charge-separated form, because that is what RDKit actually builds: measured, the
+    # pentavalent `[NX3](=O)=O` matches nothing in `c1ccccc1[N+](=O)[O-]`, which RDKit canonicalises
+    # to `O=[N+]([O-])c1ccccc1`. The dead pattern left nitrobenzene's nitrogen labelled "the
+    # heteroatom" — the strongest electron-withdrawing group there is, unnamed.
+    ("nitro_nitrogen", "[NX3+](=[OX1])[OX1-]"),
     ("amide_nitrogen", "[NX3][CX3]=[OX1]"),
     ("aromatic_nitrogen", "[n]"),
     ("amine_nitrogen", "[NX3;!$([NX3]=*)]"),
+    # `[OX1]~[N+]` rather than a spelled-out nitro: both oxygens are terminal on a cationic
+    # nitrogen whichever resonance form RDKit picked, and writing the charges out matched nothing
+    # because the two oxygens differ in charge between forms. Measured against the canonical
+    # molecule rather than reasoned about, which is how the pentavalent pattern below was caught.
+    ("nitro_oxygen", "[OX1]~[NX3+]"),
     ("carbonyl_oxygen", "[OX1]=[CX3]"),
     ("hydroxyl_oxygen", "[OX2H1]"),
     ("ether_oxygen", "[OX2H0]"),
@@ -146,6 +166,7 @@ _NOUNS: dict[SiteKind, str] = {
     "amide_nitrogen": "amide nitrogen",
     "amine_nitrogen": "amine nitrogen",
     "nitro_nitrogen": "nitro nitrogen",
+    "nitro_oxygen": "nitro oxygen",
     "carbonyl_oxygen": "carbonyl oxygen",
     "hydroxyl_oxygen": "hydroxyl oxygen",
     "ether_oxygen": "ether oxygen",
@@ -274,10 +295,17 @@ def describe_atom_sites(smiles: str) -> list[Site]:
     index is meaningful only inside one particular explicit-H numbering, and handing one out invites
     it to be carried somewhere it means something else.
 
+    **The molecule is canonicalised first, and that is the whole join.** Every calculator in this
+    family embeds through `require_canonical_smiles`, so its atom 0 is the canonical form's atom 0.
+    Numbering from the caller's spelling instead would hand back indices for a different atom
+    ordering: measured, phenol written `c1ccccc1O` puts the oxygen at index 6 here and index 0
+    there, so every per-atom number joined on these indices would be attributed to the wrong atom —
+    silently, and in exactly the way this module exists to prevent.
+
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
     """
-    mol = require_molecule(smiles)
+    mol = require_molecule(require_canonical_smiles(smiles))
     with_hydrogens = Chem.AddHs(mol)
     ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=True))
     matched = {kind: _matched_atoms(mol, pattern) for kind, pattern in _KINDS}
@@ -319,7 +347,32 @@ def describe_atom_sites(smiles: str) -> list[Site]:
             )
         )
     # Sorted so two runs, and two writings, list the same sites in the same order.
-    return sorted(sites, key=lambda site: site.atoms[0])
+    return _disambiguate(sorted(sites, key=lambda site: site.atoms[0]))
+
+
+def _disambiguate(sites: list[Site]) -> list[Site]:
+    """Make every label unique within the molecule, appending an index only where it has to.
+
+    **A colliding label is a broken answer, not an untidy one.** The reactivity skill instructs the
+    model to name sites by `label` and never by index, so two distinct sites sharing one is two
+    different answers spelled identically. Measured, this happens wherever a relationship to a
+    single reference cannot separate two positions: quinoline's two "one ring bond from the ring
+    fusion" carbons, 2-methylnaphthalene's two "ortho", and both chlorines of
+    2,4-dichloropyrimidine.
+
+    The disambiguator is the representative atom index, which is the same convention
+    `_reference_label` already uses for a ring with two nitrogens: a poor name and a fine
+    tiebreaker. It is appended only to labels that actually collide, so the common case stays clean.
+    """
+    counts: dict[str, int] = {}
+    for site in sites:
+        counts[site.label] = counts.get(site.label, 0) + 1
+    return [
+        site
+        if counts[site.label] == 1
+        else site.model_copy(update={"label": f"{site.label} [atom {site.atoms[0]}]"})
+        for site in sites
+    ]
 
 
 def _hydrogen_indices(with_hydrogens: Chem.Mol, heavy_count: int) -> dict[int, list[int]]:

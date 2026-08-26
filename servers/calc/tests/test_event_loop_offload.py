@@ -39,7 +39,9 @@ CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
 
 # The same situation for `xtb`: with no binary the atomic panel refuses before dispatching, so there
 # is no offload to observe. Named rather than skipped, so installing the binary makes the case run.
-BINARY_TOOLS: set[str] = set() if xtb_cli.is_available() else {"compute_atomic_descriptors"}
+BINARY_TOOLS: set[str] = (
+    set() if xtb_cli.is_available() else {"compute_atomic_descriptors", "compute_surface_potential"}
+)
 
 # (tool name, the module attribute whose call must land off the loop, a zero-argument coroutine).
 #
@@ -130,6 +132,14 @@ if not BINARY_TOOLS:
             xtb_atomic,
             "compute_atomic_descriptors",
             lambda: tools.compute_atomic_descriptors("CCO"),
+        )
+    )
+    CASES.append(
+        (
+            "compute_surface_potential",
+            xtb_atomic,
+            "compute_surface_potential",
+            lambda: tools.compute_surface_potential("CCO"),
         )
     )
 

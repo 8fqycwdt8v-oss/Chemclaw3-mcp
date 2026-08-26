@@ -238,13 +238,16 @@ def _wiberg(matrix: np.ndarray) -> np.ndarray:
     return np.asarray(matrix)[:, :, 0]
 
 
-def _valences(wiberg: np.ndarray, symbols: list[str]) -> list[tuple[float, float | None]]:
+def _valences(
+    wiberg: np.ndarray, symbols: list[str], charges: list[int]
+) -> list[tuple[float, float | None]]:
     """Each atom's total Wiberg valence and its free valence.
 
     Free valence is the classical Coulson radical index: the element's normal valence minus the bond
     order the atom actually uses.
 
-    **It is `None` for any element with more than one normal valence**, which is what RDKit's
+    **It is `None` wherever the atom has no single normal valence to subtract from**, which is what
+    RDKit's
     valence *list* answers and its `GetDefaultValence` does not. Measured: sulfur's default is 2,
     so a sulfone's sulfur — which uses 4.94 of Wiberg bond order — came out at a free valence of
     **-2.94**, a number that looks like a strongly saturated atom and means nothing at all. The list
@@ -255,11 +258,36 @@ def _valences(wiberg: np.ndarray, symbols: list[str]) -> list[tuple[float, float
     table = Chem.GetPeriodicTable()
     used = wiberg.sum(axis=1)
     valences: list[tuple[float, float | None]] = []
-    for symbol, total in zip(symbols, used, strict=True):
+    for symbol, charge, total in zip(symbols, charges, used, strict=True):
         allowed = list(table.GetValenceList(symbol))
-        free = round(allowed[0] - float(total), 3) if len(allowed) == 1 else None
+        # Two ways an atom has no single normal valence to subtract from, and both were measured.
+        undefined = len(allowed) != 1 or charge != 0
+        free = None if undefined else round(allowed[0] - float(total), 3)
         valences.append((round(float(total), 3), free))
     return valences
+
+
+def _formal_charges(structure: Structure) -> list[int]:
+    """Per-atom formal charges for `structure`, read back from the canonical SMILES it carries.
+
+    `Structure` records the *molecular* charge and not where it sits, which is enough for an SCF and
+    not enough to say whether one atom is in its neutral normal-valence state. The canonical SMILES
+    is: `structure_from_smiles` stores it, and `AddHs` over it reproduces this structure's atom
+    order exactly — heavy atoms in canonical order, hydrogens appended by parent — which is the same
+    alignment every other per-atom field here relies on.
+
+    **Returns all-unknown (a non-zero sentinel) when there is no SMILES**, so a geometry-only
+    structure yields no free valence rather than one computed against an assumption. That is the
+    honest failure: `compute_properties_at` takes a bare geometry, and guessing neutrality there
+    would put the sulfone number back for a case nobody could see.
+    """
+    if structure.smiles is None:
+        return [1] * len(structure.elements)
+    molecule = Chem.AddHs(Chem.MolFromSmiles(structure.smiles))
+    charges = [atom.GetFormalCharge() for atom in molecule.GetAtoms()]
+    # A mismatch means the SMILES does not describe this geometry; refuse the descriptor rather
+    # than pair charges with the wrong atoms.
+    return charges if len(charges) == len(structure.elements) else [1] * len(structure.elements)
 
 
 def _bond_orders(matrix: np.ndarray, threshold: float) -> list[BondOrder]:
@@ -287,7 +315,7 @@ def compute_properties(spec: XtbSpec, structure: Structure) -> ElectronicPropert
     )
     homo, lumo = _frontier_orbitals(result["orbital-energies"], result["orbital-occupations"])
     symbols = structure.symbols
-    valences = _valences(_wiberg(result["bond-orders"]), symbols)
+    valences = _valences(_wiberg(result["bond-orders"]), symbols, _formal_charges(structure))
     return ElectronicProperties(
         calc_version=resolved.calc_version(),
         calc_key=resolved.cache_key(structure).as_str(),
