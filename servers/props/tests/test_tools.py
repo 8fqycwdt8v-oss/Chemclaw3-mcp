@@ -123,9 +123,9 @@ def test_a_swap_shortlist_states_its_own_basis() -> None:
     assert "reactivity" in result.basis
 
 
-def test_compare_solvents_reports_unknown_names_without_failing() -> None:
+def test_compare_solvent_properties_reports_unknown_names_without_failing() -> None:
     """One typo must not cost the whole comparison."""
-    result = tools.compare_solvents(["THF", "2-MeTHF", "not-a-solvent"])
+    result = tools.compare_solvent_properties(["THF", "2-MeTHF", "not-a-solvent"])
     assert [row.name for row in result.rows] == ["tetrahydrofuran", "2-methyltetrahydrofuran"]
     assert result.unknown == ["not-a-solvent"]
 

@@ -18,12 +18,30 @@ here does that; a server that starts doing real work must revisit this.
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_props.engine import correlations, records, selection
 
 server = FastMCP("props")
+
+# How many solvents one `compare_solvent_properties` call may name.
+#
+# **Derived from the corpus rather than chosen**, because the table is what makes the number
+# principled: a comparison naming more solvents than exist cannot be a comparison, only duplicates
+# or unknowns, so the largest legitimate request is "every solvent you have". A literal here would
+# be a magic number that either forbids a real question or leaves the cost unbounded, and it would
+# go stale the first time a row is added.
+#
+# It exists because the unbounded version was measured, not imagined: 100 000 x "dcm" was a 700 KB
+# request — 70% of `DEFAULT_MAX_REQUEST_BYTES`, so accepted — that returned 81 601 345 B after
+# 14.83 s, during which a `/healthz` probe waited 14.47 s. The body is synchronous, so that was the
+# event loop held in one block, and this module's own opening paragraph ("a dictionary lookup and a
+# few floating-point operations — microseconds — so the tools are synchronous") was false for as
+# long as the input could be any length. Bounding the input is what makes it true again.
+MAX_COMPARED_SOLVENTS = len(records.all_solvents())
 
 
 class SolventSummary(BaseModel):
@@ -399,15 +417,24 @@ def solvent_swap_candidates(
 
 
 @server.tool()
-def compare_solvents(names: list[str]) -> ComparisonResult:
+def compare_solvent_properties(
+    names: Annotated[list[str], Field(min_length=1, max_length=MAX_COMPARED_SOLVENTS)],
+) -> ComparisonResult:
     """Put several solvents side by side on the properties a process decision turns on.
 
     Use it when the chemist is weighing a named set — "compare 2-MeTHF, THF and MTBE" — rather than
     asking for a shortlist. Unknown names are returned in `unknown` instead of failing the whole
     call, so one typo does not cost the comparison.
 
+    **This compares tabulated physical properties and nothing else.** It reads measured numbers out
+    of a vendored table; it runs no calculation, knows nothing about your reaction, and has no
+    opinion on which solvent the chemistry prefers. For "which solvent makes this reaction go", the
+    question is a computed one and belongs to Chemclaw3's `compare_solvents` job.
+
     Args:
-        names: The solvents to compare, in any spelling the table answers to.
+        names: The solvents to compare, in any spelling the table answers to. At most
+            `MAX_COMPARED_SOLVENTS` (the size of the table), since naming more than exist can only
+            repeat or misspell them.
 
     Returns:
         One row per resolved solvent (boiling and melting point, flash point, density, dielectric
