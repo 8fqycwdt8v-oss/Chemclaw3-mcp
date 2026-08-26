@@ -40,7 +40,7 @@ from __future__ import annotations
 import re
 
 from chemclaw_mcp_calc import tools
-from chemclaw_mcp_calc.engine import crest_cli
+from chemclaw_mcp_calc.engine import crest_cli, xtb_cli
 from chemclaw_mcp_calc.engine.key import Keyed
 
 # `calc_type@calc_version:input_hash:params_hash`, with the two hashes being 16 hex characters —
@@ -80,6 +80,19 @@ def _crest_exclusions() -> set[str]:
     return {"search_conformer_ensemble", *_UNRUNNABLE_HERE}
 
 
+def _binary_exclusions() -> set[str]:
+    """Which binary-only panels this run cannot exercise — a fact about the machine, not the image.
+
+    Same shape and same reason as `_crest_exclusions` above: the answer differs between the shipped
+    image and a runner without the binary, so a constant would have to pick one and be wrong on the
+    other. Both panels come from `xtb` and nothing approximates them, so with no binary they are
+    excluded here and their refusal is exercised in `test_reactivity_panel.py` instead.
+    """
+    if xtb_cli.is_available():
+        return set()
+    return {"compute_atomic_descriptors", "compute_surface_potential"}
+
+
 async def _every_tool_result() -> dict[str, Keyed]:
     """Call every computing tool once and return its result by tool name.
 
@@ -98,6 +111,14 @@ async def _every_tool_result() -> dict[str, Keyed]:
         "compute_xtb_energy": await tools.compute_xtb_energy(ETHANOL),
         "compute_electronic_properties": await tools.compute_electronic_properties(ETHANOL),
         "predict_site_reactivity": await tools.predict_site_reactivity(ETHANOL),
+        **(
+            {}
+            if not xtb_cli.is_available()
+            else {
+                "compute_atomic_descriptors": await tools.compute_atomic_descriptors(ETHANOL),
+                "compute_surface_potential": await tools.compute_surface_potential(ETHANOL),
+            }
+        ),
         "optimize_geometry": await tools.optimize_geometry("O"),
         "predict_pka": await tools.predict_pka(ACETIC),
         "predict_solubility": await tools.predict_solubility(ETHANOL),
@@ -129,9 +150,15 @@ async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
     growing either is a deliberate act.
     """
     results = await _every_tool_result()
-    # The helpers are excluded by name rather than by forgetting them, and the searches this
-    # machine cannot afford to run by `_crest_exclusions` — both stated, so the remainder is closed.
-    served = {tool.name for tool in await tools.server.list_tools()} - HELPERS - _crest_exclusions()
+    # The helpers are excluded by name rather than by forgetting them, the searches this machine
+    # cannot afford to run by `_crest_exclusions`, and the binary-only panels by
+    # `_binary_exclusions` — every set stated, so the remainder is closed.
+    served = (
+        {tool.name for tool in await tools.server.list_tools()}
+        - HELPERS
+        - _crest_exclusions()
+        - _binary_exclusions()
+    )
     assert set(results) == served, (
         "a tool is served that this test does not exercise (or vice versa); every compute "
         "tool must be checked for calc_version, and the served surface is the list that decides"

@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_calc import tools
-from chemclaw_mcp_calc.engine import crest_search, xtb_props
+from chemclaw_mcp_calc.engine import crest_search, xtb_atomic, xtb_cli, xtb_props
 from chemclaw_mcp_calc.engine.structure import structure_from_smiles
 
 # Built at import rather than per case: these are inputs, and embedding them inside a case would
@@ -36,6 +36,20 @@ ETHANOL = structure_from_smiles("CCO", optimize=True)
 # Refuse on the missing `crest` binary before any work is dispatched, so there is no offload to
 # observe. Named so that shipping the binary turns this into a visible gap rather than a silent one.
 CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
+
+
+def _binary_exclusions() -> set[str]:
+    """Which binary-only panels this run cannot exercise — a fact about the machine, not the image.
+
+    A function read at call time rather than a constant, for `_crest_exclusions`' reason in
+    `test_calc_version.py`: the shipped image carries `xtb` and a bare runner may not, so a constant
+    would have to pick one and be wrong on the other. With no binary these refuse before dispatching
+    anything, so there is no offload to observe.
+    """
+    if xtb_cli.is_available():
+        return set()
+    return {"compute_atomic_descriptors", "compute_surface_potential"}
+
 
 # (tool name, the module attribute whose call must land off the loop, a zero-argument coroutine).
 #
@@ -116,6 +130,27 @@ CASES: list[tuple[str, Any, str, Callable[[], Awaitable[Any]]]] = [
     # are excluded by name below rather than skipped silently.
 ]
 
+# Appended rather than written inline, because the case can only run where the binary exists — the
+# same closure shape as the two SCF cases above: the spy goes on the engine module the tool body
+# reaches through, which is the call that actually blocks (a subprocess here).
+if not _binary_exclusions():
+    CASES.append(
+        (
+            "compute_atomic_descriptors",
+            xtb_atomic,
+            "compute_atomic_descriptors",
+            lambda: tools.compute_atomic_descriptors("CCO"),
+        )
+    )
+    CASES.append(
+        (
+            "compute_surface_potential",
+            xtb_atomic,
+            "compute_surface_potential",
+            lambda: tools.compute_surface_potential("CCO"),
+        )
+    )
+
 
 def _thread_recording(target: Any, seen: list[int]) -> Any:
     """Wrap `target` so every call records the thread it ran on, then delegates unchanged."""
@@ -161,5 +196,9 @@ def test_every_served_tool_is_covered() -> None:
     reason `test_calc_version.py` does it: the thing that must not be forgotten is exactly the thing
     a forgetful change adds.
     """
-    served = {tool.name for tool in asyncio.run(tools.server.list_tools())} - CREST_TOOLS
+    served = (
+        {tool.name for tool in asyncio.run(tools.server.list_tools())}
+        - CREST_TOOLS
+        - _binary_exclusions()
+    )
     assert {case[0] for case in CASES} == served

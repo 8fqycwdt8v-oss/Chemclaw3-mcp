@@ -68,7 +68,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from chemclaw_mcp_calc.engine import crest_cli, crest_search, xtb_props
+from chemclaw_mcp_calc.engine import crest_cli, crest_search, xtb_atomic, xtb_props
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.descriptors import (
     DescriptorInput,
@@ -92,6 +92,7 @@ from chemclaw_mcp_calc.engine.solubility import (
 )
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb import XtbInput, XtbResult, run_xtb
+from chemclaw_mcp_calc.engine.xtb_atomic import AtomicDescriptorResult, SurfacePotentialResult
 from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, pack_array
 from chemclaw_mcp_calc.engine.xtb_hessian import compute_hessian as compute_hessian_engine
 from chemclaw_mcp_calc.engine.xtb_opt import (
@@ -331,6 +332,77 @@ async def predict_site_reactivity(
         result = xtb_props.compute_fukui(*xtb_props.fukui_inputs(smiles), mode)
         limit = top_n if top_n > 0 else settings.xtb_fukui_top_n
         return result.model_copy(update={"sites": result.sites[:limit]})
+
+    return await asyncio.to_thread(_run)
+
+
+@server.tool()
+async def compute_atomic_descriptors(
+    smiles: str, solvent: str | None = None
+) -> AtomicDescriptorResult:
+    """Per-atom polarisability, dispersion and multipole descriptors (GFN2-xTB, binary only).
+
+    Answers two questions a partial charge cannot: which atom is **polarisable** — a soft,
+    dispersion-driven or halogen-bonding site — and how anisotropic its own electron density is.
+    For where the electrostatic potential is most positive or negative, which is where a halogen's
+    sigma-hole shows up, call `compute_surface_potential`: that is a second calculation with its
+    own cost and its own cache entry, not an argument to this one.
+
+    Read it as a per-atom panel, not a ranking. Nothing in it is normalised per molecule, so unlike
+    Fukui indices these values *are* comparable between molecules — an iodine's 33.7 au
+    polarisability is larger than a fluorine's wherever it sits.
+
+    **This tool needs the `xtb` binary and refuses by name when the deployment has none.** It does
+    not approximate: the in-process library exposes no atomic multipoles and no polarisability at
+    all, so there is nothing to fall back to. Use `compute_electronic_properties` for partial
+    charges, bond orders and frontier orbitals, and `predict_site_reactivity` for site rankings —
+    neither needs the binary.
+
+    Args:
+        smiles: The molecule as a SMILES string. Must be closed-shell.
+        solvent: Optional ALPB implicit solvent name; omit for gas phase.
+
+    Returns:
+        One entry per atom, in the same order `compute_electronic_properties` and
+        `predict_site_reactivity` use, so the panels join on atom index for one structure. Atomic
+        units throughout.
+    """
+
+    def _run() -> AtomicDescriptorResult:
+        return xtb_atomic.compute_atomic_descriptors(*xtb_atomic.atomic_inputs(smiles, solvent))
+
+    return await asyncio.to_thread(_run)
+
+
+@server.tool()
+async def compute_surface_potential(
+    smiles: str, solvent: str | None = None
+) -> SurfacePotentialResult:
+    """Where a molecule's electrostatic potential is most positive and most negative (GFN2-xTB).
+
+    The two extrema on a molecular surface, in kcal/mol. The **maximum** is where an electrophilic
+    patch sits — an acidic hydrogen, or a heavy halogen's sigma-hole, which is what makes a halogen
+    bond and which a partial charge cannot show at all. The **minimum** marks the most electron-rich
+    patch: a lone pair, a pi face.
+
+    These are extrema over a grid, not a map: use them to compare analogues (does the bromo
+    congener still have a positive sigma-hole?), not to locate a patch in space.
+
+    **Needs the `xtb` binary and refuses by name where a deployment has none**, like
+    `compute_atomic_descriptors`. It is a separate calculation from that one and costs its own
+    single point — an `--esp` run cannot also produce the atomic multipoles, which was measured
+    rather than assumed — so ask for it when the question is about the surface.
+
+    Args:
+        smiles: The molecule as a SMILES string. Must be closed-shell.
+        solvent: Optional ALPB implicit solvent name; omit for gas phase.
+
+    Returns:
+        The minimum and maximum potential in kcal/mol and how many grid points they were taken over.
+    """
+
+    def _run() -> SurfacePotentialResult:
+        return xtb_atomic.compute_surface_potential(*xtb_atomic.surface_inputs(smiles, solvent))
 
     return await asyncio.to_thread(_run)
 

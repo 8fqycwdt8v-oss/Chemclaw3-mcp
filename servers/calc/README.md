@@ -14,8 +14,9 @@ rather than only in an answer:
 | Tool | What it computes |
 | --- | --- |
 | `compute_xtb_energy` | GFN2-xTB single-point total energy (Hartree). |
-| `compute_electronic_properties` | HOMO/LUMO/gap (eV), dipole (Debye), Mulliken charges, Wiberg bond orders. |
-| `predict_site_reactivity` | Condensed Fukui indices, atoms ranked by susceptibility to attack. |
+| `compute_electronic_properties` | HOMO/LUMO/gap (eV), dipole (Debye), Mulliken charges, Wiberg bond orders and per-atom Wiberg/free valence. |
+| `predict_site_reactivity` | Condensed Fukui indices (f⁻/f⁺/f⁰, dual descriptor, local softness, local electrophilicity) plus the conceptual-DFT global panel, atoms ranked by susceptibility to attack. All of it from the same three single points — the global panel is the ion *energies* the Fukui path used to compute and discard. |
+| `compute_atomic_descriptors` | Per-atom polarisability, C6, covalent coordination number and atomic multipoles, plus the electrostatic-potential extrema on request. **Binary only** — tblite exposes none of these — and it refuses by name where no `xtb` is installed rather than returning nulls. |
 | `optimize_geometry` | Relaxation to a stationary point of the GFN2 surface. |
 | `predict_pka` | pKa of the most acidic O-H/S-H site, or a base's conjugate acid (pKaH). |
 | `predict_solubility` | Aqueous log S from the ESOL (Delaney 2004) baseline, with a domain check. |

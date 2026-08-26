@@ -43,6 +43,7 @@ endpoint:
     - render_structure
     - enumerate_torsions
     - describe_topology
+    - describe_sites
     - enumerate_tautomers
     - enumerate_protonation_states
     - enumerate_stereoisomers
@@ -70,6 +71,7 @@ endpoint:
     # rather than in front of the cost; the ranking that follows is `calc`'s, and that is where
     # approval belongs.
     - describe_topology
+    - describe_sites
     - enumerate_tautomers
     - enumerate_protonation_states
     - enumerate_stereoisomers

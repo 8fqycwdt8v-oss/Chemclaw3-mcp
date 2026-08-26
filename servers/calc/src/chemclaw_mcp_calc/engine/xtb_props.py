@@ -7,6 +7,12 @@ Two calculators over the SCF the energy calculator already runs:
   reading the result we were already discarding.
 - `compute_fukui` — condensed Fukui indices from the finite-difference definition, three single
   points on one fixed geometry (N, N-1 and N+1 electrons). This is what answers "which atom reacts".
+  It also returns the **conceptual-DFT global panel** and the local descriptors derived from it, and
+  those cost nothing: the ionization potential and electron affinity are differences between the
+  three energies this function already computes and used to discard, reading only `["charges"]` out
+  of each result. Everything downstream — chemical potential, hardness, softness, electrophilicity,
+  and then local softness and local electrophilicity per atom — is arithmetic on those. No fourth
+  SCF runs, and the calculation's identity is unchanged because the calculation is unchanged.
 
 Both are honest about their domain rather than clever about it: Fukui indices need a closed-shell
 parent (the ions' doublet state is then unambiguous), and the ranking they produce compares sites
@@ -25,6 +31,7 @@ from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, Field
+from rdkit import Chem
 
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import Keyed
@@ -38,6 +45,7 @@ __all__ = [
     "ElectronicProperties",
     "FukuiMode",
     "FukuiSite",
+    "GlobalDescriptors",
     "SiteReactivityResult",
     "compute_fukui",
     "compute_properties",
@@ -68,11 +76,25 @@ _MODE_FIELD: dict[FukuiMode, str] = {
 
 
 class AtomCharge(BaseModel):
-    """One atom's Mulliken partial charge, with the index a chemist can locate."""
+    """One atom's Mulliken partial charge and its Wiberg valence, with the index to locate it.
+
+    `free_valence` is the classical Coulson radical index — the atom's normal valence minus the
+    bond order it actually uses — so a large value marks an atom with bonding capacity to spare.
+    It is `None` for an element whose valence RDKit reports as variable (hypervalent sulfur and
+    phosphorus), because subtracting from a number nobody can state is not a descriptor.
+    """
 
     index: int
     element: str
     charge: float
+    wiberg_valence: float = Field(
+        description="Sum of this atom's Wiberg bond orders to every other atom."
+    )
+    free_valence: float | None = Field(
+        default=None,
+        description="Normal valence minus `wiberg_valence`, or null where the "
+        "element has no single normal valence.",
+    )
 
 
 class BondOrder(BaseModel):
@@ -104,6 +126,38 @@ class ElectronicProperties(Keyed):
     bond_orders: list[BondOrder]
 
 
+class GlobalDescriptors(BaseModel):
+    """Conceptual-DFT global reactivity descriptors for one molecule, in eV.
+
+    Derived from **vertical Delta-SCF** energies rather than from Koopmans' theorem: the three
+    single points the Fukui path runs already give E(N), E(N-1) and E(N+1) on one fixed geometry, so
+    `IP = E(N-1) - E(N)` and `EA = E(N) - E(N+1)` are differences between numbers already computed.
+    That is strictly better than reading the frontier orbital energies, and it is free.
+
+    **These rank a series; they do not measure an ionization potential.** Measured against GFN2,
+    phenol comes out at 13.5 eV against an experimental 8.5 — the semiempirical Hamiltonian is not
+    parameterised for absolute ionization energetics, and no amount of arithmetic downstream fixes
+    that. Use them to order related molecules, register them with the calibration ledger, and never
+    quote one as a measurement.
+    """
+
+    ionization_potential_ev: float = Field(
+        description="Vertical Delta-SCF IP: E(N-1) - E(N). Uncalibrated in absolute terms."
+    )
+    electron_affinity_ev: float = Field(description="Vertical Delta-SCF EA: E(N) - E(N+1).")
+    chemical_potential_ev: float = Field(
+        description="mu = -(IP + EA)/2 — the escaping tendency of the electrons. Negative."
+    )
+    hardness_ev: float = Field(
+        description="eta = IP - EA. Resistance to charge transfer; large means hard."
+    )
+    softness_per_ev: float = Field(description="S = 1/eta, in 1/eV. What local softness scales.")
+    electrophilicity_ev: float = Field(
+        description="omega = mu^2 / (2 * eta) — the energy stabilisation on saturating with "
+        "electrons. The global scale behind `local_electrophilicity_ev`."
+    )
+
+
 class FukuiSite(BaseModel):
     """Condensed Fukui indices for one atom.
 
@@ -116,6 +170,26 @@ class FukuiSite(BaseModel):
     f_minus: float = Field(description="electrophilic attack (site donates electrons)")
     f_plus: float = Field(description="nucleophilic attack (site accepts electrons)")
     f_zero: float = Field(description="radical attack (the mean of the other two)")
+    dual: float = Field(
+        description=(
+            "f_plus - f_minus. Positive marks a site that accepts electrons more readily than it "
+            "donates (electrophilic in character), negative the reverse. One number where the two "
+            "Fukui indices are two, which is what makes a cycloaddition's large-with-large pairing "
+            "rule sayable."
+        )
+    )
+    local_softness_minus: float = Field(
+        description="S * f_minus, in 1/eV. Softness partitioned onto this site."
+    )
+    local_softness_plus: float = Field(description="S * f_plus, in 1/eV.")
+    local_electrophilicity_ev: float = Field(
+        description=(
+            "omega * f_plus, in eV — the global electrophilicity partitioned onto this site. The "
+            "one quantity here carrying a global scale factor, so it is the only one with any "
+            "chance of ranking sites *across* molecules; whether it actually does is a calibration "
+            "question, not a settled one."
+        )
+    )
 
 
 class SiteReactivityResult(Keyed):
@@ -135,6 +209,7 @@ class SiteReactivityResult(Keyed):
     mode: FukuiMode
     ranked_by: str
     total_atoms: int
+    descriptors: GlobalDescriptors
     sites: list[FukuiSite]
 
 
@@ -153,10 +228,71 @@ def _frontier_orbitals(energies: np.ndarray, occupations: np.ndarray) -> tuple[f
     return float(energies[homo_index]), lumo
 
 
+def _wiberg(matrix: np.ndarray) -> np.ndarray:
+    """The Wiberg bond-order matrix, with tblite's trailing spin dimension dropped.
+
+    One channel here: this server runs no spin-polarised property calculation, and taking `[:, :,
+    0]`
+    in two places is how the two would silently disagree if one ever did.
+    """
+    return np.asarray(matrix)[:, :, 0]
+
+
+def _valences(
+    wiberg: np.ndarray, symbols: list[str], charges: list[int]
+) -> list[tuple[float, float | None]]:
+    """Each atom's total Wiberg valence and its free valence.
+
+    Free valence is the classical Coulson radical index: the element's normal valence minus the bond
+    order the atom actually uses.
+
+    **It is `None` wherever the atom has no single normal valence to subtract from**, which is what
+    RDKit's
+    valence *list* answers and its `GetDefaultValence` does not. Measured: sulfur's default is 2,
+    so a sulfone's sulfur — which uses 4.94 of Wiberg bond order — came out at a free valence of
+    **-2.94**, a number that looks like a strongly saturated atom and means nothing at all. The list
+    is `[2, 4, 6]` there, and no single member of it is "the" normal valence, so the honest answer
+    is
+    that this element has no free valence rather than a negative one.
+    """
+    table = Chem.GetPeriodicTable()
+    used = wiberg.sum(axis=1)
+    valences: list[tuple[float, float | None]] = []
+    for symbol, charge, total in zip(symbols, charges, used, strict=True):
+        allowed = list(table.GetValenceList(symbol))
+        # Two ways an atom has no single normal valence to subtract from, and both were measured.
+        undefined = len(allowed) != 1 or charge != 0
+        free = None if undefined else round(allowed[0] - float(total), 3)
+        valences.append((round(float(total), 3), free))
+    return valences
+
+
+def _formal_charges(structure: Structure) -> list[int]:
+    """Per-atom formal charges for `structure`, read back from the canonical SMILES it carries.
+
+    `Structure` records the *molecular* charge and not where it sits, which is enough for an SCF and
+    not enough to say whether one atom is in its neutral normal-valence state. The canonical SMILES
+    is: `structure_from_smiles` stores it, and `AddHs` over it reproduces this structure's atom
+    order exactly — heavy atoms in canonical order, hydrogens appended by parent — which is the same
+    alignment every other per-atom field here relies on.
+
+    **Returns all-unknown (a non-zero sentinel) when there is no SMILES**, so a geometry-only
+    structure yields no free valence rather than one computed against an assumption. That is the
+    honest failure: `compute_properties_at` takes a bare geometry, and guessing neutrality there
+    would put the sulfone number back for a case nobody could see.
+    """
+    if structure.smiles is None:
+        return [1] * len(structure.elements)
+    molecule = Chem.AddHs(Chem.MolFromSmiles(structure.smiles))
+    charges = [atom.GetFormalCharge() for atom in molecule.GetAtoms()]
+    # A mismatch means the SMILES does not describe this geometry; refuse the descriptor rather
+    # than pair charges with the wrong atoms.
+    return charges if len(charges) == len(structure.elements) else [1] * len(structure.elements)
+
+
 def _bond_orders(matrix: np.ndarray, threshold: float) -> list[BondOrder]:
     """Upper-triangle bond orders above `threshold`, strongest first."""
-    # tblite returns the Wiberg matrix with a trailing spin dimension; one channel here.
-    wiberg = np.asarray(matrix)[:, :, 0]
+    wiberg = _wiberg(matrix)
     pairs = [
         BondOrder(atom_i=int(i), atom_j=int(j), order=round(float(wiberg[i, j]), 3))
         for i, j in zip(*np.triu_indices_from(wiberg, k=1), strict=True)
@@ -179,6 +315,7 @@ def compute_properties(spec: XtbSpec, structure: Structure) -> ElectronicPropert
     )
     homo, lumo = _frontier_orbitals(result["orbital-energies"], result["orbital-occupations"])
     symbols = structure.symbols
+    valences = _valences(_wiberg(result["bond-orders"]), symbols, _formal_charges(structure))
     return ElectronicProperties(
         calc_version=resolved.calc_version(),
         calc_key=resolved.cache_key(structure).as_str(),
@@ -192,10 +329,73 @@ def compute_properties(spec: XtbSpec, structure: Structure) -> ElectronicPropert
         gap_ev=None if lumo is None else (lumo - homo) * _HARTREE_TO_EV,
         dipole_debye=float(np.linalg.norm(result["dipole"])) * AU_TO_DEBYE,
         atom_charges=[
-            AtomCharge(index=index, element=symbol, charge=round(float(charge), 4))
-            for index, (symbol, charge) in enumerate(zip(symbols, result["charges"], strict=True))
+            AtomCharge(
+                index=index,
+                element=symbol,
+                charge=round(float(charge), 4),
+                wiberg_valence=valence,
+                free_valence=free,
+            )
+            for index, (symbol, charge, (valence, free)) in enumerate(
+                zip(symbols, result["charges"], valences, strict=True)
+            )
         ],
         bond_orders=_bond_orders(result["bond-orders"], settings.xtb_bond_order_threshold),
+    )
+
+
+def _global_descriptors(neutral: float, cation: float, anion: float) -> GlobalDescriptors:
+    """The conceptual-DFT panel from three total energies in Hartree.
+
+    Raises `ValueError` on a non-positive hardness. `eta = IP - EA` divides both the softness and
+    the electrophilicity, and a zero or negative value means the three SCFs did not describe one
+    consistent electronic system — returning an infinity or a sign-flipped electrophilicity from it
+    would hand a caller a number that looks like a descriptor.
+    """
+    ionization = (cation - neutral) * _HARTREE_TO_EV
+    affinity = (neutral - anion) * _HARTREE_TO_EV
+    hardness = ionization - affinity
+    if hardness <= 0:
+        raise ValueError(
+            "non-positive chemical hardness "
+            f"(IP {ionization:.3f} eV, EA {affinity:.3f} eV): the neutral, cation and anion single "
+            "points do not describe one consistent electronic system, so no global descriptor "
+            "derived from them would mean anything"
+        )
+    potential = -(ionization + affinity) / 2
+    return GlobalDescriptors(
+        ionization_potential_ev=round(ionization, 4),
+        electron_affinity_ev=round(affinity, 4),
+        chemical_potential_ev=round(potential, 4),
+        hardness_ev=round(hardness, 4),
+        softness_per_ev=round(1 / hardness, 6),
+        electrophilicity_ev=round(potential**2 / (2 * hardness), 4),
+    )
+
+
+def _site(
+    index: int, element: str, minus: float, plus: float, panel: GlobalDescriptors
+) -> FukuiSite:
+    """One atom's Fukui indices and everything derived from them.
+
+    **Every derived value is computed from the *rounded* f-minus and f-plus, not from the raw
+    differences**, so a caller who recomputes `(f_minus + f_plus) / 2` from the two numbers this
+    result carries gets the number it also carries. Rounding the derivation separately left
+    `f_zero` disagreeing with its own definition in the fourth decimal — small, and exactly the kind
+    of inconsistency that makes a reader distrust the rest of the panel.
+    """
+    f_minus = round(minus, 4)
+    f_plus = round(plus, 4)
+    return FukuiSite(
+        index=index,
+        element=element,
+        f_minus=f_minus,
+        f_plus=f_plus,
+        f_zero=round((f_minus + f_plus) / 2, 4),
+        dual=round(f_plus - f_minus, 4),
+        local_softness_minus=round(panel.softness_per_ev * f_minus, 6),
+        local_softness_plus=round(panel.softness_per_ev * f_plus, 6),
+        local_electrophilicity_ev=round(panel.electrophilicity_ev * f_plus, 4),
     )
 
 
@@ -210,6 +410,14 @@ def compute_fukui(spec: XtbSpec, structure: Structure, mode: FukuiMode) -> SiteR
         f+(k) = q(k, N)   - q(k, N+1)   nucleophilic attack
         f0(k) = (f- + f+) / 2           radical attack
 
+    **The same three results also carry their total energies, and reading them is what produces the
+    global panel.** `IP = E(N-1) - E(N)` and `EA = E(N) - E(N+1)` are vertical Delta-SCF quantities
+    on a fixed geometry; chemical potential, hardness, softness and electrophilicity follow from
+    them, and local softness and local electrophilicity from those in turn. Every one of those
+    numbers used to be computed and thrown away — this function read `["charges"]` out of each
+    result and nothing else. No fourth single point runs, which is why the calculation's identity is
+    unchanged: the calculation did not change, only how much of its result is read.
+
     Raises `ValueError` for an open-shell parent: both ions of a closed-shell molecule are
     unambiguously doublets, while the ions of an open-shell parent could be either of two spin
     states and picking one silently would be guessing.
@@ -222,34 +430,29 @@ def compute_fukui(spec: XtbSpec, structure: Structure, mode: FukuiMode) -> SiteR
     resolved = spec.for_structure(structure)
     numbers, positions = structure.arrays()
 
-    def charges(charge: int, uhf: int) -> np.ndarray:
-        return np.asarray(
-            run_singlepoint(
-                resolved.method,
-                numbers,
-                positions,
-                charge=charge,
-                uhf=uhf,
-                solvent=resolved.solvent,
-            )["charges"]
+    def single_point(charge: int, uhf: int) -> tuple[np.ndarray, float]:
+        """The Mulliken charges *and* the total energy of one ionization state."""
+        result = run_singlepoint(
+            resolved.method,
+            numbers,
+            positions,
+            charge=charge,
+            uhf=uhf,
+            solvent=resolved.solvent,
         )
+        return np.asarray(result["charges"]), float(result["energy"])
 
     # Removing or adding one electron from a closed shell leaves exactly one unpaired.
-    neutral = charges(structure.charge, 0)
-    cation = charges(structure.charge + 1, 1)
-    anion = charges(structure.charge - 1, 1)
+    neutral, neutral_energy = single_point(structure.charge, 0)
+    cation, cation_energy = single_point(structure.charge + 1, 1)
+    anion, anion_energy = single_point(structure.charge - 1, 1)
 
+    descriptors = _global_descriptors(neutral_energy, cation_energy, anion_energy)
     f_minus = cation - neutral
     f_plus = neutral - anion
     symbols = structure.symbols
     sites = [
-        FukuiSite(
-            index=index,
-            element=symbol,
-            f_minus=round(float(minus), 4),
-            f_plus=round(float(plus), 4),
-            f_zero=round(float(minus + plus) / 2, 4),
-        )
+        _site(index, symbol, float(minus), float(plus), descriptors)
         for index, (symbol, minus, plus) in enumerate(zip(symbols, f_minus, f_plus, strict=True))
     ]
     ranked_by = _MODE_FIELD[mode]
@@ -264,6 +467,7 @@ def compute_fukui(spec: XtbSpec, structure: Structure, mode: FukuiMode) -> SiteR
         mode=mode,
         ranked_by=ranked_by,
         total_atoms=len(sites),
+        descriptors=descriptors,
         sites=sites,
     )
 

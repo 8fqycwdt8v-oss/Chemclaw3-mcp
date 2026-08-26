@@ -66,6 +66,12 @@ def backend_version(backend: Backend) -> str:
 # electrons) for the condensed Fukui indices; `opt` relaxes to a minimum; `hess` is the Hessian and
 # the thermochemistry over it.
 #
+# `atomic` is the binary-only per-atom panel: polarisabilities, dispersion coefficients and atomic
+# multipoles; `surface` is the electrostatic potential on a molecular surface, a *second* xtb run
+# and so a second task rather than an argument to the first — which is a distinct calculation type
+# rather than more of `properties` because it can
+# only be produced by one backend and must key on that backend's build.
+#
 # `conformers` and `complex` are crest's (`CrestSpec` below); the rest are xTB's.
 #
 # Chemclaw3's own literal additionally carries `scan`, and that one is deliberately absent: a scan
@@ -73,7 +79,32 @@ def backend_version(backend: Backend) -> str:
 # keys as one, so a scan point computed here and a hand-written constrained relaxation of the same
 # geometry share a cache row rather than sitting in two. A `xtb.scan@...` key would name a
 # calculation this server never runs.
-XtbTask = Literal["sp", "properties", "fukui", "opt", "hess", "conformers", "complex"]
+XtbTask = Literal[
+    "sp", "properties", "fukui", "atomic", "surface", "opt", "hess", "conformers", "complex"
+]
+
+
+# **Which backend a task is allowed to name.** A task either has a binary code path or it does not,
+# and that is a property of the task rather than of whoever built the spec — so it is decided here
+# once instead of at every construction site.
+#
+# The defect this removes was live and invisible. `xtb_engine` defaults to `"auto"`, so
+# `resolve_backend()` answers `"xtb"` wherever the binary is installed; `sp`, `properties` and
+# `fukui` have **no** binary code path (they call `run_singlepoint`/`gfn2_energy` unconditionally),
+# so on such a deployment their `calc_version` named a program that had not run — measured against
+# xtb 6.6.1, and forbidden in as many words by `calc_version`'s own rule below. It was unobservable
+# in the shipped image, which carries no binary, and it would have partitioned the Chemclaw3 cache
+# the first time a deployment added one.
+#
+# `opt` and `hess` are absent because they genuinely dispatch (`xtb_opt`, `xtb_hessian` branch on
+# `engine`), and so are crest's two, which key on crest's build instead.
+_FIXED_BACKEND: dict[str, Backend] = {
+    "sp": "tblite",
+    "properties": "tblite",
+    "fukui": "tblite",
+    "atomic": "xtb",
+    "surface": "xtb",
+}
 
 
 class XtbSpec(BaseModel):
@@ -129,10 +160,24 @@ class XtbSpec(BaseModel):
         derived from the *returned* spec, so a calculation computed by tblite is recorded as
         tblite's even when the deployment prefers the binary. Idempotent, so callers may apply it
         more than once.
+
+        **A task with only one implementation gets that one**, from `_FIXED_BACKEND` above and
+        before anything else, because a preference cannot select a code path that does not exist.
+        The open-shell rule then applies on top, `atomic` included: an open-shell `atomic` spec
+        therefore resolves to a backend that cannot serve it, which
+        `xtb_atomic.compute_atomic_descriptors` refuses in words. That is deliberate — exempting
+        `atomic` here would have sent a radical to the binary whose `--spinpol` this build cannot
+        run, which is the physics error the fallback exists to prevent.
         """
-        if self.engine == "xtb" and structure.uhf:
-            return self.model_copy(update={"engine": "tblite"})
-        return self
+        fixed = _FIXED_BACKEND.get(self.task)
+        spec = (
+            self
+            if fixed is None or fixed == self.engine
+            else self.model_copy(update={"engine": fixed})
+        )
+        if spec.engine == "xtb" and structure.uhf:
+            return spec.model_copy(update={"engine": "tblite"})
+        return spec
 
     def calc_version(self) -> str:
         """What actually computes this spec, versioned — half the staleness guard, and the half

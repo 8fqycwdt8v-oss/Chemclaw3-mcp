@@ -34,6 +34,7 @@ from chemclaw_mcp_chem.engine import stoichiometry
 from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
 from chemclaw_mcp_chem.engine.depiction import render_svg
 from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
+from chemclaw_mcp_chem.engine.sites import Site, describe_atom_sites
 from chemclaw_mcp_chem.engine.species import (
     DegradantSet,
     SpeciesSet,
@@ -210,6 +211,45 @@ async def enumerate_torsions(smiles: str) -> list[Torsion]:
         hydrogen and its energy is already carried by the free-rotor treatment of the low modes.
     """
     return await asyncio.to_thread(enumerate_torsion_candidates, smiles)
+
+
+@server.tool()
+async def describe_sites(smiles: str) -> list[Site]:
+    """Name every atom of a molecule, so a per-atom number can be reported as a *position*.
+
+    **Call this before, or alongside, any per-atom calculation** — site reactivity, partial charges,
+    bond orders, a C-H abstraction question. Those return an atom *index*, and an index is not a
+    name: a chemist asks which ring position is nitrated, and nothing in an index says. Never work
+    the mapping out yourself from the SMILES; take it from here. This is `enumerate_torsions`' rule
+    one dimension down, and for the same measured reason.
+
+    **One entry per symmetry class, not per atom.** Toluene's two *ortho* carbons are one site,
+    asked once. That grouping is the point rather than a tidy-up: measured on phenol, the two
+    *ortho* carbons' Fukui indices differ by 0.0088 purely because the planar O-H makes one *syn*
+    and the other *anti* — the same size as the *ortho*-to-*meta* difference somebody would draw a
+    conclusion from. Report the class, and use the spread across its members as the noise floor.
+
+    Free: a graph operation and a table of SMARTS. No calculation, no cache, no network. So ask it
+    first, see what positions the molecule actually has, and only then decide what to spend.
+
+    Args:
+        smiles: The molecule, as SMILES.
+
+    Returns:
+        One entry per symmetry-distinct heavy atom. `site_id` is a handle that stays the same
+        however the molecule is written — carry it, not the indices, when a later turn asks about
+        "the same position". `atoms` are the heavy-atom indices of the class and `hydrogens` the
+        indices its hydrogens carry once a calculator makes them explicit, which is the join key
+        for a C-H question: the ranking is read on the hydrogen and reported on the carbon.
+        `scopes` says which questions the site is a candidate answer to, so a ring-substitution
+        question can ask for `ring_carbons` instead of sifting a list where the answer sits behind
+        the heteroatom and four hydrogens. `label`, `ring_position` and `adjacent_ring_heteroatoms`
+        are what make an answer sayable — the last being what separates the two chlorines of a
+        dichloropyrimidine, since both are *ortho* to a ring nitrogen and only one sits between two.
+        Hydrogens are not sites of their own, by the same rule that gives a symmetric top no
+        dihedral: a hydrogen index means something only inside one explicit-H numbering.
+    """
+    return await asyncio.to_thread(describe_atom_sites, smiles)
 
 
 @server.tool()
