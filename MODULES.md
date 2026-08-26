@@ -258,7 +258,11 @@ no new primitive at all, being pure composition over ones already exposed.
   them turned out to be broken in ways no test could reach. Both versions are pinned, because both
   are interpolated into `calc_version` and an unpinned rebuild would re-key every cached row.
   `crest` is GPL-3.0 and `xtb` LGPL-3.0; both are run as subprocesses, never linked, and shipping
-  them is a distribution decision recorded in the ADR.
+  them is a distribution decision recorded in the ADR. **`xtb` ships available rather than active**:
+  the image pins `CHEMCLAW_XTB_ENGINE=tblite`, because the backend is part of `calc_version` and
+  letting `auto` find the binary would re-key every cached row, orphan every calibration-ledger
+  residual, and move the path `predict_pka`'s own calibration was fitted through — silently, on the
+  day the image deployed.
 - **The Hessian crosses the wire as base64 `.npy`**, which round-trips float64 exactly and is
   byte-for-byte what Chemclaw3's artifact store holds. The ceiling is ~2.2 MB, bounded quadratically
   by `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS`.

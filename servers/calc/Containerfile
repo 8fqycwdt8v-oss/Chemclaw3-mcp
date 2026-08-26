@@ -69,6 +69,26 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
 COPY --from=sampling /opt/sampling /opt/sampling
 ENV PATH=/opt/sampling/bin:$PATH
 
+# **The `xtb` binary is installed and is deliberately not the default backend.** `CHEMCLAW_XTB_ENGINE`
+# defaults to `auto`, which resolves to the binary the moment one is on PATH — and the backend is
+# interpolated into `calc_version`, so this image would otherwise change, on the day it is deployed:
+#
+#   opt-GFN2-xTB+tblite-0.7.0/...   ->   opt-GFN2-xTB+xtb-6.7.1/tblite-0.7.0/...
+#
+# Measured, both strings, with and without the binary on PATH. Three things follow from that one
+# character difference, none of them announced: every row already in `calculation_results` misses
+# forever, every reconciled residual in Chemclaw3's calibration ledger becomes unreachable
+# (`predictions` is keyed on `calc_version` and read with an exact predicate, so
+# `calculator_trust("pka")` would report a confident `UNCALIBRATED`, n=0), and `predict_pka`'s base
+# branch — which relaxes both species through this backend — would compute numbers its calibration
+# was not fitted on. The slope and intercept `pka.py` ships were fitted through the *tblite* path.
+#
+# So the binary ships available rather than active: ANCopt and GFN-FF are one environment variable
+# away for a deployment that wants them and has decided to recompute, and CREST is unaffected either
+# way because it carries its own GFN implementation. Adding a backend to an image must not silently
+# re-key a cache and a calibration.
+ENV CHEMCLAW_XTB_ENGINE=tblite
+
 USER ${UID}
 EXPOSE 8860
 

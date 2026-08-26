@@ -28,6 +28,7 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from chemclaw_mcp_calc.engine import crest_cli
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp_server_kit.testing import assert_manifest_matches
@@ -260,12 +261,20 @@ async def test_the_primitive_chain_composes_over_the_wire(running_server: str) -
         assert payload["structure_id"] == minimum["structure_id"]
 
 
-async def test_a_crest_primitive_refuses_by_name_across_the_wire(running_server: str) -> None:
-    """The absent binary reaches the caller as a sentence, not as "an internal error occurred".
+async def test_a_crest_primitive_answers_or_refuses_by_name_across_the_wire(
+    running_server: str,
+) -> None:
+    """Whichever of the two states this deployment is in, the caller can act on what comes back.
 
-    `connector_app` replaces every non-`ValueError` with a generic notice, so this is the check that
-    the refusal is worded rather than swallowed — and it matters more than usual because the fix is
-    an operator action (ship the binary) that the message has to name.
+    Written when no image shipped `crest`, and it asserted the refusal — which is now the *other*
+    branch, since `D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual` puts the binary
+    in the image. Both halves matter and neither may be assumed: with a binary the search has to
+    come back as an ensemble across the wire (the shape a composite consumes), and without one the
+    refusal has to be a **sentence**, because `connector_app` replaces every non-`ValueError` with a
+    generic notice and the fix is an operator action the message must name.
+
+    Branching on `is_available()` rather than skipping: a skip here would stop noticing the day a
+    deployment trims the binary back out.
     """
     async with _session(running_server) as session:
         embedded = await session.call_tool("embed_structure", {"smiles": "CCO"})
@@ -273,6 +282,11 @@ async def test_a_crest_primitive_refuses_by_name_across_the_wire(running_server:
         result = await session.call_tool(
             "search_conformer_ensemble", {"structure": embedded.structuredContent}
         )
+        if crest_cli.is_available():
+            assert result.isError is False
+            assert result.structuredContent is not None
+            assert result.structuredContent["members"]
+            return
         assert result.isError is True
         assert "crest" in str(result.content)
 

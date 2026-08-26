@@ -40,6 +40,7 @@ from __future__ import annotations
 import re
 
 from chemclaw_mcp_calc import tools
+from chemclaw_mcp_calc.engine import crest_cli
 from chemclaw_mcp_calc.engine.key import Keyed
 
 # `calc_type@calc_version:input_hash:params_hash`, with the two hashes being 16 hex characters —
@@ -57,10 +58,26 @@ ACETIC = "CC(=O)O"
 # fourth is a deliberate act with a reason beside it.
 HELPERS = {"embed_structure", "combine_structures", "calculation_key"}
 
-# The two CREST searches. They key and refuse like everything else, but they cannot *run* without a
-# binary this image does not ship, so they are exercised in `test_engine.py` (the refusal) and
-# `test_calculation_key.py` (the identity) rather than here.
-CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
+# The two CREST searches. The image now ships the binary
+# (`D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual`), so the conformer search joins
+# the dict below wherever one is installed — on water, which is seconds. `search_binding_modes`
+# stays out either way and by cost rather than by capability: a wall-potential metadynamics over a
+# *pair* is minutes at best, which is not a unit test, and its identity is covered by
+# `test_calculation_key.py`.
+_UNRUNNABLE_HERE = {"search_binding_modes"}
+
+
+def _crest_exclusions() -> set[str]:
+    """Which searches this run cannot exercise — a fact about the machine, read at call time.
+
+    Named as a function rather than a constant because the answer differs between the shipped image
+    and a CI runner without the binary, and a constant would have to pick one and be wrong on the
+    other. The subtraction is what keeps the remainder closed: a tool that is neither exercised nor
+    named here fails the set assertion.
+    """
+    if crest_cli.is_available():
+        return set(_UNRUNNABLE_HERE)
+    return {"search_conformer_ensemble", *_UNRUNNABLE_HERE}
 
 
 async def _every_tool_result() -> dict[str, Keyed]:
@@ -77,7 +94,7 @@ async def _every_tool_result() -> dict[str, Keyed]:
     """
     water = await tools.embed_structure("O")
     relaxed = await tools.relax_structure(water)
-    return {
+    results: dict[str, Keyed] = {
         "compute_xtb_energy": await tools.compute_xtb_energy(ETHANOL),
         "compute_electronic_properties": await tools.compute_electronic_properties(ETHANOL),
         "predict_site_reactivity": await tools.predict_site_reactivity(ETHANOL),
@@ -93,6 +110,14 @@ async def _every_tool_result() -> dict[str, Keyed]:
             await tools.embed_structure(ETHANOL), [0, 1, 2, 3], 60.0
         ),
     }
+    if crest_cli.is_available():
+        # Water: one conformer and seconds of sampling, so the *contract* is checked without the
+        # cost. What is being asserted is that a search's payload carries a `calc_version` like
+        # every other calculation's — which nothing checked while the binary was absent everywhere.
+        results["search_conformer_ensemble"] = await tools.search_conformer_ensemble(
+            await tools.embed_structure("O")
+        )
+    return results
 
 
 async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
@@ -103,9 +128,9 @@ async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
     growing either is a deliberate act.
     """
     results = await _every_tool_result()
-    # The helpers are excluded by name rather than by forgetting them, and the CREST searches
-    # because no binary is installed — both sets stated, so the remainder is closed.
-    served = {tool.name for tool in await tools.server.list_tools()} - HELPERS - CREST_TOOLS
+    # The helpers are excluded by name rather than by forgetting them, and the searches this
+    # machine cannot afford to run by `_crest_exclusions` — both stated, so the remainder is closed.
+    served = {tool.name for tool in await tools.server.list_tools()} - HELPERS - _crest_exclusions()
     assert set(results) == served, (
         "a tool is served that this test does not exercise (or vice versa); every compute "
         "tool must be checked for calc_version, and the served surface is the list that decides"

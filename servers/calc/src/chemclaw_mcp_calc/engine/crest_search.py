@@ -17,10 +17,10 @@ that molecule.
 trajectory: the sampling is a single stateful run, its intermediate structures are not answers, and
 there is no point at which half of it is a result. One tool, one key, minutes to hours.
 
-**The binary ships in this server's image** (crest 3.0.2, from conda-forge; see the `Containerfile`).
-Chemclaw3's own pods do not have it and do not need it — the searches run here, and its composites
-reach them through this server. Where an operator removes it, these primitives refuse by name rather
-than degrading into a single-conformer answer that looks like an ensemble.
+**The binary ships in this server's image** (crest 3.0.2 from conda-forge; see the
+`Containerfile`). Chemclaw3's own pods do not have it and do not need it: the searches run here,
+and its composites reach them through this server. Where an operator removes it, these primitives
+refuse by name rather than degrading into a single-conformer answer that looks like an ensemble.
 """
 
 from __future__ import annotations

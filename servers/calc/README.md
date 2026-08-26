@@ -253,6 +253,19 @@ shipping them in an image is distribution, and its obligations (offer of source,
 attach to whoever publishes the image. That was decided deliberately; it is not an accident of a
 base image.
 
+**The `xtb` binary is installed and is deliberately not the default backend.** The image pins
+`CHEMCLAW_XTB_ENGINE=tblite`, because `auto` resolves to the binary the moment one is on `PATH` and
+the backend is part of `calc_version` — measured, `opt-GFN2-xTB+tblite-0.7.0/…` becomes
+`opt-GFN2-xTB+xtb-6.7.1/tblite-0.7.0/…`. Three consequences follow from that one difference and none
+of them announces itself: every row in `calculation_results` misses forever, every reconciled
+residual in Chemclaw3's calibration ledger becomes unreachable (so `calculator_trust("pka")` reports
+a confident `UNCALIBRATED`, n=0), and `predict_pka`'s base branch — which relaxes both species
+through this backend — computes numbers its calibration was not fitted on, since the shipped slope
+and intercept came from the tblite path. So the binary ships *available* rather than *active*:
+`CHEMCLAW_XTB_ENGINE=xtb` or `auto` turns it on for a deployment that wants ANCopt and GFN-FF and
+has decided to recompute. CREST is unaffected either way, because it carries its own GFN
+implementation.
+
 **Removing them is supported and is not silent**: `crest_cli.is_available()` goes False, the
 sampling primitives refuse by name, and `XtbSpec.resolve_backend()` falls back to `tblite` with the
 version string saying so.
