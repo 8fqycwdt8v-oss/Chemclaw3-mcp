@@ -615,6 +615,47 @@ async def compute_properties_at(
 
 
 @server.tool()
+async def compute_fukui_at(
+    structure: Structure,
+    mode: FukuiMode = "electrophilic",
+    solvent: str | None = None,
+    top_n: int = 0,
+) -> SiteReactivityResult:
+    """Condensed Fukui indices at a given geometry — regioselectivity on a shape you already hold.
+
+    **For the orchestrator, not the chemist** — `predict_site_reactivity` embeds from a SMILES and
+    answers the same question. This one runs at whatever geometry it is handed, which is what a
+    composition needs: a flexible molecule's site ranking is a property of the conformer, so
+    averaging it over an ensemble means asking for it *per conformer*, and only the caller holds
+    those geometries.
+
+    Reads exactly like its twin: a hypothesis about electronic susceptibility within one molecule,
+    never between molecules, with sterics and the specific reagent outside the model. The three
+    single points do not depend on `mode` — it only chooses the sort — so the result carries all
+    three indices per atom and a second ranking is a re-sort rather than three more SCFs.
+
+    Args:
+        structure: The geometry to evaluate at. Must be closed-shell; the ions of an open-shell
+            parent could be either of two spin states, and picking one silently would be guessing.
+        mode: Which attack to rank for.
+        solvent: ALPB implicit solvent name; omit for gas phase.
+        top_n: How many atoms to return, most susceptible first. 0 uses the configured default.
+
+    Returns:
+        The ranked sites with all three Fukui indices per atom, and the key this calculation is
+        addressed by — the same `xtb.fukui` row `predict_site_reactivity` would produce at this
+        geometry.
+    """
+
+    def _run() -> SiteReactivityResult:
+        result = xtb_props.compute_fukui(XtbSpec(task="fukui", solvent=solvent), structure, mode)
+        limit = top_n if top_n > 0 else settings.xtb_fukui_top_n
+        return result.model_copy(update={"sites": result.sites[:limit]})
+
+    return await asyncio.to_thread(_run)
+
+
+@server.tool()
 async def compute_hessian(structure: Structure, solvent: str | None = None) -> HessianPayload:
     """Second derivatives at a geometry — the expensive half of every vibrational question.
 

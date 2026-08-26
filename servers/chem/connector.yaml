@@ -42,11 +42,18 @@ endpoint:
     - green_metrics
     - render_structure
     - enumerate_torsions
+    - describe_topology
+    - enumerate_tautomers
+    - enumerate_protonation_states
+    - enumerate_stereoisomers
+    - enumerate_bond_cleavages
+    - enumerate_degradants
   # Pure functions of their arguments plus a read of a read-only table: nothing here spends compute
   # worth gating, writes anything, or has an effect the plan gate should hold. So an agent may use
-  # all four while building the plan a human is asked to approve — which is the point, since "what
-  # do we actually charge, and what does it cost in waste" is a question that has to be answerable
-  # *before* approval, not after.
+  # every one of them while building the plan a human is asked to approve — which is the point,
+  # since "what do we actually charge, and what does it cost in waste" is a question that has to be
+  # answerable *before* approval, not after. (A count is not written here: the sentence that used
+  # to say "all four" outlived two additions.)
   read_only:
     - resolve_compound
     - stoichiometry_table
@@ -56,3 +63,15 @@ endpoint:
     # scan — gating it would put the human in front of the question rather than in front of the
     # cost. The scan it feeds is `calc`'s, and that one is state-changing.
     - enumerate_torsions
+    # The species enumerations are reads on the same argument, and the classification matters more
+    # for them. Each is a map from one SMILES to a set of SMILES — no SCF, no `calc_version`,
+    # nothing cached — and what it produces is the *species set* an expensive protocol then runs
+    # over, once per member. Gating an enumeration would put the human in front of the question
+    # rather than in front of the cost; the ranking that follows is `calc`'s, and that is where
+    # approval belongs.
+    - describe_topology
+    - enumerate_tautomers
+    - enumerate_protonation_states
+    - enumerate_stereoisomers
+    - enumerate_bond_cleavages
+    - enumerate_degradants

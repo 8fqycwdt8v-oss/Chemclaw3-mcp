@@ -97,6 +97,9 @@ CASES: list[tuple[str, Any, str, Callable[[], Awaitable[Any]]]] = [
         "compute_properties",
         lambda: tools.compute_properties_at(WATER),
     ),
+    # Three single points rather than one, so the offload matters more here than for its twin: a
+    # missed hop holds the loop for three SCFs.
+    ("compute_fukui_at", xtb_props, "compute_fukui", lambda: tools.compute_fukui_at(WATER)),
     (
         "compute_hessian",
         tools,

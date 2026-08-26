@@ -88,6 +88,7 @@ async def _every_tool_result() -> dict[str, Keyed]:
         "predict_developability_profile": await tools.predict_developability_profile(ETHANOL),
         "relax_structure": relaxed,
         "compute_properties_at": await tools.compute_properties_at(relaxed.structure),
+        "compute_fukui_at": await tools.compute_fukui_at(relaxed.structure),
         "compute_hessian": await tools.compute_hessian(relaxed.structure),
         "scan_point": await tools.scan_point(
             await tools.embed_structure(ETHANOL), [0, 1, 2, 3], 60.0
@@ -133,6 +134,7 @@ async def test_the_version_names_the_programs_that_actually_ran() -> None:
         "optimize_geometry",
         "relax_structure",
         "compute_properties_at",
+        "compute_fukui_at",
         "compute_hessian",
         "scan_point",
     ):

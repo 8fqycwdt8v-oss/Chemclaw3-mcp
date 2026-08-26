@@ -248,6 +248,25 @@ def _properties_at(arguments: dict[str, Any]) -> CalculationIdentity:
     )
 
 
+def _fukui_at(arguments: dict[str, Any]) -> CalculationIdentity:
+    """`compute_fukui_at` — the same `xtb.fukui` calculation as the SMILES-in tool.
+
+    Same `calc_type` as `predict_site_reactivity`, for the reason `_properties_at` gives one
+    function up: the two differ in how the caller names the subject, not in what is computed.
+
+    **`mode` is absent from the key and `solvent` is present**, and that asymmetry against the
+    SMILES-in twin is real rather than an oversight. `mode` only chooses the sort — the three
+    single points are the same three whichever attack is asked about, which is why `ranked_for`
+    exists — so keying on it would make a cache hit authoritative about an ordering it never chose.
+    `solvent` is in because this tool takes one and `predict_site_reactivity` does not.
+    """
+    return _from_spec(
+        "compute_fukui_at",
+        XtbSpec(task="fukui", solvent=_solvent(arguments)),
+        _structure(arguments),
+    )
+
+
 def _hessian(arguments: dict[str, Any]) -> CalculationIdentity:
     """`compute_hessian` — keyed on the geometry and what moves the matrix, and nothing else.
 
@@ -324,6 +343,7 @@ COMPUTE_TOOLS: dict[str, tuple[frozenset[str], Callable[[dict[str, Any]], Calcul
     # The structure-in primitives Chemclaw3's activities compose.
     "relax_structure": (frozenset({"structure", "solvent", "frozen_atoms"}), _relax_structure),
     "compute_properties_at": (frozenset({"structure", "solvent"}), _properties_at),
+    "compute_fukui_at": (frozenset({"structure", "solvent", "mode", "top_n"}), _fukui_at),
     "compute_hessian": (frozenset({"structure", "solvent"}), _hessian),
     "scan_point": (frozenset({"structure", "atoms", "value", "solvent"}), _scan_point),
     "search_conformer_ensemble": (

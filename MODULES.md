@@ -115,8 +115,18 @@ draws a molecule or reaction as an inline SVG, optionally with chosen atoms high
 rewritten SMILES — because an atom index does not, and a torsion scan driven from a stale one
 returns a plausible barrier for a different bond with no error anywhere.
 
+**The six enumerations are the free half of Chemclaw3's multi-step protocols.** `rank_species` and
+`survey_bond_strengths` rank a *set* of structures; these produce the set from the molecular graph
+at no cost, which is what lets Chemclaw3's skills state the rule as *enumerate, then compute, and
+never the reverse*. `describe_topology` is the one to ask first — it says whether a search would
+find anything, and the commonest waste in that catalogue is paying for a conformer search to
+discover the molecule was rigid. Each enumeration bounds its output and **refuses past the bound
+rather than truncating**: a partial set silently redefines the universe a downstream population is
+normalized over.
+
 *Tools:* `resolve_compound`, `stoichiometry_table`, `green_metrics`, `render_structure`,
-`enumerate_torsions` — all `read_only`.
+`enumerate_torsions`, `describe_topology`, `enumerate_tautomers`, `enumerate_protonation_states`,
+`enumerate_stereoisomers`, `enumerate_bond_cleavages`, `enumerate_degradants` — all `read_only`.
 *Offline:* a vendored, checksummed CSV of 61 reagents under 87 spellings (CC0), plus RDKit. No
 upstream at all, and deliberately so: an external resolver (PubChem, OPSIN) is a request-time
 network call, which this repository does not permit and which the common case does not need.
@@ -205,9 +215,12 @@ Seventeen tools in three groups, none of them on any agent's surface — Chemcla
 **Eight** back its SMILES-in tools one for one: GFN2-xTB single-point
 energy, electronic properties, condensed Fukui site reactivity, geometry optimisation, the xTB pKa
 predictor, an ESOL solubility baseline with an applicability-domain check, pH-dependent logD and an
-RDKit developability panel. **Six** structure-in primitives Chemclaw3's durable-job activities
-compose — `relax_structure`, `compute_properties_at`, `compute_hessian`, `scan_point`,
-`search_conformer_ensemble`, `search_binding_modes`. **Three** helpers that compute nothing:
+RDKit developability panel. **Seven** structure-in primitives Chemclaw3's durable-job activities
+compose — `relax_structure`, `compute_properties_at`, `compute_fukui_at`, `compute_hessian`,
+`scan_point`, `search_conformer_ensemble`, `search_binding_modes`. `compute_fukui_at` is the
+geometry-taking twin of `predict_site_reactivity` and shares its `xtb.fukui` row: a flexible
+molecule's site ranking is a property of the conformer, so averaging it over an ensemble means
+asking per conformer, and only the caller holds those geometries. **Three** helpers that compute nothing:
 `embed_structure`, `combine_structures` and `calculation_key`.
 
 *Offline:* **no vendored dataset at all** — the first server in the fleet with none. Every number is
