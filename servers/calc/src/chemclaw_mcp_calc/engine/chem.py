@@ -28,9 +28,20 @@ molecule under the caller's key.
 
 from __future__ import annotations
 
-from rdkit import Chem
+from collections.abc import Sequence
 
-__all__ = ["InvalidSmilesError", "require_canonical_smiles", "require_molecule"]
+from rdkit import Chem
+from rdkit.Chem import rdDetermineBonds
+
+from chemclaw_mcp_calc.engine.config import settings
+
+__all__ = [
+    "InvalidSmilesError",
+    "atomic_numbers",
+    "perceive_smiles",
+    "require_canonical_smiles",
+    "require_molecule",
+]
 
 
 class InvalidSmilesError(ValueError):
@@ -92,3 +103,73 @@ def require_canonical_smiles(smiles: str) -> str:
     3D geometry, and therefore the same `structure_id` and the same key.
     """
     return str(Chem.MolToSmiles(require_molecule(smiles)))
+
+
+def atomic_numbers(symbols: Sequence[str]) -> list[int]:
+    """Atomic numbers for element symbols, rejecting one the periodic table does not know.
+
+    The inverse of `Structure.symbols`, and it exists because a CREST ensemble file is the one
+    input to this server whose *element list* is not already known: a protonation search adds or
+    removes an atom and presorts the rest, so the elements have to be read from the file rather
+    than inherited from the structure that was sent in.
+
+    Raises:
+        ValueError: naming the symbol RDKit's periodic table refuses.
+    """
+    table = Chem.GetPeriodicTable()
+    numbers: list[int] = []
+    for symbol in symbols:
+        try:
+            numbers.append(int(table.GetAtomicNumber(symbol)))
+        except RuntimeError as error:  # RDKit raises this for an unknown symbol
+            raise ValueError(f"{symbol!r} is not an element symbol") from error
+    return numbers
+
+
+def perceive_smiles(
+    elements: Sequence[int], positions: Sequence[Sequence[float]], charge: int
+) -> str | None:
+    """Best-effort SMILES for a bare geometry: *which* molecule is this one?
+
+    A CREST protonation, deprotonation or tautomer search returns structures whose constitution is
+    not the input's — that is the whole point of running it — so the SMILES the caller sent in is
+    the wrong label for every member. Without perception the ensemble is a list of anonymous
+    geometries, and the question a chemist actually asked ("which site comes off first?") is
+    unanswerable from the result. Measured on phenol's deprotomer ensemble: `[O-]c1ccccc1`, in 4 ms.
+
+    **Best-effort by construction, and never a guess.** Bond orders are inferred from interatomic
+    distances plus the *known* charge, and that inference fails on exactly the structures where it
+    would be most misleading — a transition-metal complex, a fragment mid-dissociation, a geometry
+    whose bonding is genuinely ambiguous. On any failure this answers `None` and the member travels
+    without a label, because a wrong constitution reported confidently is worse than no label: it
+    would name the wrong protonation site in a pKa.
+
+    The atom-count ceiling is a real bound rather than caution: bond-order assignment is
+    combinatorial over the conjugated system, and an unbounded call inside an ensemble loop is a
+    hang rather than a slow answer.
+
+    Args:
+        elements: Atomic numbers, parallel to `positions`.
+        positions: Cartesian coordinates in Angstrom.
+        charge: The species' net charge — an input, not something perception may decide.
+
+    Returns:
+        The canonical SMILES, or `None` when the geometry cannot be read as one molecule.
+    """
+    if len(elements) > settings.crest_perceive_max_atoms:
+        return None
+    table = Chem.GetPeriodicTable()
+    lines = [str(len(elements)), ""]
+    lines += [
+        f"{table.GetElementSymbol(number)} {x:.10f} {y:.10f} {z:.10f}"
+        for number, (x, y, z) in zip(elements, positions, strict=True)
+    ]
+    try:
+        mol = Chem.MolFromXYZBlock("\n".join(lines) + "\n")
+        if mol is None:
+            return None
+        rdDetermineBonds.DetermineBonds(mol, charge=charge)
+        Chem.SanitizeMol(mol)
+        return str(Chem.MolToSmiles(Chem.RemoveHs(mol)))
+    except (ValueError, RuntimeError, Chem.AtomValenceException, Chem.KekulizeException):
+        return None

@@ -18,12 +18,32 @@ the same turn as the decision that depends on them.
 | `vapour_pressure` | Vapour pressure at a temperature, with the method that produced it. |
 | `boiling_point_at_pressure` | The rotovap and distillation question, in the useful direction. |
 | `solvent_swap_candidates` | A filtered, Hansen-ranked replacement shortlist. |
-| `compare_solvents` | A named set side by side. |
+| `compare_solvent_properties` | A named set side by side. |
 
 All six are `read_only`: pure functions of their arguments and a read of a read-only table. Nothing
 here writes, spends real compute, or has an effect worth gating — which matters, because "what is
 the flash point of the solvent you are proposing" has to be answerable *before* a plan is approved,
 not after.
+
+### Why `compare_solvent_properties` is not called `compare_solvents`
+
+It was, and that name belongs to something else. Chemclaw3's `calc` bundle declares a durable job
+called `compare_solvents` — the same reaction computed in each solvent and ranked by ΔG — and a
+deployment that registers this fleet's `manifests/` alongside core's connectors, which is the
+documented wiring, has both names live at once. Measured with `calc` and `props` enabled: 21
+endpoint tools plus 9 jobs is 30 declared names and 29 distinct ones.
+
+Nothing caught it. `registry.job_tools()` refuses a job-vs-*job* collision because the name is an
+authorization key, but no check compares a job name against an endpoint tool name, and
+`connector_tool_names()` is a set union, so the two collapse into one entry silently. Chemclaw3 now
+refuses that configuration at build time
+(`D-2026-08-26-a-tool-name-is-one-capability-or-it-is-neither`); this rename is what makes the
+configuration loadable again, and the one to move because `calc.compare_solvents` is named by
+string in two `SKILL.md` files, the agent's system prompt, `durable/connector_job.py` and two
+live-test probes, against six references to this one, all inside this repository.
+
+The two are not near-duplicates that could be merged: this reads measured numbers out of a table in
+microseconds, that one runs a semiempirical calculation per species per solvent as a durable job.
 
 ## Running it
 

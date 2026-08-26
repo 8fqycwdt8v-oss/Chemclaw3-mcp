@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_calc import tools
-from chemclaw_mcp_calc.engine import xtb_engine
+from chemclaw_mcp_calc.engine import crest_cli, xtb_engine
 from chemclaw_mcp_calc.engine.identity import COMPUTE_TOOLS, calculation_identity
 from chemclaw_mcp_calc.engine.key import CalculationKey
 
@@ -189,16 +189,25 @@ async def test_a_scan_point_keys_as_the_constrained_optimisation_it_is() -> None
     assert free.key.params_hash != point.key.params_hash
 
 
-async def test_a_crest_search_refuses_to_be_keyed_without_its_binary() -> None:
-    """The probe refuses exactly where the search would, and for the reason that matters.
+async def test_a_crest_search_is_keyed_or_refused_exactly_where_the_search_is() -> None:
+    """The probe and the search agree about whether this deployment can answer.
 
     `CrestSpec.calc_version()` answers `crest-absent` rather than raising, so a key *is* derivable
     with no binary — and it would be a well-formed identity naming a program that cannot run,
     addressing a row nothing will ever write. That is the same shape as the `binary_version()` trap
-    this whole port exists to contain, so both paths refuse together.
+    this port exists to contain, so both paths refuse together where the binary is missing.
+
+    Where it is present, the key must name the build that would produce the answer: a caller checks
+    the cache with this before paying for minutes of sampling, so a probe that refused on a machine
+    that *can* search would send every caller down the compute path forever.
     """
     water = await tools.embed_structure("O")
     for tool in ("search_conformer_ensemble", "search_binding_modes"):
+        if crest_cli.is_available():
+            keyed = await tools.calculation_key(tool, {"structure": water.model_dump()})
+            assert keyed is not None
+            assert f"crest-{crest_cli.binary_version()}" in keyed.key.calc_version
+            continue
         with pytest.raises(ValueError, match="crest"):
             await tools.calculation_key(tool, {"structure": water.model_dump()})
 

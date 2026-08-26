@@ -37,7 +37,7 @@ endpoint:
     - vapour_pressure
     - boiling_point_at_pressure
     - solvent_swap_candidates
-    - compare_solvents
+    - compare_solvent_properties
   # Every tool is a pure function of its arguments and a read of a read-only table: nothing here
   # spends compute worth gating, writes anything, or has an effect the plan gate should hold. So an
   # agent may use all six while building the plan a human is asked to approve — which is the point,
@@ -49,4 +49,4 @@ endpoint:
     - vapour_pressure
     - boiling_point_at_pressure
     - solvent_swap_candidates
-    - compare_solvents
+    - compare_solvent_properties

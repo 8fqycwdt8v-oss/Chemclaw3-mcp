@@ -2,15 +2,44 @@
 # server's answers are *computed* rather than looked up, so what it carries is a numerical stack —
 # tblite's compiled GFN Hamiltonians, RDKit, and scipy's LAPACK — instead of a data directory.
 #
-# **On the `xtb` and `crest` binaries.** They are not installed here and cannot be installed by a
-# Python dependency: both are compiled Fortran programs distributed through conda-forge and
-# distribution packages rather than PyPI. Their absence is not a gap in the capability — `tblite`
-# carries the same GFN1/GFN2 Hamiltonians in-process, and Chemclaw3's own deployment resolves to
-# `tblite` too — it costs the ANCopt speedup on large molecules (measured ~7-9x on 76-118 atoms) and
-# GFN-FF. `xtb_cli.is_available()` is False, `XtbSpec.resolve_backend()` picks `tblite`, and every
-# `calc_version` says so. An operator who wants the binary adds a layer here and sets nothing: the
-# `auto` default finds it on PATH, and the version string moves to record that it did. See
-# `README.md`.
+# **On the `xtb` and `crest` binaries — this image now ships both**, which is the change
+# `D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual` made. They are compiled Fortran
+# programs distributed through conda-forge rather than PyPI, so a Python dependency cannot express
+# them and the stage below installs them the way they are actually distributed. What their absence
+# cost was not evenly spread: `xtb` is an optimisation, since `tblite` carries the same GFN1/GFN2
+# Hamiltonians in-process (it buys ANCopt, measured ~7-9x on 76-118 atoms, and GFN-FF), while
+# **`crest` has no in-process substitute at all** — without it `search_conformer_ensemble`,
+# `search_binding_modes` and every Chemclaw3 composite over them refused, and the four searches
+# were shipped untested because no machine that ran the suite could run one.
+#
+# The versions are pinned rather than floating: `crest --version` and `xtb --version` are both
+# interpolated into `calc_version`, so an unpinned build would re-key every cached calculation on a
+# base-image rebuild.
+#
+# **Licence.** `crest` is GPL-3.0 and `xtb` is LGPL-3.0. Both are invoked as separate processes over
+# files and neither is linked into this codebase, so the analysis is unchanged from
+# `engine/crest_cli.py`'s — but *shipping* them in an image is distribution, and the obligations
+# (offer of source, licence texts) attach to whoever publishes it. That is a product decision, taken
+# deliberately here rather than inherited: see the ADR and `README.md`.
+FROM python:3.11-slim AS sampling
+
+ARG CREST_VERSION=3.0.2
+ARG XTB_VERSION=6.7.1
+ENV MAMBA_ROOT_PREFIX=/opt/mamba
+
+# `curl` and `bzip2` are the whole toolchain: micromamba is one static binary, and it installs the
+# two programs plus their Fortran and OpenMP runtimes into a self-contained prefix whose libraries
+# are found through RPATH — so the final stage copies one directory and needs no LD_LIBRARY_PATH.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl bzip2 ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sSL https://micro.mamba.pm/api/micromamba/linux-64/latest \
+       | tar -xj -C /usr/local bin/micromamba \
+    && micromamba create -y -p /opt/sampling -c conda-forge \
+       "crest=${CREST_VERSION}" "xtb=${XTB_VERSION}" \
+    && micromamba clean --all --yes \
+    && rm -rf /opt/mamba
+
 FROM python:3.11-slim AS build
 
 WORKDIR /build
@@ -35,6 +64,31 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit chemclaw-mcp-calc \
     && rm -rf /wheels
 
+# The samplers, read-only to the running user: nothing in this image writes into them, and a CREST
+# run works in a fresh temporary directory (`crest_cli`), never in its own installation.
+COPY --from=sampling /opt/sampling /opt/sampling
+ENV PATH=/opt/sampling/bin:$PATH
+
+# **The `xtb` binary is installed and is deliberately not the default backend.** `CHEMCLAW_XTB_ENGINE`
+# defaults to `auto`, which resolves to the binary the moment one is on PATH — and the backend is
+# interpolated into `calc_version`, so this image would otherwise change, on the day it is deployed:
+#
+#   opt-GFN2-xTB+tblite-0.7.0/...   ->   opt-GFN2-xTB+xtb-6.7.1/tblite-0.7.0/...
+#
+# Measured, both strings, with and without the binary on PATH. Three things follow from that one
+# character difference, none of them announced: every row already in `calculation_results` misses
+# forever, every reconciled residual in Chemclaw3's calibration ledger becomes unreachable
+# (`predictions` is keyed on `calc_version` and read with an exact predicate, so
+# `calculator_trust("pka")` would report a confident `UNCALIBRATED`, n=0), and `predict_pka`'s base
+# branch — which relaxes both species through this backend — would compute numbers its calibration
+# was not fitted on. The slope and intercept `pka.py` ships were fitted through the *tblite* path.
+#
+# So the binary ships available rather than active: ANCopt and GFN-FF are one environment variable
+# away for a deployment that wants them and has decided to recompute, and CREST is unaffected either
+# way because it carries its own GFN implementation. Adding a backend to an image must not silently
+# re-key a cache and a calibration.
+ENV CHEMCLAW_XTB_ENGINE=tblite
+
 USER ${UID}
 EXPOSE 8860
 
@@ -51,6 +105,15 @@ ENV MCP_EGRESS_GUARD=on
 ENV OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
     MKL_NUM_THREADS=1
+
+# **A CREST run is the one thing in this image that should use more than one core, and it has to be
+# told so here.** The three variables above bind the in-process stack, and they do not reach the
+# sampler: `crest_cli` runs it with a scrubbed environment of four allow-listed variables, so
+# `OMP_NUM_THREADS` is not inherited. Left unset, CREST's own OpenMP sizes itself from
+# `/proc/cpuinfo` — the *node's* core count, which a container CPU limit does not change — and one
+# search would then saturate a host it was never scheduled for. This is the bound; a pod sized for
+# heavier sampling raises it deliberately.
+ENV CHEMCLAW_CREST_THREADS=4
 
 # The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a

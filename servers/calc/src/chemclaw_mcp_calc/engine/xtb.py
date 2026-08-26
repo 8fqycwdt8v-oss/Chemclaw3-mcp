@@ -1,7 +1,7 @@
 """GFN2-xTB semiempirical single-point energies.
 
 Fast, local, deterministic single-point energies via `tblite` (GFN2-xTB) on an RDKit-embedded 3D
-geometry. No HPC, sub-second on ordinary molecules.
+geometry. Sub-second on ordinary molecules.
 
 Thin by design: `structure` owns the geometry and its validation, `xtb_spec` owns the version and
 the key, and `xtb_engine` owns the SCF. What is left here is the one thing specific to a single

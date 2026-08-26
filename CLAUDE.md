@@ -240,6 +240,19 @@ What a slow tool still owes the fleet: a bound on its input so the cost cannot r
 and a `calculation_key`-style probe if the caller is expected to cache it. See
 `docs/adding-a-server.md`.
 
+**That bound belongs in the engine, not in the transport, and the reason is measurable.** A
+per-tool-call wall clock in `connector_app` looks like the general answer and is not: every heavy
+tool here offloads with `asyncio.to_thread`, and cancelling the awaiting coroutine does not stop the
+worker thread — so such a timeout would return an error to a caller who has already gone while the
+CPU burn continued, which is a control that reads as one and is not. What actually stops the cost is
+`xtb_cli.run_isolated`: the run gets its own process group (`start_new_session=True`) and the whole
+group is killed on timeout, because `xtb` forks workers that `subprocess.run(timeout=…)` leaves as
+orphans still burning CPU and still writing into a tempdir the caller has already removed.
+`servers/calc/tests/test_process_isolation.py` pins both directions — that the isolated form reaches
+the fork, and that the naive form does not, which is what makes the first assertion mean something.
+Chemclaw3 cancels from its side too (`D-2026-08-26-a-request-timeout-bounds-the-wait-not-the-work`);
+this is the half that holds when the caller vanishes without saying anything.
+
 ## Ports
 
 | Port | Server | Status |
@@ -273,9 +286,19 @@ question — the failure its own `connectors/README.md` records as two live defi
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
 | ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
-| DFT via Nextflow/HPC | `qm` |
 | Knowledge graph read/write, the PR-gate | core |
 | ELN and ORD ingestion | `ingest/sources` |
+
+**There is no DFT row any more, and its absence is a constraint rather than an opening.** Chemclaw3
+deleted its `qm` bundle, the Nextflow/HPC launcher behind it and `compute_dft_energy` itself
+(`D-2026-08-26-semiempirical-is-the-whole-tier` there): the calculation tier that family runs is
+semiempirical end to end — GFN2-xTB via tblite, and CREST — served from `servers/calc/` in a pod on
+OpenShift or Databricks. So a server proposed here **must not** reintroduce one by the back door: a
+tool that shells out to ORCA, Psi4, Gaussian or NWChem, or that answers from a hosted quantum-chemistry
+API, is not a gap this fleet fills. Both halves of the rule bite — the first needs a cluster nobody
+has, and the second is an outbound call at request time, which the no-egress posture forbids outright.
+Restoring a heavy tier is a decision for Chemclaw3 to take again, in an ADR, before anything is built
+here.
 
 Before proposing a tool, check `MODULES.md` and the table above. Overlap that is deliberate must be
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
