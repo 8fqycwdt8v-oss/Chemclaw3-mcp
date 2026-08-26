@@ -22,6 +22,7 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from chemclaw_mcp_props.engine import records
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp_server_kit.testing import assert_manifest_matches
@@ -141,3 +142,34 @@ async def test_a_bad_argument_reaches_the_agent_as_a_usable_message(running_serv
         result = await session.call_tool("solvent_properties", {"name": "unobtainium"})
         assert result.isError is True
         assert "vendored solvent table" in str(result.content)
+
+
+async def test_a_comparison_longer_than_the_table_is_refused_at_the_transport(
+    running_server: str,
+) -> None:
+    """The bound is on the surface, not just in the docstring — and it is what the caller meets.
+
+    Unbounded, this tool was measured at 100 000 x "dcm" -> a 700 KB request (accepted, 70% of the
+    1 MB body cap) returning 81 601 345 B after 14.83 s, with a `/healthz` probe stuck behind it for
+    14.47 s because the body is synchronous. So both halves are asserted here rather than in
+    `test_tools.py`: `@server.tool()` returns the undecorated function, so a direct call skips
+    argument validation entirely and the bound is only real over the wire.
+    """
+    async with _session(running_server) as session:
+        listed = await session.list_tools()
+        tool = next(t for t in listed.tools if t.name == "compare_solvent_properties")
+        # Advertised, so the model can size the request rather than discover the limit by failing.
+        assert tool.inputSchema["properties"]["names"]["maxItems"] == len(records.all_solvents())
+
+        result = await session.call_tool("compare_solvent_properties", {"names": ["dcm"] * 100_000})
+        assert result.isError is True
+        # A pydantic ValidationError is a ValueError, so the kit's sanitiser lets it through: the
+        # agent is told the bound instead of "an internal error occurred".
+        assert "at most" in str(result.content)
+
+        # And the legitimate request the bound is sized for still answers.
+        every = [solvent.name for solvent in records.all_solvents()]
+        ok = await session.call_tool("compare_solvent_properties", {"names": every})
+        assert ok.isError is False
+        assert ok.structuredContent is not None
+        assert len(ok.structuredContent["rows"]) == len(every)
