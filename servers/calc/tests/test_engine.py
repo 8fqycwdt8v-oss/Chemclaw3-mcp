@@ -82,11 +82,19 @@ def test_a_string_rdkit_would_truncate_never_reaches_a_calculator() -> None:
 def test_the_backend_never_resolves_to_the_word_auto() -> None:
     """A version string containing "auto" would mean different things on two deployments.
 
-    This also documents what the shipped image actually does: with no `xtb` binary installed,
-    `resolve_backend()` answers `tblite`, and every `calc_version` says `+tblite+`.
+    Three separate claims, and the middle one used to be written as a property of *this run*:
+    `resolve_backend() == ("xtb" if is_available() else "tblite")`. That is `auto`'s rule, not the
+    function's, and it held only while nothing pinned the setting — so it failed the moment the
+    shipped image pinned `CHEMCLAW_XTB_ENGINE=tblite` beside an installed binary
+    (`D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual`: the backend is part of
+    `calc_version`, so letting `auto` find the new binary would re-key every cached row). The rule
+    is now exercised by asking for `auto` explicitly, which is true on any machine.
     """
     assert resolve_backend() in ("tblite", "xtb")
-    assert resolve_backend() == ("xtb" if xtb_cli.is_available() else "tblite")
+    assert resolve_backend("auto") == ("xtb" if xtb_cli.is_available() else "tblite")
+    # An explicit choice is honoured over what is installed, which is what makes the image's pin a
+    # control rather than a preference.
+    assert resolve_backend("tblite") == "tblite"
 
 
 def test_an_unparameterised_solvent_is_refused_with_the_supported_list() -> None:
