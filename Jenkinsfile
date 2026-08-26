@@ -51,6 +51,11 @@ pipeline {
           env.REVISION = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
           def discovered = sh(script: "ls -d servers/*/Containerfile | cut -d/ -f2", returnStdout: true).trim().split('\n')
           env.SERVER_LIST = (params.SERVERS ? params.SERVERS.split(/\s+/) : discovered).join(' ')
+          // One shape for an image reference, resolved once. The verify stage needs the same
+          // references the build stage produced, and carrying them between stages as a map keyed by
+          // server name was the fragile way to do it — this is the same string in both places.
+          env.IMAGE_PREFIX = params.IMAGE_REGISTRY ? "${params.IMAGE_REGISTRY}/" : ''
+          env.IMAGE_TAG = env.REVISION.take(12)
           echo "revision ${env.REVISION}\nservers  ${env.SERVER_LIST}"
         }
         // The shared library rather than a fourth copy of `build_and_push`. Vendoring it here is
@@ -81,8 +86,7 @@ pipeline {
           script {
             def digests = [:]
             for (name in env.SERVER_LIST.split(' ')) {
-              def ref = params.IMAGE_REGISTRY ? "${params.IMAGE_REGISTRY}/chemclaw-mcp-${name}:${env.REVISION.take(12)}"
-                                              : "chemclaw-mcp-${name}:${env.REVISION.take(12)}"
+              def ref = "${env.IMAGE_PREFIX}chemclaw-mcp-${name}:${env.IMAGE_TAG}"
               if (params.DRY_RUN || !params.IMAGE_REGISTRY) {
                 sh """
                   set -euo pipefail
@@ -104,7 +108,6 @@ pipeline {
                     --build-arg CHEMCLAW_REVISION=${env.REVISION}
                 """).trim()
               }
-              env["IMAGE_REF_${name}"] = ref
             }
             env.DIGEST_LINES = digests.collect { name, digest -> "${name}=${digest}" }.join('\n')
           }
@@ -132,7 +135,7 @@ pipeline {
               set -euo pipefail
               runner="\$(command -v podman || command -v docker)"
               cid="\$("\${runner}" run -d -p 127.0.0.1:${port}:${port} \
-                -e ${tokenEnv}=verify-token '${env["IMAGE_REF_${name}"]}')"
+                -e ${tokenEnv}=verify-token '${env.IMAGE_PREFIX}chemclaw-mcp-${name}:${env.IMAGE_TAG}')"
               trap '"\${runner}" rm -f "\${cid}" >/dev/null 2>&1 || true' EXIT
               for _ in \$(seq 1 60); do
                 curl -fsS "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1 && break || sleep 1
