@@ -32,7 +32,7 @@ behind an indicative greenness band, for 44 process solvents. Computes vapour pr
 temperature, boiling point under vacuum, and a filtered, Hansen-ranked swap shortlist.
 
 *Tools:* `list_solvents`, `solvent_properties`, `vapour_pressure`, `boiling_point_at_pressure`,
-`solvent_swap_candidates`, `compare_solvents` — all `read_only`.
+`solvent_swap_candidates`, `compare_solvent_properties` — all `read_only`.
 *Offline:* a vendored, checksummed CSV compiled in this repository (CC0). No upstream at all.
 *Why first:* pure, deterministic, genuinely offline by nature, and it exercises every part of the
 mechanism the rest will copy. See `servers/props/README.md`.
