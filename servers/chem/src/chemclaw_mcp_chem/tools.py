@@ -5,7 +5,7 @@ reads before deciding whether to call a tool and what to pass it, and they are c
 Chemclaw3's own `chem` connector word for word — several sentences in them exist because a live run
 got something wrong in a way that was measured, and shortening one would delete the measurement.
 
-Four capabilities, all pure functions of their arguments plus a read of a vendored table: no store,
+Five capabilities, all pure functions of their arguments plus a read of a vendored table: no store,
 no durable state, no network.
 
 **"Cheap" is relative to a DFT job, not to an event loop.** RDKit parsing, `Descriptors.MolWt` and
@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 from chemclaw_mcp_chem.engine import stoichiometry
 from chemclaw_mcp_chem.engine.depiction import render_svg
 from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
+from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candidates
 
 server = FastMCP("chem")
 
@@ -138,16 +139,57 @@ async def green_metrics(
 
 
 @server.tool()
-async def render_structure(smiles: str) -> str:
+async def render_structure(smiles: str, highlight_atoms: list[int] | None = None) -> str:
     """Draw a molecule or reaction as an SVG the chat surface can show inline.
 
     Use this when a structure is the answer, or when naming several related structures in prose
     would be ambiguous — a chemist reads a drawing far faster than a SMILES string.
 
+    **Use `highlight_atoms` to show which bond you are about to rotate.** Pass the `atoms` of an
+    `enumerate_torsions` entry and the chemist sees the torsion drawn, which is the one form in
+    which they can check the choice before a scan is paid for. Saying "the amide C-N" is a claim;
+    the picture is the evidence.
+
     Args:
         smiles: A molecule SMILES, or a reaction SMILES (`reactants>>products`).
+        highlight_atoms: Atom indices to mark, and the bonds between them. Molecules only.
 
     Returns:
         An inline SVG document.
     """
-    return await asyncio.to_thread(render_svg, smiles)
+    return await asyncio.to_thread(render_svg, smiles, highlight_atoms)
+
+
+@server.tool()
+async def enumerate_torsions(smiles: str) -> list[Torsion]:
+    """List the bonds of a molecule that can be rotated, so one can be *named* rather than indexed.
+
+    **Call this before any torsion scan or rotational-barrier job.** Those take four atom indices,
+    and an index is not a name: measured on RDKit, `(4, 5)` is the amide C-N of
+    `c1ccc(NC(C)=O)cc1` and an aromatic *ring* bond of `CC(=O)Nc1ccccc1` — the same compound,
+    rewritten. The scan would run and return a plausible barrier for a different bond, with no
+    error anywhere. Never work out torsion indices yourself; take them from here.
+
+    **Then confirm which one before spending anything.** If the chemist named a bond in words and
+    exactly one entry matches, proceed and say back which bond you chose, by its `label`. If
+    several match, ask which — listing the labels. If none matches, say so and list what there is.
+    A guessed torsion is the one failure here that looks exactly like an answer.
+
+    Free: a graph operation, no calculation, no cache. So enumerate first, look at what the
+    molecule actually has, and only then decide what to spend.
+
+    Args:
+        smiles: The molecule, as SMILES.
+
+    Returns:
+        One entry per symmetry-distinct rotatable bond. `torsion_id` is a handle that stays the
+        same however the molecule is written — carry it, not the indices, when a later turn asks
+        about "the same bond". `atoms` is the dihedral to scan and `period_degrees` is the range a
+        scan has to cover; `equivalent_bonds` names the copies that need no separate scan. Ring
+        bonds are not listed, because driving one is a ring pucker rather than a rotation. A
+        `kind="top"` entry — a methyl or tert-butyl rotation — is listed with **no** dihedral
+        atoms: it is a real rotation, and the reason to show it is that the rotatable-bond
+        descriptor everyone reaches for reports zero for toluene, but its dihedral needs a
+        hydrogen and its energy is already carried by the free-rotor treatment of the low modes.
+    """
+    return await asyncio.to_thread(enumerate_torsion_candidates, smiles)
