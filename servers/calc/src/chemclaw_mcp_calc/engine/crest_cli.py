@@ -1,9 +1,15 @@
 """The `crest` binary: conformer, tautomer, protomer and non-covalent-complex sampling.
 
-**Not installed in this image, and not installed in Chemclaw3's either.** `which crest` is empty on
-both sides today, so every tool built on this module refuses identically wherever it runs — parity
-is preserved by the port rather than broken by it, and nothing silently changes answer. It becomes
-usable when an operator adds the binary; see `servers/calc/README.md`.
+**This image ships the binary** (`Containerfile`, crest 3.0.2 from conda-forge). It did not, for as
+long as this module existed, and that absence is what let three of the four searches ship broken:
+`--deprotonate` raised a validation error on every molecule, `--protonate` looked for a filename no
+version of CREST writes, and both would have labelled a charged species with the neutral's charge.
+None of it was visible, because the only machine that ever ran the tests was one where the whole
+module refused on line one. `tests/test_crest_ensembles.py` now drives the real binary where it is
+present and a stand-in where it is not.
+
+A deployment that removes the binary still works: `is_available()` goes False and the searches
+refuse by name rather than degrading into a single-conformer answer.
 
 CREST removes the caveat attached to every other number here. Everything else describes **one**
 conformer — whichever geometry was embedded and relaxed — and for a flexible molecule that is a
@@ -52,9 +58,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from chemclaw_mcp_calc.engine.chem import atomic_numbers, perceive_smiles
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure
-from chemclaw_mcp_calc.engine.xtb_cli import CliError, _from_xyz, _safe, _to_xyz, run_isolated
+from chemclaw_mcp_calc.engine.xtb_cli import CliError, _safe, _to_xyz, run_isolated
 
 # What to search for. Each is a different CREST run mode over the same machinery.
 # Searches over **one** molecule. Separate from the union below because the
@@ -91,13 +98,44 @@ _METHOD_FLAGS = {
 
 _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL")
 
-# The file each search writes its ensemble to.
-_ENSEMBLE_FILES: dict[CrestSearch, tuple[str, ...]] = {
-    "conformers": ("crest_conformers.xyz",),
-    "tautomers": ("tautomers.xyz", "crest_conformers.xyz"),
-    "protomers": ("protomers.xyz", "crest_conformers.xyz"),
-    "deprotomers": ("deprotonated.xyz", "crest_conformers.xyz"),
-    "complex": ("crest_conformers.xyz",),
+# The file each search writes its ensemble to. **Exactly one name per search, and the absence of a
+# fallback is the correction**: `crest_conformers.xyz` used to stand behind the three
+# constitution-changing searches, and it holds the *input* molecule's conformers. A protonation run
+# that wrote no ensemble would therefore have returned the neutral species' conformers, relabelled
+# with a shifted charge — a converged energy for a molecule nobody asked about. Measured against
+# crest 3.0.2: `--protonate` writes `protonated.xyz` (not `protomers.xyz`, which this table named
+# and which never exists), `--deprotonate` writes `deprotonated.xyz`, `--tautomerize` writes
+# `tautomers.xyz`. Missing the file is now an error, which is what it always was.
+_ENSEMBLE_FILE: dict[CrestSearch, str] = {
+    "conformers": "crest_conformers.xyz",
+    "tautomers": "tautomers.xyz",
+    "protomers": "protonated.xyz",
+    "deprotomers": "deprotonated.xyz",
+    "complex": "crest_conformers.xyz",
+}
+
+# What each search does to the net charge. CREST adds or removes a **proton** — a nucleus with no
+# electrons — so the electron count is unchanged and the multiplicity carries over untouched; only
+# the charge moves. Getting this wrong is not a labelling error: the members feed `relax_structure`
+# and `compute_hessian` on the caller's side, and an anion relaxed at charge 0 is a converged
+# number for a species that does not exist.
+_CHARGE_SHIFT: dict[CrestSearch, int] = {
+    "conformers": 0,
+    "tautomers": 0,
+    "protomers": +1,
+    "deprotomers": -1,
+    "complex": 0,
+}
+
+# Whether every member of this search *is* the molecule that was sent in. A conformer or binding
+# mode is; a tautomer, protomer or deprotomer is a different constitution, so carrying the input's
+# SMILES onto it would name the wrong molecule — the label is perceived from the geometry instead.
+_KEEPS_CONSTITUTION: dict[CrestSearch, bool] = {
+    "conformers": True,
+    "tautomers": False,
+    "protomers": False,
+    "deprotomers": False,
+    "complex": True,
 }
 
 
@@ -160,23 +198,51 @@ def _read_degeneracies(directory: Path, count: int) -> list[int]:
     return degeneracies if len(degeneracies) == count else [1] * count
 
 
-def _read_ensemble(path: Path, template: Structure) -> list[EnsembleMember]:
+def _read_ensemble(path: Path, template: Structure, search: CrestSearch) -> list[EnsembleMember]:
     """Parse a multi-structure XYZ; CREST writes the energy on each comment line.
 
-    Charge and multiplicity come from the template rather than being re-derived, because
-    for a conformer search they are invariant by construction — and for a protomer search
-    the caller adjusts them explicitly, which is the only honest way to change an
-    electron count.
+    **The elements are read from the file, not inherited from the template**, and that is the
+    difference between this parser and `xtb_cli._from_xyz`. xtb echoes the same atoms in the same
+    order, so trusting the template turns an element mismatch into a loud failure there. CREST does
+    neither: `--protonate` returns *more* atoms than it was given, `--deprotonate` fewer, and all
+    three protonation modes presort the input so that every hydrogen is written last. Measured on
+    phenol before this: the deprotomer search raised "12 positions for 13 elements" — it had never
+    once returned an ensemble — and had the counts happened to match, the template's element order
+    would have relabelled the atoms of a molecule that had been resorted underneath it.
+
+    Charge comes from the template plus the search's own shift, and the multiplicity carries over:
+    a proton is a nucleus without electrons, so the electron count does not move.
+
+    The SMILES is perceived from the geometry for a search that changes the constitution, because
+    the input's SMILES is the wrong label for a tautomer or a protomer — and perception answers
+    `None` rather than guessing, so a member whose bonding cannot be read travels unlabelled.
     """
     lines = path.read_text().splitlines()
+    charge = template.charge + _CHARGE_SHIFT[search]
     members: list[EnsembleMember] = []
     cursor = 0
     while cursor < len(lines) and lines[cursor].strip():
         count = int(lines[cursor].split()[0])
         energy = float(lines[cursor + 1].split()[0])
-        block = "\n".join(lines[cursor : cursor + 2 + count])
+        rows = [line.split() for line in lines[cursor + 2 : cursor + 2 + count]]
+        elements = atomic_numbers([row[0] for row in rows])
+        positions = [[float(value) for value in row[1:4]] for row in rows]
+        smiles = (
+            template.smiles
+            if _KEEPS_CONSTITUTION[search]
+            else perceive_smiles(elements, positions, charge)
+        )
         members.append(
-            EnsembleMember(energy_hartree=energy, structure=_from_xyz(block, template, None))
+            EnsembleMember(
+                energy_hartree=energy,
+                structure=Structure(
+                    elements=elements,
+                    positions=positions,
+                    charge=charge,
+                    multiplicity=template.multiplicity,
+                    smiles=smiles,
+                ),
+            )
         )
         cursor += 2 + count
     return members
@@ -242,22 +308,21 @@ def run(
         if completed.returncode != 0:
             tail = "\n".join(completed.stdout.splitlines()[-12:])
             raise CliError(f"crest {search} failed (exit {completed.returncode}):\n{tail}")
-        for name in _ENSEMBLE_FILES[search]:
-            candidate = directory / name
-            if candidate.exists():
-                members = _read_ensemble(candidate, structure)
-                degeneracies = _read_degeneracies(directory, len(members))
-                paired = [
-                    member.model_copy(update={"degeneracy": degeneracy})
-                    for member, degeneracy in zip(members, degeneracies, strict=True)
-                ]
-                # Sorted here rather than assumed. CREST does write its ensembles lowest first, but
-                # Chemclaw3's `ConformerEnsemble.lowest` is `conformers[0]` and the member list is
-                # truncated to `max_members` on the way to a reader — so a file that ever came back
-                # in another order would silently drop the lowest conformer and report the wrong
-                # one, which is not a failure any test would show as a failure.
-                return sorted(paired, key=lambda member: member.energy_hartree)
-        raise CliError(f"crest {search} wrote no ensemble file")
+        candidate = directory / _ENSEMBLE_FILE[search]
+        if not candidate.exists():
+            raise CliError(f"crest {search} wrote no {_ENSEMBLE_FILE[search]}")
+        members = _read_ensemble(candidate, structure, search)
+        degeneracies = _read_degeneracies(directory, len(members))
+        paired = [
+            member.model_copy(update={"degeneracy": degeneracy})
+            for member, degeneracy in zip(members, degeneracies, strict=True)
+        ]
+        # Sorted here rather than assumed. CREST does write its ensembles lowest first, but
+        # Chemclaw3's `ConformerEnsemble.lowest` is `conformers[0]` and the member list is
+        # truncated to `max_members` on the way to a reader — so a file that ever came back
+        # in another order would silently drop the lowest conformer and report the wrong
+        # one, which is not a failure any test would show as a failure.
+        return sorted(paired, key=lambda member: member.energy_hartree)
 
 
 def _environment() -> dict[str, str]:

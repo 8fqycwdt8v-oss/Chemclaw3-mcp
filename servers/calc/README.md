@@ -231,14 +231,49 @@ Three things that would otherwise be on that list are **not**:
   It is the `input_hash` of every `xtb.*` key.)
 - *The flat key format.* `calculation_key` returns the four fields, so nothing parses the string.
 
-## The `xtb` and `crest` binaries: not in this image
+## The `xtb` and `crest` binaries: both ship, in their own build stage
 
-**They are not installed, and a Python dependency cannot install them.** Both are compiled Fortran
-programs distributed through conda-forge and distribution packages rather than PyPI, so
-`pyproject.toml` has no way to express them and the `python:3.11-slim` base carries neither.
+**A Python dependency cannot install either**, since both are compiled Fortran distributed through
+conda-forge rather than PyPI — so the `Containerfile` installs them the way they are actually
+distributed, with `micromamba` into a self-contained prefix the final image copies and puts on
+`PATH`. Versions are pinned (`CREST_VERSION`, `XTB_VERSION`) because both are interpolated into
+`calc_version`: an unpinned rebuild would silently re-key every cached calculation.
 
-This is a speed limit, not a capability gap, and the reason is that `tblite` — which *does* ship
-manylinux wheels — carries the same GFN1/GFN2 Hamiltonians in-process. Everything the xTB tools do
+**Why this changed.** For `xtb` the absence was a speed limit, as the rest of this section explains.
+For `crest` it was the capability: there is no in-process substitute, so the four sampling
+primitives refused every call — and, being unreachable, three of the four had shipped broken.
+Driven against crest 3.0.2 for the first time, `--deprotonate` raised a validation error on every
+molecule, `--protonate` looked for a filename no CREST version writes, and both would have handed
+back a charged species carrying the neutral's charge. See
+`D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual` in Chemclaw3's `docs/decisions/`.
+
+**Licence.** `crest` is GPL-3.0 and `xtb` LGPL-3.0. Both are invoked as separate processes over
+files and neither is linked into this codebase, so the licences do not reach this source — but
+shipping them in an image is distribution, and its obligations (offer of source, licence texts)
+attach to whoever publishes the image. That was decided deliberately; it is not an accident of a
+base image.
+
+**The `xtb` binary is installed and is deliberately not the default backend.** The image pins
+`CHEMCLAW_XTB_ENGINE=tblite`, because `auto` resolves to the binary the moment one is on `PATH` and
+the backend is part of `calc_version` — measured, `opt-GFN2-xTB+tblite-0.7.0/…` becomes
+`opt-GFN2-xTB+xtb-6.7.1/tblite-0.7.0/…`. Three consequences follow from that one difference and none
+of them announces itself: every row in `calculation_results` misses forever, every reconciled
+residual in Chemclaw3's calibration ledger becomes unreachable (so `calculator_trust("pka")` reports
+a confident `UNCALIBRATED`, n=0), and `predict_pka`'s base branch — which relaxes both species
+through this backend — computes numbers its calibration was not fitted on, since the shipped slope
+and intercept came from the tblite path. So the binary ships *available* rather than *active*:
+`CHEMCLAW_XTB_ENGINE=xtb` or `auto` turns it on for a deployment that wants ANCopt and GFN-FF and
+has decided to recompute. CREST is unaffected either way, because it carries its own GFN
+implementation.
+
+**Removing them is supported and is not silent**: `crest_cli.is_available()` goes False, the
+sampling primitives refuse by name, and `XtbSpec.resolve_backend()` falls back to `tblite` with the
+version string saying so.
+
+### What `xtb` buys over the in-process path
+
+`tblite` — which *does* ship manylinux wheels — carries the same GFN1/GFN2 Hamiltonians in-process,
+which is why the `xtb` binary is an optimisation rather than a capability. Everything the xTB tools do
 runs on it: single points, properties, Fukui indices, the L-BFGS-B optimizer over tblite's analytic
 gradient, the finite-difference Hessian, and both pKa branches. Chemclaw3's own deployment resolves
 to `tblite` too, for the same reason, so **the numbers and the `calc_version` strings this server
@@ -254,8 +289,8 @@ What is given up without the binary:
 - **GFN-FF**, xtb's force field. `optimize_geometry` with `method="GFN-FF"` raises a message naming
   the missing binary rather than substituting GFN2.
 
-`engine/xtb_cli.py` is nonetheless ported in full, and turning it on is one layer plus nothing else:
-install `xtb` on `PATH` and the `auto` default (`CHEMCLAW_XTB_ENGINE`) finds it, routes to it, and —
+`engine/xtb_cli.py` is ported in full, and the `auto` default (`CHEMCLAW_XTB_ENGINE`) finds the
+binary on `PATH`, routes to it, and —
 the part that matters — **moves every `calc_version` to say so**. Two pods, one with the binary and
 one without, therefore compute different keys for the same molecule. That is wanted rather than
 tolerated: the two backends do not agree to the last decimal, and a shared key would serve one

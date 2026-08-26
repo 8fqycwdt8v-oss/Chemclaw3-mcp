@@ -267,12 +267,19 @@ no new primitive at all, being pure composition over ones already exposed.
 
 **Four things to know before touching it:**
 
-- **`xtb` and `crest` are not in the image and cannot be**, being compiled Fortran distributed
-  through conda-forge rather than PyPI. For `xtb` that costs the ANCopt speedup (~7-9x on 76-118
-  atoms) and GFN-FF and nothing else — `tblite` carries the same Hamiltonians in-process, and
-  Chemclaw3's own deployment resolves to it too, so the numbers and the version strings are
-  unchanged by the port. For `crest` it means the two ensemble primitives **refuse**, by name — and
-  `crest` is absent from Chemclaw3's environment too, so nothing that worked before has stopped.
+- **`xtb` and `crest` ship in the image**, installed from conda-forge in their own build stage
+  because both are compiled Fortran and neither is on PyPI. They were absent for as long as this
+  server existed, and the two costs were not comparable: `xtb` is an optimisation (ANCopt, ~7-9x on
+  76-118 atoms, plus GFN-FF) over a `tblite` that carries the same Hamiltonians in-process, while
+  `crest` has no in-process substitute — the four sampling primitives simply refused, and three of
+  them turned out to be broken in ways no test could reach. Both versions are pinned, because both
+  are interpolated into `calc_version` and an unpinned rebuild would re-key every cached row.
+  `crest` is GPL-3.0 and `xtb` LGPL-3.0; both are run as subprocesses, never linked, and shipping
+  them is a distribution decision recorded in the ADR. **`xtb` ships available rather than active**:
+  the image pins `CHEMCLAW_XTB_ENGINE=tblite`, because the backend is part of `calc_version` and
+  letting `auto` find the binary would re-key every cached row, orphan every calibration-ledger
+  residual, and move the path `predict_pka`'s own calibration was fitted through — silently, on the
+  day the image deployed.
 - **The Hessian crosses the wire as base64 `.npy`**, which round-trips float64 exactly and is
   byte-for-byte what Chemclaw3's artifact store holds. The ceiling is ~2.2 MB, bounded quadratically
   by `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS`.

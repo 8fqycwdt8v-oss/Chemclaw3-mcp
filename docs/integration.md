@@ -154,9 +154,16 @@ manifest, feeding `authz.expensive_actions`. That gate stays there** and is deli
 reproduced here: it is an authorization decision about a person, which a tool server has no basis to
 make.
 
-**The `crest` binary is in neither environment today.** The two ensemble primitives refuse by name
-rather than degrading, and they refuse identically wherever they run — so nothing that previously
-worked has stopped. Adding the binary to this server's image is what turns them on.
+**The `crest` binary ships in this server's image**, which is what makes the sampling primitives —
+and every Chemclaw3 composite over them — live rather than a documented intention. Chemclaw3's own
+pods still have no `crest` and need none: the searches run here. A deployment that trims the binary
+gets a refusal by name rather than a single-conformer answer wearing an ensemble's shape.
+
+**One Chemclaw3 composite is built on them directly**: `microstate_pka` (the `predict_pka_ensemble`
+job) is a conformer search of the neutral plus a `--deprotonate`/`--protonate` microstate search, so
+the pKa it reports is a macrostate free-energy difference rather than one drawn microspecies. Both
+halves are ordinary cached primitives here; the composition, the calibration and the warnings are
+Chemclaw3's, exactly as the split requires.
 
 **What the manifest here is for, then.** `servers/calc/connector.yaml` is this repository's own
 declaration of the served surface — every tool classified, checked against the running server by
