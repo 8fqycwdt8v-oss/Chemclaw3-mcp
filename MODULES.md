@@ -110,15 +110,19 @@ What do I weigh out, what is this compound, what does it look like, and how gree
 canonical structure — the bridge every structure-taking tool in the fleet needs;
 `stoichiometry_table` scales a batch to the limiting reagent and converts solvent *volumes* into
 real masses; `green_metrics` computes E-factor and PMI from exactly those masses; `render_structure`
-draws a molecule or reaction as an inline SVG.
+draws a molecule or reaction as an inline SVG, optionally with chosen atoms highlighted; and
+`enumerate_torsions` lists the bonds that can be rotated, each under a handle that survives a
+rewritten SMILES — because an atom index does not, and a torsion scan driven from a stale one
+returns a plausible barrier for a different bond with no error anywhere.
 
-*Tools:* `resolve_compound`, `stoichiometry_table`, `green_metrics`, `render_structure` — all
-`read_only`.
+*Tools:* `resolve_compound`, `stoichiometry_table`, `green_metrics`, `render_structure`,
+`enumerate_torsions` — all `read_only`.
 *Offline:* a vendored, checksummed CSV of 61 reagents under 87 spellings (CC0), plus RDKit. No
 upstream at all, and deliberately so: an external resolver (PubChem, OPSIN) is a request-time
 network call, which this repository does not permit and which the common case does not need.
 *Provenance:* **a port of Chemclaw3's own in-tree `chem` connector** — the same manifest name, the
-same four tools, the same argument names, the same model-facing docstrings. It is a replacement for
+same argument names, the same model-facing docstrings, plus `enumerate_torsions`, which that bundle
+never had and whose name Chemclaw3's manifest now declares too. It is a replacement for
 that bundle rather than a second implementation, and the two cannot both answer:
 `CHEMCLAW_CONNECTOR_URLS` is keyed by name, and `CHEMCLAW_CONNECTORS_DIR` resolves a name collision
 by first directory (`connectors/registry.py::_bundle_dirs`). Moving it here takes RDKit out of the

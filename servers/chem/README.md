@@ -1,14 +1,18 @@
 # `chem` — bench chemistry over RDKit
 
-What do I weigh out, what is this compound, what does it look like, and how green is this route.
-Four pure, deterministic tools over RDKit and a vendored table of 61 bench reagents.
+What do I weigh out, what is this compound, what does it look like, which bond can I rotate, and
+how green is this route. Five pure, deterministic tools over RDKit and a vendored table of 61 bench
+reagents.
 
 ## It replaces a Chemclaw3 bundle rather than adding a second one
 
 Chemclaw3 ships its own in-tree `chem` connector, and `CLAUDE.md`'s exclusion table forbids a second
-answer to one question. This is a **port**, not a duplicate: same manifest `name`, same four tools,
+answer to one question. This began as a **port**, not a duplicate: same manifest `name`, same tools,
 same argument names, same docstrings — the model-facing prose is carried over word for word, because
 several sentences in it exist to prevent a mistake that was measured in a live run.
+`enumerate_torsions` is the one tool here Chemclaw3's bundle never had, added under
+`D-2026-08-26-a-torsion-is-named-not-indexed`; Chemclaw3's own manifest declares it too, so the two
+lists still agree.
 
 The two cannot both answer, and that is enforced by Chemclaw3's own mechanism rather than by
 convention:
@@ -29,9 +33,10 @@ surface releases on its own cadence.
 | `resolve_compound` | The name a chemist wrote → a canonical structure, or an honest miss. |
 | `stoichiometry_table` | What to weigh and measure out for a batch, scaled to the basis. |
 | `green_metrics` | E-factor and PMI from the charged masses. |
-| `render_structure` | A molecule or reaction as an inline SVG. |
+| `render_structure` | A molecule or reaction as an inline SVG, optionally with atoms highlighted. |
+| `enumerate_torsions` | Which bonds can be rotated, each with a handle that survives a rewritten SMILES. |
 
-All four are `read_only`: pure functions of their arguments plus a read of a read-only table.
+All five are `read_only`: pure functions of their arguments plus a read of a read-only table.
 Nothing here writes, spends real compute, or has an effect worth gating — which matters, because
 "what do we actually charge, and what does it cost in waste" has to be answerable *before* a plan is
 approved, not after.
@@ -102,7 +107,7 @@ turns a test red instead of quietly answering differently.
 **What was deliberately not ported:** the `standardize` pipeline that answers the *other* question,
 "is this the same compound?" (salts stripped, charges neutralized, one tautomer per set), and
 `compound_id` built on it. They key the knowledge graph and the fingerprint index, which are
-Chemclaw3's; none of these four tools ever asked that question.
+Chemclaw3's; none of these tools ever asked that question.
 
 ## What it is not
 

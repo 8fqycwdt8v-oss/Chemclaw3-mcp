@@ -41,6 +41,7 @@ endpoint:
     - stoichiometry_table
     - green_metrics
     - render_structure
+    - enumerate_torsions
   # Pure functions of their arguments plus a read of a read-only table: nothing here spends compute
   # worth gating, writes anything, or has an effect the plan gate should hold. So an agent may use
   # all four while building the plan a human is asked to approve — which is the point, since "what
@@ -51,3 +52,7 @@ endpoint:
     - stoichiometry_table
     - green_metrics
     - render_structure
+    # A graph operation, free, and the thing a chemist consults *before* authorizing a torsion
+    # scan — gating it would put the human in front of the question rather than in front of the
+    # cost. The scan it feeds is `calc`'s, and that one is state-changing.
+    - enumerate_torsions
