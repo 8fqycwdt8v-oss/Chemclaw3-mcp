@@ -189,7 +189,8 @@ async def calculation_key(tool: str, arguments: dict[str, Any]) -> CalculationId
 async def compute_xtb_energy(smiles: str, charge: int = 0) -> XtbResult:
     """Compute the GFN2-xTB total energy of a molecule (fast, semiempirical).
 
-    Runs a quick semiempirical single point (no HPC).
+    Runs a quick GFN2-xTB single point. Semiempirical is the ceiling here — there is no
+    higher-accuracy method behind this tool to escalate to.
 
     A single-point energy is only meaningful **relatively** — compare it with another energy
     computed the same way (an isomer, a conformer, the same molecule in another solvent). The
