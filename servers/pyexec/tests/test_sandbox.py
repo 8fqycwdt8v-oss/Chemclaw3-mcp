@@ -322,6 +322,40 @@ print(
 """
 
 
+def _a_second_uid_is_reachable() -> bool:
+    """Whether this process can actually become another user, rather than merely look like root.
+
+    `geteuid() == 0` is not the question. `make offline-run` and the `offline` CI lane run the suite
+    under `unshare --user --map-root-user --net`, where the process *is* uid 0 — of a user namespace
+    that maps exactly one uid. `setuid(65534)` there fails with `EINVAL`, inside `preexec_fn`, which
+    `subprocess` reports only as "Exception occurred in preexec_fn".
+
+    So the map is what is read. A single-entry map covering one uid means there is no second user to
+    drop to, and the two tests below are skipped rather than run as root — at root the refusal they
+    assert would be the kernel declining to let `CAP_SYS_PTRACE` be used on a dumpable-cleared
+    process, which is not the control this server added. The `check` lane runs as real root with the
+    full range and proves it there; this is the same rule as the binary-gated skips, written down.
+    """
+    try:
+        entries = [line.split() for line in Path("/proc/self/uid_map").read_text().splitlines()]
+    except OSError:  # pragma: no cover — no procfs; the caller falls back to "cannot drop".
+        return False
+    return any(int(count) > 1 for _inside, _outside, count in entries)
+
+
+#: Skip marker for the two tests that need a second user to be meaningful. Loud, and it says which
+#: environment cannot provide one, because a silently-permanent skip is how a control stops being
+#: checked without anybody deciding that.
+_needs_a_second_uid = pytest.mark.skipif(
+    os.geteuid() == 0 and not _a_second_uid_is_reachable(),
+    reason=(
+        "running as uid 0 of a single-uid user namespace (the `offline` lane's `unshare "
+        "--map-root-user`): there is no unprivileged user to drop to, and as root the assertion "
+        "would test the kernel rather than this server's seal. Proven in the `check` lane."
+    ),
+)
+
+
 def _drop_privileges() -> None:  # pragma: no cover — runs after fork, inside the stand-in server.
     """Become an unprivileged user, because root reads any `/proc/<pid>` whatever the flag says.
 
@@ -340,7 +374,9 @@ def _through_a_stand_in_server(code: str) -> dict[str, Any]:
         [sys.executable, "-c", _STAND_IN_SERVER],
         input=code,
         env={**os.environ, "CHEMCLAW_PYEXEC_TOKEN": _POD_SECRET},
-        preexec_fn=_drop_privileges if os.geteuid() == 0 else None,
+        preexec_fn=(
+            _drop_privileges if os.geteuid() == 0 and _a_second_uid_is_reachable() else None
+        ),
         capture_output=True,
         text=True,
         timeout=180,
@@ -351,6 +387,7 @@ def _through_a_stand_in_server(code: str) -> dict[str, Any]:
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<ppid>/environ")
+@_needs_a_second_uid
 def test_an_escaped_program_cannot_read_the_servers_own_environment() -> None:
     """The child's environment is built from an allowlist; the *parent's* was readable anyway.
 
@@ -374,6 +411,7 @@ def test_an_escaped_program_cannot_read_the_servers_own_environment() -> None:
     assert _POD_SECRET not in json.dumps(answered), answered
 
 
+@_needs_a_second_uid
 def test_a_flood_to_the_stdout_descriptor_does_not_grow_the_server() -> None:
     """The 10,000-character cap is on the runner's own capture; fd 1 goes straight past it.
 
