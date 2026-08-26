@@ -22,6 +22,7 @@ import pytest
 import rdkit
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
 from chemclaw_mcp_chem.engine.torsions import (
+    _KINDS,
     Torsion,
     enumerate_torsion_candidates,
     torsion_handle,
@@ -40,6 +41,31 @@ def _by_kind(smiles: str, kind: str) -> Torsion:
 # One compound, three ways of writing it — the corpus behind the measurement this module exists
 # for. Module-level rather than a class attribute so it is one list, not one per instance.
 ACETANILIDE = ("CC(=O)Nc1ccccc1", "O=C(C)Nc1ccccc1", "c1ccc(NC(C)=O)cc1")
+
+# One compound per pattern in `_KINDS`, in its order. Module-level because two tests read it: the
+# one that assigns each kind, and the one that checks this list still covers the table.
+ONE_PER_PATTERN: tuple[tuple[str, str], ...] = (
+    ("CC(=O)Nc1ccccc1", "amide"),
+    ("CC(=O)OCC", "ester"),
+    ("c1ccc(-c2ccccc2)cc1", "biaryl"),
+    ("CC(C)(C)c1ccccc1", "benzylic"),
+    ("CCOCC", "ether"),
+    ("CCN(CC)CC", "amine"),
+)
+
+# What the pattern invariant is checked against: the representatives above plus compounds whose
+# kinds are decided by topology, so a pattern is exercised where it is meant to fire and where it
+# is not.
+PATTERN_CORPUS: tuple[str, ...] = (
+    *(smiles for smiles, _ in ONE_PER_PATTERN),
+    "CC(C)CC(C)C",
+    "C=CC=C",
+    "Cc1ccccc1",
+    "CCOC(=O)c1ccc(N)cc1",
+    "c1ccc(COc2ccccc2)cc1",
+    "CC(C)(C)OC(=O)N1CCCCC1",
+    "COCCOC",
+)
 
 
 class TestTheHandleSurvivesARewrittenSmiles:
@@ -232,3 +258,91 @@ def _bond_orbits(mol: Chem.Mol) -> dict[tuple[int, int], int]:
             if first != second:
                 parent[first] = second
     return {bond: hash(find(bond)) for bond in bonds}
+
+
+class TestTheKindIsACheckableClaim:
+    """`kind` and `smarts` are what a human checks the choice by, so both have to be true.
+
+    The label is prose and the atoms are integers; the pair (kind, smarts) is the only part of a
+    `Torsion` that says *why* this bond was called what it was called. A kind nothing can be
+    assigned and a pattern that matches everything are the two ways that claim rots without any
+    test noticing, and both had happened.
+    """
+
+    @pytest.mark.parametrize(("smiles", "kind"), ONE_PER_PATTERN)
+    def test_every_pattern_kind_can_actually_be_assigned(self, smiles: str, kind: str) -> None:
+        """One representative per pattern in `_KINDS`, because a dead pattern is invisible.
+
+        `ether` was `[CX4][OX2][CX4]` — three atoms, and `_matched_pairs` reads the *first and
+        last*, which for that pattern are the two carbons and are not bonded to each other. So no
+        bond ever matched it and every ether came back `alkyl`, with a `smarts` naming a pattern
+        that had not been matched. Nothing was red: no test asked for a kind that was never
+        produced.
+        """
+        assert _by_kind(smiles, kind).kind == kind
+
+    def test_the_table_is_covered(self) -> None:
+        """A pattern added without a representative is a pattern nobody has ever seen assigned."""
+        assert {kind for _, kind in ONE_PER_PATTERN} == {kind for kind, _ in _KINDS}
+
+    @pytest.mark.parametrize(
+        ("smiles", "kind"),
+        [("CC(C)CC(C)C", "alkyl"), ("C=CC=C", "conjugated"), ("Cc1ccccc1", "top")],
+    )
+    def test_a_kind_decided_by_topology_reports_no_pattern(self, smiles: str, kind: str) -> None:
+        """Empty, not `[*]-[*]`.
+
+        These three are decided by the bond's own topology, so there is no environment to show. It
+        used to report `[*]-[*]`, which matches every bond in every molecule — an unfalsifiable
+        claim in the one field whose job is to make the label falsifiable.
+        """
+        assert _by_kind(smiles, kind).smarts == ""
+
+    @pytest.mark.parametrize(("pattern_kind", "pattern"), _KINDS)
+    def test_every_pattern_names_a_bond(self, pattern_kind: str, pattern: str) -> None:
+        """Wherever a pattern matches, its first and last matched atoms are bonded to each other.
+
+        This is the invariant `_matched_pairs` rests on — it reads exactly those two atoms and
+        treats them as the bond — and it is what the dead `ether` pattern broke: `[CX4][OX2][CX4]`
+        matched the two *carbons*, which are two bonds apart. Stated over `_KINDS` against every
+        compound in this module, so a future three-atom pattern is red the day it is written
+        rather than silently unassignable.
+        """
+        query = Chem.MolFromSmarts(pattern)
+        assert query is not None, f"{pattern_kind}: {pattern} is not a parseable SMARTS"
+        for smiles in PATTERN_CORPUS:
+            mol = Chem.MolFromSmiles(smiles)
+            for match in mol.GetSubstructMatches(query):
+                assert mol.GetBondBetweenAtoms(match[0], match[-1]) is not None, (
+                    f"{pattern_kind}: {pattern} matched {match} of {smiles}, "
+                    "whose first and last atoms are not bonded"
+                )
+
+
+class TestAMonovalentEndIsNotARotation:
+    """Turning a bond whose far end is a single atom moves nothing, so it is not a candidate."""
+
+    @pytest.mark.parametrize("smiles", ["CCCl", "ClCCCl", "FC(F)(F)c1ccccc1", "CCBr"])
+    def test_a_terminal_halogen_is_not_a_torsion(self, smiles: str) -> None:
+        """`CCCl` listed "the Cl top on C1" — a rotation about an axis with nothing off it.
+
+        Every other rule here accepted it: acyclic, single, neither end linear, both ends heavy. A
+        chemist asked for a barrier about that bond would get a flat profile and no indication that
+        the question was meaningless.
+        """
+        halogens = {9, 17, 35, 53}
+        mol = Chem.MolFromSmiles(smiles)
+        for torsion in enumerate_torsion_candidates(smiles):
+            atoms = [mol.GetAtomWithIdx(index) for index in torsion.bond]
+            assert not any(atom.GetAtomicNum() in halogens for atom in atoms), (
+                f"{smiles}: {torsion.label} rotates about a monovalent atom"
+            )
+
+    def test_a_hydroxyl_is_still_a_rotation(self) -> None:
+        """The distinction the fix rests on: an O-H hydrogen is off the axis, a chlorine is on it.
+
+        Which is why the rule is "carries any substituent" rather than "carries a heavy one" — the
+        cheaper rule would have taken every alcohol's O-H rotation with the halides.
+        """
+        tops = [t for t in enumerate_torsion_candidates("CCO") if t.kind == "top"]
+        assert sorted(t.label for t in tops) == ["the O top on C1", "the methyl top on C1"]
