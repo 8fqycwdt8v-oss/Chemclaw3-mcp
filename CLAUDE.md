@@ -240,6 +240,19 @@ What a slow tool still owes the fleet: a bound on its input so the cost cannot r
 and a `calculation_key`-style probe if the caller is expected to cache it. See
 `docs/adding-a-server.md`.
 
+**That bound belongs in the engine, not in the transport, and the reason is measurable.** A
+per-tool-call wall clock in `connector_app` looks like the general answer and is not: every heavy
+tool here offloads with `asyncio.to_thread`, and cancelling the awaiting coroutine does not stop the
+worker thread — so such a timeout would return an error to a caller who has already gone while the
+CPU burn continued, which is a control that reads as one and is not. What actually stops the cost is
+`xtb_cli.run_isolated`: the run gets its own process group (`start_new_session=True`) and the whole
+group is killed on timeout, because `xtb` forks workers that `subprocess.run(timeout=…)` leaves as
+orphans still burning CPU and still writing into a tempdir the caller has already removed.
+`servers/calc/tests/test_process_isolation.py` pins both directions — that the isolated form reaches
+the fork, and that the naive form does not, which is what makes the first assertion mean something.
+Chemclaw3 cancels from its side too (`D-2026-08-26-a-request-timeout-bounds-the-wait-not-the-work`);
+this is the half that holds when the caller vanishes without saying anything.
+
 ## Ports
 
 | Port | Server | Status |
