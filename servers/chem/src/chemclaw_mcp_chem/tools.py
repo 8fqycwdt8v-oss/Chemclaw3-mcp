@@ -5,8 +5,14 @@ reads before deciding whether to call a tool and what to pass it, and they are c
 Chemclaw3's own `chem` connector word for word — several sentences in them exist because a live run
 got something wrong in a way that was measured, and shortening one would delete the measurement.
 
-Five capabilities, all pure functions of their arguments plus a read of a vendored table: no store,
-no durable state, no network.
+Every capability here is a pure function of its arguments plus a read of a vendored table: no
+store, no durable state, no network. A count is deliberately not written here — the sentence that
+used to say "five" outlived two additions.
+
+**The six enumerations exist so that the expensive half never has to guess its own universe.**
+Chemclaw3's `rank_species` and `survey_bond_strengths` rank a *set*; these produce the set from the
+molecular graph, for free. Its skills state the rule as *enumerate, then compute, and never the
+reverse*, and the reason is that the alternative is a model inventing plausible SMILES.
 
 **"Cheap" is relative to a DFT job, not to an event loop.** RDKit parsing, `Descriptors.MolWt` and
 especially 2D-coordinate generation plus SVG rendering are CPU-bound C++ that holds the GIL for
@@ -25,8 +31,19 @@ import asyncio
 from mcp.server.fastmcp import FastMCP
 
 from chemclaw_mcp_chem.engine import stoichiometry
+from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
 from chemclaw_mcp_chem.engine.depiction import render_svg
 from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
+from chemclaw_mcp_chem.engine.species import (
+    DegradantSet,
+    SpeciesSet,
+    Topology,
+    describe_molecule,
+    enumerate_degradant_candidates,
+    enumerate_microstates,
+    enumerate_stereoisomer_set,
+    enumerate_tautomer_set,
+)
 from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candidates
 
 server = FastMCP("chem")
@@ -193,3 +210,151 @@ async def enumerate_torsions(smiles: str) -> list[Torsion]:
         hydrogen and its energy is already carried by the free-rotor treatment of the low modes.
     """
     return await asyncio.to_thread(enumerate_torsion_candidates, smiles)
+
+
+@server.tool()
+async def describe_topology(smiles: str) -> Topology:
+    """Say what the molecular graph is like, before spending anything on it.
+
+    Free and structural — no calculation runs. Ask this first when you are unsure whether an
+    expensive search is worth it, because the commonest waste in this catalogue is paying for a
+    conformer search to discover the molecule was rigid.
+
+    How to read the answer:
+
+    - **`rotatable_bonds` near zero** means a conformer search will find little. A rigid molecule
+      has one shape and `compute_electronic_properties` on it is already the ensemble answer.
+    - **`tautomer_count` of 1** means there is no tautomer question; resolving it would rank a set
+      of one. Above 1, resolve the form *before* computing anything else about the molecule,
+      because every downstream number describes whichever form was assumed.
+    - **`unassigned_stereocentres` of 0** means a stereoisomer expansion returns one structure.
+    - **`ionisable_acidic_sites` and `ionisable_basic_sites`**: one of either means `predict_pka`
+      covers the question; both, or several, is the amphoteric/polyprotic case a microspecies
+      profile exists for.
+
+    Args:
+        smiles: The molecule, as SMILES.
+
+    Returns:
+        Counts from the graph. Deliberately not a recommendation — the numbers are stable, and what
+        to do about them is judgement.
+    """
+    return await asyncio.to_thread(describe_molecule, smiles)
+
+
+@server.tool()
+async def enumerate_tautomers(smiles: str) -> SpeciesSet:
+    """List the tautomers of a molecule — the proton-shift isomers it can exist as.
+
+    Free and structural. Pass `smiles` from the result straight to `rank_species` to find out which
+    form actually dominates; this tool says only which forms are possible.
+
+    Use it before any other calculation on a molecule with a mobile proton between heteroatoms:
+    heterocyclic N-H (pyrazoles, imidazoles, triazoles, purines), 1,3-dicarbonyls, amidines,
+    2-pyridone/2-hydroxypyridine. Every property of a tautomeric molecule is a property of one
+    *form*, so computing before resolving describes whichever form happened to be drawn.
+
+    Args:
+        smiles: The molecule, as SMILES.
+
+    Returns:
+        The tautomers, canonical and de-duplicated, with the input first. Refuses rather than
+        truncating past 64 — a partial set would make a downstream population normalize over a
+        fraction of the universe while looking complete.
+    """
+    return await asyncio.to_thread(enumerate_tautomer_set, smiles)
+
+
+@server.tool()
+async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
+    """List the protonation microstates — each ionisable site toggled, one at a time.
+
+    Free and structural. The ranking that says which dominates at a given pH is `rank_species`;
+    for a single site, `predict_pka` answers directly and more cheaply.
+
+    Each ionisable site is toggled **singly**: the parent, plus each single ionisation. Combined
+    states (a zwitterion's doubly-ionised form, say) are reachable by calling this again on a
+    result, which keeps the expansion an explicit decision rather than a silent 2^n.
+
+    Args:
+        smiles: The molecule, as SMILES. Give the neutral form where there is one.
+
+    Returns:
+        The microstates with the input first, each labelled with the site that moved.
+    """
+    return await asyncio.to_thread(enumerate_microstates, smiles)
+
+
+@server.tool()
+async def enumerate_stereoisomers(smiles: str) -> SpeciesSet:
+    """List the stereoisomers of a molecule at the centres its SMILES leaves *unassigned*.
+
+    Free and structural. `rank_species` on the result gives the relative free energies — which is
+    the diastereomer question; it is not the enantiomer question, since enantiomers are isoenergetic
+    and no calculation here distinguishes them.
+
+    **Only unassigned centres are expanded.** A structure drawn with defined stereochemistry is a
+    claim, and re-enumerating over it would offer the enantiomer of a compound somebody specified.
+    A fully-specified input therefore comes back as itself.
+
+    Args:
+        smiles: The molecule, as SMILES.
+
+    Returns:
+        The isomers. Note that an input with open centres is *not* among them — it is the
+        underspecified question the set answers, not a member of it.
+    """
+    return await asyncio.to_thread(enumerate_stereoisomer_set, smiles)
+
+
+@server.tool()
+async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic") -> CleavageSet:
+    """List every breakable bond and the two fragments breaking it would give.
+
+    Free and structural. Pass `cleavages` from the result straight to `survey_bond_strengths`,
+    which computes one balanced reaction per bond — that is the expensive half, and it is what
+    answers "which bond breaks first".
+
+    Acyclic single bonds only: breaking one bond of a ring gives an open-chain biradical rather
+    than two fragments, which is not a dissociation energy in the sense the question means.
+    Symmetry-equivalent bonds are collapsed to one entry, so a methyl contributes one C-H rather
+    than three identical calculations.
+
+    Args:
+        smiles: The molecule, as SMILES.
+        mode: `homolytic` for radicals (the usual question — bond strength, H-abstraction,
+            autoxidation), `heterolytic` for the ion pair. The two are not comparable; a survey
+            mixing them ranks nothing meaningful.
+
+    Returns:
+        One entry per distinct bond, with fragments whose radical electrons or charges are explicit
+        so the calculation needs no separately declared spin state.
+    """
+    return await asyncio.to_thread(enumerate_cleavages, smiles, mode)
+
+
+@server.tool()
+async def enumerate_degradants(smiles: str) -> DegradantSet:
+    """Propose degradation products by applying forced-degradation transforms to the structure.
+
+    Free and structural, and **a short list rather than a ranking or a prediction**: each entry
+    says a transform *matches* the molecule's graph, not that the chemistry happens. Report it as
+    candidates to screen, and say so — a transform can match a substructure the chemistry does not
+    favour.
+
+    Each candidate names the transform that produced it, which is the half a chemist can argue
+    with: "N-oxidation" can be rejected for a hindered amine, and a bare SMILES cannot.
+
+    The transforms are the oxidative, hydrolytic and thermal routes an ICH Q1A forced-degradation
+    study looks for first. The list is deliberately short and named; it is not comprehensive, and a
+    degradant it does not propose is one nobody is offered.
+
+    Args:
+        smiles: The parent compound, as SMILES.
+
+    Returns:
+        The proposals, grouped by nothing — group them by `condition` when reporting. The parent
+        is deliberately not among them, so `count` reads as "how many liabilities" rather than one
+        more.
+    """
+    return await asyncio.to_thread(enumerate_degradant_candidates, smiles)

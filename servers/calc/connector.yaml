@@ -78,6 +78,7 @@ endpoint:
     # and a scan that gains two points reuses the twenty-four it had.
     - relax_structure
     - compute_properties_at
+    - compute_fukui_at
     - compute_hessian
     - scan_point
     - search_conformer_ensemble
@@ -119,6 +120,7 @@ endpoint:
     - predict_developability_profile
     - relax_structure
     - compute_properties_at
+    - compute_fukui_at
     - compute_hessian
     - scan_point
     - search_conformer_ensemble
