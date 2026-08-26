@@ -118,9 +118,19 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
     The token rides on a caller-supplied httpx client because that is how this version of the MCP
     client takes headers — which also means the credential is exercised on the real path rather than
     injected past it.
+
+    **The read timeout is stated rather than defaulted, and finding out why cost an afternoon.**
+    httpx defaults to 5 s. A tool call that outlives it does not fail: the streamable-HTTP client
+    treats the dropped stream as a disconnect and reconnects ("GET stream disconnected, reconnecting
+    in 1000ms"), so the caller waits forever for a response that was already computed. Every tool
+    here answered in milliseconds while `crest` shipped in no image, so the default was never
+    reached; the first real CREST search over this wire hung the suite instead of failing it.
+    Chemclaw3 sets the same bound deliberately on its side (`calc_sampling_timeout_seconds`).
     """
     async with (
-        httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,
+        httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {TOKEN}"}, timeout=httpx.Timeout(300.0)
+        ) as http_client,
         streamable_http_client(f"{base}/mcp", http_client=http_client) as (rx, tx, _),
         ClientSession(rx, tx) as session,
     ):
@@ -277,7 +287,9 @@ async def test_a_crest_primitive_answers_or_refuses_by_name_across_the_wire(
     deployment trims the binary back out.
     """
     async with _session(running_server) as session:
-        embedded = await session.call_tool("embed_structure", {"smiles": "CCO"})
+        # Water, for the reason `test_calc_version.py` gives: one conformer and seconds of
+        # sampling, so the *contract* is checked without a metadynamics run inside a unit suite.
+        embedded = await session.call_tool("embed_structure", {"smiles": "O"})
         assert embedded.structuredContent is not None
         result = await session.call_tool(
             "search_conformer_ensemble", {"structure": embedded.structuredContent}
