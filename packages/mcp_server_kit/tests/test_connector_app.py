@@ -248,3 +248,61 @@ def test_metrics_is_open_and_carries_no_identity(running_server: str) -> None:
             f"/metrics is unauthenticated and published {forbidden!r}; a labelled metric on this "
             "endpoint must never carry an actor, a session, a correlation id or a tool argument"
         )
+
+
+async def test_metrics_publishes_what_a_tool_call_did(running_server: str) -> None:
+    """The other direction, and the one the absence test above cannot give: it is not empty.
+
+    Measured before this instrumentation existed: **ten** series on a running server, all ten
+    `prometheus_client` built-ins. An operator could read the interpreter version and the pod's
+    open file descriptors and could not answer "which tool is slow", "which tool is failing", or
+    "is anything being called". The absence assertion above was fully satisfied by that, which is
+    exactly why it needs a companion — a `/metrics` that publishes nothing passes every rule about
+    what it must not publish.
+
+    All three outcomes are driven through the real transport rather than asserted off the code,
+    because `outcome` is decided by `ToolError.__cause__` — a property of the *upstream* tool
+    manager, and the same one `_sanitize_tool_errors`'s exemption reads.
+    """
+    async with _session(running_server) as session:
+        await session.call_tool("echo", {"text": "hello"})
+        await session.call_tool("boom_domain", {})
+        await session.call_tool("boom_internal", {})
+
+    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
+    for expected in (
+        'chemclaw_mcp_tool_calls_total{outcome="ok",server="probe",tool="echo"}',
+        'chemclaw_mcp_tool_calls_total{outcome="refused",server="probe",tool="boom_domain"}',
+        'chemclaw_mcp_tool_calls_total{outcome="failed",server="probe",tool="boom_internal"}',
+        'chemclaw_mcp_tool_duration_seconds_count{server="probe",tool="echo"}',
+        'chemclaw_mcp_requests_total{path="/mcp",server="probe",status="200"}',
+        "chemclaw_mcp_build_info{revision=",
+        "chemclaw_mcp_egress_guard_armed 1.0",
+    ):
+        assert expected in exposition, f"/metrics does not publish {expected!r}"
+
+
+async def test_an_unknown_tool_name_cannot_mint_a_metric_series(running_server: str) -> None:
+    """The trap that makes this metric safe, and it is not safe by construction.
+
+    A tool name is not an actor, a session or an argument, so it is allowed as a label — but it is
+    **caller-supplied**: `ToolManager.call_tool` raises `Unknown tool: <whatever>` for anything it
+    does not have, so an unclamped counter mints one Prometheus series per string a confused model
+    or a hostile caller sends, in the pod's memory, unbounded. Measured in the audit's prototype: a
+    probe calling `nope` minted `tool="nope"`.
+
+    So the call is still counted — a caller guessing tool names is a real signal — and it is
+    counted under the fixed `<unknown>` sentinel.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool("definitely_not_a_tool_here", {})
+        assert result.isError is True
+
+    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
+    assert "definitely_not_a_tool_here" not in exposition, (
+        "a caller-supplied tool name reached a metric label; the label set is then unbounded and "
+        "anything that can reach the pod can grow it until the process runs out of memory"
+    )
+    assert 'chemclaw_mcp_tool_calls_total{outcome="refused",server="probe",tool="<unknown>"}' in (
+        exposition
+    ), "an unknown tool name must still be counted, under the sentinel"

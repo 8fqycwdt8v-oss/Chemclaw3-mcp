@@ -1,0 +1,29 @@
+# What actually tells Prometheus to scrape this server. Before this file the fleet published a
+# `/metrics` endpoint that nothing collected: the NetworkPolicy admitted the monitoring namespace,
+# and no Service, ServiceMonitor or PodMonitor existed in any server's `deploy/` directory — so
+# every counter this repository now emits would have gone nowhere.
+#
+# `port: http` is the **name** of the port on `deploy/service.yaml`, not a number. Prometheus
+# Operator resolves it through the Service, and a name that does not match there produces no
+# targets and no error — which is why `tests/test_deploy.py` asserts the two files agree rather
+# than trusting that they do.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: chemclaw-mcp-chem
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-chem
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-chem
+  endpoints:
+    # No `bearerTokenSecret` and no `tlsConfig`: `/metrics` is one of the two routes
+    # `mcp_server_kit.auth.OPEN_PATHS` serves without a credential, deliberately and on the
+    # condition that it publishes nothing about a caller. See `packages/mcp_server_kit/metrics.py`.
+    - port: http
+      path: /metrics
+      scheme: http
+      interval: 30s
+      scrapeTimeout: 10s

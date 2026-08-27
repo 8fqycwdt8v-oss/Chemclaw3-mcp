@@ -51,6 +51,8 @@ servers/<name>/
 ├── Containerfile                # rootless, dataset baked in, no credential for anything external
 ├── README.md                    # what it serves, the exact artifact it reads, and who refreshes it
 ├── deploy/networkpolicy.yaml    # policyTypes includes Egress; egress: []
+├── deploy/service.yaml          # one port named `http`; what the ServiceMonitor resolves through
+├── deploy/servicemonitor.yaml   # path /metrics, port: http — a *name*, not a number
 ├── src/chemclaw_mcp_<name>/
 │   ├── engine/                  # pure computation — no FastAPI, no MCP, no network
 │   ├── tools.py                 # the FastMCP surface
@@ -106,6 +108,48 @@ shows the pattern: CAS check digits, molecular weight against formula, and Antoi
 the tabulated boiling point are all pairs of *independently written* numbers that must agree, so a
 transposed digit fails a test instead of answering a question. Find the equivalent for your data
 before falling back to "it was reviewed once".
+
+## Observability
+
+**This section exists because its absence was the cause.** The checklist you are reading never
+mentioned logging, metrics or monitoring, and the result was measurable: seven servers, ten metric
+series (all ten `prometheus_client` built-ins), 26 log call sites in the whole repository and not
+one of them recording a tool name, a duration or an outcome. Four servers contained no log
+statement at all. Nobody skipped a step; there was no step.
+
+Most of it you get for free and must not re-implement:
+
+- **Logging is configured by `connector_app`** (`mcp_server_kit.logging`), with `force=True`
+  because `FastMCP.__init__` has already called `basicConfig` by then. Never call `basicConfig`,
+  `dictConfig` or `setLevel` in a server: `MCP_LOG_LEVEL`, `MCP_LOG_FORMAT` and `MCP_LOG_JSON` are
+  the knobs, and a module just does `logging.getLogger(__name__)`.
+- **Every line already carries the caller** — actor, session and correlation id, stamped by
+  `ContextFilter` — and every credential this process holds is already scrubbed from the message,
+  the traceback and the `extra=` fields. Do not format an identifier into a message by hand.
+- **Every tool call is already counted and timed**, by server, tool and `ok`/`refused`/`failed`.
+  Do not add a per-tool counter in a server; it would be a second answer to one question.
+
+What a *new server* still owes:
+
+1. **A `readiness` callable**, if the server has anything to be unready about — a corpus, a binary,
+   a compiled rule table. It loads what the first tool call would load and returns the `Dataset`s
+   it verified; `connector_app` answers 503 with the reason when it raises. Without one `/healthz`
+   is a constant 200, which is how a pod with a corpus that failed its checksum passes the kubelet
+   probe, takes traffic and fails every call.
+2. **A metric for anything expensive the server can do to itself** — a killed subprocess, a spent
+   budget, a resource limit firing. `servers/calc/src/chemclaw_mcp_calc/engine/metrics.py` and its
+   `pyexec` sibling are the two worked examples. The rule for a label is the one
+   in `packages/mcp_server_kit/metrics.py`: `/metrics` is unauthenticated, so **never** an actor, a
+   session, a correlation id or a tool argument, and never a value a caller chooses unless it is
+   clamped to a set this repository defines.
+3. **A log line on every branch that ends a run early.** The test is whether an operator could tell
+   your three failure modes apart from the log alone. A timeout that only raises is invisible: the
+   exception is a `RuntimeError`, so it arrives at `connector_app` as "a tool raised an unexpected
+   exception", which is what a genuine bug looks like.
+4. **`deploy/service.yaml` and `deploy/servicemonitor.yaml`**, copied from any server and renamed.
+   The NetworkPolicy already admits the monitoring namespace; these are what tell Prometheus to use
+   it. `tests/test_fleet.py` requires both files and `tests/test_deploy.py` holds their port against
+   the Containerfile and the manifest.
 
 ## The tool docstrings
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from hmac import compare_digest
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -43,10 +44,18 @@ from mcp_server_kit.identity import (
     bind_caller,
     reset_caller,
 )
+from mcp_server_kit.metrics import REQUESTS, UNAUTHENTICATED_REQUESTS
 
 logger = logging.getLogger(__name__)
 
 OPEN_PATHS = frozenset({"/healthz", "/metrics"})
+
+# What a request's path is allowed to become as a metric label. Three routes and a sentinel,
+# because a path is caller-supplied: counting it verbatim would let anything that can reach the pod
+# mint a series per URL it invents, which is the same unbounded-cardinality trap
+# `app._served_tool_name` closes for a tool name.
+_MCP_PATH = "/mcp"
+_OTHER_PATH = "<other>"
 
 
 def _is_open(path: str) -> bool:
@@ -60,6 +69,14 @@ def _is_open(path: str) -> bool:
     MCP surface to anything that could write a path starting with `/healthz`.
     """
     return (path.rstrip("/") or "/") in OPEN_PATHS
+
+
+def _labelled_path(path: str) -> str:
+    """`path` folded onto the fixed route set this server actually has."""
+    normalised = path.rstrip("/") or "/"
+    if normalised in OPEN_PATHS or normalised == _MCP_PATH:
+        return normalised
+    return _OTHER_PATH
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -90,6 +107,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 expected.encode("utf-8", "surrogateescape"),
             )
         ):
+            UNAUTHENTICATED_REQUESTS.labels(self._server).inc()
             logger.warning(
                 "server %s refused an unauthenticated request to %s",
                 self._server,
@@ -100,33 +118,75 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 
 class CallerLogMiddleware(BaseHTTPMiddleware):
-    """Log the `X-Chemclaw-*` caller of every request and bind it for the request's duration.
+    """Bind the `X-Chemclaw-*` caller for the request's duration, then log what happened to it.
 
     Binding here covers the HTTP path; `app._bind_caller_per_tool_call` covers the tool bodies,
     which run in a different task. Both are needed, and neither is an access decision.
+
+    **The line used to be written before `call_next` and that made it near-useless**, in three
+    separate ways an operator meets on the same bad day:
+
+    - A request that 500s, hangs, or is abandoned mid-stream logged *exactly* the same line as one
+      that succeeded. There was no record anywhere that a request had ever finished, so "the pod
+      stopped answering" and "the pod is answering fine" produced identical logs.
+    - The **correlation id** — the single field that joins this fleet's lines to Chemclaw3's audit
+      trail — was bound on every request and logged on none. Its only readers in the whole
+      repository were `identity.py` and its own test.
+    - Nothing said which build answered, so a log line could not be tied to an image.
+
+    So it moves into a `finally`, and carries the status, the duration and the revision. What it
+    deliberately still cannot say is *which tool* was called — `path` is `/mcp` for every one of
+    them, because the tool name is inside a JSON-RPC body this middleware must not parse. That
+    question is answered by `chemclaw_mcp_tool_calls_total` instead, which is the right place for
+    it: a per-tool rate is an aggregate, not a line.
+
+    `/healthz` and `/metrics` drop to DEBUG. At an ordinary 30 s probe interval and a 30 s scrape
+    that is on the order of 40,000 content-free lines a day across seven servers — plausibly the
+    bulk of this fleet's log volume, describing the two requests nobody has ever needed to see one
+    of. They are still emitted, at a level a deployment can turn back on with `MCP_LOG_LEVEL`.
     """
 
-    def __init__(self, app: ASGIApp, *, server: str) -> None:
-        """Bind the server's name so one log line identifies which capability was called."""
+    def __init__(self, app: ASGIApp, *, server: str, revision: str) -> None:
+        """Bind the server's name and build so one log line says which pod, and which image."""
         super().__init__(app)
         self._server = server
+        self._revision = revision
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        """Log the caller, bind it, serve the request unchanged, and always reset."""
+        """Bind the caller, serve the request, and log its outcome exactly once."""
         actor = request.headers.get(HEADER_ACTOR, "")
         session = request.headers.get(HEADER_SESSION, "")
-        logger.info(
-            "server %s request: path=%s actor=%s session=%s dry_run=%s",
-            self._server,
-            request.url.path,
-            actor or "-",
-            session or "-",
-            request.headers.get(HEADER_DRY_RUN, "-"),
-        )
-        tokens = bind_caller(actor, session, request.headers.get(HEADER_CORRELATION, ""))
+        correlation = request.headers.get(HEADER_CORRELATION, "")
+        path = request.url.path
+        tokens = bind_caller(actor, session, correlation)
+        started = time.perf_counter()
+        status = 500
         try:
-            return await call_next(request)
+            response = await call_next(request)
+            status = response.status_code
+            return response
         finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            REQUESTS.labels(self._server, _labelled_path(path), str(status)).inc()
+            # Logged *before* the reset, deliberately. `ContextFilter` stamps every record from the
+            # ambient caller, so resetting first left this one line — the request line — carrying
+            # `[-/-]` where every line inside the request carried the ids. Measured against a
+            # running server: the correlation id appeared in the message and not in the field a log
+            # stack indexes, on the one record most worth joining on.
+            logger.log(
+                logging.DEBUG if _is_open(path) else logging.INFO,
+                "server %s request: path=%s status=%s duration_ms=%.1f actor=%s session=%s "
+                "correlation=%s dry_run=%s revision=%s",
+                self._server,
+                path,
+                status,
+                elapsed_ms,
+                actor or "-",
+                session or "-",
+                correlation or "-",
+                request.headers.get(HEADER_DRY_RUN, "-"),
+                self._revision,
+            )
             reset_caller(tokens)
 
 

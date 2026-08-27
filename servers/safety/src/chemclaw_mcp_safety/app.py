@@ -17,6 +17,15 @@ fails closed with 401 rather than serving the surface anonymously.
 from fastapi import FastAPI
 from mcp_server_kit import connector_app
 
+from chemclaw_mcp_safety.engine.readiness import verified_corpora
 from chemclaw_mcp_safety.tools import server
 
-app: FastAPI = connector_app(server, name="safety", token_env="CHEMCLAW_SAFETY_TOKEN")
+app: FastAPI = connector_app(
+    server,
+    name="safety",
+    token_env="CHEMCLAW_SAFETY_TOKEN",
+    # Five tables, all loaded lazily, and an unready pod here answers "nothing matched" — which
+    # reads as *safe*. See `engine/readiness.py` for why the check exercises the screens rather
+    # than only hashing the files.
+    readiness=verified_corpora,
+)

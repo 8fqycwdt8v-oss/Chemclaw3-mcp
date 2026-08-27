@@ -5,7 +5,13 @@ the scrape, `/mcp` for the MCP streamable-HTTP transport. That shape is written 
 server's own `app.py` is three lines, and so the cross-cutting behaviours it needs cannot be
 forgotten one server at a time.
 
-Four of those behaviours are not obvious, and each is here because getting it wrong is quiet:
+It is also the one place the process's *observability* is established, for the same reason: a log
+configuration, a build-info label and a per-tool counter added one server at a time are added to
+some of them. Before this, the fleet had none of the three — `configure_logging()` here is what
+gives every line a timestamp and a level, and `_instrument_tool_calls` is what gives `/metrics`
+anything about a tool at all.
+
+Five of these behaviours are not obvious, and each is here because getting it wrong is quiet:
 
 - **The parent app must run the MCP session manager.** `FastMCP.streamable_http_app()` returns a
   Starlette app whose *own* lifespan starts the session manager, and mounting an app does not run
@@ -20,7 +26,11 @@ Four of those behaviours are not obvious, and each is here because getting it wr
 - **A tool's unexpected exception must not reach the model verbatim.** `Tool.run` folds `str(e)`
   into the error result, so an unhandled internal error arrives at the agent carrying whatever the
   exception happened to mention. `ValueError` (the family this repository uses for deliberately
-  worded, caller-safe messages) passes through; everything else is replaced and logged.
+  worded, caller-safe messages) passes through; everything else is replaced and logged — with an
+  `error_id` in *both* halves, because a notice the model can quote and a traceback nobody can
+  find it in are two records of one fault that cannot be joined.
+- **`configure_logging()` must force.** `FastMCP.__init__` calls `basicConfig` at import of the
+  server's `tools.py`, so anything that does not pass `force=True` here silently loses to it.
 """
 
 from __future__ import annotations
@@ -28,11 +38,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator, Callable, Coroutine
+import secrets
+import time
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.lowlevel.server import request_ctx
@@ -40,6 +53,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from starlette.responses import Response
 
 from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit, CallerLogMiddleware
+from mcp_server_kit.datasets import Dataset
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
     HEADER_CORRELATION,
@@ -47,12 +61,61 @@ from mcp_server_kit.identity import (
     bind_caller,
     reset_caller,
 )
+from mcp_server_kit.logging import configure_logging, register_secret_env
+from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
 
 logger = logging.getLogger(__name__)
+
+# What a server passes to prove it can actually answer: a callable that loads whatever the first
+# tool call would have loaded, and returns the corpora it verified. See `connector_app`.
+Readiness = Callable[[], Iterable[Dataset]]
 
 # One JSON-RPC call carrying chemistry-sized arguments. Far below a web front door's cap, because
 # nothing legitimate on this surface is a file upload.
 DEFAULT_MAX_REQUEST_BYTES = 1_000_000
+
+
+def _requested_tool(args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
+    """The tool name this `call_tool` invocation asked for, however upstream was called.
+
+    `ToolManager.call_tool(name, arguments, ...)` is called positionally by the MCP server and by
+    name in tests, and this reads both rather than pinning one — the wrappers around it must not
+    change behaviour with the call style.
+    """
+    return args[0] if args else kwargs.get("name", "")
+
+
+def _served_tool_name(manager: Any, requested: object) -> str:
+    """`requested` if this server actually serves it, else the `<unknown>` sentinel.
+
+    **The clamp that keeps a metric label bounded.** The name in a `tools/call` is caller-supplied
+    and reaches `ToolManager.call_tool` unvalidated — it raises `Unknown tool: <whatever>` for
+    anything it does not have — so counting it verbatim mints one Prometheus series per string a
+    confused model or a hostile caller sends, unbounded, in the process's memory. Measured in the
+    audit that prompted this: a probe calling `nope` minted `tool="nope"`.
+
+    `get_tool` is a lookup in the same dict `list_tools()` returns, so this is O(1) and always
+    reflects the surface as it stands rather than a snapshot taken at wrap time.
+    """
+    if isinstance(requested, str) and manager.get_tool(requested) is not None:
+        return requested
+    return UNKNOWN_TOOL
+
+
+def _is_caller_safe(exc: ToolError) -> bool:
+    """Whether this `ToolError` is a refusal the model may read, rather than a fault to hide.
+
+    One definition, read by both `_sanitize_tool_errors` (which decides what the model is told) and
+    `_instrument_tool_calls` (which decides whether the call counts as `refused` or `failed`). Two
+    spellings of the same discriminator is how an operator's dashboard comes to disagree with what
+    the agent was actually told.
+
+    A deliberately worded domain message is a `ValueError` (pydantic's `ValidationError` is one);
+    upstream folds a failing tool body into `ToolError(...) from e`, so a fault always arrives
+    chained, and raises a bare `ToolError(f"Unknown tool: {name}")` for a name it does not have —
+    a caller input error, and the only unchained one on this path.
+    """
+    return exc.__cause__ is None or isinstance(exc.__cause__, ValueError)
 
 
 def _bind_caller_per_tool_call(server: FastMCP) -> None:
@@ -112,10 +175,68 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
         try:
             return await wrapped(*args, **kwargs)
         except ToolError as exc:
-            if exc.__cause__ is None or isinstance(exc.__cause__, ValueError):
+            if _is_caller_safe(exc):
                 raise
-            logger.exception("server %s: a tool raised an unexpected exception", name)
-            raise ToolError("an internal error occurred") from exc.__cause__
+            # A short random token, minted here and put in *both* places: the operator's traceback
+            # and the model's notice. Without it the two are unjoinable — the line said only which
+            # server, so two concurrent faults in one second were indistinguishable and "the agent
+            # said it broke" was not a thing anyone could grep for. A random hex is not an actor, a
+            # session or a tool argument, so handing it to the model costs nothing.
+            error_id = secrets.token_hex(4)
+            tool = _served_tool_name(manager, _requested_tool(args, kwargs))
+            logger.exception(
+                "server %s: tool %s raised an unexpected exception (error id %s)",
+                name,
+                tool,
+                error_id,
+                extra={"error_id": error_id, "tool": tool},
+            )
+            raise ToolError(f"an internal error occurred (error id {error_id})") from exc.__cause__
+
+    manager.call_tool = call_tool
+
+
+def _instrument_tool_calls(server: FastMCP, *, name: str) -> None:
+    """Count and time every tool call, at the one seam the whole fleet shares.
+
+    `_tool_manager.call_tool` is where `_sanitize_tool_errors` and `_bind_caller_per_tool_call`
+    already reach, so instrumenting it costs one more wrapper here and **no per-server change** —
+    which is why the fleet had no per-tool signal at all: there was no other place to add one once
+    without adding it seven times.
+
+    `outcome` splits on `_is_caller_safe`, the same discriminator the sanitiser uses, and the split
+    is the operationally important half of this metric. A rising `refused` on `props` means the
+    model keeps asking for solvents the corpus does not carry — a prompt or a catalogue problem. A
+    rising `failed` means the server is broken. Neither was visible before, and one counter for
+    both would have made them indistinguishable.
+
+    Applied *outside* the sanitiser so `outcome` describes what the caller was actually told, and
+    outside the caller binding for the same reason the exposition carries no identity: this
+    wrapper must never read who is asking.
+    """
+    manager = getattr(server, "_tool_manager", None)
+    if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
+        return
+    wrapped = manager.call_tool
+
+    async def call_tool(*args: Any, **kwargs: Any) -> Any:
+        tool = _served_tool_name(manager, _requested_tool(args, kwargs))
+        started = time.perf_counter()
+        outcome = "ok"
+        try:
+            return await wrapped(*args, **kwargs)
+        except ToolError as exc:
+            outcome = "refused" if _is_caller_safe(exc) else "failed"
+            raise
+        except BaseException:
+            # Anything that is not a `ToolError` never reached the sanitiser's judgement, so it is
+            # a fault by definition — including a cancellation, which on this server means a caller
+            # that gave up mid-calculation and is exactly the event `servers/calc` needs to see.
+            outcome = "failed"
+            raise
+        finally:
+            TOOL_DURATION.labels(name, tool).observe(time.perf_counter() - started)
+            TOOL_CALLS.labels(name, tool, outcome).inc()
 
     manager.call_tool = call_tool
 
@@ -161,6 +282,7 @@ def connector_app(
     token_env: str | None = None,
     max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
     on_start: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    readiness: Readiness | None = None,
 ) -> FastAPI:
     """Build the FastAPI app that serves one capability over MCP streamable-HTTP.
 
@@ -178,15 +300,29 @@ def connector_app(
         on_start: Optional coroutine started once at startup, for a server that wants to report
             what it loaded. Started, never awaited — a server that refuses to start because it
             could not describe itself is strictly worse than one that starts.
+        readiness: Optional callable that loads whatever the first tool call would have loaded and
+            returns the corpora it verified. `None` means this server has nothing to be unready
+            about, and `/healthz` stays the constant 200 it always was.
 
     Returns:
         A FastAPI app exposing `GET /healthz`, `GET /metrics`, and the MCP endpoint at `/mcp`.
     """
+    # First, and with `force=True` underneath it. `FastMCP.__init__` ran at import of the server's
+    # `tools.py` and has already called `basicConfig`, so anything that does not force is a no-op
+    # and the process keeps upstream's timestamp-free `"%(message)s"`. See `logging.py`.
+    configure_logging()
+    if token_env:
+        # The credential this server checks on every request, into the redaction inventory — so it
+        # cannot reach a log line through an exception message, an environment dump or a `repr`.
+        register_secret_env(token_env)
+    BUILD_INFO.labels(name, server_revision()).set(1)
     _stamp_revision(server)
     _sanitize_tool_errors(server, name=name)
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
     _bind_caller_per_tool_call(server)
+    # Outermost, so its `outcome` is the one the caller was actually given. See the function.
+    _instrument_tool_calls(server, name=name)
     mcp_app = server.streamable_http_app()
 
     @asynccontextmanager
@@ -201,7 +337,7 @@ def connector_app(
                     report.cancel()
 
     app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
-    app.add_middleware(CallerLogMiddleware, server=name)
+    app.add_middleware(CallerLogMiddleware, server=name, revision=server_revision())
     # Added after the logger, so Starlette's add-order (most recent outermost) puts the credential
     # check outside it: an unauthenticated request is refused before anything logs or reads it.
     app.add_middleware(BearerAuthMiddleware, server=name, token_env=token_env)
@@ -209,26 +345,66 @@ def connector_app(
         app.add_middleware(BodySizeLimit, max_bytes=max_request_bytes)
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        """Liveness and readiness for Chemclaw3's startup probe.
+    async def healthz() -> Response:
+        """Liveness *and* readiness — and until `readiness` existed only the first was true.
 
-        One route for both, honestly: uvicorn accepts connections only once the lifespan above has
-        completed, so this route answering *is* the evidence that the session manager is running.
-        A separate `/readyz` could only assert the same fact twice.
+        This route answering is evidence the session manager is running, because uvicorn accepts
+        connections only once the lifespan above has completed. It was never evidence that the
+        server could answer anything, and the difference is not theoretical: datasets load lazily
+        here, so a `chem` pod whose corpus fails its checksum returned 200, passed the kubelet
+        probe, took traffic and failed every tool call — while `load_dataset`'s own docstring says
+        a bad corpus "fails at startup with the two hashes in the message", which is true only of
+        the servers that happen to touch their corpus at import. Measured: `props` had its table
+        loaded at import *by accident* (an incidental module-level `len(...)` in `tools.py`) and
+        `chem` did not.
+
+        So a server that has something to be unready about passes a `readiness` callable, and this
+        route runs it: 503 with the reason on failure, and on success the corpora it verified, so
+        an operator can confirm which version of which table a pod is serving without a shell.
+
+        Cheap to call repeatedly by construction — every loader behind it is `lru_cache`d, so the
+        checksum is paid once per process and the probe thereafter reads a dict.
         """
-        return {"status": "ok", "server": name, "revision": server_revision()}
+        payload: dict[str, object] = {
+            "status": "ok",
+            "server": name,
+            "revision": server_revision(),
+        }
+        if readiness is None:
+            READY.labels(name).set(1)
+            return JSONResponse(payload)
+        try:
+            # Off the event loop: a readiness check reads and hashes a corpus, and on `calc` it can
+            # reach a subprocess. Blocking here would stall every in-flight SSE stream in the pod
+            # for the duration of a probe — the same trap `calc`'s `on_start` hoist exists for.
+            verified = list(await asyncio.to_thread(readiness))
+        except Exception as exc:
+            READY.labels(name).set(0)
+            logger.exception("server %s is not ready: %s", name, exc)
+            return JSONResponse(
+                {**payload, "status": "unready", "reason": str(exc)}, status_code=503
+            )
+        READY.labels(name).set(1)
+        payload["datasets"] = [f"{corpus.name}@{corpus.version}" for corpus in verified]
+        return JSONResponse(payload)
 
     @app.get("/metrics")
     async def metrics() -> Response:
         """Prometheus exposition. Unauthenticated, so what it may carry is bounded.
 
         Not "counts only", which is what this used to say and was never true: the default registry
-        publishes `python_info` and the `process_*` collectors, and an operator wants them. What
-        the endpoint may **never** carry, because it is served without a credential, is anything
-        about a request — a caller's actor or session, a correlation id, or a tool argument. A
+        publishes `python_info` and the `process_*` collectors, and an operator wants them. It is
+        no longer *only* those either — `mcp_server_kit.metrics` puts this fleet's own per-tool
+        counters and latencies here, which is the whole reason an operator can now answer "which
+        tool is slow" and "which tool is failing".
+
+        What the endpoint may **never** carry, because it is served without a credential, is
+        anything about a *caller*: an actor, a session, a correlation id, or a tool argument. A
         labelled counter such as `tool_calls_total{tool=..., actor=...}` would publish per-actor
-        call volumes to anything that can reach the pod. `tests/test_connector_app.py` asserts that
-        absence over the live exposition rather than leaving it to this docstring.
+        call volumes to anything that can reach the pod. A tool *name* is none of those four and is
+        clamped to the served surface (`_served_tool_name`); a destination host is not clamped and
+        is therefore not a label at all. `tests/test_connector_app.py` asserts both directions over
+        the live exposition rather than leaving it to this docstring.
         """
         return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 

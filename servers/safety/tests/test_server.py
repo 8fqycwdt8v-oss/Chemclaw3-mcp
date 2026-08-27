@@ -85,7 +85,19 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # for a test process, which is not built from a Containerfile — that the *image*
     # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
     # fills is a provenance record that quietly says nothing.
-    assert response.json() == {"status": "ok", "server": "safety", "revision": "unknown"}
+    from chemclaw_mcp_safety.engine.readiness import verified_corpora
+
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["server"] == "safety"
+    assert body["revision"] == "unknown"
+    # The corpora this pod actually verified, which is the half `/healthz` did not have. It was a
+    # constant 200: it proved the session manager was running and said nothing about whether the
+    # server could answer, so a pod whose table failed its checksum passed the probe, took traffic
+    # and failed every tool call. `readiness` in this server's `app.py` is what runs the load, and
+    # naming the version here is what lets an operator confirm which table a pod serves without a
+    # shell on it.
+    assert body["datasets"] == [f"{corpus.name}@{corpus.version}" for corpus in verified_corpora()]
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:

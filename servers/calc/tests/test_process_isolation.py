@@ -100,7 +100,13 @@ def _run_forking_engine(runner: str) -> tuple[int, int, int]:
         env = {"PATH": os.environ.get("PATH", "")}
         with pytest.raises(subprocess.TimeoutExpired):
             if runner == "isolated":
-                run_isolated(argv, cwd=Path(directory), env=env, timeout=_BOUND_SECONDS)
+                run_isolated(
+                    argv,
+                    cwd=Path(directory),
+                    env=env,
+                    timeout=_BOUND_SECONDS,
+                    label="forking-engine",
+                )
             else:
                 # The naive form, run here deliberately: this branch exists to prove it leaks.
                 subprocess.run(

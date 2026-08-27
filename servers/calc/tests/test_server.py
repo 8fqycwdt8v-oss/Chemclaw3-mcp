@@ -90,7 +90,15 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # for a test process, which is not built from a Containerfile — that the *image*
     # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
     # fills is a provenance record that quietly says nothing.
-    assert response.json() == {"status": "ok", "server": "calc", "revision": "unknown"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["server"] == "calc"
+    assert body["revision"] == "unknown"
+    # An empty list, and the field is present rather than omitted: this server vendors no corpus.
+    # What the probe proves here is the other half of readiness — `app._readiness` derives a
+    # `calc_version`, so a pod that could not resolve its backend answers 503 and is not sent a
+    # calculation it would fail. `/healthz` was a constant 200 before that.
+    assert body["datasets"] == []
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
