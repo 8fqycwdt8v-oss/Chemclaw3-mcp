@@ -359,6 +359,18 @@ themselves to the *node* rather than to the container's CPU limit and then fight
 concurrency belongs at the request level, where the server can see it. Raise it deliberately, on a
 pod sized for it.
 
+**And it is now bounded there.** One calculation is one core under that pinning, so aggregate load
+was whatever the callers happened to send: a burst thrashes the pod, every call takes longer than it
+would have alone, the caller's timeout fires, and its retry lands beside a calculation that never
+stopped. `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` (default 4) is the ceiling, and a call arriving at a
+full pod is **refused promptly rather than queued** — a queued minute-long calculation comes back
+long after `request_timeout`, computed at the expense of one somebody is waiting for. The three tools
+that run no SCF (`calculation_key`, `embed_structure`, `combine_structures`) are outside the gate on
+purpose: `calculation_key` is how a client avoids work, so refusing it under load adds work.
+Chemclaw3 declares the same number as `calc_backend_max_concurrent_requests` and keeps under it; this
+is the backstop for every other caller and for the case where the two disagree. See
+`engine/admission.py`.
+
 ## The Hessian on the wire
 
 `compute_hessian` returns matrices, and they are the only payload here big enough to need a decision.

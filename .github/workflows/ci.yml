@@ -12,6 +12,22 @@ on:
   # with no route to a verdict while every other branch's CI drained normally. `Chemclaw3`'s own
   # ci.yml carries this trigger for the same reason.
   workflow_dispatch:
+  # `deps` below scans the *lockfile* for known CVEs, so without this its coverage would be a
+  # function of how often somebody happened to push: an advisory published against an unchanged
+  # dependency stays invisible until the next commit. A blocking gate whose reach depends on commit
+  # frequency is a gate on activity, not on the dependency closure. Weekly, so a quiet week still
+  # gets one audit of what is actually deployed. The other three jobs ride along; they need no
+  # cluster and no credentials, so a weekly re-run of them costs minutes and catches a toolchain
+  # that moved underneath a green commit.
+  schedule:
+    - cron: "0 6 * * 1"
+
+# Read-only by default, granted per job where more is needed — which is nothing here. Stated
+# rather than inherited because every action in this file is SHA-pinned for the same reason: a
+# third-party step that is not what it was when it was reviewed runs with whatever this token can
+# do, and the ambient default is wider than any job below needs.
+permissions:
+  contents: read
 
 # Nothing here needs a cluster, a database, or a network. That is a property of the fleet rather
 # than of the workflow: every server answers from data in its own image, and `offline-check` proves
@@ -40,10 +56,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
 
@@ -69,10 +85,10 @@ jobs:
     # an upstream fails here and nowhere else.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
 
@@ -112,10 +128,10 @@ jobs:
     # server; this job checks the fleet-level invariants a single server cannot see.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
 
@@ -124,3 +140,22 @@ jobs:
 
       - name: Every manifest is registered, unique, and points at its own server
         run: uv run pytest -q tests
+
+  deps:
+    # The supply-chain gate: `pip-audit` over the locked closure, blocking. It is a separate job
+    # rather than a step in `check` because it is the one gate whose fix lives in `uv.lock` rather
+    # than in the diff under review, and because it is the only job in this file that *needs* the
+    # network — the other three prove the opposite property about this fleet.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+
+      # No `uv sync`: the target audits the exported lockfile, not the environment, so nothing has
+      # to be installed for it to be right.
+      - name: Audit the locked dependency closure for known vulnerabilities
+        run: make deps-audit
