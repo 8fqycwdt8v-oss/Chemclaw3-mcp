@@ -58,7 +58,7 @@ python_version = "3.11"
 strict = true
 # Every package ships its own `src/` layout; point mypy at the sources rather than the installed
 # copies so a type error is reported against the file a person edits.
-mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src"
+mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/rxnlabel/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src"
 
 [[tool.mypy.overrides]]
 module = [
@@ -71,6 +71,7 @@ module = [
     "dgl.*",
     "onmt.*",
     "rxn_insight.*",
+    "rxnmapper.*",
     "t5chem.*",
     "torch.*",
     "two_stage_dnn.*",

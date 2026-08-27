@@ -18,6 +18,7 @@ from a second table.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -213,6 +214,69 @@ def test_the_map_and_the_tree_agree() -> None:
             continue
         assert (directory / "README.md").is_file(), f"{directory.name}/ has no README.md"
         assert f"`{directory.name}/" in guidance, f"{directory.name}/ has no row in CLAUDE.md"
+
+
+def test_no_server_registers_a_resource_or_a_prompt() -> None:
+    """`connector_app`'s caller-rebind and error-sanitize only cover `server._tool_manager`.
+
+    `_bind_caller_per_tool_call`/`_sanitize_tool_errors` (`mcp_server_kit/app.py`) both patch
+    `manager.call_tool` — the one FastMCP dispatch that a live attribute lookup inside the SDK's own
+    registered handler reads afresh on every call. `FastMCP.read_resource`/`get_prompt` are *not*
+    that shape: the lowlevel server captures the bound method object at `_setup_handlers()`, inside
+    `FastMCP.__init__`, before `connector_app()` ever sees the instance — so the same "monkeypatch
+    the attribute afterward" trick that works for tools would silently do nothing for a resource or
+    a prompt, and `read_resource`'s own exception handler
+    (`except Exception as e: raise ResourceError(str(e))`, no `ValueError` exemption) would reach
+    the calling model verbatim, and `current_caller()` inside a resource/prompt body would read the
+    *handshake's* identity rather than the request being served.
+
+    So: nobody may add one until the kit actually covers it. This is the guard rail, not a
+    permanent decision — extending `_bind_caller_per_tool_call`/`_sanitize_tool_errors` (which needs
+    a real registration to develop and verify against, not a guess at SDK internals with nothing
+    live to test it on) is what turns this red into a real fix.
+    """
+    for server in server_dirs():
+        src = server / "src"
+        if not src.is_dir():
+            continue
+        for path in src.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    assert node.func.attr not in {"resource", "prompt"}, (
+                        f"{path.relative_to(ROOT)}:{node.lineno} calls .{node.func.attr}(...) — "
+                        "connector_app's caller-rebind and error-sanitize do not cover resources "
+                        "or prompts yet (see this test's docstring)"
+                    )
+
+
+def test_every_server_is_wired_into_the_type_gate() -> None:
+    """`make type` (what CI's `Types` step and `make check` both run) must see every server.
+
+    This recurred once already for `servers/safety/src` — the CI workflow's own comment records it
+    — and the fix (centralising on `make type` instead of a hardcoded path list in CI) only moved
+    the drift one level down: the Makefile's own `SRC` variable then silently dropped
+    `servers/rxnlabel/src` and `servers/rxnpredict/src`, and `rxnlabel` sat with five real
+    `mypy --strict` errors CI had never run against it. `docs/adding-a-server.md`'s checklist never
+    mentions this step, which is why it keeps not happening — so this is the check, not the prose.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    src_line = next(line for line in makefile.splitlines() if line.startswith("SRC :="))
+    make_src = set(src_line.removeprefix("SRC :=").split())
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    mypy_path_line = next(
+        line for line in pyproject.splitlines() if line.strip().startswith("mypy_path")
+    )
+    mypy_path = set(mypy_path_line.split("=", 1)[1].strip().strip('"').split(":"))
+
+    for server in server_dirs():
+        src = server / "src"
+        if not src.is_dir():
+            continue
+        expected = f"servers/{server.name}/src"
+        assert expected in make_src, f"Makefile's SRC is missing {expected} — make type skips it"
+        assert expected in mypy_path, f"pyproject.toml's mypy_path is missing {expected}"
 
 
 def test_every_server_appears_in_the_catalogue() -> None:

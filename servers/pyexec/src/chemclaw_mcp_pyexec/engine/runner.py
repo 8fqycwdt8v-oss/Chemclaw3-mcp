@@ -247,6 +247,15 @@ def _neutralise_network() -> None:
     Serving is `bind`/`listen`/`accept` and is untouched, exactly as `mcp_server_kit.egress` reasons
     in the parent. This process serves nothing, but keeping the two ideas separate is what stops a
     later edit here breaking a server there by analogy.
+
+    **`connect`/`connect_ex` are not the whole of "outbound", and this used to patch only those.**
+    `mcp_server_kit.egress` measured the same gap in the parent process and its docstring says why:
+    a datagram socket never calls `connect` either, so `sendto`/`sendmsg` carried a payload straight
+    out, and `getaddrinfo`/`gethostbyname` are module-level C functions a DNS-based exfiltration or
+    licence check reaches with no `connect` call at all. This process cannot import that module (it
+    runs as an isolated script with no sibling-package imports, by design — see the module
+    docstring), so the same five names are patched here, by hand, to stay a real second layer behind
+    the deployment's `egress: []` NetworkPolicy rather than a control that reads as one and is not.
     """
     import socket
 
@@ -255,7 +264,12 @@ def _neutralise_network() -> None:
 
     socket.socket.connect = _refuse  # type: ignore[method-assign]
     socket.socket.connect_ex = _refuse  # type: ignore[method-assign]
+    socket.socket.sendto = _refuse  # type: ignore[method-assign]
+    socket.socket.sendmsg = _refuse  # type: ignore[method-assign]
     socket.create_connection = _refuse
+    socket.getaddrinfo = _refuse
+    socket.gethostbyname = _refuse
+    socket.gethostbyname_ex = _refuse
 
 
 def _restricted_builtins() -> dict[str, Any]:

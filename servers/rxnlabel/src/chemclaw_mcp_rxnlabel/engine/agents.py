@@ -85,10 +85,17 @@ CCCCCC CCCCCCC CC(C)CC(C)(C)C C1CCCCC1
 CC(=O)O OC=O CCCCCCO CO[Si](C)(C)C
 N#Cc1ccccc1 O=C1CCCCC1 CCCCCCCCCCCC
 """
+
+
+def _canonical_or_none(token: str) -> str | None:
+    """`Chem.CanonSmiles(token)`, or `None` for a token that does not parse."""
+    if Chem.MolFromSmiles(token) is None:
+        return None
+    return Chem.CanonSmiles(token)  # type: ignore[no-untyped-call,no-any-return]
+
+
 SOLVENTS = frozenset(
-    canonical
-    for token in _SOLVENT_SMILES.split()
-    if (canonical := Chem.CanonSmiles(token) if Chem.MolFromSmiles(token) else None)
+    canonical for token in _SOLVENT_SMILES.split() if (canonical := _canonical_or_none(token))
 )
 
 # Ligand scaffolds, as SMARTS. Each is a donor motif that binds a metal, and each is a *ligand only

@@ -61,6 +61,15 @@ def _bind_caller_per_tool_call(server: FastMCP) -> None:
     `request_ctx` is set per JSON-RPC message and carries the ASGI request, so the serving request
     is reachable from inside the tool body's task. With no request context — a direct call in a
     test — this falls through to whatever the middleware bound, which is the right behaviour.
+
+    **Tools only.** `FastMCP.read_resource`/`get_prompt` are a different shape: the lowlevel server
+    captures the bound method at `_setup_handlers()`, inside `FastMCP.__init__`, before this
+    function ever sees the instance, so patching `server.read_resource` here would silently do
+    nothing — unlike `manager.call_tool` below, which `FastMCP.call_tool`'s own body looks up
+    afresh on every call. A resource or prompt handler calling `current_caller()` would read the
+    handshake's identity rather than the request being served.
+    `tests/test_fleet.py::test_no_server_registers_a_resource_or_a_prompt` is what keeps that gap
+    from being silently exploited — no server may register either until this is extended.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - a future mcp release with a real middleware hook
@@ -102,6 +111,15 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     logged a stack trace at ERROR for every such call, so an operator's alerting fired on a client
     mistake. Both halves of that upstream behaviour are pinned in
     `tests/test_connector_app.py`, because neither is a documented promise.
+
+    **Tools only, for the same reason `_bind_caller_per_tool_call` gives.** `FastMCP.read_resource`
+    does its own `except Exception as e: raise ResourceError(str(e))` around `resource.read()`, with
+    no `ValueError` exemption and no redaction — a subprocess stderr line, a file path, a secret,
+    reaching the model verbatim. `get_prompt` does the equivalent. Neither can be patched at the
+    manager level the way `call_tool` is: the try/except is inside `FastMCP`'s own method body, not
+    delegated to `_resource_manager`/`_prompt_manager`, and that body itself is already captured by
+    the lowlevel dispatch table before this function runs. Guarded the same way — see
+    `test_no_server_registers_a_resource_or_a_prompt`.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
