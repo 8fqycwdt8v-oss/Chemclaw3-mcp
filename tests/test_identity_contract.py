@@ -38,6 +38,7 @@ import threading
 import time
 from collections.abc import Iterator
 
+import anyio
 import httpx
 import pytest
 import uvicorn
@@ -59,8 +60,13 @@ SESSION = "sess-1"
 CORRELATION = "corr-abc"
 
 
+#: What each `slow_whoami` body read, appended from the server thread's loop — the concurrent
+#: test's evidence, since two raw POSTs' SSE bodies are harder to parse than one shared list.
+SEEN_CONCURRENT: list[tuple[str, str, str]] = []
+
+
 def _probe_app() -> uvicorn.Config:
-    """A `connector_app` whose one tool reports the caller its own body can see."""
+    """A `connector_app` whose tools report the caller their own bodies can see."""
     server = FastMCP("identity-probe")
 
     @server.tool()
@@ -72,6 +78,14 @@ def _probe_app() -> uvicorn.Config:
             "session": caller.session,
             "correlation": caller.correlation,
         }
+
+    @server.tool()
+    async def slow_whoami() -> str:
+        """Dawdle long enough that two calls overlap, then record the caller this body sees."""
+        await anyio.sleep(0.25)
+        caller = current_caller()
+        SEEN_CONCURRENT.append((caller.actor, caller.session, caller.correlation))
+        return "ok"
 
     app = connector_app(server, name="identity-probe", token_env=None)
     return uvicorn.Config(app, host="127.0.0.1", port=_free_port(), log_level="warning")
@@ -175,3 +189,73 @@ def test_each_constant_names_the_header_that_is_sent(constant: str, sent: str) -
     from mcp_server_kit import identity
 
     assert getattr(identity, constant) == sent.lower()
+
+
+async def test_two_concurrent_calls_on_one_session_each_read_their_own_caller(
+    probe_url: str,
+) -> None:
+    """Chemclaw3's agent gathers a whole tool batch, so two `tools/call`s can be in flight on one
+    `mcp-session-id` at once — and the caller re-binding was only ever measured sequentially.
+
+    If the SDK served both from one task, the bind/reset pairs would interleave and a durable row
+    would be stamped with the other caller's identity. This pins that each in-flight call reads
+    its own headers, which is the property the fleet's whole attribution story rests on under
+    parallel batches. Raw JSON-RPC posts rather than `ClientSession`, because the client session
+    fixes its headers at construction and the thing under test is per-*call* identity.
+    """
+
+    def who(name: str) -> dict[str, str]:
+        return {
+            SENT_ACTOR: f"{name}-oid",
+            SENT_SESSION: f"sess-{name}",
+            SENT_CORRELATION: f"corr-{name}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+
+    SEEN_CONCURRENT.clear()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        opened = await client.post(
+            probe_url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "probe", "version": "1"},
+                },
+            },
+            headers=who("opener"),
+        )
+        session_id = opened.headers["mcp-session-id"]
+        await client.post(
+            probe_url,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            headers={**who("opener"), "mcp-session-id": session_id},
+        )
+
+        async def call(name: str, request_id: int) -> None:
+            await client.post(
+                probe_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": "slow_whoami", "arguments": {}},
+                },
+                headers={**who(name), "mcp-session-id": session_id},
+            )
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(call, "alice", 2)
+            group.start_soon(call, "bob", 3)
+
+    assert sorted(SEEN_CONCURRENT) == [
+        ("alice-oid", "sess-alice", "corr-alice"),
+        ("bob-oid", "sess-bob", "corr-bob"),
+    ], (
+        f"two concurrent calls on one session read {SEEN_CONCURRENT}; the per-call binding "
+        "interleaved and a stamped record would carry the other caller's identity"
+    )
