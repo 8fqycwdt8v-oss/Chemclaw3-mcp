@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -46,6 +47,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from chemclaw_mcp_pyexec.engine.limits import Limits
+from chemclaw_mcp_pyexec.engine.metrics import RUNS
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["Outcome", "run"]
 
@@ -148,6 +152,18 @@ def _stderr_tail(path: Path) -> str:
         return source.read().decode("utf-8", "replace")
 
 
+def _diagnostic_suffix(path: Path) -> str:
+    """The last line the child wrote to stderr, rendered for a log line, or `""`.
+
+    A timed-out run has usually written nothing — it was killed mid-work — so this stays empty
+    rather than padding every WARNING with an empty parenthesis. When there *is* a line it is the
+    only evidence of what the program was doing, and it belongs beside the kill rather than only in
+    a file inside a scratch directory that is about to be removed.
+    """
+    tail = _stderr_tail(path).strip().splitlines()
+    return f"; last stderr line: {tail[-1]}" if tail else ""
+
+
 def _kill_group(process: subprocess.Popen[bytes]) -> None:
     """SIGKILL the child's whole process group, tolerating a child that has already gone.
 
@@ -225,6 +241,16 @@ def run(code: str, data: dict[str, object] | None = None, limits: Limits | None 
                 timed_out = True
 
         if timed_out:
+            # WARNING and counted. A process group killed for going over its wall clock is the
+            # sandbox's bound doing its job, but a *rate* of them is a deployment fact — the limit
+            # is too tight for the analyses being asked for, or something is submitting programs
+            # that do not terminate — and neither was observable from outside this pod.
+            RUNS.labels("timeout").inc()
+            logger.warning(
+                "pyexec run exceeded its %gs wall-clock limit; SIGKILLed its process group%s",
+                bounds.wall_seconds,
+                _diagnostic_suffix(diagnostics),
+            )
             return Outcome(
                 stdout="",
                 result_json=None,
@@ -240,6 +266,17 @@ def run(code: str, data: dict[str, object] | None = None, limits: Limits | None 
             # step it thinks it took.
             detail = _stderr_tail(diagnostics).strip().splitlines()
             tail = detail[-1] if detail else f"exit status {process.returncode}"
+            # The branch that means a *resource* limit fired rather than a program failing, and it
+            # was silent: the caller got one sentence and this pod recorded nothing. `killed` is
+            # deliberately its own outcome rather than folded into `error`, because the responses
+            # differ — an `error` is the submitted program's problem, a `killed` is this pod's
+            # memory or CPU ceiling and is the one an operator has to act on.
+            RUNS.labels("killed").inc()
+            logger.warning(
+                "pyexec run was stopped before it finished: exit=%s %s",
+                process.returncode,
+                tail,
+            )
             return Outcome(
                 stdout="",
                 result_json=None,
@@ -249,6 +286,11 @@ def run(code: str, data: dict[str, object] | None = None, limits: Limits | None 
             )
 
         written = json.loads(result.read_text(encoding="utf-8"))
+        # A program that raised is a *successful* run carrying a traceback (see this function's
+        # Returns), so it is counted apart from one that produced an answer and apart from the two
+        # ways the sandbox stopped it. Not logged: a caller's own `ZeroDivisionError` is the
+        # caller's to read, and logging every one would put submitted-program text in the pod log.
+        RUNS.labels("error" if written["error"] else "ok").inc()
         return Outcome(
             stdout=str(written["stdout"]),
             result_json=written["result_json"],

@@ -12,6 +12,8 @@ requires-python = ">=3.11"
 # capability.
 dependencies = [
     "mcp-server-kit",
+    # Imported directly by this server's own engine metrics, not only through the kit.
+    "prometheus-client>=0.20",
     "uvicorn[standard]>=0.32",
     "numpy>=1.26",
     "pandas>=2.2",

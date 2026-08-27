@@ -38,12 +38,17 @@ with the guard relaxed *outside* the serving image, not so a server can be talke
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import socket
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from mcp_server_kit.metrics import EGRESS_GUARD_ARMED, EGRESS_REFUSED
+
 __all__ = ["EgressForbidden", "allowed_hosts", "arm", "armed", "disarm"]
+
+logger = logging.getLogger(__name__)
 
 
 class EgressForbidden(OSError):
@@ -137,10 +142,27 @@ def _host_of(address: Any) -> str | None:
 
 
 def _check(address: Any) -> None:
-    """Raise `EgressForbidden` unless `address` is loopback or explicitly allowed."""
+    """Raise `EgressForbidden` unless `address` is loopback or explicitly allowed.
+
+    **The refusal is logged and counted before it is raised, and that is not decoration.**
+    `EgressForbidden` derives from `OSError` — the family libraries retry on — so what a refusal
+    looks like from outside depends entirely on who catches it, and three real catchers in this
+    fleet turn it into something else: `servers/calc/tools.py` catches `(OSError, SubprocessError)`
+    and reports "could not resolve the xTB backend", `servers/rxnpredict/tools.py` gathers with
+    `return_exceptions=True` so a transformer reaching for weights degrades the ensemble silently,
+    and any library's own `except OSError: retry` swallows it whole. The fleet's central security
+    promise was therefore enforceable and invisible: nothing recorded that it had ever fired.
+
+    **The host and nothing else.** A destination is enough to name the library that tried to call
+    out, which is what a stack trace ending here is for; the payload of a refused `sendto` is not
+    this log line's business. `EGRESS_REFUSED` is unlabelled for the reason `metrics.py` gives —
+    the host is attacker-influenced and unbounded, and a bare counter is all `rate(...) > 0` needs.
+    """
     host = _host_of(address)
     if host is None or _is_loopback(host) or host.strip("[]").lower() in _allowed:
         return
+    EGRESS_REFUSED.inc()
+    logger.error("egress refused: host=%r", host)
     raise EgressForbidden(
         f"outbound connection to {host!r} refused: servers in this repository answer from "
         f"vendored data and never call out at request time. If a build-time ingestion step needs "
@@ -204,6 +226,7 @@ def arm(allow: Iterable[str] = ()) -> None:
     socket.gethostbyname = gethostbyname
     socket.gethostbyname_ex = gethostbyname_ex
     _armed = True
+    EGRESS_GUARD_ARMED.set(1)
 
 
 def disarm() -> None:
@@ -218,6 +241,7 @@ def disarm() -> None:
     socket.gethostbyname_ex = _original_gethostbyname_ex
     _armed = False
     _allowed = frozenset()
+    EGRESS_GUARD_ARMED.set(0)
 
 
 def arm_from_env() -> None:
@@ -228,5 +252,9 @@ def arm_from_env() -> None:
     and `tests/test_egress.py` asserts the default is on.
     """
     if os.environ.get(_GUARD_ENV, "on").strip().lower() in {"off", "0", "false", "no"}:
+        # Recorded rather than merely returned: a deployment that shipped `MCP_EGRESS_GUARD=off`
+        # used to be visible only in a docstring, and the gauge is what makes "the guard is armed"
+        # a fact a scrape can check instead of a claim a document makes.
+        EGRESS_GUARD_ARMED.set(0)
         return
     arm()

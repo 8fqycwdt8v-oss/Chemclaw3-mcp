@@ -54,3 +54,36 @@ def test_the_image_runs_offline_and_on_the_declared_port() -> None:
     assert "8857" in containerfile
     manifest = yaml.safe_load((POLICY.parents[1] / "connector.yaml").read_text(encoding="utf-8"))
     assert ":8857/mcp" in manifest["endpoint"]["url"]
+
+
+def test_the_scrape_is_wired_end_to_end() -> None:
+    """`/metrics` is only observability if something is told to collect it, and nothing was.
+
+    Every NetworkPolicy in this fleet admits the monitoring namespace on the server's port — the
+    hole has been open since the first server shipped — and `deploy/` held exactly one file, that
+    policy. No Service, no ServiceMonitor, no PodMonitor: Prometheus had no way to discover a
+    single pod here, so every counter this repository emits would have gone nowhere.
+
+    The chain this asserts is four links, and the weakest is the last. A ServiceMonitor's
+    `endpoints[].port` is a **port name**, resolved through the Service, and a name that matches
+    nothing produces no targets and **no error** — the failure a scrape configuration has when
+    nobody checks it is silence, which is indistinguishable from a healthy server nobody is
+    calling. So the number is held against the Containerfile and the manifest by the test above,
+    and the *name* is held between these two files here.
+    """
+    deploy = POLICY.parent
+    service = yaml.safe_load((deploy / "service.yaml").read_text(encoding="utf-8"))
+    monitor = yaml.safe_load((deploy / "servicemonitor.yaml").read_text(encoding="utf-8"))
+    assert service["spec"]["selector"]["app.kubernetes.io/name"] == "chemclaw-mcp-rxnpredict"
+    ports = service["spec"]["ports"]
+    assert ports == [{"name": "http", "protocol": "TCP", "port": 8857, "targetPort": 8857}]
+    assert monitor["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"] == (
+        "chemclaw-mcp-rxnpredict"
+    )
+    endpoints = monitor["spec"]["endpoints"]
+    assert len(endpoints) == 1, "one process, one port, one scrape"
+    assert endpoints[0]["port"] == ports[0]["name"], (
+        "the ServiceMonitor names a port the Service does not declare; Prometheus resolves that "
+        "name through the Service and reports no targets and no error when it misses"
+    )
+    assert endpoints[0]["path"] == "/metrics"

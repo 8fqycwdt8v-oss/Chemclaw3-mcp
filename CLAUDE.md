@@ -52,6 +52,8 @@ servers/<name>/
 ├── Containerfile                    # one rootless image per server
 ├── README.md                        # what it serves, what data it reads, who refreshes it
 ├── deploy/networkpolicy.yaml        # default-deny egress
+├── deploy/service.yaml              # one port, named `http`
+├── deploy/servicemonitor.yaml       # what tells Prometheus to scrape /metrics
 ├── src/chemclaw_mcp_<name>/
 │   ├── engine/                      # pure computation — no FastAPI, no MCP, no network
 │   ├── tools.py                     # the FastMCP surface; the docstrings are the prompt
@@ -100,9 +102,12 @@ science belongs in `engine/` — and if it grows past this repository, it belong
 ## The FastAPI shape, and the trap in it
 
 Every server's `app.py` is three lines because `mcp_server_kit.connector_app` owns the shape:
-`/healthz`, `/metrics`, `/mcp`, bearer auth, caller logging, a body cap, and error sanitising.
-**Do not hand-roll a transport.** Four things in that helper are non-obvious, and each is quiet
-when wrong:
+`/healthz`, `/metrics`, `/mcp`, bearer auth, caller logging, a body cap, error sanitising, **the
+process's log configuration and the per-tool metrics**. The last two are there for the same reason
+as the rest: an observability decision taken one server at a time is taken in some of them, and
+before it moved here the fleet had no owned log configuration anywhere and no application metric at
+all. **Do not hand-roll a transport, and do not call `basicConfig` in a server.** Five things in
+that helper are non-obvious, and each is quiet when wrong:
 
 1. **The parent app must run the MCP session manager.** `FastMCP.streamable_http_app()` returns a
    Starlette app whose *own* lifespan starts the session manager, and mounting an app does not run
@@ -115,18 +120,33 @@ when wrong:
    alice's handshake then bob's call had the tool reading alice.
 4. **An unexpected exception must not reach the model verbatim.** `Tool.run` folds `str(e)` into
    the error result. `ValueError` — the family used here for deliberately worded, caller-safe
-   messages — passes through; anything else is replaced and logged.
+   messages — passes through; anything else is replaced and logged, with a short `error_id` in
+   both halves so the notice the model quotes and the traceback an operator greps are one fault.
+5. **`configure_logging()` has to force.** `FastMCP.__init__` calls `basicConfig` at import of the
+   server's `tools.py`, long before `app.py` runs, so anything that does not pass `force=True`
+   loses to it silently — and the fleet keeps upstream's `"%(message)s"`: no timestamp, no level,
+   no logger name, with a WARNING and an INFO byte-identical.
 
 ## Authentication and identity
 
 - **Bearer on `/mcp`; `/healthz` and `/metrics` stay open.** A kubelet probe and a Prometheus
   scrape have no identity. The exposition is the default registry's — `python_info` and the
-  `process_*` collectors — and carries nothing about a *request*: no caller, no session, no
-  correlation id, no tool argument. It said "counts only" for as long as it published the
-  interpreter version, and the test that covered the endpoint asserted the non-count was there.
+  `process_*` collectors — **plus this fleet's own per-tool counters and latencies**
+  (`packages/mcp_server_kit/metrics.py`), and it carries nothing about a *caller*: no actor, no
+  session, no correlation id, no tool argument. It said "counts only" for as long as it published
+  the interpreter version, and the test that covered the endpoint asserted the non-count was there.
   A labelled metric on this endpoint must never take an actor, a session or a tool argument as a
-  label, and `packages/mcp_server_kit/tests/test_connector_app.py` asserts that absence over the
-  live exposition.
+  label; a tool **name** is none of those and is allowed, on the condition that it is clamped to
+  the served surface — the name in a `tools/call` is caller-supplied, so an unclamped label mints
+  a series per string anything that can reach the pod invents. A destination host is not clampable
+  and is therefore not a label at all (`chemclaw_mcp_egress_refused_total` is bare).
+  `packages/mcp_server_kit/tests/test_connector_app.py` asserts all of that over the live
+  exposition, in both directions: the forbidden words are absent **and** the metrics are there.
+- **`/healthz` is readiness, not a constant 200.** A server whose corpus, rule table or backend
+  will not load answers 503 naming the reason, and lists what it did verify as `name@version`.
+  Datasets here load lazily, so before this a `chem` pod with a corpus that failed its checksum
+  passed the probe, took traffic and failed every call. A new server passes `readiness=` to
+  `connector_app`; see `docs/adding-a-server.md`.
 - **Declare `auth: {mode: bearer, token_env: ...}` in every manifest, even on the loopback dev
   URL.** Chemclaw3's `HttpEndpoint` would accept `mode: none` for loopback and refuse it the moment
   a deployment moved the address — and a manifest whose auth mode changes with its address is one
@@ -155,7 +175,14 @@ independent layers because a rule that lives in one place rots:
 
 1. **The runtime guard** (`mcp_server_kit/egress.py`), armed on import. A non-loopback
    `connect`/`connect_ex`, a UDP `sendto`/`sendmsg`, or a DNS lookup
-   (`getaddrinfo`/`gethostbyname`) raises `EgressForbidden`. This is the layer that catches what a
+   (`getaddrinfo`/`gethostbyname`) is logged at ERROR with the host, counted on
+   `chemclaw_mcp_egress_refused_total`, and raises `EgressForbidden`. **The log and the counter are
+   load-bearing rather than decorative**: `EgressForbidden` subclasses `OSError`, so what a refusal
+   looks like from outside depends on who catches it — `calc` reports it as "could not resolve the
+   xTB backend", `rxnpredict` gathers it into a silently degraded ensemble, and any library's own
+   `except OSError: retry` swallows it whole. `chemclaw_mcp_egress_guard_armed` is what makes a
+   deployment that shipped `MCP_EGRESS_GUARD=off` visible from a scrape rather than from a
+   docstring. This is the layer that catches what a
    static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
    `MCP_EGRESS_ALLOW` is empty by default and empty in every shipped deployment.
 

@@ -58,6 +58,14 @@ def test_a_server_ships_the_whole_set(server: Path) -> None:
         "Containerfile",
         "README.md",
         "deploy/networkpolicy.yaml",
+        # The two files that make `/metrics` reachable by a scrape. Listed here rather than left to
+        # each server's own `test_deploy.py`, because the failure they prevent is a *new* server
+        # shipping without them — which its own tests, if it copied a directory that had none,
+        # would never notice. `deploy/` held only the NetworkPolicy on every server in this fleet
+        # while every one of those policies admitted the monitoring namespace: the hole was open
+        # and nothing was told to go through it.
+        "deploy/service.yaml",
+        "deploy/servicemonitor.yaml",
         "tests/test_no_egress.py",
         "tests/test_server.py",
     ):

@@ -15,8 +15,22 @@ fails closed with 401 rather than serving the surface anonymously.
 """
 
 from fastapi import FastAPI
-from mcp_server_kit import connector_app
+from mcp_server_kit import Dataset, connector_app
 
+from chemclaw_mcp_chem.engine import reagents
 from chemclaw_mcp_chem.tools import server
 
-app: FastAPI = connector_app(server, name="chem", token_env="CHEMCLAW_CHEM_TOKEN")
+
+def _readiness() -> list[Dataset]:
+    """Verify the reagent table, and name the version of it this pod serves.
+
+    This server is the one the readiness gap was *demonstrated* on: nothing here touches the corpus
+    at import, so a `chem` pod carrying a `records.csv` that failed its checksum returned 200 from
+    `/healthz`, passed the kubelet probe, took traffic, and failed every tool call.
+    """
+    return [reagents.dataset()]
+
+
+app: FastAPI = connector_app(
+    server, name="chem", token_env="CHEMCLAW_CHEM_TOKEN", readiness=_readiness
+)

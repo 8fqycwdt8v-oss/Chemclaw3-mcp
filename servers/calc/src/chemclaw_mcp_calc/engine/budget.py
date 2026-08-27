@@ -27,10 +27,15 @@ deliberately not reused: it exists to carry a subprocess's stderr tail, which is
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
+from chemclaw_mcp_calc.engine.metrics import INLINE_BUDGET_EXCEEDED
+
 __all__ = ["Deadline"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,17 @@ class Deadline:
     def check(self, what: str) -> None:
         """Raise if the budget is spent, naming the calculation and both numbers.
 
+        **Logged and counted before it is raised, and that is not symmetry for its own sake.** A
+        `ValueError` is the family `connector_app` passes to the model verbatim — which is exactly
+        why this refusal was invisible to everyone else: it was never logged and never counted, so
+        the likeliest capacity symptom a `calc` deployment has (this pod is undersized for the
+        molecules it is being sent) was a sentence only the agent ever saw. The counter is what
+        turns "occasionally a chemist is told to run a smaller system" into a rate an operator can
+        put a threshold on.
+
+        WARNING rather than INFO for the same reason: it means the deployment's budget is too small
+        for its traffic, not that the caller asked for something silly.
+
         Args:
             what: The calculation in progress, phrased to complete "a <what> exceeded …" — the
                 caller's only lever is its size, so the message has to say what was running.
@@ -61,6 +77,13 @@ class Deadline:
         """
         if self.elapsed <= self.seconds:
             return
+        INLINE_BUDGET_EXCEEDED.inc()
+        logger.warning(
+            "inline budget exceeded: a %s spent %.1fs of a %gs budget and was stopped",
+            what,
+            self.elapsed,
+            self.seconds,
+        )
         raise ValueError(
             f"a {what} exceeded this server's inline budget of {self.seconds:g}s (spent "
             f"{self.elapsed:.1f}s). This calculation runs inside a conversation turn and nothing "

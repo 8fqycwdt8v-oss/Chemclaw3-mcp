@@ -1,0 +1,30 @@
+# The Service `deploy/servicemonitor.yaml` selects, and the only way anything reaches this pod by
+# name. Shipped beside the NetworkPolicy because the two are halves of one statement: the policy
+# already *admits* the monitoring namespace on port 8850 — the hole has always been open — and
+# without a Service and a ServiceMonitor nothing was ever told to go through it. Measured before
+# these files existed: `deploy/` held one file per server, and Prometheus had no way to discover a
+# single one of them.
+#
+# One port, named `http`, carrying `/mcp`, `/healthz` and `/metrics` alike. A second port for the
+# scrape would be a second address for one process and a second thing for the NetworkPolicy to
+# admit; `/metrics` is unauthenticated precisely so it can share this one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: chemclaw-mcp-props
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-props
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  selector:
+    app.kubernetes.io/name: chemclaw-mcp-props
+  ports:
+    # `name: http` is what the ServiceMonitor's `endpoints[].port` refers to — that field is a
+    # *port name*, not a number, and a ServiceMonitor naming a port no Service declares selects
+    # nothing and reports nothing, silently. `servers/props/tests/test_deploy.py` holds the two
+    # together, and holds this number against the Containerfile, the NetworkPolicy and
+    # `connector.yaml`.
+    - name: http
+      protocol: TCP
+      port: 8850
+      targetPort: 8850

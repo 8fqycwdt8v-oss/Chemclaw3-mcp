@@ -68,7 +68,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from contextlib import suppress
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -77,6 +79,11 @@ import numpy as np
 from pydantic import BaseModel
 
 from chemclaw_mcp_calc.engine.config import settings
+from chemclaw_mcp_calc.engine.metrics import (
+    PROCESS_GROUP_KILLS,
+    SUBPROCESS_DURATION,
+    SUBPROCESS_TIMEOUTS,
+)
 from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb_engine import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL
 
@@ -94,6 +101,7 @@ __all__ = [
     "is_available",
     "run",
     "run_isolated",
+    "scratch_dir",
     "supports",
 ]
 
@@ -139,8 +147,38 @@ def _task_flags(task: CliTask, opt_level: str | None) -> list[str]:
 _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL")
 
 
+@contextmanager
+def scratch_dir(prefix: str) -> Iterator[Path]:
+    """A temporary directory for one run, whose *removal* is reported rather than raised.
+
+    `TemporaryDirectory` propagates a cleanup failure out of the `with`, which on this server means
+    a completed calculation is thrown away and reported to the model as an internal fault — the
+    answer is already in hand and the only thing that went wrong is a directory that would not
+    unlink. And the realistic cause is the exact failure `run_isolated` exists to prevent: an
+    orphaned worker still writing into the directory while it is being removed. That is worth a
+    WARNING an operator can count occurrences of, and is worth neither losing the result over nor
+    passing silently.
+
+    Args:
+        prefix: The `mkdtemp` prefix, so a leaked directory names the run that leaked it.
+    """
+    workdir = tempfile.TemporaryDirectory(prefix=prefix)
+    try:
+        yield Path(workdir.name)
+    finally:
+        try:
+            workdir.cleanup()
+        except OSError as exc:
+            logger.warning(
+                "could not remove the scratch directory %s: %s — a process from this run may "
+                "still be writing into it",
+                workdir.name,
+                exc,
+            )
+
+
 def run_isolated(
-    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float, label: str
 ) -> subprocess.CompletedProcess[str]:
     """Run `argv` in its own process group, and kill the whole group on timeout.
 
@@ -152,7 +190,30 @@ def run_isolated(
     `start_new_session=True` puts the child in a new session and process group of its own, so
     `os.killpg` on a timeout reaches every process the run spawned. Everything else matches
     `subprocess.run(..., timeout=..., capture_output=True, text=True, check=False)`.
+
+    **This function owns the whole of this server's cost control and was completely silent.** It
+    could SIGKILL a process group after burning an hour of CPU — up to four on a CREST search — and
+    emit not one line and not one counter, so the single most expensive event a `calc` pod can
+    produce left no trace anywhere: an operator asking "why is this pod pinned at 100% and
+    answering nothing" had the logs of a server that had said nothing since startup. The completion
+    line is INFO because a run finishing is ordinary; the kill is **WARNING** and names the pgid and
+    the elapsed seconds, because it means an undersized budget or an oversized molecule and both
+    need a decision.
+
+    Args:
+        argv: The command, already built and checked by the caller.
+        cwd: The scratch directory the run owns.
+        env: The scrubbed environment (`_ENV_ALLOWLIST`), never the parent's.
+        timeout: Wall-clock budget in seconds, after which the whole group is killed.
+        label: What this run is, for the log line and the metric — the calculation, not the
+            molecule. Required rather than derived from `argv[0]`, which is a filesystem path and
+            says `xtb` for a single point, an optimisation and a Hessian alike.
+
+    Raises:
+        subprocess.TimeoutExpired: the budget was spent; the group has been killed by then.
     """
+    binary = Path(argv[0]).name
+    started = time.monotonic()
     process = subprocess.Popen(
         argv,
         cwd=cwd,
@@ -168,12 +229,36 @@ def run_isolated(
         # The group leader's pgid is its own pid (start_new_session guarantees the child is the
         # leader of a fresh group), so this reaches every process the run forked. A race where the
         # process has already exited between the timeout and here is not an error.
+        killed = -1
         with suppress(ProcessLookupError):
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            killed = os.getpgid(process.pid)
+            os.killpg(killed, signal.SIGKILL)
+        elapsed = time.monotonic() - started
+        SUBPROCESS_DURATION.labels(binary).observe(elapsed)
+        SUBPROCESS_TIMEOUTS.labels(binary).inc()
+        PROCESS_GROUP_KILLS.labels(binary).inc()
+        logger.warning(
+            "%s %s exceeded its %gs budget after %.1fs; SIGKILLed process group %d",
+            binary,
+            label,
+            timeout,
+            elapsed,
+            killed,
+        )
         # Reap the now-dead group leader and collect whatever it had written; the pipes are closed
         # and the process is gone, so this returns immediately rather than blocking again.
         stdout, stderr = process.communicate()
         raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from None
+    elapsed = time.monotonic() - started
+    SUBPROCESS_DURATION.labels(binary).observe(elapsed)
+    logger.info(
+        "%s %s finished: exit=%d elapsed_s=%.1f stdout_bytes=%d",
+        binary,
+        label,
+        process.returncode,
+        elapsed,
+        len(stdout),
+    )
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
@@ -445,17 +530,24 @@ def run(
         cycles = max_cycles if max_cycles is not None else settings.xtb_opt_max_steps
         argv += ["--cycles", str(cycles)]
 
-    with tempfile.TemporaryDirectory(prefix="xtb-") as workdir:
-        directory = Path(workdir)
+    with scratch_dir("xtb-") as directory:
         (directory / "input.xyz").write_text(_to_xyz(structure))
         environment = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
         if settings.xtb_cli_threads > 0:
             environment["OMP_NUM_THREADS"] = str(settings.xtb_cli_threads)
         try:
             completed = run_isolated(
-                argv, cwd=directory, env=environment, timeout=settings.xtb_cli_timeout_seconds
+                argv,
+                cwd=directory,
+                env=environment,
+                timeout=settings.xtb_cli_timeout_seconds,
+                label=task,
             )
         except subprocess.TimeoutExpired as error:
+            # `CliError` is a `RuntimeError` by design, so this reaches `connector_app`'s sanitiser
+            # and is logged there as "a tool raised an unexpected exception" — indistinguishable
+            # from a genuine bug in the server. `run_isolated` has already logged the kill at
+            # WARNING and counted it, which is what separates the two.
             raise CliError(
                 f"xtb {task} timed out after {settings.xtb_cli_timeout_seconds}s"
             ) from error
@@ -554,13 +646,16 @@ def run_surface_potential(
     if solvent is not None:
         argv += ["--alpb", _safe(solvent, "solvent")]
 
-    with tempfile.TemporaryDirectory(prefix="xtb-esp-") as workdir:
-        directory = Path(workdir)
+    with scratch_dir("xtb-esp-") as directory:
         (directory / "input.xyz").write_text(_to_xyz(structure))
         environment = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
         try:
             run_isolated(
-                argv, cwd=directory, env=environment, timeout=settings.xtb_cli_timeout_seconds
+                argv,
+                cwd=directory,
+                env=environment,
+                timeout=settings.xtb_cli_timeout_seconds,
+                label="esp",
             )
         except subprocess.TimeoutExpired as error:
             raise CliError(

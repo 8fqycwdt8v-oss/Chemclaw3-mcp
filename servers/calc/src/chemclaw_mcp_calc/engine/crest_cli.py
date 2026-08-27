@@ -48,10 +48,10 @@ already been removed.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -61,7 +61,15 @@ from pydantic import BaseModel
 from chemclaw_mcp_calc.engine.chem import atomic_numbers, perceive_smiles
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure
-from chemclaw_mcp_calc.engine.xtb_cli import CliError, _safe, _to_xyz, run_isolated
+from chemclaw_mcp_calc.engine.xtb_cli import (
+    CliError,
+    _safe,
+    _to_xyz,
+    run_isolated,
+    scratch_dir,
+)
+
+logger = logging.getLogger(__name__)
 
 # What to search for. Each is a different CREST run mode over the same machinery.
 # Searches over **one** molecule. Separate from the union below because the
@@ -292,15 +300,32 @@ def run(
     if solvent is not None:
         argv += ["--alpb", _safe(solvent, "solvent")]
 
-    with tempfile.TemporaryDirectory(prefix="crest-") as workdir:
-        directory = Path(workdir)
+    with scratch_dir("crest-") as directory:
         (directory / "input.xyz").write_text(_to_xyz(structure))
         environment = _environment()
+        # Announced before it starts, and this is the one place in the fleet where that is not
+        # noise. A caller waiting on a CREST search waits minutes to hours and gets nothing until
+        # the answer — the fleet promises statelessness, so there is no progress channel and there
+        # is not going to be one. One line at the start is what tells an operator that the pod
+        # burning CPU is working rather than wedged, and what the budget it is working against is.
+        logger.info(
+            "crest %s sampling started: atoms=%d effort=%s budget=%ss",
+            search,
+            len(structure.elements),
+            effort,
+            settings.crest_timeout_seconds,
+        )
         try:
             completed = run_isolated(
-                argv, cwd=directory, env=environment, timeout=settings.crest_timeout_seconds
+                argv,
+                cwd=directory,
+                env=environment,
+                timeout=settings.crest_timeout_seconds,
+                label=search,
             )
         except subprocess.TimeoutExpired as error:
+            # See the sibling in `xtb_cli`: `run_isolated` has already logged and counted the kill,
+            # so this raise is not the only record of a four-hour run being abandoned.
             raise CliError(
                 f"crest {search} timed out after {settings.crest_timeout_seconds}s; "
                 "a larger molecule needs a longer budget or a cheaper effort level"
