@@ -57,18 +57,27 @@ connected turn on one loop, so every tool body runs its work in a worker thread
 (`asyncio.to_thread`) and the coroutine only awaits it. `tests/test_event_loop_offload.py` asserts
 the hop for every one of the nine, because a hop with no test is a property nobody would notice
 losing.
+
+**And how many of those threads may run at once is bounded** — by
+`CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS`, enforced by `_admitted` below over every tool the
+manifest calls `state_changing`. The hop keeps one call off the event loop; it says nothing about
+twenty arriving together on an image that pins one thread per calculation. `engine/admission.py`
+has the argument for refusing rather than queueing.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import subprocess
-from typing import Any
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
 from chemclaw_mcp_calc.engine import crest_cli, crest_search, xtb_atomic, xtb_props
+from chemclaw_mcp_calc.engine.admission import ADMISSION_MARKER, Admission
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.descriptors import (
     DescriptorInput,
@@ -112,6 +121,59 @@ from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 server = FastMCP("calc")
 
 logger = logging.getLogger(__name__)
+
+# The pod's ceiling on concurrent calculations. Built at import, like `settings` itself; a test that
+# needs a different ceiling replaces this attribute rather than the setting, because the number a
+# gate enforces and the number it was built from must be the same number.
+_admission = Admission(settings.calc_max_concurrent_requests)
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _release_slot(task: asyncio.Task[Any]) -> None:
+    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
+
+    Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
+    left to receive its failure, and asyncio logs "exception was never retrieved" at exit for
+    every one of them — noise in the logs of exactly the incident this gate exists for.
+    """
+    _admission.release()
+    if not task.cancelled():
+        task.exception()
+
+
+def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how many calculations run at once, refusing promptly when the pod is full.
+
+    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
+    `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the manifest's
+    `state_changing` list instead of against a second hand-kept list here.
+
+    **The slot is released when the work finishes, not when the caller stops waiting**, and
+    `asyncio.shield` is what buys that. Cancelling the awaiting coroutine does not stop the worker
+    thread underneath it, so releasing on cancellation would hand a slot to a retry while the
+    original burn continued — which is the precise failure this gate is for: a caller times out,
+    retries, and the second calculation lands beside the first on a pod that thinks it has room.
+    Shielded, the inner task outlives its awaiter and gives its slot back when the CPU is actually
+    free again.
+
+    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
+    from `inspect.signature`, which follows `__wrapped__` back to the real signature and resolves
+    its annotations against *that* function's module. Without it every tool here would advertise
+    `(*args, **kwargs)`.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        _admission.acquire(work.__name__)
+        task = asyncio.ensure_future(work(*args, **kwargs))
+        task.add_done_callback(_release_slot)
+        return await asyncio.shield(task)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
+
 
 __all__ = [
     "calculation_key",
@@ -187,6 +249,7 @@ async def calculation_key(tool: str, arguments: dict[str, Any]) -> CalculationId
 
 
 @server.tool()
+@_admitted
 async def compute_xtb_energy(smiles: str, charge: int = 0) -> XtbResult:
     """Compute the GFN2-xTB total energy of a molecule (fast, semiempirical).
 
@@ -209,6 +272,7 @@ async def compute_xtb_energy(smiles: str, charge: int = 0) -> XtbResult:
 
 
 @server.tool()
+@_admitted
 async def predict_solubility(smiles: str) -> SolubilityResult:
     """Predict aqueous solubility (log S, mol/L) of a molecule, with uncertainty.
 
@@ -232,6 +296,7 @@ async def predict_solubility(smiles: str) -> SolubilityResult:
 
 
 @server.tool()
+@_admitted
 async def predict_pka(smiles: str) -> PkaResult:
     """Predict a molecule's pKa via GFN2-xTB — an acid site, or a base's conjugate acid.
 
@@ -262,6 +327,7 @@ async def predict_pka(smiles: str) -> PkaResult:
 
 
 @server.tool()
+@_admitted
 async def compute_electronic_properties(
     smiles: str, solvent: str | None = None
 ) -> ElectronicProperties:
@@ -294,6 +360,7 @@ async def compute_electronic_properties(
 
 
 @server.tool()
+@_admitted
 async def predict_site_reactivity(
     smiles: str, mode: FukuiMode = "electrophilic", top_n: int = 0
 ) -> SiteReactivityResult:
@@ -337,6 +404,7 @@ async def predict_site_reactivity(
 
 
 @server.tool()
+@_admitted
 async def compute_atomic_descriptors(
     smiles: str, solvent: str | None = None
 ) -> AtomicDescriptorResult:
@@ -375,6 +443,7 @@ async def compute_atomic_descriptors(
 
 
 @server.tool()
+@_admitted
 async def compute_surface_potential(
     smiles: str, solvent: str | None = None
 ) -> SurfacePotentialResult:
@@ -408,6 +477,7 @@ async def compute_surface_potential(
 
 
 @server.tool()
+@_admitted
 async def optimize_geometry(smiles: str, solvent: str | None = None) -> OptimizationSummary:
     """Relax a molecule to its nearest stable 3D shape with GFN2-xTB.
 
@@ -439,6 +509,7 @@ async def optimize_geometry(smiles: str, solvent: str | None = None) -> Optimiza
 
 
 @server.tool()
+@_admitted
 async def predict_developability_profile(smiles: str) -> DescriptorProfile:
     """Compute a developability descriptor panel: MW, LogP, TPSA, H-bond counts, Ro5/Veber flags.
 
@@ -457,6 +528,7 @@ async def predict_developability_profile(smiles: str) -> DescriptorProfile:
 
 
 @server.tool()
+@_admitted
 async def predict_logd(smiles: str, ph: float | None = None) -> LogdResult:
     """Predict the pH-dependent distribution coefficient (logD) of a singly-ionisable molecule.
 
@@ -643,6 +715,7 @@ async def combine_structures(
 
 
 @server.tool()
+@_admitted
 async def relax_structure(
     structure: Structure,
     solvent: str | None = None,
@@ -674,6 +747,7 @@ async def relax_structure(
 
 
 @server.tool()
+@_admitted
 async def compute_properties_at(
     structure: Structure, solvent: str | None = None
 ) -> ElectronicProperties:
@@ -702,6 +776,7 @@ async def compute_properties_at(
 
 
 @server.tool()
+@_admitted
 async def compute_fukui_at(
     structure: Structure,
     mode: FukuiMode = "electrophilic",
@@ -743,6 +818,7 @@ async def compute_fukui_at(
 
 
 @server.tool()
+@_admitted
 async def compute_hessian(structure: Structure, solvent: str | None = None) -> HessianPayload:
     """Second derivatives at a geometry — the expensive half of every vibrational question.
 
@@ -808,6 +884,7 @@ async def compute_hessian(structure: Structure, solvent: str | None = None) -> H
 
 
 @server.tool()
+@_admitted
 async def scan_point(
     structure: Structure, atoms: list[int], value: float, solvent: str | None = None
 ) -> OptimizationResult:
@@ -843,6 +920,7 @@ async def scan_point(
 
 
 @server.tool()
+@_admitted
 async def search_conformer_ensemble(
     structure: Structure,
     search: crest_search.EnsembleSearch = "conformers",
@@ -889,6 +967,7 @@ async def search_conformer_ensemble(
 
 
 @server.tool()
+@_admitted
 async def search_binding_modes(
     structure: Structure,
     effort: crest_cli.CrestEffort = "quick",

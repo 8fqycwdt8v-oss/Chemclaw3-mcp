@@ -40,7 +40,14 @@ variance between servers should be in what they compute, not in how they are sha
    - a `request_timeout` in its manifest that states the real budget rather than inheriting a
      habitual one and dying mid-calculation;
    - a docstring that tells the model what it is asking for;
-   - and a `calculation_key`-style probe, if a caller is expected to cache it.
+   - a `calculation_key`-style probe, if a caller is expected to cache it;
+   - and a **ceiling on how many of it may run at once**, refused promptly rather than queued. This
+     is not the first bullet again: `servers/calc` bounded every individual call's atom count and
+     its wall clock and still had no answer for twenty of them arriving together on an image that
+     pins one thread per calculation. Queueing is the wrong answer for a tool this slow — the held
+     call comes back after `request_timeout` has expired — so a full server refuses, in a message
+     naming the ceiling and the setting that raises it. See
+     `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
 ## The files
 

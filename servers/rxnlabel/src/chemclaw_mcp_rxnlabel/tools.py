@@ -24,6 +24,7 @@ the call `chem` makes for the same reason.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -269,7 +270,7 @@ async def name_reactions(reactions: list[NamingRequest]) -> NameBatch:
     return NameBatch(version=_version().version, results=await asyncio.to_thread(_name, reactions))
 
 
-def _check_batch(reactions: list[object]) -> None:
+def _check_batch(reactions: Sequence[object]) -> None:
     """Refuse an oversized batch by saying how much to ask for.
 
     A `ValueError`, because `mcp_server_kit` re-raises that cause untouched while replacing every

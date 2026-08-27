@@ -11,7 +11,9 @@ some of them. Before this, the fleet had none of the three — `configure_loggin
 gives every line a timestamp and a level, and `_instrument_tool_calls` is what gives `/metrics`
 anything about a tool at all.
 
-Five of these behaviours are not obvious, and each is here because getting it wrong is quiet:
+These behaviours are not obvious, and each is here because getting it wrong is quiet (no count:
+the one that stood here said four while the list below had five, and the list has grown again
+since):
 
 - **The parent app must run the MCP session manager.** `FastMCP.streamable_http_app()` returns a
   Starlette app whose *own* lifespan starts the session manager, and mounting an app does not run
@@ -29,6 +31,11 @@ Five of these behaviours are not obvious, and each is here because getting it wr
   worded, caller-safe messages) passes through; everything else is replaced and logged — with an
   `error_id` in *both* halves, because a notice the model can quote and a traceback nobody can
   find it in are two records of one fault that cannot be joined.
+- **The trace must be continued per tool call, for the same reason the caller must.** Chemclaw3
+  sends `traceparent` on every call and this fleet dropped it, so a connector's work was an orphan
+  trace rather than a span inside the turn. It is picked up from the same request the caller is,
+  because the serving request is only reachable there — see `tracing.py` for why nothing here
+  exports anything.
 - **`configure_logging()` must force.** `FastMCP.__init__` calls `basicConfig` at import of the
   server's `tools.py`, so anything that does not pass `force=True` here silently loses to it.
 """
@@ -63,6 +70,7 @@ from mcp_server_kit.identity import (
 )
 from mcp_server_kit.logging import configure_logging, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
+from mcp_server_kit.tracing import tool_call_span
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +132,15 @@ def _bind_caller_per_tool_call(server: FastMCP) -> None:
     `request_ctx` is set per JSON-RPC message and carries the ASGI request, so the serving request
     is reachable from inside the tool body's task. With no request context — a direct call in a
     test — this falls through to whatever the middleware bound, which is the right behaviour.
+
+    **Tools only.** `FastMCP.read_resource`/`get_prompt` are a different shape: the lowlevel server
+    captures the bound method at `_setup_handlers()`, inside `FastMCP.__init__`, before this
+    function ever sees the instance, so patching `server.read_resource` here would silently do
+    nothing — unlike `manager.call_tool` below, which `FastMCP.call_tool`'s own body looks up
+    afresh on every call. A resource or prompt handler calling `current_caller()` would read the
+    handshake's identity rather than the request being served.
+    `tests/test_fleet.py::test_no_server_registers_a_resource_or_a_prompt` is what keeps that gap
+    from being silently exploited — no server may register either until this is extended.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - a future mcp release with a real middleware hook
@@ -148,6 +165,35 @@ def _bind_caller_per_tool_call(server: FastMCP) -> None:
     manager.call_tool = call_tool
 
 
+def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
+    """Open a span for each tool call, parented on the `traceparent` that call's request carried.
+
+    Per tool call rather than in ASGI middleware, for exactly the reason
+    `_bind_caller_per_tool_call` is: the tool body runs in the session manager's task, so a
+    context attached in middleware is the *handshake's*. One MCP session carries many calls, and
+    a span parented on the handshake's trace would put every subsequent call inside whichever turn
+    happened to open the connection.
+
+    Inert unless a deployment enables it, and it never exports anything itself — `tracing.py` holds
+    that argument. With no request context (a direct call in a test) there is nothing to continue,
+    so the tool runs unchanged.
+    """
+    manager = getattr(server, "_tool_manager", None)
+    if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
+        return
+    wrapped = manager.call_tool
+
+    async def call_tool(*args: Any, **kwargs: Any) -> Any:
+        headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
+        if headers is None:
+            return await wrapped(*args, **kwargs)
+        tool = str(args[0]) if args else str(kwargs.get("name", ""))
+        with tool_call_span(headers, server=name, tool=tool):
+            return await wrapped(*args, **kwargs)
+
+    manager.call_tool = call_tool
+
+
 def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     """Replace an unexpected tool exception's text with a generic notice before a caller sees it.
 
@@ -165,6 +211,15 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     logged a stack trace at ERROR for every such call, so an operator's alerting fired on a client
     mistake. Both halves of that upstream behaviour are pinned in
     `tests/test_connector_app.py`, because neither is a documented promise.
+
+    **Tools only, for the same reason `_bind_caller_per_tool_call` gives.** `FastMCP.read_resource`
+    does its own `except Exception as e: raise ResourceError(str(e))` around `resource.read()`, with
+    no `ValueError` exemption and no redaction — a subprocess stderr line, a file path, a secret,
+    reaching the model verbatim. `get_prompt` does the equivalent. Neither can be patched at the
+    manager level the way `call_tool` is: the try/except is inside `FastMCP`'s own method body, not
+    delegated to `_resource_manager`/`_prompt_manager`, and that body itself is already captured by
+    the lowlevel dispatch table before this function runs. Guarded the same way — see
+    `test_no_server_registers_a_resource_or_a_prompt`.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
@@ -321,8 +376,15 @@ def connector_app(
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
     _bind_caller_per_tool_call(server)
-    # Outermost, so its `outcome` is the one the caller was actually given. See the function.
+    # Outside the sanitiser, so the `outcome` it books is the one the caller was actually given
+    # rather than the exception the tool body raised — those differ by design, and the difference
+    # is exactly what `ok`/`refused`/`failed` is splitting on. See the function.
     _instrument_tool_calls(server, name=name)
+    # Outermost of the four, so the span covers the whole call — the binding, the tool body, the
+    # sanitiser's decision about what the caller is told, and the counter that records it. A span
+    # that ended before the metric was booked would put the two records of one call fractionally
+    # out of step, which is the sort of skew nobody debugs and everybody mistrusts.
+    _continue_trace_per_tool_call(server, name=name)
     mcp_app = server.streamable_http_app()
 
     @asynccontextmanager

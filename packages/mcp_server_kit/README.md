@@ -6,9 +6,10 @@ own `engine/`.
 
 | Module | What it is |
 | --- | --- |
-| `app.py` | `connector_app()` — the FastAPI app: `/healthz`, `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding, and tool-error sanitising. |
+| `app.py` | `connector_app()` — the FastAPI app: `/healthz`, `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding and trace continuation, and tool-error sanitising. |
 | `auth.py` | Bearer check on `/mcp` (probes stay open, comparison in bytes, fails closed), the caller log, and the request-body cap. |
 | `identity.py` | The `X-Chemclaw-*` headers and the contextvars that carry them. Provenance, never authorization. |
+| `tracing.py` | The receiving half of Chemclaw3's `traceparent`: one span per tool call, under the caller's trace. Off unless `MCP_TRACING_ENABLED` says otherwise, and it constructs no exporter — the `otel` extra installs the API only. |
 | `datasets.py` | Vendored-corpus loading: all six provenance fields required, checksum verified on load. |
 | `egress.py` | The runtime guard. Armed on import; a non-loopback `connect`, `sendto`/`sendmsg` or DNS lookup raises `EgressForbidden`. A child process and a `ctypes` call are outside it by construction — `make offline-run` is what covers those. |
 | `no_egress.py` | The static scan — AST, not grep — that each server's `test_no_egress.py` calls. |
@@ -17,7 +18,8 @@ own `engine/`.
 ## The parts that exist because they went wrong somewhere
 
 Most of this is ported in shape from Chemclaw3's `chemclaw/connectors/server.py`, minus its
-`chemclaw.core` dependencies. Four behaviours are here specifically because their absence was quiet:
+`chemclaw.core` dependencies. The behaviours below are here specifically because their absence was
+quiet — no count, because the one written here said four over five bullets before this list grew:
 
 - **Running the MCP session manager from the parent lifespan.** Mounting a Starlette app does not
   run its lifespan; the server then accepts connections and hangs on the first request.
@@ -27,6 +29,13 @@ Most of this is ported in shape from Chemclaw3's `chemclaw/connectors/server.py`
 - **Checking the bearer token on the serving side.** Chemclaw3 shipped `BearerAuth` on the sending
   side only — a deployment mounted a secret, recorded the control as enabled, and served every tool
   to anything that could reach the pod.
+- **Continuing the trace, per tool call.** Chemclaw3 injects W3C `traceparent` on every connector
+  call and its tracing docstring says the consequence in the present tense — "a connector's work
+  appears inside the turn that asked for it". That was true only of the connectors Chemclaw3 hosts
+  itself: every server in this fleet read the identity headers beside it and dropped the trace
+  context, so a CREST search produced no span at all on this side. Per tool call for the same reason
+  the caller is bound there — one MCP session carries many calls, and a span parented on the
+  handshake would put all of them inside whichever turn opened the connection.
 - **Refusing an oversized body before a handler reads it.** The counter alone bounds only what
   somebody *reads*: a route that ignores the body never pulls from the receive channel, so an
   oversized request to it was served 200 with the cap installed and silent. The declared
@@ -40,8 +49,8 @@ Most of this is ported in shape from Chemclaw3's `chemclaw/connectors/server.py`
   stale tool name was told "an internal error occurred", and an ERROR-level traceback fired for a
   client input error.
 
-Four of those are only visible against a *running* server, which is what
-`tests/test_connector_app.py` is for.
+Most of those are only visible against a *running* server, which is what
+`tests/test_connector_app.py` is for; the trace continuation is checked the same way, against a real socket, in `tests/test_tracing.py`.
 
 `tests/` covers each of them. **This package used to be exempt from the `no_egress` scan as a
 whole**, for the reason that is real but belongs to one file: `egress.py` has to import `socket` to

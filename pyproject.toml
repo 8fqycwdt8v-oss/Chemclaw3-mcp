@@ -10,8 +10,10 @@ dependencies = []
 [dependency-groups]
 dev = [
     # `[testing]` because every server's `test_server.py` imports `mcp_server_kit.testing`,
-    # whose `httpx`/`pyyaml` are declared there rather than assumed from this list.
-    "mcp-server-kit[testing]",
+    # whose `httpx`/`pyyaml` are declared there rather than assumed from this list. `[otel]` for the
+    # same reason one step further: `tracing.py` is only exercisable where the API is installed, and
+    # a shipped image installs neither extra.
+    "mcp-server-kit[testing,otel]",
     "chemclaw-mcp-props",
     "chemclaw-mcp-rxnpredict",
     "chemclaw-mcp-rxnlabel",
@@ -31,6 +33,11 @@ dev = [
     # stubs both imports are `import-untyped` under `--strict`, which would mean either an ignore
     # per import or a blanket override that also hides real errors.
     "scipy-stubs>=1.17.1",
+    # The SDK, for the tracing test alone. It is what turns the API's non-recording proxy spans into
+    # recordable ones, so `tests/test_tracing.py` can assert that a tool call actually joined the
+    # caller's trace instead of asserting that nothing raised. Deliberately paired with an
+    # *in-memory* exporter there and with none here: nothing in this workspace may dial a collector.
+    "opentelemetry-sdk>=1.25",
 ]
 
 [tool.uv.workspace]
@@ -58,7 +65,7 @@ python_version = "3.11"
 strict = true
 # Every package ships its own `src/` layout; point mypy at the sources rather than the installed
 # copies so a type error is reported against the file a person edits.
-mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src"
+mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/rxnlabel/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src"
 
 [[tool.mypy.overrides]]
 module = [
@@ -71,6 +78,7 @@ module = [
     "dgl.*",
     "onmt.*",
     "rxn_insight.*",
+    "rxnmapper.*",
     "t5chem.*",
     "torch.*",
     "two_stage_dnn.*",

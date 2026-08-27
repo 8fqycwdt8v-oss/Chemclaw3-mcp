@@ -20,7 +20,7 @@ and no core edit is needed. So the target every server here is built against is:
 | Directory | What it is |
 | --- | --- |
 | `servers/` | One directory per capability — a complete, independently deployable MCP server. |
-| `packages/mcp_server_kit/` | The shape every server has, written once: transport, auth, identity, datasets, the egress guard. |
+| `packages/mcp_server_kit/` | The shape every server has, written once: transport, auth, identity, trace continuation, datasets, the egress guard. |
 | `manifests/` | One directory per **connector** holding its `connector.yaml` (a symlink). What `CHEMCLAW_CONNECTORS_DIR` points at, and only what may safely go there. |
 | `manifests-internal/` | The same, for the servers Chemclaw3 must **not** discover — `calc` (a backend behind `cached_compute`) and `rxnlabel` (a background drain's primitives). No published `export` line names it, and each manifest here declares `mount: backend`, a key Chemclaw3's `extra="forbid"` manifest model refuses. |
 | `docs/` | How to wire this fleet to Chemclaw3, and the checklist for adding a server. |
@@ -186,6 +186,14 @@ independent layers because a rule that lives in one place rots:
    static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
    `MCP_EGRESS_ALLOW` is empty by default and empty in every shipped deployment.
 
+   **`mcp_server_kit/tracing.py` is inside this rule, not an exception to it.** It continues the
+   W3C trace context Chemclaw3 sends, so a tool call is a span under the turn that asked for it —
+   and it constructs no provider, no processor and no exporter. Without a configured SDK the tracer
+   is a proxy producing non-recording spans and no I/O at all, `MCP_TRACING_ENABLED` is off by
+   default, and `opentelemetry-api` is an extra rather than a fleet-wide dependency. Exporting
+   those spans means a deployment installing an SDK and opening a destination, which is a decision
+   to argue for in exactly the way `MCP_EGRESS_ALLOW` is.
+
    **It covered only `connect` for a while, and the docstring named DNS anyway** — so two of the
    three examples above walked past it, and a `bytes` host in the address tuple walked past it in
    pure Python. What is still outside it *by construction* is now stated rather than implied: a
@@ -279,8 +287,13 @@ and interaction energies out of them — caching one row per primitive instead o
 
 What a slow tool still owes the fleet: a bound on its input so the cost cannot run away unpriced, a
 `request_timeout` stating the real budget, a docstring that tells the model what it is asking for,
-and a `calculation_key`-style probe if the caller is expected to cache it. See
-`docs/adding-a-server.md`.
+a `calculation_key`-style probe if the caller is expected to cache it, and **a ceiling on how many
+of it may run at once**. That last one is not the same bound as the first: `servers/calc` bounded
+every individual call's atom count and its wall clock and still had no answer for twenty of them
+arriving together, on an image that pins one thread per calculation. `engine/admission.py` is the
+worked example, and the shape generalises — a full pod refuses promptly rather than queueing,
+because a queued minute-long calculation returns after `request_timeout` has expired, computed at
+the expense of one somebody is still waiting for. See `docs/adding-a-server.md`.
 
 **That bound belongs in the engine, not in the transport, and the reason is measurable.** A
 per-tool-call wall clock in `connector_app` looks like the general answer and is not: every heavy
@@ -309,8 +322,28 @@ second declaration nothing checks is exactly what `manifests/README.md` forbids 
 it does not become safe because the subject is a number.
 
 What belongs here is the *rule* rather than the assignments: the fleet's block is **8850–8899**,
-deliberately clear of Chemclaw3's own connectors at 8810–8815 and `Chemclaw3_mock` at 8090–8091, so
-nothing here can collide with a local full-stack run.
+and every manifest in it is what `tests/test_fleet.py` holds — that half is a checked fact.
+
+**The clearance from the rest of the family is not, and the sentence that used to state it was
+wrong.** It read "deliberately clear of Chemclaw3's own connectors at 8810–8815", and Chemclaw3's
+`bo` connector has sat on **8816** since it was written — outside the range this file published as
+that repository's. Nothing here could have caught it: the numbers belong to a repository this one
+cannot see, and a test that read them would be reading a checkout that may not exist. That is the
+same defect as the port table this section replaced, one repository further out, and it does not
+become safe because the subject is somebody else's number.
+
+So the clearance is recorded as the *reason the block starts at 8850*, with the date it was last
+checked, rather than as a boundary anybody may rely on. Observed on 2026-08-27 against the
+repositories in the family: Chemclaw3's connector manifests claim 8811 (`molfp`), 8812 (`rxnfp`),
+8815 (`calc`) and 8816 (`bo`), plus 8810 for the dev process that mounts every bundle by name; its
+runbook additionally names 8000 for the front door and 8820 for a mock OpenAI-compatible LLM; and
+`Chemclaw3_mock` serves 8090 and 8091. Everything observed is below 8850, which is why the block
+begins there and why it is fifty ports wide.
+
+A collision with one of those would surface in a local full-stack run, not in this repository's
+suite. If you find one, move **this** block — renumbering a served port here is a `MODULES.md`
+change and a manifest change in the same pull request, and the registry test is what keeps the two
+together.
 
 ## Never duplicate a Chemclaw3 capability
 
@@ -382,7 +415,8 @@ primitive instead of one per job. See `servers/calc/README.md` and `docs/integra
 
 ```sh
 make install         # uv sync
-make check           # lint + mypy --strict + the whole suite (what CI runs)
+make check           # lint + mypy --strict + the whole suite + the dependency audit
+make deps-audit      # that last step alone: pip-audit over the exported lockfile
 make offline-run     # the same suite with the network namespace taken away
 make run-props       # the reference server on 127.0.0.1:8850
 make run-safety      # one per server; see the Makefile for the full list

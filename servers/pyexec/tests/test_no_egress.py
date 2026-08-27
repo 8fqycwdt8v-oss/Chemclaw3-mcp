@@ -36,9 +36,12 @@ def test_the_exempt_file_only_uses_socket_to_disable_it() -> None:
     """The exemption is a claim about `runner.py`; this is the claim being checked.
 
     Read as a tree rather than as text, and asserted positively: every attribute of the `socket`
-    module that `runner.py` touches must be an assignment target, and the three of them must be the
-    outbound calls. A future edit that *reads* something off the module, or replaces one fewer, is
-    an exemption that has stopped being true — and it fails here rather than in a deployment.
+    module that `runner.py` touches must be an assignment target, and the eight of them must be
+    the outbound calls — `connect`/`connect_ex`/`create_connection` (TCP), `sendto`/`sendmsg`
+    (UDP, which never calls `connect` at all) and `getaddrinfo`/`gethostbyname`/`gethostbyname_ex`
+    (DNS, reachable with no socket object at all). A future edit that *reads* something off the
+    module, or replaces one fewer, is an exemption that has stopped being true — and it fails here
+    rather than in a deployment.
     """
     tree = ast.parse(RUNNER.read_text(encoding="utf-8"), filename=str(RUNNER))
     # Only the outermost attribute of a chain is the access: in `socket.socket.connect = ...` the
@@ -58,7 +61,16 @@ def test_the_exempt_file_only_uses_socket_to_disable_it() -> None:
         if isinstance(root, ast.Name) and root.id == "socket":
             dotted = ".".join(reversed(parts))
             (assigned if isinstance(node.ctx, ast.Store) else read).add(dotted)
-    assert assigned == {"socket.connect", "socket.connect_ex", "create_connection"}, assigned
+    assert assigned == {
+        "socket.connect",
+        "socket.connect_ex",
+        "socket.sendto",
+        "socket.sendmsg",
+        "create_connection",
+        "getaddrinfo",
+        "gethostbyname",
+        "gethostbyname_ex",
+    }, assigned
     assert not read, f"runner.py reads {sorted(read)} off the socket module; it may only disable it"
 
 
@@ -102,6 +114,49 @@ def test_an_outbound_connection_from_inside_the_sandbox_fails() -> None:
         "    import socket\n"
         "    socket.create_connection(('1.1.1.1', 80), timeout=1)\n"
         "    result = 'CONNECTED'\n"
+        "except Exception as exc:\n"
+        "    result = f'refused: {type(exc).__name__}'",
+        limits=Limits(wall_seconds=8.0, cpu_seconds=4),
+    )
+    assert outcome.error is None, outcome.error
+    assert json.loads(outcome.result_json or '""').startswith("refused:")
+
+
+def test_a_udp_datagram_from_inside_the_sandbox_is_refused() -> None:
+    """`connect`-only neutralisation never touches a datagram socket, which never calls `connect`.
+
+    Reached the same way `mcp_server_kit.egress`'s own regression is: not via `import socket`
+    (refused at the door, and refused for the wrong reason if the test only checked that), but via
+    the `sys` reference an *allowed* stdlib module already holds, which is enough to walk back to
+    `sys.modules['socket']` — the module `_neutralise_network` has already neutered, if it neutered
+    the right names. Before `sendto` was patched, this sent a real datagram with no exception.
+    """
+    outcome = run(
+        "import warnings\n"
+        "sock = warnings.sys.modules['socket']\n"
+        "try:\n"
+        "    sock.socket(sock.AF_INET, sock.SOCK_DGRAM).sendto(b'x', ('127.0.0.1', 19999))\n"
+        "    result = 'SENT'\n"
+        "except Exception as exc:\n"
+        "    result = f'refused: {type(exc).__name__}'",
+        limits=Limits(wall_seconds=8.0, cpu_seconds=4),
+    )
+    assert outcome.error is None, outcome.error
+    assert json.loads(outcome.result_json or '""').startswith("refused:")
+
+
+def test_a_dns_lookup_from_inside_the_sandbox_is_refused() -> None:
+    """`getaddrinfo`/`gethostbyname` are module-level C functions; no socket object is ever built.
+
+    A DNS-based licence check or exfiltration channel reaches these with no `connect` call at all —
+    the same gap `mcp_server_kit.egress`'s docstring records finding and fixing in the parent.
+    """
+    outcome = run(
+        "import warnings\n"
+        "sock = warnings.sys.modules['socket']\n"
+        "try:\n"
+        "    sock.getaddrinfo('example.com', 80)\n"
+        "    result = 'RESOLVED'\n"
         "except Exception as exc:\n"
         "    result = f'refused: {type(exc).__name__}'",
         limits=Limits(wall_seconds=8.0, cpu_seconds=4),
