@@ -130,6 +130,17 @@ class CalcSettings(BaseSettings):
     # worker thread — so a caller that gave up left the CPU burning, and its retry started a second
     # burn beside the first. Raise it deliberately, on a deployment whose caller waits longer.
     xtb_inline_timeout_seconds: float = 900.0
+    # How many calculations this server will run **at once**, refused rather than queued past it.
+    # The pair on Chemclaw3's side is `calc_backend_max_concurrent_requests`, which is what it will
+    # not exceed when it dials this server; this is the backstop for every other caller and for the
+    # case where the two disagree.
+    #
+    # Not keyed, and it must not be: like the timeouts, it decides whether an answer comes back, not
+    # what it is. 4 because the image pins `OMP_NUM_THREADS=1` — one in-process calculation is one
+    # core — and `CHEMCLAW_CREST_THREADS=4` already assumes a pod with about that many. Raise it
+    # deliberately, on a pod sized for more; `engine/admission.py` has the argument for why a full
+    # gate refuses instead of queueing.
+    calc_max_concurrent_requests: int = Field(default=4, ge=1)
     # **CREST sampling temperature, and the only survivor of the thermochemistry block.** It keeps
     # Chemclaw3's name and value because it keeps Chemclaw3's *meaning*: it is passed to `crest
     # --temp`, so it changes what the search samples and therefore belongs in an ensemble's key. The

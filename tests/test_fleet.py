@@ -185,7 +185,14 @@ def test_a_networked_manifest_carries_a_credential(server: Path) -> None:
 
 
 def test_ports_are_unique_and_inside_this_repository_s_block() -> None:
-    """8850+ keeps the fleet clear of Chemclaw3's own 8810-8815 and the mock's 8090-8091."""
+    """Every served port is unique and inside 8850-8899, which is all this repository can check.
+
+    Why the block *is* 8850-8899 — that everything else in the family was observed below it — is
+    recorded in `CLAUDE.md` as a dated reason rather than asserted here. It is a fact about
+    repositories this suite cannot see, and the version of it that lived in prose as a boundary was
+    wrong for as long as it existed: it published Chemclaw3's connectors as 8810-8815 while `bo` sat
+    on 8816.
+    """
     seen: dict[int, str] = {}
     for server in server_dirs():
         endpoint = manifest_of(server)["endpoint"]
@@ -245,7 +252,7 @@ def test_claude_md_holds_no_second_port_registry() -> None:
     was invisible to the suite and first to a reader.
 
     Asserted as "no server name paired with a port", not "no port literal", because the *rule* —
-    the 8850-8899 block, clear of 8810-8815 and 8090-8091 — is prose worth keeping there.
+    the 8850-8899 block, and why it starts there — is prose worth keeping there.
     """
     guidance = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     for server in server_dirs():

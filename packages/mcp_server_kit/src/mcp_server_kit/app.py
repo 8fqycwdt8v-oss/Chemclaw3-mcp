@@ -5,7 +5,8 @@ the scrape, `/mcp` for the MCP streamable-HTTP transport. That shape is written 
 server's own `app.py` is three lines, and so the cross-cutting behaviours it needs cannot be
 forgotten one server at a time.
 
-Four of those behaviours are not obvious, and each is here because getting it wrong is quiet:
+These behaviours are not obvious, and each is here because getting it wrong is quiet (no count:
+the one that stood here said four while the list below had five):
 
 - **The parent app must run the MCP session manager.** `FastMCP.streamable_http_app()` returns a
   Starlette app whose *own* lifespan starts the session manager, and mounting an app does not run
@@ -21,6 +22,11 @@ Four of those behaviours are not obvious, and each is here because getting it wr
   into the error result, so an unhandled internal error arrives at the agent carrying whatever the
   exception happened to mention. `ValueError` (the family this repository uses for deliberately
   worded, caller-safe messages) passes through; everything else is replaced and logged.
+- **The trace must be continued per tool call, for the same reason the caller must.** Chemclaw3
+  sends `traceparent` on every call and this fleet dropped it, so a connector's work was an orphan
+  trace rather than a span inside the turn. It is picked up from the same request the caller is,
+  because the serving request is only reachable there — see `tracing.py` for why nothing here
+  exports anything.
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from mcp_server_kit.identity import (
     bind_caller,
     reset_caller,
 )
+from mcp_server_kit.tracing import tool_call_span
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +88,35 @@ def _bind_caller_per_tool_call(server: FastMCP) -> None:
             return await wrapped(*args, **kwargs)
         finally:
             reset_caller(tokens)
+
+    manager.call_tool = call_tool
+
+
+def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
+    """Open a span for each tool call, parented on the `traceparent` that call's request carried.
+
+    Per tool call rather than in ASGI middleware, for exactly the reason
+    `_bind_caller_per_tool_call` is: the tool body runs in the session manager's task, so a
+    context attached in middleware is the *handshake's*. One MCP session carries many calls, and
+    a span parented on the handshake's trace would put every subsequent call inside whichever turn
+    happened to open the connection.
+
+    Inert unless a deployment enables it, and it never exports anything itself — `tracing.py` holds
+    that argument. With no request context (a direct call in a test) there is nothing to continue,
+    so the tool runs unchanged.
+    """
+    manager = getattr(server, "_tool_manager", None)
+    if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
+        return
+    wrapped = manager.call_tool
+
+    async def call_tool(*args: Any, **kwargs: Any) -> Any:
+        headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
+        if headers is None:
+            return await wrapped(*args, **kwargs)
+        tool = str(args[0]) if args else str(kwargs.get("name", ""))
+        with tool_call_span(headers, server=name, tool=tool):
+            return await wrapped(*args, **kwargs)
 
     manager.call_tool = call_tool
 
@@ -187,6 +223,9 @@ def connector_app(
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
     _bind_caller_per_tool_call(server)
+    # Outermost of the three, so the span covers the whole call — the binding, the tool body, and
+    # the sanitiser's own decision about what the caller is told.
+    _continue_trace_per_tool_call(server, name=name)
     mcp_app = server.streamable_http_app()
 
     @asynccontextmanager

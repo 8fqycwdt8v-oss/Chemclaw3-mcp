@@ -1,0 +1,50 @@
+# Automated dependency updates.
+#
+# The pipeline now *detects* a vulnerable closure — `make deps-audit` runs `pip-audit` over the
+# exported lockfile, blocking, in `make check` and in CI. What nothing does is *propose the fix*: a
+# finding turns into a red build and then into somebody hand-resolving a bump, and how long that
+# takes is what decides the window between "we know" and "it is fixed". These two ecosystems are the
+# ones that gate a merge here.
+version: 2
+updates:
+  # The actions are SHA-pinned (see `.github/workflows/ci.yml`), which is the reason this entry has
+  # to exist rather than a reason it does not: a pinned digest never floats to a fix on its own, so
+  # pinning without an updater trades a supply-chain risk for a staleness one. Dependabot rewrites
+  # the digest and the `# vX.Y.Z` comment together, so the pin stays readable in review.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # **One entry at the workspace root, not one per member, and that is a fact about this workspace
+  # rather than a preference.** `pyproject.toml` declares `[tool.uv.workspace] members =
+  # ["packages/*", "servers/*"]` and a single `uv.lock` at the root resolves all nine of them
+  # together, so a per-member entry would have nothing of its own to update — every member's pin
+  # lives in that one file. It is the same fact `make deps-audit` had to work around from the other
+  # side: the root package declares no dependencies, so the audit needs `--all-packages
+  # --all-extras` to see anything at all.
+  #
+  # Grouped into one pull request rather than one per package, deliberately: every bump here runs
+  # the full gate three times over (the suite, the suite again with no network, and the manifest
+  # invariants), and this tree pins few upper bounds, so an ungrouped week is a dozen of those.
+  # Security updates are exempt from the grouping so a CVE fix is never queued behind an unrelated
+  # minor bump — which matters here specifically, because the exemption list in the Makefile is
+  # waiting on exactly such a fix for `transformers`.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
