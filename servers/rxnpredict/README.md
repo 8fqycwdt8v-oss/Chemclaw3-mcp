@@ -33,7 +33,7 @@ which is the evidence that the fork is the same model rather than a similar one.
 | `predict_reaction_conditions` | Catalyst, solvent, reagent and temperature for a known transformation |
 | `predict_forward_single_model` | The same, from one named model — for interrogating a predictor |
 | `predict_conditions_single_model` | The condition-side counterpart |
-| `list_available_models` | Which predictors loaded, which did not, and why |
+| `list_available_models` | Which predictors this deployment serves, which it does not, and why |
 | `classify_reaction` | The coarse SMARTS reaction class used for gating |
 
 All six are `read_only`.
@@ -47,7 +47,10 @@ CHEMCLAW_RXNPREDICT_TOKEN=dev-token \
 
 With no predictor extras installed the server starts, serves its tools, and reports every predictor
 as unavailable with the reason — which is the honest behaviour and is what `list_available_models`
-is for. For a working tool surface with no model weights at all, enable a deterministic double:
+is for. The same tool reports a predictor that *did* load but is switched off by
+`CHEMCLAW_RXNPREDICT_DISABLED_MODELS` or the `ENABLED_*_MODELS` allow-lists as unavailable too, and
+the single-model tools refuse it: one function decides what this deployment serves, so a control an
+operator applied cannot be walked around through a different tool. For a working tool surface with no model weights at all, enable a deterministic double:
 
 ```sh
 CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a  # see engine/base_doubles.py

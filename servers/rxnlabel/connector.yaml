@@ -11,6 +11,13 @@
 # So this file exists for two other readers: this repository's own dev harness, which starts the
 # fleet from these manifests, and a person who wants to know what the server serves without reading
 # `tools.py`.
+#
+# **`mount: backend` is what makes "does not mount this" checkable.** This directory is registered
+# in `manifests-internal/` rather than `manifests/`, so no published `export` line reaches it, and
+# the key refuses the mistake a second time: Chemclaw3's `ConnectorManifest` is `extra="forbid"`,
+# so pointing a path here anyway aborts its startup with a `ConnectorError` naming this file rather
+# than putting `represent_reactions` into the agent's prompt.
+mount: backend
 name: rxnlabel
 description: >-
   Reaction and per-species representations with role assignment, and named-reaction classification.

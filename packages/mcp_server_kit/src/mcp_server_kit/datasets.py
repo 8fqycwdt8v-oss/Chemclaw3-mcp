@@ -84,7 +84,12 @@ def load_dataset(directory: Path, *, records_file: str = "records.csv") -> Datas
         raise DatasetError(f"no dataset manifest at {manifest_path}")
     if not records_path.is_file():
         raise DatasetError(f"no records file at {records_path}")
-    manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+    parsed: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(parsed, dict):
+        raise DatasetError(
+            f"{manifest_path} must contain a JSON object, got {type(parsed).__name__}"
+        )
+    manifest: dict[str, Any] = parsed
     missing = [field for field in _REQUIRED if not str(manifest.get(field, "")).strip()]
     if missing:
         raise DatasetError(

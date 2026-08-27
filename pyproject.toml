@@ -9,7 +9,9 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-    "mcp-server-kit",
+    # `[testing]` because every server's `test_server.py` imports `mcp_server_kit.testing`,
+    # whose `httpx`/`pyyaml` are declared there rather than assumed from this list.
+    "mcp-server-kit[testing]",
     "chemclaw-mcp-props",
     "chemclaw-mcp-rxnpredict",
     "chemclaw-mcp-rxnlabel",

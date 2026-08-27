@@ -10,7 +10,14 @@ gating by reaction class.
     be assigned), falling back to global priors.
   - Sort candidates by total weight, descending.
   - Ties broken by higher vote count.
-  - Returned consensus_score is renormalised so the top candidate scores ~1.0.
+  - `consensus_score` is the candidate's share of the weight it *could* have had: every
+    voting model ranking it first at full confidence, i.e. `sum(effective_prior(m))`.
+
+That denominator is the whole point of the field. It used to be the top candidate's own
+weight, which made rank 1 score exactly 1.0 by construction — a five-model unanimous vote and
+a lone predictor that guessed a product at a per-token probability of 1e-4 came back with the
+identical `consensus_score: 1.0`. A confidence that cannot vary does not measure anything, and
+it was the field named `consensus_score` that an agent would quote.
 
 This requires no training data and degrades gracefully when models are missing.
 """
@@ -71,6 +78,9 @@ def aggregate_forward(
 
     weights: dict[str, float] = defaultdict(float)
     voters: dict[str, set[str]] = defaultdict(set)
+    # The weight a candidate every voter ranked first at full confidence would carry. Summed over
+    # the models that actually answered, so a crashed predictor costs its vote and not the scale.
+    attainable = 0.0
 
     for model_name, preds in per_model.items():
         prior = effective_prior(
@@ -79,6 +89,7 @@ def aggregate_forward(
             settings.model_trust_priors,
             per_class,
         )
+        attainable += prior
         for p in preds:
             canon = _normalise_product(p.product_smiles)
             contribution = prior * p.score / p.rank
@@ -93,13 +104,13 @@ def aggregate_forward(
         key=lambda kv: (-kv[1], -len(voters[kv[0]])),
     )
 
-    max_weight = sorted_candidates[0][1] or 1.0
+    attainable = attainable or 1.0
     aggregated: list[AggregatedForwardPrediction] = []
     for rank, (smiles, weight) in enumerate(sorted_candidates[:top_k], start=1):
         aggregated.append(
             AggregatedForwardPrediction(
                 product_smiles=smiles,
-                consensus_score=min(1.0, weight / max_weight),
+                consensus_score=min(1.0, weight / attainable),
                 rank=rank,
                 vote_count=len(voters[smiles]),
                 contributing_models=sorted(voters[smiles]),
@@ -160,6 +171,9 @@ def aggregate_conditions(
     weights: dict[ConditionKey, float] = defaultdict(float)
     voters: dict[ConditionKey, set[str]] = defaultdict(set)
     temps_for_key: dict[ConditionKey, list[float]] = defaultdict(list)
+    # See aggregate_forward: the denominator of consensus_score is what a candidate could
+    # attain, not what the winner attained.
+    attainable = 0.0
 
     for model_name, preds in per_model.items():
         prior = effective_prior(
@@ -168,6 +182,7 @@ def aggregate_conditions(
             settings.model_trust_priors,
             per_class,
         )
+        attainable += prior
         for p in preds:
             cats = _canon_set(p.catalysts)
             sols = _canon_set(p.solvents)
@@ -189,7 +204,7 @@ def aggregate_conditions(
         key=lambda kv: (-kv[1], -len(voters[kv[0]])),
     )
 
-    max_weight = sorted_candidates[0][1] or 1.0
+    attainable = attainable or 1.0
     aggregated: list[AggregatedConditionsPrediction] = []
     for rank, (key, weight) in enumerate(sorted_candidates[:top_k], start=1):
         cats, sols, rgs, _tbucket = key
@@ -201,7 +216,7 @@ def aggregate_conditions(
                 solvents=list(sols),
                 reagents=list(rgs),
                 temperature_c=mean_temp,
-                consensus_score=min(1.0, weight / max_weight),
+                consensus_score=min(1.0, weight / attainable),
                 rank=rank,
                 vote_count=len(voters[key]),
                 contributing_models=sorted(voters[key]),

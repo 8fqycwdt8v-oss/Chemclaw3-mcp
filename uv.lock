@@ -722,7 +722,7 @@ dev = [
     { name = "chemclaw-mcp-rxnpredict" },
     { name = "chemclaw-mcp-safety" },
     { name = "httpx" },
-    { name = "mcp-server-kit" },
+    { name = "mcp-server-kit", extra = ["testing"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -745,7 +745,7 @@ dev = [
     { name = "chemclaw-mcp-rxnpredict", editable = "servers/rxnpredict" },
     { name = "chemclaw-mcp-safety", editable = "servers/safety" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
+    { name = "mcp-server-kit", extras = ["testing"], editable = "packages/mcp_server_kit" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
@@ -1592,14 +1592,23 @@ dependencies = [
     { name = "starlette" },
 ]
 
+[package.optional-dependencies]
+testing = [
+    { name = "httpx" },
+    { name = "pyyaml" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'testing'", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.9,<2" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.9" },
+    { name = "pyyaml", marker = "extra == 'testing'", specifier = ">=6.0" },
     { name = "starlette", specifier = ">=0.38" },
 ]
+provides-extras = ["testing"]
 
 [[package]]
 name = "mpmath"
