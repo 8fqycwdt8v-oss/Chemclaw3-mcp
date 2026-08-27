@@ -308,8 +308,19 @@ def test_the_hessian_carries_the_gradient_that_says_whether_it_is_a_minimum() ->
     assert at_embedding.max_gradient > at_minimum.max_gradient
 
 
-def test_a_molecule_over_the_atom_limit_is_refused_and_says_where_to_go() -> None:
-    """The refusal names Chemclaw3's durable job path, because this server has none of its own."""
+def test_a_molecule_over_the_atom_limit_is_refused_without_naming_a_route_it_cannot_see() -> None:
+    """The refusal states this server's own limit and stops.
+
+    It used to end "Submit it through Chemclaw3's durable QM job path instead", which the same
+    function's docstring simultaneously claimed it did *not* say — and the route had been deleted
+    outright (`D-2026-08-26-semiempirical-is-the-whole-tier` there). A tool docstring and a tool
+    error are both prompt: a refusal naming a route nobody can take sends the model, and then a
+    chemist, looking for it.
+
+    Where to go next is orchestration knowledge this server does not have. Chemclaw3 owns it and
+    now refuses first, in `science/calc/budget.py::require_hessian_affordable`, before the call
+    reaches the wire — so this bound is the backstop for a caller that is not Chemclaw3.
+    """
     # Two over the limit rather than one, because an odd number of hydrogens is an odd number of
     # electrons and `Structure` rejects that before the size check is ever reached.
     count = settings.xtb_hessian_max_atoms + 2
@@ -317,8 +328,12 @@ def test_a_molecule_over_the_atom_limit_is_refused_and_says_where_to_go() -> Non
         elements=[1] * count,
         positions=[[float(i), 0.0, 0.0] for i in range(count)],
     )
-    with pytest.raises(ValueError, match="durable QM job path"):
+    with pytest.raises(ValueError, match="exceeds this server's inline limit") as raised:
         compute_hessian(HessianSpec(), big)
+    message = str(raised.value)
+    assert str(settings.xtb_hessian_max_atoms) in message, "the refusal must state the bound it hit"
+    for route in ("durable", "QM job", "Chemclaw3"):
+        assert route not in message, f"the refusal still names {route!r}, a route it cannot see"
 
 
 def test_driving_a_coordinate_moves_it_and_leaves_the_molecule_intact() -> None:

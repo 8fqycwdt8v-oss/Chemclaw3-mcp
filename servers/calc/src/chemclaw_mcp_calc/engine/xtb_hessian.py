@@ -160,16 +160,22 @@ def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
 
     Raises `ValueError` above `settings.xtb_hessian_max_atoms`, and again if the in-process run
     exceeds `settings.xtb_inline_timeout_seconds`: the cost is 6N single points, and blocking an
-    agent turn for minutes is a worse failure than refusing. **The refusal
-    is worded differently here than in Chemclaw3**, which named the durable QM job path as the
-    alternative — this server has no durable path, and pointing at one that does not exist from here
-    would send a chemist looking for a route nobody can take.
+    agent turn for minutes is a worse failure than refusing.
+
+    **The refusal states this server's limit and names no alternative**, and the second half is the
+    part that took a correction: it used to end "Submit it through Chemclaw3's durable QM job path
+    instead" while this very paragraph claimed it did not, and that route had been deleted outright
+    (`D-2026-08-26-semiempirical-is-the-whole-tier`). A tool error is prompt, so a refusal naming a
+    route nobody can take sends the model — and then a chemist — looking for it. Where to go next
+    is orchestration knowledge this server does not have; Chemclaw3 owns it and refuses first, in
+    `science/calc/budget.py::require_hessian_affordable`, so this bound is the backstop for a caller
+    that is not Chemclaw3.
     """
     if len(structure.elements) > settings.xtb_hessian_max_atoms:
         raise ValueError(
             f"a Hessian on {len(structure.elements)} atoms exceeds this server's inline limit of "
             f"{settings.xtb_hessian_max_atoms}: the cost is 6N single points and a tool call runs "
-            "inside a conversation turn. Submit it through Chemclaw3's durable QM job path instead"
+            "inside a conversation turn"
         )
     resolved = spec.for_structure(structure)
     if resolved.engine == "xtb":
