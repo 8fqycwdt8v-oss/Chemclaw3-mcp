@@ -23,17 +23,26 @@ server returns carries `calc_version`, and every result whose source derived a k
 
 ## The duplication, stated exactly
 
-Two things in this file are copies of Chemclaw3's `chemclaw/science/calc/store.py`, and **the two
-copies must agree or the key stops addressing anything**:
+Two things in this file are copies of Chemclaw3's `chemclaw/science/calc/store.py`:
 
-1. `CALCULATION_EPOCH` — the version of *ChemClaw's own* contribution to a stored result, folded
-   into `params_hash` by `build()`. It is a source constant on both sides. Bumping it in one
-   repository and not the other silently partitions every cache entry and every ledger row.
-2. `CalculationKey.build` / `as_str` — the field order, the two `stable_hash` calls, the
-   `{"epoch": ..., "params": ...}` envelope, and the `@`/`:` separators of the flat form.
+1. `CalculationKey.build` / `as_str` — the field *names*, the two `stable_hash` calls, the
+   `{"epoch": ..., "params": ...}` envelope, and the `@`/`:` separators of the flat form. **This
+   is the half that must agree.** `connectors/calc/remote.py::remote_key` rebuilds a key out of
+   `key["calc_type"]`, `key["calc_version"]`, `key["input_hash"]` and `key["params_hash"]` by name,
+   so a renamed field is a rename with no local consequence here and a `CalcToolError` on every
+   calculation there.
+2. `CALCULATION_EPOCH` — the version of *ChemClaw's own* contribution to a stored result, folded
+   into `params_hash` by `build()`. **This half does not have to agree, and saying it did was
+   wrong.** The claim rested on Chemclaw3 still building keys for in-tree calculators; it has none
+   — `CalculationKey.build` has no caller left in its `src/`, and `cached_compute` has exactly one,
+   `remote.py::cached_remote`. `remote_key` folds *its* epoch over **ours**
+   (`stable_hash({"epoch": <theirs>, "remote_params": <ours>})`), so the two **compose**: a bump on
+   either side alone changes the composed digest and misses every stored row, which is what an
+   epoch is for. Move them together as a convention — it keeps the two epoch logs describing the
+   same events — not because a divergence would be silent.
 
-`tests/test_key_contract.py` pins both as literal strings taken from Chemclaw3, which is the only
-mechanism available: neither repository may import the other.
+`tests/test_key_contract.py` pins the first as literal strings taken from Chemclaw3, which is the
+only mechanism available: neither repository may import the other.
 
 **What is deliberately absent**: `ResultStore`, `StoredResult`, `cached_compute`, `run_cached` and
 every backend. This server has no store. A key is emitted as provenance, never looked up.
@@ -59,10 +68,12 @@ __all__ = ["CALCULATION_EPOCH", "CalculationKey", "Keyed"]
 # by `2 * symmetry` instead of `symmetry`, so every N2/CO/CO2/HCN/alkyne entropy already on disk was
 # wrong), and a persisted payload's *shape* changing under a stable version.
 #
-# **This value is Chemclaw3's, and moves only when Chemclaw3's moves.** It is not this server's to
-# bump: the rows it partitions live over there. If the arithmetic in `xtb_thermo` here is fixed in a
-# way that makes an already-written Chemclaw3 row wrong, the epoch is bumped in **both**
-# repositories in the same change, or the two stop addressing the same rows.
+# **The rows it partitions live over there, so a bump here is still Chemclaw3's decision to take.**
+# If the arithmetic in `xtb_thermo` here is fixed in a way that makes an already-written Chemclaw3
+# row wrong, the epoch is bumped in both repositories in the same change — by convention, so the two
+# logs below describe the same events. It is a convention rather than an invariant: `remote_key`
+# folds Chemclaw3's epoch over this one's `params_hash`, so bumping either alone already invalidates
+# every stored row. What a unilateral bump costs is CPU, not correctness.
 #
 #   1 — introduced.
 #   2 — the per-atom reactivity panel. `SiteReactivityResult` gained the conceptual-DFT global

@@ -119,3 +119,28 @@ async def test_an_oversized_body_is_refused(monkeypatch: pytest.MonkeyPatch) -> 
         content=b"x" * 4096,
     )
     assert response.status_code == 413
+
+
+@pytest.mark.parametrize("path", ["/healthz/", "/metrics/"])
+async def test_a_probe_path_with_a_trailing_slash_is_still_open(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """`OPEN_PATHS` was an exact-match set, so `/healthz/` returned 401 instead of the redirect.
+
+    Not a security hole — the opposite — but a diagnosable condition turned into an undiagnosable
+    one: a kubelet `httpGet` configured as `path: /healthz/` would never make the pod ready, while
+    the server log said "refused an unauthenticated request to /healthz/", which reads as a
+    credential problem and is not.
+    """
+    monkeypatch.setenv(TOKEN_ENV, "s3cret")
+    response = await _call(_app(token_env=TOKEN_ENV), "GET", path)
+    assert response.status_code != 401
+
+
+async def test_the_open_paths_are_not_a_prefix_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Normalising the trailing slash must not become "anything starting with /healthz"."""
+    monkeypatch.setenv(TOKEN_ENV, "s3cret")
+    app = _app(token_env=TOKEN_ENV)
+    for path in ("/healthz/../mcp", "//metrics", "/HEALTHZ", "/healthzz", "/metrics/../mcp"):
+        response = await _call(app, "GET", path)
+        assert response.status_code == 401, f"{path} reached the app unauthenticated"

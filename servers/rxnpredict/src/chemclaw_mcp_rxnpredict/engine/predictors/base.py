@@ -26,6 +26,25 @@ class BasePredictor(ABC):
 
     def __init__(self) -> None:
         self._loaded = False
+        # The lazy load must happen once, not once per coroutine that arrived first.
+        #
+        # `if not self._loaded: await to_thread(self.load); self._loaded = True` straddles an await
+        # with nothing holding the gap, so three requests in the seconds after a restart measured
+        # three `load()` calls. For `reaction_t5_v2` that is three `from_pretrained` allocations of
+        # one checkpoint in a pod sized for one — an OOMKill, restarting into the same window — and
+        # the later loads rebind `_model`/`_tokenizer` under an earlier request already inside
+        # `predict_sync`. Constructed here rather than lazily because 3.10+ binds no loop at
+        # construction, so one lock per predictor instance is safe to build at import time.
+        self._load_lock = asyncio.Lock()
+
+    async def ensure_loaded(self) -> None:
+        """Load once, however many callers arrive before the first load finishes."""
+        if self._loaded:
+            return
+        async with self._load_lock:
+            if not self._loaded:
+                await asyncio.to_thread(self.load)
+                self._loaded = True
 
     @abstractmethod
     def load(self) -> None:
@@ -54,9 +73,7 @@ class BaseForwardPredictor(BasePredictor):
         if cached is not None:
             return [ForwardPrediction.model_validate(d) for d in cached]
 
-        if not self._loaded:
-            await asyncio.to_thread(self.load)
-            self._loaded = True
+        await self.ensure_loaded()
         result = await asyncio.to_thread(self.predict_sync, reactants, top_k)
 
         # Only cache non-empty results: an empty list usually signals a transient
@@ -83,9 +100,7 @@ class BaseConditionsPredictor(BasePredictor):
         if cached is not None:
             return [ConditionsPrediction.model_validate(d) for d in cached]
 
-        if not self._loaded:
-            await asyncio.to_thread(self.load)
-            self._loaded = True
+        await self.ensure_loaded()
         result = await asyncio.to_thread(self.predict_sync, reactants, product, top_k)
 
         # See BaseForwardPredictor.predict: don't cache empty (likely-transient) results.

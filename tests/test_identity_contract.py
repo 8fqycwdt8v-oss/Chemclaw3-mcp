@@ -19,9 +19,18 @@ can fill, described in the present tense by three docstrings.
 **The literals below are deliberately not imported from `mcp_server_kit.identity`.** A test written
 against this repository's own constants asserts that this repository agrees with itself, which it
 always did — the two constants were consistent, and both were wrong about the sender. These strings
-are transcribed from `chemclaw.connectors.identity` (`HEADER_ACTOR`, `HEADER_ROLES`,
-`HEADER_SESSION`, `HEADER_CORRELATION`, `HEADER_DRY_RUN`) and are the thing under test. Change one
-only because Chemclaw3 changed it.
+are transcribed from `chemclaw.connectors.identity` — exactly its `STAMPED_HEADERS` tuple
+(`HEADER_ACTOR`, `HEADER_SESSION`, `HEADER_CORRELATION`, `HEADER_DRY_RUN`) — and are the thing under
+test. Change one only because Chemclaw3 changed it.
+
+**`X-Chemclaw-Roles` was a fifth and is not one any more.** Chemclaw3 deleted `HEADER_ROLES` in
+`D-2026-08-26-an-entitlement-set-is-not-provenance`: it had one writer and, measured across both
+repositories, zero readers, while being the one header with no bound — under
+`entra_group_claims_as_roles` it carried every AD group a user is in, to every connector. This file
+went on listing it among the constants it transcribes and went on sending it, which is precisely the
+failure it exists to catch, in the file positioned as the authority. Nothing broke at runtime,
+because the header was ignored on both sides; what was lost is the property that made this file
+worth having.
 
 Driven through a real `connector_app` over a real MCP session rather than through the middleware
 alone, because the caller is bound *twice* and only the second binding is what a tool body reads:
@@ -50,10 +59,14 @@ from mcp_server_kit import connector_app, current_caller
 # Transcribed from `chemclaw.connectors.identity`. See the module docstring for why these are
 # literals rather than imports.
 SENT_ACTOR = "X-Chemclaw-Actor"
-SENT_ROLES = "X-Chemclaw-Roles"
 SENT_SESSION = "X-Chemclaw-Session"
 SENT_CORRELATION = "X-Chemclaw-Correlation-Id"
 SENT_DRY_RUN = "X-Chemclaw-Dry-Run"
+
+# Chemclaw3's `STAMPED_HEADERS`, in its order. Its own comment says a new `X-Chemclaw-*` header
+# belongs in that tuple the day it is written, so transcribing the whole tuple rather than four
+# loose names is what makes a fifth one a visible gap here rather than a silent one.
+SENT_STAMPED = (SENT_ACTOR, SENT_SESSION, SENT_CORRELATION, SENT_DRY_RUN)
 
 ACTOR = "alice-oid"
 SESSION = "sess-1"
@@ -149,7 +162,6 @@ async def test_a_tool_body_reads_every_header_chemclaw3_sends(probe_url: str) ->
         probe_url,
         {
             SENT_ACTOR: ACTOR,
-            SENT_ROLES: "process-chemist",
             SENT_SESSION: SESSION,
             SENT_CORRELATION: CORRELATION,
             SENT_DRY_RUN: "false",
@@ -259,3 +271,22 @@ async def test_two_concurrent_calls_on_one_session_each_read_their_own_caller(
         f"two concurrent calls on one session read {SEEN_CONCURRENT}; the per-call binding "
         "interleaved and a stamped record would carry the other caller's identity"
     )
+
+
+def test_the_constants_are_exactly_the_headers_chemclaw3_stamps() -> None:
+    """The inverse assertion, which is what makes the four above a *set* rather than four names.
+
+    A header Chemclaw3 adds is invisible here otherwise, and a header it deletes lives on — this
+    file sent `X-Chemclaw-Roles` on every request for as long as after Chemclaw3 removed it
+    (`D-2026-08-26-an-entitlement-set-is-not-provenance`), while claiming in its own docstring to
+    transcribe the sender's constants. Both directions, so neither can drift alone.
+    """
+    from mcp_server_kit import identity
+
+    ours = {
+        identity.HEADER_ACTOR,
+        identity.HEADER_SESSION,
+        identity.HEADER_CORRELATION,
+        identity.HEADER_DRY_RUN,
+    }
+    assert ours == {sent.lower() for sent in SENT_STAMPED}

@@ -141,3 +141,131 @@ async def test_a_repeated_call_is_served_from_the_cache(fake_predictors: None) -
     cached = get_cache().get_forward("fake_a", "CC(=O)Cl.Nc1ccccc1", 2)
     assert cached is not None
     assert cached[0]["product_smiles"] == "CC(=O)Nc1ccccc1"
+
+
+async def test_the_top_consensus_score_measures_agreement_rather_than_being_one_by_definition(
+    fake_predictors: None,
+) -> None:
+    """A confidence that is always maximal measures nothing, and this one always was.
+
+    The score was `weight / max_weight` over the sorted candidates, so rank 1's weight *was*
+    `max_weight` and rank 1 scored exactly 1.0 — for a five-model unanimous vote and for one model
+    that guessed a product at a per-token probability of 1e-4 alike. The denominator has to be the
+    weight a candidate *could* have had (every voting model ranking it first at full confidence),
+    not the weight the winner happened to get.
+    """
+    from chemclaw_mcp_rxnpredict.engine.config import Settings
+    from chemclaw_mcp_rxnpredict.engine.meta.aggregator import aggregate_forward
+    from chemclaw_mcp_rxnpredict.engine.schemas import ForwardPrediction
+
+    settings = Settings()
+    settings.model_trust_priors = {"m_a": 1.0, "m_b": 1.0, "m_c": 1.0}
+
+    def pred(model: str, smiles: str, rank: int, score: float) -> ForwardPrediction:
+        return ForwardPrediction(product_smiles=smiles, score=score, rank=rank, source_model=model)
+
+    lone_weak = aggregate_forward({"m_a": [pred("m_a", "CCO", 1, 0.0001)]}, settings, 3)
+    unanimous = aggregate_forward(
+        {name: [pred(name, "CCO", 1, 1.0)] for name in ("m_a", "m_b", "m_c")}, settings, 3
+    )
+    print(
+        f"one model, score 1e-4, rank 1 -> consensus_score={lone_weak[0].consensus_score:.4f} "
+        f"(vote_count={lone_weak[0].vote_count})"
+    )
+    print(
+        f"three models, unanimous, score 1.0 -> "
+        f"consensus_score={unanimous[0].consensus_score:.4f} "
+        f"(vote_count={unanimous[0].vote_count})"
+    )
+    assert unanimous[0].consensus_score == pytest.approx(1.0)
+    assert lone_weak[0].consensus_score < 0.01
+
+
+async def test_a_disabled_predictor_is_unreachable_through_the_single_model_tool(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One function must decide what this deployment serves, or the control is not a control.
+
+    The ensemble tools narrowed the registry through `_select`; the single-model tools looked the
+    predictor up in the raw registry and called it. So a predictor an operator switched off after a
+    bad checkpoint bake stayed fully callable through a declared, advertised `read_only` tool — and
+    `list_available_models`, the one tool a caller would check, reported it `available: true`.
+    """
+    monkeypatch.setenv("CHEMCLAW_RXNPREDICT_DISABLED_MODELS", "fake_b,fake_d")
+    from chemclaw_mcp_rxnpredict.engine.config import reset_settings_for_tests
+
+    reset_settings_for_tests()
+    with pytest.raises(ValueError, match="fake_b"):
+        await tools.predict_forward_single_model("fake_b", "CC(=O)Cl.Nc1ccccc1")
+    with pytest.raises(ValueError, match="fake_d"):
+        await tools.predict_conditions_single_model(
+            "fake_d", "CC(=O)Cl.Nc1ccccc1", "CC(=O)Nc1ccccc1"
+        )
+
+    listed = tools.list_available_models()
+    by_name = {row.name: row for row in listed.forward + listed.conditions}
+    for name in ("fake_b", "fake_d"):
+        print(f"list_available_models: {name} available={by_name[name].available}")
+        assert by_name[name].available is False
+        assert by_name[name].unavailable_reason
+    assert by_name["fake_a"].available is True
+
+
+async def test_top_k_is_bounded_on_the_tools_that_are_actually_served() -> None:
+    """The bound lived in request envelopes nothing imports; the served schema had none.
+
+    `reaction_t5` passes `top_k` straight into `num_beams` and `num_return_sequences`, so an
+    unbounded integer is an unbounded allocation inside a worker thread that a client timeout does
+    not stop. `top_k=-1` was accepted too, and `sorted_candidates[:-1]` then dropped the only
+    prediction, so `per_model` and `consensus` contradicted each other.
+    """
+    schemas = {tool.name: tool.inputSchema for tool in await tools.server.list_tools()}
+    for name in (
+        "predict_forward_reaction",
+        "predict_reaction_conditions",
+        "predict_forward_single_model",
+        "predict_conditions_single_model",
+    ):
+        top_k = schemas[name]["properties"]["top_k"]
+        print(f"{name}: top_k schema = {top_k}")
+        assert top_k.get("minimum") == 1, name
+        assert top_k.get("maximum") == tools.MAX_TOP_K, name
+
+
+async def test_a_concurrent_first_request_loads_the_checkpoint_once(
+    fake_predictors: None,
+) -> None:
+    """Three requests arriving before the first load finishes must not be three checkpoints.
+
+    `if not self._loaded: await ...; self._loaded = True` straddles an await with no lock, so every
+    coroutine that arrived first saw `False`. For `reaction_t5_v2` each load is a full T5
+    checkpoint into a fresh allocation, in a pod sized for one — three at once is an OOMKill and a
+    restart back into the same window.
+    """
+    import asyncio
+
+    from chemclaw_mcp_rxnpredict.engine.predictors.base import BaseForwardPredictor
+    from chemclaw_mcp_rxnpredict.engine.schemas import ForwardPrediction
+
+    class CountingPredictor(BaseForwardPredictor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.name = "counting"
+            self.description = "counts its own loads"
+            self.loads = 0
+
+        def load(self) -> None:
+            import time
+
+            time.sleep(0.05)
+            self.loads += 1
+
+        def predict_sync(self, reactants: str, top_k: int) -> list[ForwardPrediction]:
+            return [
+                ForwardPrediction(product_smiles="CCO", score=1.0, rank=1, source_model=self.name)
+            ]
+
+    predictor = CountingPredictor()
+    await asyncio.gather(*(predictor.predict("C" * (n + 2) + "O", 1) for n in range(3)))
+    print(f"load() was called {predictor.loads} time(s) for 3 concurrent first requests")
+    assert predictor.loads == 1

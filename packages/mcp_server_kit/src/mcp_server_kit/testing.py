@@ -68,14 +68,17 @@ def assert_manifest_matches(manifest_path: Path, tool_names: list[str]) -> None:
     """
     manifest = load_manifest(manifest_path)
     endpoint = manifest.get("endpoint", {})
-    declared = sorted(endpoint.get("tools", []))
+    # `or []` rather than a default: a manifest with a bare `tools:` key parses to `None`, and
+    # `sorted(None)` is a TypeError naming this line instead of the assertion below naming the
+    # manifest — which is the whole reason this helper exists.
+    declared = sorted(endpoint.get("tools") or [])
     served = sorted(tool_names)
     assert served == declared, (
         f"{manifest_path} declares {declared} but the server serves {served}; "
         "the manifest is the contract Chemclaw3 reads, so these must be equal"
     )
-    read_only = set(endpoint.get("read_only", []))
-    state_changing = set(endpoint.get("state_changing", []))
+    read_only = set(endpoint.get("read_only") or [])
+    state_changing = set(endpoint.get("state_changing") or [])
     unclassified = set(declared) - read_only - state_changing
     both = read_only & state_changing
     assert not unclassified, f"{manifest_path}: unclassified tool(s) {sorted(unclassified)}"

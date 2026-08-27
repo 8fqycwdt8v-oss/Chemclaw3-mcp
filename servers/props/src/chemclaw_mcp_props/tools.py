@@ -254,8 +254,10 @@ def vapour_pressure(name: str, temperature_c: float) -> VapourPressureResult:
     sweep will carry, and for the vapour side of a flammability assessment.
 
     **The number arrives with a `method`, and the two methods are not equally good.** `antoine` is a
-    fit from the table and is worth about a percent near its range. `clausius_clapeyron`
-    extrapolates from the normal boiling point and is exact only there.
+    fit from the table, worth about a percent, and is only ever returned inside the temperature
+    range that fit was made over — the `caveat` names that range, and outside it this server falls
+    back rather than extrapolating a correlation past where it is known to diverge.
+    `clausius_clapeyron` extrapolates from the normal boiling point and is exact only there.
     `clausius_clapeyron_trouton` additionally
     *estimates* the enthalpy of vaporisation, and underestimates it for alcohols, acids and water —
     so it reads high below the boiling point. Quote `method` and `caveat` whenever you report the
@@ -307,8 +309,10 @@ def boiling_point_at_pressure(name: str, pressure_mbar: float) -> BoilingPointRe
         The boiling temperature at that pressure, alongside the normal boiling point for comparison.
 
     Raises:
-        ValueError: if the solvent is unknown, the pressure is not positive, or the solvent would
-            freeze before boiling at that vacuum.
+        ValueError: if the solvent is unknown, the pressure is not positive, the solvent would
+            freeze before boiling at that vacuum, or the pressure is one it never reaches in the
+            range this server models — a pressurised question above the correlation's ceiling gets
+            a refusal naming the ceiling, never the ceiling itself dressed up as a boiling point.
     """
     solvent = records.require(name)
     temperature = correlations.boiling_point_at(solvent, pressure_mbar)

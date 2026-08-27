@@ -20,7 +20,8 @@ enforced rather than requested.
 | [`CLAUDE.md`](CLAUDE.md) | The conventions every server follows, and the reasons behind them. |
 | [`servers/props/`](servers/props/) | The reference server: solvent and pure-component properties. Copy this one. |
 | [`packages/mcp_server_kit/`](packages/mcp_server_kit/) | The shared shape: FastAPI transport, bearer auth, identity logging, vendored datasets, the egress guard. |
-| [`manifests/`](manifests/) | One directory per server, holding its `connector.yaml`. Point `CHEMCLAW_CONNECTORS_DIR` here. |
+| [`manifests/`](manifests/) | One directory per **connector**, holding its `connector.yaml`. Point `CHEMCLAW_CONNECTORS_DIR` here — and only here. |
+| [`manifests-internal/`](manifests-internal/) | The two servers Chemclaw3 must not discover — `calc` and `rxnlabel`. Reached by configuration, never mounted. |
 | [`docs/integration.md`](docs/integration.md) | Wiring a Chemclaw3 checkout to this fleet. |
 | [`docs/adding-a-server.md`](docs/adding-a-server.md) | The checklist for a new server. |
 
@@ -59,14 +60,18 @@ Then, in the Chemclaw3 checkout, `make connector-validate` resolves the manifest
 picks the tools up on the next turn. Full instructions, including the Helm side and the
 degrades-silently failure mode to watch for, are in [`docs/integration.md`](docs/integration.md).
 
-**One server is wired differently and it is not optional to know which.** `calc` is not a connector
-Chemclaw3 dials: it holds the *physics* behind that bundle's calculators and durable jobs, and is
-called from inside Chemclaw3's own `cached_compute` on a cache miss. Putting its manifest on
-`CHEMCLAW_CONNECTORS_DIR` would let a partial surface win the `calc` name collision and take the
-calibration ledger, the calculation cache, the artifact store and every durable calc job off the
-agent's surface — with no error. It is also the server that shows what this fleet does and does not
-promise: it may run for hours, and it may not hold state. See
-[`servers/calc/README.md`](servers/calc/README.md).
+**Two servers are wired differently, and the export line above no longer reaches them.** `calc` is
+not a connector Chemclaw3 dials: it holds the *physics* behind that bundle's calculators and durable
+jobs, and is called from inside Chemclaw3's own `cached_compute` on a cache miss. `rxnlabel` is
+reached the same way, by a background corpus drain. Mounting `calc` would let a partial surface win
+the `calc` name collision and take the calibration ledger, the calculation cache, the artifact store
+and every durable calc job off the agent's surface — with no error, which is exactly why prose was
+not enough. Their manifests live in [`manifests-internal/`](manifests-internal/), which no `export`
+line names, and each declares `mount: backend` — a key Chemclaw3's manifest model refuses, so
+pointing a path there anyway is a startup error naming the file rather than a silent swap.
+
+`calc` is also the server that shows what this fleet does and does not promise: it may run for
+hours, and it may not hold state. See [`servers/calc/README.md`](servers/calc/README.md).
 
 ## Adding a server
 

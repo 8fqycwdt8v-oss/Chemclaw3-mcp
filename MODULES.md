@@ -95,7 +95,10 @@ repairs itself.
 *Not mounted on Chemclaw3's `CHEMCLAW_CONNECTORS_DIR`*, deliberately: these are internal primitives
 for a background drain, and mounting the manifest would put them in the agent's prompt as tools to
 choose between — the call `core/config/calculators.py` makes for the calculation server. Chemclaw3
-addresses it through `rxnlabel_server_url` and `rxnlabel_server_token_env`.
+addresses it through `rxnlabel_server_url` and `rxnlabel_server_token_env`. Registered in
+`manifests-internal/`, not `manifests/`, and its manifest declares `mount: backend` — a key
+Chemclaw3's `extra="forbid"` manifest model refuses, so mounting it is a startup error rather than
+a silent widening of the agent's tool list.
 *Port note:* 8865 rather than a tranche-1 slot, because 8850-8856 are all claimed by this
 catalogue's own proposals and taking a proposed server's port silently is what
 `test_the_catalogue_claims_no_port_a_server_contradicts` exists to prevent. It sits next to
@@ -236,7 +239,9 @@ holds the physics.** It is *not* a connector Chemclaw3 dials — it is called fr
 `science/calc/store.py::cached_compute` as a backend on a miss, and registering it on
 `CHEMCLAW_CONNECTORS_DIR` would let it win the `calc` name collision and take the calibration
 ledger, the calculation cache, the artifact store and every durable job off the agent's surface,
-with no error. See `docs/integration.md`.
+with no error. That is now structural rather than stated: its manifest is registered in
+`manifests-internal/`, which no published `export` line names, and declares `mount: backend`, which
+Chemclaw3's manifest model refuses outright. See `docs/integration.md`.
 
 **`cached_compute` takes the key as an *argument*, so a key that only arrives on the result cannot
 serve the lookup.** Hence `calculation_key`, which answers what a calculation would be stored under
@@ -284,9 +289,12 @@ no new primitive at all, being pure composition over ones already exposed.
   byte-for-byte what Chemclaw3's artifact store holds. The ceiling is ~2.2 MB, bounded quadratically
   by `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS`.
 - **Three definitions are copied from Chemclaw3**: `stable_hash`, `CalculationKey`/
-  `CALCULATION_EPOCH`, and `require_canonical_smiles`. Because Chemclaw3 never derives a key, **only
-  `CALCULATION_EPOCH` has to agree** across the two repositories — it is a source constant in both
-  and moves in both or in neither. The calculator settings and the RDKit build do not, since only
+  `CALCULATION_EPOCH`, and `require_canonical_smiles`. Because Chemclaw3 never derives a key,
+  **nothing has to agree** across the two repositories. Not even the epoch: `CalculationKey.build`
+  has no caller left in Chemclaw3's `src/`, and `connectors/calc/remote.py::remote_key` folds *its*
+  epoch over **this server's** `params_hash`, so the two **compose** and a bump on either side alone
+  invalidates every stored row. They move together by convention — it keeps the two epoch logs
+  describing the same events — not because a divergence is silent. The calculator settings and the RDKit build do not, since only
   this server reads them and only this server embeds.
 - **`Structure.structure_id` is a `computed_field`, not a property.** A plain property does not
   serialize, so a geometry crossing the wire arrived without its content address — and re-deriving

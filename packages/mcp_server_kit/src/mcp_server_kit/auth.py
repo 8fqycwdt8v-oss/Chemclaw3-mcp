@@ -18,7 +18,10 @@ wrong place:
   A misconfigured deployment must serve nothing, not everything.
 
 `/healthz` and `/metrics` stay open: a kubelet probe and a Prometheus scrape happen independently
-of any identity, and the exposition carries counts only.
+of any identity. The exposition is the default registry's — `python_info` and the `process_*`
+collectors, which an operator wants — and never anything about a *request*: no caller identity, no
+correlation id, no tool argument. That is the bound an unauthenticated endpoint has to keep, and it
+is asserted over the live exposition in `tests/test_connector_app.py` rather than only stated here.
 """
 
 from __future__ import annotations
@@ -46,6 +49,19 @@ logger = logging.getLogger(__name__)
 OPEN_PATHS = frozenset({"/healthz", "/metrics"})
 
 
+def _is_open(path: str) -> bool:
+    """Whether `path` is one of the two unauthenticated probe routes.
+
+    A trailing slash is the only normalisation, and it is deliberately the only one: `OPEN_PATHS`
+    was an exact-match set, so a kubelet probe configured as `path: /healthz/` got 401 forever and
+    the pod never became ready — while the log said "refused an unauthenticated request", which
+    reads as a credential problem and is not. Everything else stays an exact match: `//metrics`,
+    `/HEALTHZ` and `/healthz/../mcp` are *not* these routes, and a prefix rule here would open the
+    MCP surface to anything that could write a path starting with `/healthz`.
+    """
+    return (path.rstrip("/") or "/") in OPEN_PATHS
+
+
 class BearerAuthMiddleware(BaseHTTPMiddleware):
     """Refuse anything outside `OPEN_PATHS` without the bearer token `token_env` names."""
 
@@ -62,7 +78,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Check the credential, or pass straight through for the probe routes and `mode: none`."""
-        if request.url.path in OPEN_PATHS or self._token_env is None:
+        if _is_open(request.url.path) or self._token_env is None:
             return await call_next(request)
         expected = os.environ.get(self._token_env, "")
         scheme, _, offered = request.headers.get("authorization", "").partition(" ")
@@ -129,6 +145,22 @@ class BodySizeLimit:
     class shipped with the counter only, and the test for it passed for the wrong reason). The
     declared `content-length` is therefore refused up front, and the running total still guards
     the chunked case where no such declaration exists.
+
+    **The counter signals with a disconnect, not an exception, and that is the second correction
+    this class has needed.** It used to raise a private exception through the receive channel. Two
+    `BaseHTTPMiddleware` layers sit between this middleware and the app in every `connector_app`,
+    each running the downstream app inside an `anyio` task group, so the signal arrived here
+    wrapped in a nested `ExceptionGroup` that `except _BodyTooLarge` did not match: a chunked
+    oversize body got **500 plus a per-request traceback**, and with no `BaseHTTPMiddleware` in
+    between FastAPI's body parsing swallowed it into a 400 instead — the counter produced a 413 in
+    no configuration at all, while its only test exercised the declared pre-check.
+
+    An exception has to survive every `except` between here and the receive call, and there is no
+    version of that this middleware controls. A disconnect is the ASGI protocol's own way to say
+    "no more body is coming", every app already handles it, and it cannot be caught into something
+    else. What the app then says is dropped, because the request has already been refused, and
+    whatever it raises on the way out is a consequence of the refusal rather than a fault to
+    report.
     """
 
     def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
@@ -157,27 +189,39 @@ class BodySizeLimit:
             return
         seen = 0
         refused = False
+        answered = False
 
         async def counting_receive() -> Message:
+            """Deliver the body until it exceeds the cap, then report a client disconnect."""
             nonlocal seen, refused
+            if refused:
+                return {"type": "http.disconnect"}
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body", b""))
                 if seen > self._max_bytes:
                     refused = True
-                    raise _BodyTooLarge
+                    return {"type": "http.disconnect"}
             return message
 
-        try:
-            await self._app(scope, counting_receive, send)
-        except _BodyTooLarge:
-            if refused:
-                await PlainTextResponse("request body too large", status_code=413)(
-                    scope, receive, send
-                )
+        async def guarded_send(message: Message) -> None:
+            """Drop whatever the app says about a request this middleware has already refused.
+
+            Only until the app has started a response: an app that answered *before* the body went
+            over the cap is mid-response, and cutting it off there would be a protocol error rather
+            than a refusal.
+            """
+            nonlocal answered
+            if refused and not answered:
                 return
-            raise
+            if message["type"] == "http.response.start":
+                answered = True
+            await send(message)
 
-
-class _BodyTooLarge(Exception):
-    """Internal signal from the counting receive channel to `BodySizeLimit.__call__`."""
+        try:
+            await self._app(scope, counting_receive, guarded_send)
+        except Exception:
+            if not refused:
+                raise
+        if refused and not answered:
+            await PlainTextResponse("request body too large", status_code=413)(scope, receive, send)

@@ -64,12 +64,27 @@ servers/<name>/
     └── test_server.py           # real socket, real handshake, real 401, manifest mirror
 ```
 
-Then symlink the manifest — never copy it:
+Then symlink the manifest — never copy it — into the bucket that says what the server *is*:
 
 ```sh
-mkdir -p manifests/<name>
+mkdir -p manifests/<name>                                          # a connector Chemclaw3 dials
 ln -s ../../servers/<name>/connector.yaml manifests/<name>/connector.yaml
 ```
+
+`manifests/` is what every published `export CHEMCLAW_CONNECTORS_DIR=...` line names, and Chemclaw3
+enables everything it discovers there. If the new server is **not** something the agent should see
+as tools — a backend called from inside Chemclaw3's own code, or primitives for a background drain
+— it goes in `manifests-internal/` instead, and its `connector.yaml` declares `mount: backend`:
+
+```sh
+mkdir -p manifests-internal/<name>                                 # reached by configuration only
+ln -s ../../servers/<name>/connector.yaml manifests-internal/<name>/connector.yaml
+```
+
+That key is refused by Chemclaw3's `extra="forbid"` manifest model, which is the point: a deployment
+that mounts the directory anyway gets a startup error naming the file rather than an agent whose
+tool surface quietly changed. A connector's manifest must carry no `mount:` key at all, for the same
+reason. `tests/test_fleet.py` checks both directions.
 
 ## The dataset
 

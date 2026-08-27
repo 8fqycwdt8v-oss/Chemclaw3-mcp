@@ -92,6 +92,16 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     allowed to say. A deliberately worded domain message is a `ValueError` (pydantic's
     `ValidationError` is one too); anything else is a bug or an infrastructure fault and is
     replaced, with the real exception logged so an operator can still find it.
+
+    **A `ToolError` with no `__cause__` is upstream's own wording, and it passes too.** `Tool.run`
+    folds a failing tool body into `ToolError(...) from e`, so a fault always arrives chained;
+    `ToolManager.call_tool` raises a bare `ToolError(f"Unknown tool: {name}")` for a name it does
+    not have, which is a caller input error and the only unchained one on this path. Treating it as
+    a fault told a model that had guessed a stale tool name "an internal error occurred" — nothing
+    it could act on, against this repository's own rule that a refusal names what was wrong — and
+    logged a stack trace at ERROR for every such call, so an operator's alerting fired on a client
+    mistake. Both halves of that upstream behaviour are pinned in
+    `tests/test_connector_app.py`, because neither is a documented promise.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
@@ -102,7 +112,7 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
         try:
             return await wrapped(*args, **kwargs)
         except ToolError as exc:
-            if isinstance(exc.__cause__, ValueError):
+            if exc.__cause__ is None or isinstance(exc.__cause__, ValueError):
                 raise
             logger.exception("server %s: a tool raised an unexpected exception", name)
             raise ToolError("an internal error occurred") from exc.__cause__
@@ -210,7 +220,16 @@ def connector_app(
 
     @app.get("/metrics")
     async def metrics() -> Response:
-        """Prometheus exposition for this process. Unauthenticated, and carries counts only."""
+        """Prometheus exposition. Unauthenticated, so what it may carry is bounded.
+
+        Not "counts only", which is what this used to say and was never true: the default registry
+        publishes `python_info` and the `process_*` collectors, and an operator wants them. What
+        the endpoint may **never** carry, because it is served without a credential, is anything
+        about a request — a caller's actor or session, a correlation id, or a tool argument. A
+        labelled counter such as `tool_calls_total{tool=..., actor=...}` would publish per-actor
+        call volumes to anything that can reach the pod. `tests/test_connector_app.py` asserts that
+        absence over the live exposition rather than leaving it to this docstring.
+        """
         return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
     # Mounted last: Starlette matches in definition order, so the two routes above win and

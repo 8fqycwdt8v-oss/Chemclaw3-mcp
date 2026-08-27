@@ -60,8 +60,9 @@ manifest whose auth mode changes with its address is one whose serving side gets
 
 `src/chemclaw_mcp_props/data/records.csv`, described and checksummed by `dataset.json` beside it.
 
-- **What it is:** 44 solvents × 24 columns — identity (name, aliases, CAS, SMILES, formula, MW),
-  physical (bp, mp, density, dielectric constant, Hansen parameters, Antoine constants, ΔHvap),
+- **What it is:** 44 solvents × 26 columns — identity (name, aliases, CAS, SMILES, formula, MW),
+  physical (bp, mp, density, dielectric constant, Hansen parameters, Antoine constants *and the
+  temperature range they were fitted over*, ΔHvap),
   handling (flash point, water miscibility, peroxide formation), and regulatory (ICH Q3C class and
   residual-solvent limit, an indicative greenness band, GHS hazard flags).
 - **Licence:** CC0-1.0. First-party content, hand-compiled in this repository from publicly
@@ -76,14 +77,23 @@ and every tool says so through the `source` field it returns.
 ### How the table checks itself
 
 `tests/test_dataset.py` validates the corpus against itself rather than against anything external.
-Three of the checks compare pairs of numbers that were written down independently, so a typo in one
-of them cannot survive:
+Five of the checks compare numbers that were written down independently, so a typo in one of them
+cannot survive:
 
 - **CAS check digits** — a CAS number carries its own checksum.
 - **Molecular weight against formula** — computed from the formula, compared to the tabulated MW.
 - **Antoine constants against the boiling point** — the fit must put 1 atm at the tabulated bp,
-  within 2 °C. This is what makes it safe to carry Antoine constants for only 15 of the 44 rows: a
+  within 2 °C. This is what makes it safe to carry Antoine constants for only 16 of the 44 rows: a
   bad set fails here rather than answering a distillation question.
+- **Flash point against the lower flammable limit** — a closed-cup flash point *is* the temperature
+  at which the vapour first reaches its LFL, so the modelled vapour there must land on a real one
+  (0.8–15 vol%; formic acid's genuine 18% is named). This is what caught acetic acid: its ΔHvap is
+  the dimerisation-suppressed boiling-point value, extrapolating it to ambient read 5.6× high, and
+  the screen saw 15.8 vol% against an LFL of 4.0%.
+- **The Hansen polar term against Beerbower** — `δP = 37.4·μ/√Vm`, with the dipole moment held in
+  the test rather than in the corpus, so the screen shares no input with the column it checks. The
+  Hansen triple is otherwise transcribed as a unit and has no internal check at all; this caught
+  dimethyl carbonate at δP = 8.6 where the published value is 3.9.
 
 The rest are structural — closed vocabularies, melting point below boiling point, ICH limits
 present exactly when a class is, and no name or alias resolving two ways.
@@ -95,7 +105,12 @@ they *have* no flash point. Reporting 0 °C there would be a fire-safety error r
 one, so the field stays `None` the whole way to the wire.
 
 **Two routes to a vapour pressure, and they are not equally good.** `antoine` is a fit from the
-table, worth about a percent near its range. `clausius_clapeyron` extrapolates from the normal
+table, worth about a percent, and is returned *only inside the temperature range that fit was made
+over* — the table carries that range beside the constants, the caveat quotes it, and outside it the
+answer falls back to the boiling-point route and says so. (It did not, until 2026-08: there was no
+range in the corpus and no check in the code, so water at 200 °C came back as 13.775 bar against a
+steam-table 15.549 bar, labelled `antoine` and carrying the "good to about a percent" caveat.)
+`clausius_clapeyron` extrapolates from the normal
 boiling point and is exact only there. `clausius_clapeyron_trouton` additionally *estimates* ΔHvap
 by Trouton's rule, which underestimates it for alcohols, acids and water — so it reads high below
 the boiling point. Every answer carries `method` and a `caveat` naming what that method is good for,
