@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from chemclaw_mcp_rxnpredict.engine.base_doubles import register_requested
 from chemclaw_mcp_rxnpredict.engine.config import get_settings
@@ -54,6 +56,20 @@ from chemclaw_mcp_rxnpredict.engine.schemas import (
 logger = logging.getLogger(__name__)
 
 server = FastMCP("rxnpredict")
+
+# The largest `top_k` a caller may ask any tool here for.
+#
+# **It has to be on the tool signature, because that is the only schema a caller ever sees.** The
+# same bound was already written on `ForwardRequest`/`ConditionsRequest` in `engine/schemas.py`,
+# which nothing imports — so it read as present in review and was absent at runtime, and the served
+# input schema was a bare `{"default": 5, "type": "integer"}`. `reaction_t5` passes `top_k` into
+# `num_beams` and `num_return_sequences`, so an unbounded integer is an unbounded allocation inside
+# a worker thread that a client timeout cannot stop; and a negative one reached
+# `sorted_candidates[:top_k]`, which dropped the only prediction and returned a `consensus` that
+# contradicted `per_model`.
+MAX_TOP_K = 50
+
+TopK = Annotated[int, Field(ge=1, le=MAX_TOP_K)]
 
 # Import every predictor module once, here, so `list_available_models` is truthful from the first
 # request and a missing optional dependency is a recorded reason rather than a stack trace.
@@ -130,6 +146,27 @@ def _conditions_predictors(requested: list[str] | None) -> list[object]:
     ]
 
 
+def _served_names(predictors: list[object]) -> set[str]:
+    """The predictor IDs this deployment will actually answer with."""
+    return {p.name for p in predictors}  # type: ignore[attr-defined]
+
+
+def _not_served(kind: str, model_name: str, served: list[object]) -> ValueError:
+    """The error for a predictor this deployment does not serve — absent *or* switched off.
+
+    One function decides what is served, for the ensemble tools and for the single-model ones.
+    They used to disagree: the ensemble narrowed the registry through `_select`, while these looked
+    the predictor up in the raw registry and called it, so a predictor an operator had disabled
+    after a bad checkpoint bake stayed reachable through a declared, advertised `read_only` tool.
+    """
+    names = ", ".join(sorted(_served_names(served))) or "none"
+    return ValueError(
+        f"this deployment does not serve a {kind} predictor named {model_name!r} "
+        f"(serving: {names}). It is either not installed or switched off by configuration; "
+        "list_available_models says which, and why."
+    )
+
+
 def _no_predictors(kind: str) -> ValueError:
     """The error an agent should see when this build has nothing to answer with.
 
@@ -146,7 +183,7 @@ def _no_predictors(kind: str) -> ValueError:
 @server.tool()
 async def predict_forward_reaction(
     reactants: str,
-    top_k: int = 5,
+    top_k: TopK = 5,
     models: list[str] | None = None,
 ) -> ForwardResponse:
     """Predict the products of a reaction from its reactants — the consensus of several models.
@@ -163,6 +200,11 @@ async def predict_forward_reaction(
     data does not contain. They will return a confident-looking product for chemistry that does not
     work. Read `n_models_succeeded` and `contributing_models` before quoting a consensus — one model
     agreeing with itself is not agreement — and present the answer as a hypothesis for the bench.
+
+    `consensus_score` is the share of the weight a candidate could have attained if every voting
+    model had ranked it first at full confidence. A lone predictor's weak guess therefore scores
+    low; it is not 1.0 at rank 1 by definition. It is still a *relative* number over the models
+    that answered, so quote it with `vote_count` and `n_models_succeeded`, never on its own.
 
     Args:
         reactants: Dot-separated reactant SMILES, e.g. `CC(=O)Cl.Nc1ccccc1`. A full
@@ -211,7 +253,7 @@ async def predict_forward_reaction(
 async def predict_reaction_conditions(
     reactants: str,
     product: str,
-    top_k: int = 5,
+    top_k: TopK = 5,
     models: list[str] | None = None,
 ) -> ConditionsResponse:
     """Suggest catalyst, solvent, reagent and temperature for a known transformation.
@@ -227,6 +269,10 @@ async def predict_reaction_conditions(
     equipment, or the hazard profile of what they propose. Check any suggested solvent against its
     ICH class and hazard data before it reaches a plan (the `props` server answers that), and treat
     the temperature as a bucket rather than a set point.
+
+    `consensus_score` means what it does in `predict_forward_reaction`: the share of the weight
+    this condition set could have attained had every voting model ranked it first at full
+    confidence. Quote it with `vote_count`.
 
     Args:
         reactants: Dot-separated reactant SMILES.
@@ -277,7 +323,7 @@ async def predict_reaction_conditions(
 async def predict_forward_single_model(
     model_name: str,
     reactants: str,
-    top_k: int = 5,
+    top_k: TopK = 5,
 ) -> list[ForwardPrediction]:
     """Ask one named forward predictor on its own, bypassing the consensus.
 
@@ -297,11 +343,10 @@ async def predict_forward_single_model(
     Raises:
         ValueError: if no predictor of that name is loaded — the message names what is.
     """
-    matches = [p for p in list_forward() if p.name == model_name]
+    matches = [p for p in _forward_predictors([model_name])]
     if not matches:
-        loaded = ", ".join(sorted(p.name for p in list_forward())) or "none"
-        raise ValueError(f"no forward predictor named {model_name!r} is loaded (loaded: {loaded})")
-    return await matches[0].predict(reactants, top_k)
+        raise _not_served("forward", model_name, _forward_predictors(None))
+    return await matches[0].predict(reactants, top_k)  # type: ignore[attr-defined,no-any-return]
 
 
 @server.tool()
@@ -309,7 +354,7 @@ async def predict_conditions_single_model(
     model_name: str,
     reactants: str,
     product: str,
-    top_k: int = 5,
+    top_k: TopK = 5,
 ) -> list[ConditionsPrediction]:
     """Ask one named condition predictor on its own, bypassing the consensus.
 
@@ -328,13 +373,12 @@ async def predict_conditions_single_model(
     Raises:
         ValueError: if no predictor of that name is loaded — the message names what is.
     """
-    matches = [p for p in list_conditions() if p.name == model_name]
+    matches = [p for p in _conditions_predictors([model_name])]
     if not matches:
-        loaded = ", ".join(sorted(p.name for p in list_conditions())) or "none"
-        raise ValueError(
-            f"no conditions predictor named {model_name!r} is loaded (loaded: {loaded})"
-        )
-    return await matches[0].predict(reactants, product, top_k)
+        raise _not_served("conditions", model_name, _conditions_predictors(None))
+    return await matches[0].predict(  # type: ignore[attr-defined,no-any-return]
+        reactants, product, top_k
+    )
 
 
 @server.tool()
@@ -348,21 +392,33 @@ def list_available_models() -> ModelsResponse:
     Each entry carries the predictor's citation, so a result can be attributed to the paper behind
     the model rather than to "the server".
 
+    **`available` means "this deployment will answer with it", not "the import succeeded".** A
+    predictor an operator switched off through `CHEMCLAW_RXNPREDICT_DISABLED_MODELS` or the
+    `ENABLED_*_MODELS` allow-lists is reported unavailable with that as its reason — it read
+    `available: true` until the day this became the same question the prediction tools ask.
+
     Returns:
         Forward and condition predictors, each with `available`, a description, a citation, the pip
-        extra that would install it, and — when it did not load — the reason.
+        extra that would install it, and — when this deployment will not answer with it — the
+        reason: it did not load, or configuration turned it off.
     """
     unavailable_by_name = unavailable()
 
-    def _rows(kind: str, loaded: list[object]) -> list[ModelInfo]:
+    def _rows(kind: str, loaded: list[object], served: set[str]) -> list[ModelInfo]:
         rows = [
             ModelInfo(
                 name=p.name,  # type: ignore[attr-defined]
                 kind=kind,  # type: ignore[arg-type]
-                available=True,
+                available=p.name in served,  # type: ignore[attr-defined]
                 description=p.description,  # type: ignore[attr-defined]
                 citation=p.citation,  # type: ignore[attr-defined]
                 extras_install=p.extras_install,  # type: ignore[attr-defined]
+                unavailable_reason=(
+                    None
+                    if p.name in served  # type: ignore[attr-defined]
+                    else "installed and loaded, but switched off by this deployment's "
+                    "configuration (CHEMCLAW_RXNPREDICT_DISABLED_MODELS / ENABLED_*_MODELS)"
+                ),
             )
             for p in loaded
         ]
@@ -380,8 +436,10 @@ def list_available_models() -> ModelsResponse:
         return rows
 
     return ModelsResponse(
-        forward=_rows("forward", list(list_forward())),
-        conditions=_rows("conditions", list(list_conditions())),
+        forward=_rows("forward", list(list_forward()), _served_names(_forward_predictors(None))),
+        conditions=_rows(
+            "conditions", list(list_conditions()), _served_names(_conditions_predictors(None))
+        ),
     )
 
 

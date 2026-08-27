@@ -11,6 +11,19 @@ dependencies = [
     "starlette>=0.38",
 ]
 
+# `testing.py` only. `assert_manifest_matches` drives a *running* server over ASGI and parses a
+# `connector.yaml`, so it needs an HTTP client and a YAML parser — which were declared by nobody,
+# and resolved only because both are root dev dependencies of this workspace. That made
+# `uv run --package chemclaw-mcp-props pytest` impossible, since every server's `test_server.py`
+# imports this module. An extra rather than a runtime dependency because a serving image never
+# imports it; not because it keeps an HTTP client out of the image, which nothing can — the MCP SDK
+# imports one (`packages/mcp_server_kit/tests/test_no_egress.py` measures both halves).
+[project.optional-dependencies]
+testing = [
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -10,13 +10,25 @@ rule is armed inside the process too.
 **What it catches that a static scan cannot.** `tests/test_no_egress.py` reads our own modules and
 proves *we* import no HTTP client. It says nothing about the third-party code underneath: an ML
 library fetching model weights on first use, a package phoning home with usage telemetry, a licence
-check over DNS. Those are the realistic ways a "no egress" claim stops being true, and they all end
-at one place — `socket.socket.connect`.
+check over DNS. Those are the realistic ways a "no egress" claim stops being true.
 
-**What it deliberately does not touch.** Serving is `bind`/`listen`/`accept`, which are different
-calls, so an armed process still answers requests normally. Loopback stays open: a sidecar, a
-health probe against ourselves, and the in-process test client all live there. Non-`AF_INET`
-families (Unix sockets) pass, because they cannot leave the host.
+**They do not all end at `socket.socket.connect`, and believing they did left two of the three
+examples above uncovered.** A licence check over DNS never calls `connect` at all — `getaddrinfo`
+and `gethostbyname` are module-level C functions, and an armed process resolved any name it liked,
+which is a full round trip to a resolver. A datagram socket never calls `connect` either, so
+`sendto`/`sendmsg` carried payload straight out. Both were measured, and both are patched here now,
+along with `connect`/`connect_ex`.
+
+**What it deliberately does not touch, and what covers each instead.** Serving is
+`bind`/`listen`/`accept`, which are different calls, so an armed process still answers requests
+normally. Loopback stays open: a sidecar, a health probe against ourselves, and the in-process test
+client all live there. Non-`AF_INET` families (Unix sockets) pass, because they cannot leave the
+host. And three channels are outside any in-process patch by construction — a **child process**
+(`subprocess`, `os.system`), a **`ctypes` call straight into `libc.connect`**, and any syscall made
+from a compiled extension. Those are `make offline-run`'s job: it takes the network namespace away,
+which is the only layer that does not depend on the caller going through Python. `servers/pyexec`
+is the server this matters most for, and its README states the same division — the child process
+and its rlimits are the boundary there, not the guards inside the parent.
 
 The allowlist is `MCP_EGRESS_ALLOW`, and it is **empty by default and empty in the shipped chart**.
 It exists so a build-time ingestion step — the one sanctioned moment a dataset is fetched — can run
@@ -47,6 +59,11 @@ _GUARD_ENV = "MCP_EGRESS_GUARD"
 
 _original_connect = socket.socket.connect
 _original_connect_ex = socket.socket.connect_ex
+_original_sendto = socket.socket.sendto
+_original_sendmsg = socket.socket.sendmsg
+_original_getaddrinfo = socket.getaddrinfo
+_original_gethostbyname = socket.gethostbyname
+_original_gethostbyname_ex = socket.gethostbyname_ex
 
 _armed = False
 _allowed: frozenset[str] = frozenset()
@@ -76,6 +93,12 @@ def _is_loopback(host: str) -> bool:
     rather than the two spellings people remember. A name is only loopback if it *is* `localhost`
     (or a subdomain of it): resolving an arbitrary name here would mean a DNS lookup, which is
     itself a call out, and a guard whose check leaks is not a guard.
+
+    **The unspecified address counts too, and it started mattering when this guard grew to cover
+    `getaddrinfo`.** `0.0.0.0` and `::` are what a container binds to, not somewhere to reach — and
+    a `connect` to either lands on this machine anyway. CPython short-circuits a numeric bind
+    address before it reaches `getaddrinfo`, so nothing observed this; a guard that refuses a
+    server's own bind on some other path would be an outage rather than a control.
     """
     bare = host.strip("[]").lower()
     if bare in {"localhost", ""}:
@@ -83,9 +106,10 @@ def _is_loopback(host: str) -> bool:
     if bare.endswith(".localhost"):
         return True
     try:
-        return ipaddress.ip_address(bare.split("%", 1)[0]).is_loopback
+        parsed = ipaddress.ip_address(bare.split("%", 1)[0])
     except ValueError:
         return False
+    return parsed.is_loopback or parsed.is_unspecified
 
 
 def _host_of(address: Any) -> str | None:
@@ -94,11 +118,21 @@ def _host_of(address: Any) -> str | None:
     `AF_INET`/`AF_INET6` pass a tuple whose first element is the host. Everything else — a Unix
     socket path (a `str`/`bytes`), an `AF_NETLINK` tuple of ints — cannot reach another machine,
     so it is not this guard's business.
+
+    **The host inside the tuple may be `bytes`, and reading only `str` was a complete bypass.**
+    CPython accepts `connect((b"1.1.1.1", 80))`, so a tuple built from an already-encoded buffer
+    produced `None` here and `_check` read that as a family that cannot leave the host. The two
+    shapes stay distinguishable — a Unix address *is* the `bytes`, an inet address *contains* one
+    — so the branch above still exempts the path case and only the element is decoded.
     """
     if isinstance(address, (str, bytes, bytearray)):
         return None
-    if isinstance(address, Sequence) and address and isinstance(address[0], str):
-        return address[0]
+    if isinstance(address, Sequence) and address:
+        head = address[0]
+        if isinstance(head, (bytes, bytearray)):
+            return bytes(head).decode("ascii", "replace")
+        if isinstance(head, str):
+            return head
     return None
 
 
@@ -134,8 +168,41 @@ def arm(allow: Iterable[str] = ()) -> None:
         _check(address)
         return _original_connect_ex(self, address)
 
+    def sendto(self: socket.socket, *args: Any) -> int:
+        # `sendto(data, address)` and `sendto(data, flags, address)` — the destination is last in
+        # both, and this is the only unguarded channel that ever moved payload.
+        _check(args[-1] if args else None)
+        return int(_original_sendto(self, *args))
+
+    def sendmsg(self: socket.socket, *args: Any, **kwargs: Any) -> int:
+        # `sendmsg(buffers[, ancdata[, flags[, address]]])`. Forwarded verbatim so CPython's own
+        # defaults apply rather than a re-declared set of them.
+        address = kwargs.get("address", args[3] if len(args) >= 4 else None)
+        _check(address)
+        return int(_original_sendmsg(self, *args, **kwargs))
+
+    def getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any) -> Any:
+        # A name resolution is a round trip to a resolver, so it is egress in its own right — and
+        # it is the shape a licence check takes. `host` is `None` for an `AI_PASSIVE` bind lookup,
+        # which `_host_of` reads as "nothing to leave for".
+        _check((host, port))
+        return _original_getaddrinfo(host, port, *args, **kwargs)
+
+    def gethostbyname(hostname: Any) -> Any:
+        _check((hostname, 0))
+        return _original_gethostbyname(hostname)
+
+    def gethostbyname_ex(hostname: Any) -> Any:
+        _check((hostname, 0))
+        return _original_gethostbyname_ex(hostname)
+
     socket.socket.connect = connect  # type: ignore[method-assign,assignment]
     socket.socket.connect_ex = connect_ex  # type: ignore[method-assign,assignment]
+    socket.socket.sendto = sendto  # type: ignore[method-assign,assignment]
+    socket.socket.sendmsg = sendmsg  # type: ignore[method-assign,assignment]
+    socket.getaddrinfo = getaddrinfo
+    socket.gethostbyname = gethostbyname
+    socket.gethostbyname_ex = gethostbyname_ex
     _armed = True
 
 
@@ -144,6 +211,11 @@ def disarm() -> None:
     global _armed, _allowed
     socket.socket.connect = _original_connect  # type: ignore[method-assign]
     socket.socket.connect_ex = _original_connect_ex  # type: ignore[method-assign]
+    socket.socket.sendto = _original_sendto  # type: ignore[method-assign]
+    socket.socket.sendmsg = _original_sendmsg  # type: ignore[method-assign]
+    socket.getaddrinfo = _original_getaddrinfo
+    socket.gethostbyname = _original_gethostbyname
+    socket.gethostbyname_ex = _original_gethostbyname_ex
     _armed = False
     _allowed = frozenset()
 

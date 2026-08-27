@@ -1,7 +1,7 @@
 # `manifests/` — the directory Chemclaw3 points at
 
-One subdirectory per server, each holding that server's `connector.yaml`. Chemclaw3 discovers a
-bundle as "any subdirectory of `connectors_dir` containing a `connector.yaml`", and
+One subdirectory per **connector**, each holding that server's `connector.yaml`. Chemclaw3 discovers
+a bundle as "any subdirectory of `connectors_dir` containing a `connector.yaml`", and
 `CHEMCLAW_CONNECTORS_DIR` is a `PATH`-style list, so registering this whole fleet is one
 environment variable and no code change on either side:
 
@@ -20,12 +20,16 @@ lets a bundle here override a shipped one. That is a real capability and a real 
 entries here use it on purpose** — `chem` and `safety` are complete ports carrying their bundle's
 name, so the override swaps one implementation for an identical one.
 
-**`calc` is a third entry carrying a Chemclaw3 bundle's name, and it must *not* be registered this
-way.** It holds the physics behind that bundle's calculators and durable jobs — as individually
-keyed primitives — and is called from inside Chemclaw3's own `cached_compute` as a backend, not
-dialled as a connector. Putting this
-directory on `CHEMCLAW_CONNECTORS_DIR` would let a partial port win the name and take the
-calibration ledger, the calculation cache, the artifact store and every durable calc job off the
-agent's surface — **with no error**. Its manifest lives here because this repository requires one
-per server and `tests/test_server.py` checks it against the running surface, not because Chemclaw3
-should point at it. See `docs/integration.md`.
+**Two servers must never be registered this way, and they are not in this directory.** `calc`
+carries a Chemclaw3 bundle's name while holding only the physics behind it, so the override would
+hand a *partial* port the collision and take the calibration ledger, the calculation cache, the
+artifact store and every durable calc job off the agent's surface — **with no error**. `rxnlabel`
+serves internal primitives for a background drain and has no business in a conversation's tool list.
+Both are in [`../manifests-internal/`](../manifests-internal/), which no `export` line above or
+anywhere else names, and both declare `mount: backend` — a key Chemclaw3's `extra="forbid"` manifest
+model refuses, so an operator who points a path there anyway gets a startup error naming the file.
+
+That split is the whole reason the command above is safe to copy. It used to be prevented by this
+paragraph, in the same file that supplied the command — this repository's own "a README is not a
+gate", applied to itself. `tests/test_fleet.py` now replicates Chemclaw3's discovery over this
+directory and asserts everything it finds is a connector. See `docs/integration.md`.

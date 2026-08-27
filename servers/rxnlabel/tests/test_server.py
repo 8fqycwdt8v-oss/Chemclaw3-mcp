@@ -89,10 +89,15 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
-    """A Prometheus scrape has no identity and the exposition carries counts only."""
+    """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
+
+    Not "counts only": the default registry publishes `python_info` and the `process_*`
+    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
+    correlation id or a tool argument — asserted over the live exposition in
+    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
-    assert "python_info" in response.text
 
 
 def test_the_mcp_surface_refuses_an_unauthenticated_caller(running_server: str) -> None:

@@ -41,7 +41,14 @@ class AggregatedForwardPrediction(BaseModel):
     """A meta-model consensus product with per-source attribution."""
 
     product_smiles: str
-    consensus_score: float = Field(..., ge=0.0, le=1.0)
+    consensus_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Share of the weight this candidate could have attained — every voting "
+        "model ranking it first at full confidence. It is *not* 1.0 at rank 1 by definition: "
+        "a lone weak vote scores low. Read it beside `vote_count` and `n_models_succeeded`.",
+    )
     rank: int = Field(..., ge=1)
     vote_count: int = Field(
         ..., ge=1, description="Number of predictors that voted for this product."
@@ -56,33 +63,26 @@ class AggregatedConditionsPrediction(BaseModel):
     solvents: list[str]
     reagents: list[str]
     temperature_c: float | None
-    consensus_score: float = Field(..., ge=0.0, le=1.0)
+    consensus_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Share of the weight this candidate could have attained — every voting "
+        "model ranking it first at full confidence. It is *not* 1.0 at rank 1 by definition: "
+        "a lone weak vote scores low. Read it beside `vote_count` and `n_models_succeeded`.",
+    )
     rank: int = Field(..., ge=1)
     vote_count: int = Field(..., ge=1)
     contributing_models: list[str]
 
 
-# ---------- Request / response envelopes ----------
-
-
-class ForwardRequest(BaseModel):
-    reactants: str = Field(
-        ...,
-        description="Dot-separated SMILES of reactants (and optional reagents joined by '>'), "
-        "e.g. 'CC(=O)Cl.Nc1ccccc1' or 'CC(=O)Cl.Nc1ccccc1>>'.",
-    )
-    top_k: int = Field(default=5, ge=1, le=50, description="Top-K predictions per model.")
-    models: list[str] | None = Field(
-        default=None,
-        description="Subset of predictor IDs to query. None = all enabled.",
-    )
-
-
-class ConditionsRequest(BaseModel):
-    reactants: str = Field(..., description="Dot-separated SMILES of reactants.")
-    product: str = Field(..., description="SMILES of the target product.")
-    top_k: int = Field(default=5, ge=1, le=50)
-    models: list[str] | None = None
+# ---------- Response envelopes ----------
+#
+# There are no *request* envelopes here. `ForwardRequest` and `ConditionsRequest` used to sit
+# beside these with `top_k: Field(ge=1, le=50)` on them, imported by nothing: the served tools
+# take their arguments directly, so the bound read as present in review and was absent at
+# runtime. It now lives on the tool signatures in `tools.py`, which is the only schema a caller
+# ever sees.
 
 
 class ForwardResponse(BaseModel):

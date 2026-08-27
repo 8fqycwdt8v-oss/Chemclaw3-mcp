@@ -79,3 +79,17 @@ uv run uvicorn chemclaw_mcp_rxnlabel.app:app --host 127.0.0.1 --port 8865
 ```
 
 `CHEMCLAW_RXNLABEL_TOKEN` is enforced; unset, every `/mcp` request is refused with 401.
+
+## Chemclaw3 reaches this by configuration, not by discovery
+
+**Its manifest is not in `manifests/`, and that is deliberate.** These are internal primitives for a
+background corpus-labelling drain; mounting them on `CHEMCLAW_CONNECTORS_DIR` would put
+`represent_reactions` into the agent's prompt as a tool to choose between, and nothing in a
+conversation should be picking it. Chemclaw3 addresses this server through `rxnlabel_server_url` and
+`rxnlabel_server_token_env` — the same call `core/config/calculators.py` makes for the calculation
+server.
+
+The registration lives in [`manifests-internal/`](../../manifests-internal/), which no published
+`export` line names, and `connector.yaml` declares `mount: backend` — a key Chemclaw3's
+`extra="forbid"` manifest model refuses, so pointing a path there anyway is a startup error naming
+the file rather than a tool surface that quietly grew.

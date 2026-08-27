@@ -29,10 +29,12 @@ So unlike `chem` and `safety`, **this server is not a connector Chemclaw3 dials.
 `calc` bundle and all fifteen tools, and calls this server from inside
 `science/calc/store.py::cached_compute` as a backend on a cache miss. The name is still `calc`
 because this repository's own rule requires the directory, the package suffix and the manifest
-`name` to be one string (`tests/test_fleet.py`) — so putting this fleet's `manifests/` on
-`CHEMCLAW_CONNECTORS_DIR` would let a partial port win a name collision and silently take six tools
-and every durable job off the agent's surface. Read `README.md` or `docs/integration.md` before
-wiring this up.
+`name` to be one string (`tests/test_fleet.py`) — so a manifest of this server's reaching
+`CHEMCLAW_CONNECTORS_DIR` would let a partial port win a name collision and silently take seven
+tools and every durable job off the agent's surface. It is therefore registered in
+`manifests-internal/` rather than `manifests/`, and declares `mount: backend` — a key Chemclaw3's
+manifest model refuses, so mounting it anyway is a startup error naming the file. Read `README.md`
+or `docs/integration.md` before wiring this up.
 
 **The cache stayed behind, so its addressing travels in both directions.** Every result carries
 `calc_version` and — where the source derives one — `calc_key`. But `cached_compute` takes the key
@@ -46,5 +48,8 @@ primary key of the calibration ledger (`predictions`, unique on
 `(calc_type, calc_version, input_hash)`, matched exactly), and `xtb_cli.binary_version()` answers
 `"absent"` rather than raising, so the string comes out well-formed, matches zero rows, and reads as
 `UNCALIBRATED` rather than as an error. Silent, not loud. Because Chemclaw3 therefore never derives
-a key, the only thing the two repositories must keep in step is the value of `CALCULATION_EPOCH`.
+a key, the two `CALCULATION_EPOCH` constants **compose** rather than having to agree:
+`remote_key` folds Chemclaw3's over this server's `params_hash`, so a bump on either side alone
+invalidates every stored row. Moving them together is a convention that keeps the two epoch logs
+readable, not an invariant.
 """

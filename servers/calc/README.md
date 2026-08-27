@@ -91,7 +91,10 @@ answers, and there is no point at which half of it is a result. One tool, one ke
 
 `chem` and `safety` are complete ports, so registering them on `CHEMCLAW_CONNECTORS_DIR` swaps one
 implementation for an identical one. **This server is different, and putting it on that path is
-wrong.**
+wrong** — so it is not reachable from there any more. Its manifest is registered in
+`manifests-internal/`, which no published `export` line names, and declares `mount: backend`, a key
+Chemclaw3's `extra="forbid"` manifest model refuses; a deployment that points a path at that
+directory anyway fails at startup naming the file rather than serving a reduced surface.
 
 Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moved here is the *computation*
 behind them; six of that bundle's tools have no computation to move at all, because they **are**
@@ -209,15 +212,29 @@ against literal strings taken from Chemclaw3:
 | `engine/key.py` — `CalculationKey`, `CALCULATION_EPOCH` | `chemclaw/science/calc/store.py` | `tests/test_key_contract.py` |
 | `engine/chem.py` — `require_canonical_smiles` | `chemclaw/core/chem.py` | `tests/test_canonicalization_contract.py` |
 
-**But only one of them actually has to *agree* across the two repositories, and that is what
+**None of them has to *agree* across the two repositories any more, and that is what
 `calculation_key` bought.** Because Chemclaw3 never derives a key — it receives the four fields
 `store.get` takes — the copies here are the sole producer of every key this server's answers are
-addressed by. Self-consistency is enough for three of the four; the exception is:
+addressed by, and self-consistency is enough. One constant is worth a paragraph anyway, because it
+is the one people expect to be an exception:
 
 - **`CALCULATION_EPOCH`.** A source constant in both repositories, folded into every `params_hash`,
-  bumped when a ChemClaw-side change makes an already-written row wrong. Chemclaw3 still builds keys
-  for its own in-tree calculators, so the two live in one table and must match. Bump it in both in
-  the same change, or in neither.
+  bumped when a ChemClaw-side change makes an already-written row wrong.
+
+  **The two compose; they are not compared, and the older claim that they "must match" rested on a
+  premise that has since gone.** That premise was that Chemclaw3 still builds keys for its own
+  in-tree calculators. It does not: `CalculationKey.build` has **no caller left** in its `src/`, and
+  `cached_compute` has exactly one — `connectors/calc/remote.py::cached_remote`. Every row in
+  `calculation_results` is now keyed by `remote_key`, which rebuilds this server's four fields and
+  folds *its* epoch over **our** `params_hash`:
+  `stable_hash({"epoch": <theirs>, "remote_params": <ours>})`. So a bump on either side alone
+  changes the composed digest and misses every stored row, which is exactly what an epoch is for.
+
+  Move them together anyway — it keeps the two epoch logs describing the same events — but as a
+  convention, not as a correctness invariant, and knowing that a unilateral bump costs CPU rather
+  than serving a stale row. `servers/calc/tests/test_key_contract.py` pins what a divergence would
+  actually break: the pure `stable_hash`, the `{"epoch": ..., "params": ...}` envelope, the flat
+  string format, and the four field *names* `remote_key` reads.
 
 Three things that would otherwise be on that list are **not**:
 

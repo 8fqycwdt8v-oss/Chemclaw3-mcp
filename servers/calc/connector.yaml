@@ -25,12 +25,21 @@
 # Those are the calculation cache, the artifact store, the calibration ledger and the Temporal
 # queues — state, which a server in this fleet is by construction not.
 #
+# **`mount: backend` below is what makes that mechanical rather than trusted.** This directory is
+# registered in `manifests-internal/`, which no published `export CHEMCLAW_CONNECTORS_DIR=...` line
+# names, and the key is the second layer under that: Chemclaw3's `ConnectorManifest` is
+# `extra="forbid"`, so a deployment that points a path here anyway gets a `ConnectorError` naming
+# this file at startup instead of a partial surface winning the name. It is read by
+# `tests/test_fleet.py` on this side and by nothing on Chemclaw3's, which is the point — a manifest
+# Chemclaw3 must refuse is one it cannot silently accept.
+#
 # **What this file is for**, then: it is this repository's own declaration of the served surface,
 # every tool classified exactly once, checked against the running server by `tests/test_server.py`.
 # It is what a reviewer reads and what a deployment's tooling can validate. `docs/integration.md`
 # has the wiring.
 #
 # The URL below is the loopback dev default; a deployment supplies the address.
+mount: backend
 name: calc
 description: >-
   Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic

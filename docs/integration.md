@@ -79,10 +79,26 @@ result does not mean.
 
 ### `calc` is not a connector Chemclaw3 dials — it is a backend behind `cached_compute`
 
-**Do not put this fleet's `manifests/` on `CHEMCLAW_CONNECTORS_DIR` for `calc`.** That is the whole
-difference between this server and the two above, and getting it wrong is silent: the name collides,
-first-directory-wins applies, and Chemclaw3's own `calc` bundle would lose six tools and every
-durable job to a partial port.
+**`calc`'s manifest is not in `manifests/`, and that is why the export line above is safe to copy.**
+It lives in `manifests-internal/` beside `rxnlabel`, the other server Chemclaw3 reaches through
+plain configuration rather than discovery. Getting this wrong is silent: the name collides,
+first-directory-wins applies, and Chemclaw3's own `calc` bundle loses seven tools and every durable
+job to a partial port, with no error at any point. Measured with Chemclaw3's own `_bundle_dirs()`
+and the export line as it was published, the lost set is `report_measurement`, `find_calculations`,
+`list_artifacts`, `fetch_artifact`, `calculator_trust`, `calculator_outliers` and
+`compute_thermochemistry`, plus all twelve `jobs:` entries.
+
+The directory split is the first layer. The second is in the manifest itself: it declares
+`mount: backend`, and Chemclaw3's `ConnectorManifest` is `extra="forbid"`, so a deployment that
+puts `manifests-internal/` on the path anyway fails at startup with a message naming the file —
+
+```
+ConnectorError: .../manifests-internal/calc/connector.yaml: invalid manifest: 1 validation error
+for ConnectorManifest / mount / Extra inputs are not permitted
+```
+
+— rather than serving a reduced surface. A **connector's** manifest carries no such key, precisely
+because it would do the same thing to the deployments that are supposed to mount it.
 
 Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moves is the *computation*
 underneath them, its durable jobs included: this server is called from inside
@@ -168,8 +184,8 @@ Chemclaw3's, exactly as the split requires.
 **What the manifest here is for, then.** `servers/calc/connector.yaml` is this repository's own
 declaration of the served surface — every tool classified, checked against the running server by
 `tests/test_server.py`, and the thing a reviewer reads. It is not an instruction to register the
-server as a Chemclaw3 connector, and `manifests/calc/` exists because this repository requires one
-per server rather than because Chemclaw3 should point at it.
+server as a Chemclaw3 connector, and `manifests-internal/calc/` exists because this repository
+requires one registration per server rather than because Chemclaw3 should point at it.
 
 **Never derive a key on the Chemclaw3 side.** `calc_version` is assembled from the installed
 `tblite` and `rdkit` distribution versions, a Hamiltonian-revision constant, an `xtb --version`
@@ -188,12 +204,26 @@ no crest and would name a program that cannot run. The probe refuses exactly whe
 
 ### What the two repositories must still keep in step
 
-Because Chemclaw3 never derives a key, the list is short — one constant:
+Because Chemclaw3 never derives a key, the list is empty — and the one constant everybody expects to
+be on it is not:
 
-- **`CALCULATION_EPOCH`.** It is a source constant in both repositories, folded into every
-  `params_hash`, and bumped when a ChemClaw-side change makes an already-written row wrong. Chemclaw3
-  still builds keys for its own in-tree calculators, so the two live in one table and must agree.
-  Bump it in both repositories in the same change, or in neither.
+- **`CALCULATION_EPOCH`.** A source constant in both repositories, folded into every `params_hash`,
+  bumped when a ChemClaw-side change makes an already-written row wrong.
+
+  **The two compose; they are not compared, and the older claim that they "must match" rested on a
+  premise that has since gone.** That premise was that Chemclaw3 still builds keys for its own
+  in-tree calculators. It does not: `CalculationKey.build` has **no caller left** in its `src/`, and
+  `cached_compute` has exactly one — `connectors/calc/remote.py::cached_remote`. Every row in
+  `calculation_results` is now keyed by `remote_key`, which rebuilds this server's four fields and
+  folds *its* epoch over **our** `params_hash`:
+  `stable_hash({"epoch": <theirs>, "remote_params": <ours>})`. So a bump on either side alone
+  changes the composed digest and misses every stored row, which is exactly what an epoch is for.
+
+  Move them together anyway — it keeps the two epoch logs describing the same events — but as a
+  convention, not as a correctness invariant, and knowing that a unilateral bump costs CPU rather
+  than serving a stale row. `servers/calc/tests/test_key_contract.py` pins what a divergence would
+  actually break: the pure `stable_hash`, the `{"epoch": ..., "params": ...}` envelope, the flat
+  string format, and the four field *names* `remote_key` reads.
 
 Three things that used to be on this list are **not**, and that is the point of `calculation_key`
 rather than a happy accident:
@@ -255,13 +285,16 @@ it is visible: `curl .../healthz` says so.
 The manifest directory has to be readable by the Chemclaw3 pod. Either mount `manifests/` as a
 ConfigMap and prepend it to `CHEMCLAW_CONNECTORS_DIR`, or copy the `connector.yaml` files into
 Chemclaw3's own image at build time. The ConfigMap route keeps the two release cycles independent,
-which is the point of this repository existing separately.
+which is the point of this repository existing separately. Mount `manifests/` and nothing else:
+`manifests-internal/` is not a second path to add, it is the directory whose contents must not be
+discovered.
 
-**`calc` deploys like the rest and is registered like none of them.** Same image, same NetworkPolicy,
-same bearer Secret in both pods under `CHEMCLAW_CALC_TOKEN` — but its `connector.yaml` must **not**
-reach `CHEMCLAW_CONNECTORS_DIR`, because Chemclaw3 addresses this server from inside `cached_compute`
-rather than as a connector. If `manifests/` is mounted as a ConfigMap, mount it without `calc/`, or
-copy the individual files that belong there instead.
+**`calc` and `rxnlabel` deploy like the rest and are registered like none of them.** Same images,
+same NetworkPolicies, same bearer Secrets in both pods (`CHEMCLAW_CALC_TOKEN`,
+`CHEMCLAW_RXNLABEL_TOKEN`) — but their manifests must never reach `CHEMCLAW_CONNECTORS_DIR`, because
+Chemclaw3 addresses the first from inside `cached_compute` and the second from a background drain.
+Keeping them out of `manifests/` is what makes "mount the whole directory" the correct instruction
+instead of a trap with a footnote.
 
 ## Failure modes worth knowing
 
@@ -271,8 +304,9 @@ copy the individual files that belong there instead.
 | Every MCP call returns 401 | The token env var is unset or differs between the two pods. It fails closed by design. |
 | The server accepts connections then hangs on the first call | The MCP session manager is not running — the mount-does-not-run-a-lifespan trap. `connector_app` handles it; a hand-rolled transport does not. |
 | Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. |
-| `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | This fleet's `manifests/` was put on `CHEMCLAW_CONNECTORS_DIR` and its partial `calc` port won the name collision. It does not belong there: `calc` is a backend behind `cached_compute`, not a connector Chemclaw3 dials. |
-| Every calculation recomputes; the cache never hits | The key was derived locally instead of read from `calculation_key`, or the two `CALCULATION_EPOCH` constants have drifted. The parts `store.get` needs come back from that tool ready to use — nothing on the Chemclaw3 side should be assembling one. |
+| `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | A `calc` manifest from this fleet reached `CHEMCLAW_CONNECTORS_DIR` and its partial port won the name collision. It cannot come from `manifests/` any more — check for a hand-copied `connector.yaml`, or a path pointing into `manifests-internal/`. |
+| Chemclaw3 refuses to start with `invalid manifest: ... mount ... Extra inputs are not permitted` | `manifests-internal/` is on `CHEMCLAW_CONNECTORS_DIR`. That is the guard working: those servers are addressed by configuration (`CHEMCLAW_CALC_SERVER_URL`, `rxnlabel_server_url`), never discovered. Remove the path. |
+| Every calculation recomputes; the cache never hits | The key was derived locally instead of read from `calculation_key`, or a `CALCULATION_EPOCH` was bumped on either side (which invalidates every row deliberately — the two compose). The parts `store.get` needs come back from that tool ready to use; nothing on the Chemclaw3 side should be assembling one. |
 | `calculator_trust("pka")` says `UNCALIBRATED` with n=0 on a calculator that has residuals | A `calc_version` was re-derived rather than read off the result. The ledger matches it exactly and does not pool versions, so a locally-built string — which comes out well-formed, because `binary_version()` answers `"absent"` rather than raising — matches nothing. |
 | An xTB call takes minutes | Nothing is cached *on this server*. That is what `calculation_key` plus Chemclaw3's own store is for; a cold `compute_thermochemistry` is 6N+1 single points, and the manifest allows 900 s for it. |
 | `connector-validate` fails on `auth` | A non-loopback URL with `mode: none`. Declare bearer. |

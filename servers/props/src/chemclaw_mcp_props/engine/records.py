@@ -58,6 +58,10 @@ class Solvent:
     flash_point_c: float | None = None
     ich_limit_ppm: float | None = None
     antoine: tuple[float, float, float] | None = None
+    # The temperature window, in kelvin, the Antoine constants beside it were fitted over. It is
+    # part of the constants rather than a note about them: a fit evaluated outside its own range is
+    # not the quantity its caveat describes, so `correlations` refuses there and falls back.
+    antoine_range_k: tuple[float, float] | None = None
     hvap_kj_mol: float | None = None
     # Filled by `_index` so every answer can name its own source without the caller threading it.
     provenance: str = field(default="", compare=False)
@@ -76,12 +80,14 @@ def _split(raw: str) -> tuple[str, ...]:
 
 def _row_to_solvent(row: dict[str, str], provenance: str) -> Solvent:
     """Build one `Solvent` from a CSV row, failing loudly on a malformed required column."""
-    antoine_parts = [_optional_float(row[key]) for key in ("antoine_a", "antoine_b", "antoine_c")]
-    antoine = (
-        (antoine_parts[0], antoine_parts[1], antoine_parts[2])
-        if all(part is not None for part in antoine_parts)
-        else None
-    )
+    # A, B, C and the fitted range are one unit: constants whose validity window is unknown
+    # cannot be kept out of an extrapolation, so a row missing any of the five carries no fit at
+    # all and answers through the Clausius-Clapeyron route the tools already label as weaker.
+    antoine_keys = ("antoine_a", "antoine_b", "antoine_c", "antoine_tmin_k", "antoine_tmax_k")
+    antoine_parts = [_optional_float(row[key]) for key in antoine_keys]
+    complete = all(part is not None for part in antoine_parts)
+    antoine = (antoine_parts[0], antoine_parts[1], antoine_parts[2]) if complete else None
+    antoine_range = (antoine_parts[3], antoine_parts[4]) if complete else None
     return Solvent(
         name=row["name"].strip(),
         aliases=_split(row["aliases"]),
@@ -104,6 +110,7 @@ def _row_to_solvent(row: dict[str, str], provenance: str) -> Solvent:
         flash_point_c=_optional_float(row["flash_point_c"]),
         ich_limit_ppm=_optional_float(row["ich_limit_ppm"]),
         antoine=antoine,  # type: ignore[arg-type]
+        antoine_range_k=antoine_range,  # type: ignore[arg-type]
         hvap_kj_mol=_optional_float(row["hvap_kj_mol"]),
         provenance=provenance,
     )

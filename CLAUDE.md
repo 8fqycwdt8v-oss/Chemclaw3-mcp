@@ -21,7 +21,8 @@ and no core edit is needed. So the target every server here is built against is:
 | --- | --- |
 | `servers/` | One directory per capability — a complete, independently deployable MCP server. |
 | `packages/mcp_server_kit/` | The shape every server has, written once: transport, auth, identity, datasets, the egress guard. |
-| `manifests/` | One directory per server holding its `connector.yaml` (a symlink). What `CHEMCLAW_CONNECTORS_DIR` points at. |
+| `manifests/` | One directory per **connector** holding its `connector.yaml` (a symlink). What `CHEMCLAW_CONNECTORS_DIR` points at, and only what may safely go there. |
+| `manifests-internal/` | The same, for the servers Chemclaw3 must **not** discover — `calc` (a backend behind `cached_compute`) and `rxnlabel` (a background drain's primitives). No published `export` line names it, and each manifest here declares `mount: backend`, a key Chemclaw3's `extra="forbid"` manifest model refuses. |
 | `docs/` | How to wire this fleet to Chemclaw3, and the checklist for adding a server. |
 | `scripts/` | Operational scripts outside any server's runtime — today, the offline check. |
 | `tests/` | The fleet-level invariants no single server can see about itself. |
@@ -119,7 +120,13 @@ when wrong:
 ## Authentication and identity
 
 - **Bearer on `/mcp`; `/healthz` and `/metrics` stay open.** A kubelet probe and a Prometheus
-  scrape have no identity, and the exposition carries counts only.
+  scrape have no identity. The exposition is the default registry's — `python_info` and the
+  `process_*` collectors — and carries nothing about a *request*: no caller, no session, no
+  correlation id, no tool argument. It said "counts only" for as long as it published the
+  interpreter version, and the test that covered the endpoint asserted the non-count was there.
+  A labelled metric on this endpoint must never take an actor, a session or a tool argument as a
+  label, and `packages/mcp_server_kit/tests/test_connector_app.py` asserts that absence over the
+  live exposition.
 - **Declare `auth: {mode: bearer, token_env: ...}` in every manifest, even on the loopback dev
   URL.** Chemclaw3's `HttpEndpoint` would accept `mode: none` for loopback and refuse it the moment
   a deployment moved the address — and a manifest whose auth mode changes with its address is one
@@ -147,9 +154,17 @@ an outbound call at request time.** Production is air-gapped, and this is enforc
 independent layers because a rule that lives in one place rots:
 
 1. **The runtime guard** (`mcp_server_kit/egress.py`), armed on import. A non-loopback
-   `socket.connect` raises `EgressForbidden`. This is the layer that catches what a static scan
-   cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
+   `connect`/`connect_ex`, a UDP `sendto`/`sendmsg`, or a DNS lookup
+   (`getaddrinfo`/`gethostbyname`) raises `EgressForbidden`. This is the layer that catches what a
+   static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
    `MCP_EGRESS_ALLOW` is empty by default and empty in every shipped deployment.
+
+   **It covered only `connect` for a while, and the docstring named DNS anyway** — so two of the
+   three examples above walked past it, and a `bytes` host in the address tuple walked past it in
+   pure Python. What is still outside it *by construction* is now stated rather than implied: a
+   **child process**, a **`ctypes` call into `libc`**, and any syscall from a compiled extension.
+   Layer 3 below cannot see those either; `make offline-run` is the layer that does, because it
+   takes the network away instead of asking Python nicely.
 2. **The static scan** (`mcp_server_kit/no_egress.py`), one three-line test per server. AST-based,
    not grep-based — `import httpx as h` and `from requests import get` read differently as text and
    identically as a tree.
@@ -255,24 +270,20 @@ this is the half that holds when the caller vanishes without saying anything.
 
 ## Ports
 
-| Port | Server | Status |
-| --- | --- | --- |
-| 8850 | `props` | built |
-| 8857 | `rxnpredict` | built (fork of `chemclaw2_forward`) |
-| 8858 | `chem` | built (port of Chemclaw3's own `chem` bundle — see below) |
-| 8859 | `safety` | built (port of Chemclaw3's own `safety` bundle — see below) |
-| 8860 | `calc` | built (the physics behind Chemclaw3's `calc` bundle, as keyed primitives — a **backend**, not a connector; see below) |
-| 8851–8856 | `thermalsafety`, `kinetics`, `unitops`, `rxnsearch`, `blocks` | proposed |
-| 8854 | `retro` | **hosted in the chemclaw2 repository** — adopted, not rebuilt |
-| 8861+ | compound identity & data | proposed |
-| 8870+ | safety, tox & regulatory | proposed |
-| 8880+ | literature & IP | proposed |
-| 8890+ | spectra & analytics | proposed |
+**`MODULES.md` is the port registry, and it is the only one.** Claim the next free port there, in
+the same pull request that adds the server; `tests/test_fleet.py` checks it against every manifest
+in both directions and reads no other file.
 
-The 8850+ block is deliberate: Chemclaw3's own connectors sit at 8810–8815 and `Chemclaw3_mock` at
-8090–8091, so nothing here can collide with a local full-stack run. `MODULES.md` holds the
-authoritative per-server assignment; claim the next free port there in the same pull request that
-adds the server.
+There used to be a second table here. It listed five servers when seven were built, and advertised
+"8861+ compound identity & data" and "8890+ spectra & analytics" as free over ports 8865 and 8899
+that `rxnlabel` and `pyexec` already held — so a session that read this file first would have
+claimed a taken port, and the collision would have surfaced only when both pods were scheduled. A
+second declaration nothing checks is exactly what `manifests/README.md` forbids for a manifest, and
+it does not become safe because the subject is a number.
+
+What belongs here is the *rule* rather than the assignments: the fleet's block is **8850–8899**,
+deliberately clear of Chemclaw3's own connectors at 8810–8815 and `Chemclaw3_mock` at 8090–8091, so
+nothing here can collide with a local full-stack run.
 
 ## Never duplicate a Chemclaw3 capability
 
@@ -315,15 +326,23 @@ would leave both live, which is the duplication this section exists to prevent. 
 **`calc` is the third row and it left in a different way, which is why it is struck through only in
 part.** Chemclaw3 keeps its `calc` bundle and all fifteen of its tools; what moved is the *physics
 underneath* — exposed here as `servers/calc/`, a **backend** Chemclaw3 calls from inside
-`science/calc/store.py::cached_compute` on a cache miss, not a connector it dials. Putting this
-fleet's `manifests/` on `CHEMCLAW_CONNECTORS_DIR` would let a partial surface win the name collision
-and remove the calibration ledger, the calculation cache, the artifact store and every durable job
-from the agent's surface, with no error.
+`science/calc/store.py::cached_compute` on a cache miss, not a connector it dials. A `calc` manifest
+reaching `CHEMCLAW_CONNECTORS_DIR` would let a partial surface win the name collision and remove the
+calibration ledger, the calculation cache, the artifact store and every durable job from the agent's
+surface, with no error — so **it is not in `manifests/`**. It and `rxnlabel` are registered in
+`manifests-internal/`, which no `export` line names, and each declares `mount: backend`, a key
+Chemclaw3's `extra="forbid"` manifest model refuses; mounting that directory anyway is a startup
+error naming the file. `tests/test_fleet.py` holds both halves. The distinction used to live in
+prose, in the five documents that also published the command that breaks it.
 
 `cached_compute` takes the key as an *argument*, so a key that only arrives on the result would be
 unusable there — which is why that server serves `calculation_key`, returning the identity of a
 calculation before it runs. That is what makes the split honest: Chemclaw3 never derives a key, so
-the only thing the two repositories must keep in step is the value of `CALCULATION_EPOCH`.
+the two `CALCULATION_EPOCH` constants **compose** rather than needing to agree — `remote_key` folds
+Chemclaw3's over this server's `params_hash`, so a bump on either side alone invalidates every stored
+row. They are moved together by convention (it keeps the two epoch logs readable), not by an
+invariant a test can enforce; what `servers/calc/tests/test_key_contract.py` pins is the hash, the
+envelope, the flat format and the four field names.
 
 **And it is why that server ships primitives rather than composites.** A calculation whose key names
 its own *output* is a loop with state, and a loop with state is a durable job — so
