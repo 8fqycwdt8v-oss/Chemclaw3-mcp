@@ -1,7 +1,7 @@
 # The gate. `make check` is what CI runs; nothing here needs a cluster, a database or a network.
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src
 
 .PHONY: help
 help: ## Show this help.

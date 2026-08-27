@@ -89,7 +89,7 @@ def scaffold(smiles: str) -> str | None:
     mol = read_molecule(smiles)
     if mol is None:
         return None
-    core = MurckoScaffold.GetScaffoldForMol(mol)
+    core = MurckoScaffold.GetScaffoldForMol(mol)  # type: ignore[no-untyped-call]
     written = Chem.MolToSmiles(core)
     return written or None
 
