@@ -103,9 +103,10 @@ class CalcSettings(BaseSettings):
     # numerical noise.
     xtb_hessian_displacement: float = 0.005
     # Atom-count ceiling for a Hessian. Cost is 6N gradient evaluations, so this is an absolute
-    # practicality limit. **It bites harder here than it did in Chemclaw3**: over there the refusal
-    # named the durable QM job path as the alternative, and this server has no durable path — so
-    # the message says so instead of naming a route that does not exist from here.
+    # practicality limit. The refusal states this bound and names no alternative: where to go next
+    # is orchestration knowledge this server does not have, and the QM job path the message used to
+    # point at was deleted (`D-2026-08-26-semiempirical-is-the-whole-tier`). Chemclaw3 refuses first
+    # at the same count, so this is the backstop for a caller that is not Chemclaw3.
     xtb_hessian_max_atoms: int = 150
     # Atom ceiling for **any** structure this server will accept, enforced by `Structure` itself so
     # every task inherits it exactly as it inherits the electron-count check. The Hessian's own cap
