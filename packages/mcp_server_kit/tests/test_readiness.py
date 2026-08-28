@@ -5,7 +5,12 @@ constant 200 with a dataset list, and every server's own suite already covers it
 failing path is where three things went wrong at once and none of them is visible from the code:
 
 - the 503 body is served on an **unauthenticated** route (`/healthz` is in `auth.OPEN_PATHS`) and
-  carried `str(exc)` verbatim, so a loader failure published whatever the loader's message held;
+  carried `str(exc)` verbatim, so a loader failure published whatever the loader's message held.
+  #37 fixed that on `main` while this branch was in flight and its one-line change is the one that
+  shipped; what is asserted here is the half a single request cannot see — that the *memo* added
+  below holds the scrubbed string too, so a cached 503 and a fresh one cannot say different things.
+  `test_connector_app.py::test_readiness_failure_is_a_503_naming_the_reason` is #37's own test and
+  covers the same fix over a real socket; both are kept, and reverting the scrub fails both;
 - `lru_cache` does not cache exceptions, so the one path that re-runs work forever is the one a
   failing pod is on, and every probe and every retry re-ran the whole check;
 - that work went to `asyncio.to_thread`'s **default** executor, which on `servers/calc` is the same
@@ -69,20 +74,37 @@ async def test_the_503_body_is_redacted_because_the_route_is_unauthenticated() -
     Measured before the fix, with no `Authorization` header at all: the body carried
     `PGPASSWORD=hunter2` while the log line for the very same exception was correctly scrubbed —
     the two records of one fault disagreeing about what may be said, with the *unauthenticated* one
-    saying more. `redact_secrets` is exported from `logging.py` for exactly this.
+    saying more. `redact_secrets` is exported from `logging.py` for exactly this. #37 reached the
+    same conclusion independently and its wording is on the branch in `connector_app`.
+
+    **Both the freshly computed 503 and the memoised one, because this route now has two.** The
+    memo that keeps a failing pod from re-hashing its corpus per probe is a second place the reason
+    string lives, so "scrub what you return" and "scrub what you cache" are two claims and only one
+    of them is the interesting one. Measured, with the return scrubbed and the memo holding
+    `str(exc)`: the first probe's body was clean and every probe for the next five seconds leaked —
+    which the single-request form of this test could not see, because a single request never
+    reaches the memo. The invariant is that the two bodies are the same string.
     """
     from mcp_server_kit.logging import redact_secrets
 
-    async with _client(_Recorder(), name="readiness-redaction") as client:
-        response = await client.get("/healthz")
+    recorder = _Recorder()
+    async with _client(recorder, name="readiness-redaction") as client:
+        fresh = await client.get("/healthz")
+        memoised = await client.get("/healthz")
 
-    assert response.status_code == 503
-    reason = str(response.json()["reason"])
-    assert SECRET not in reason, "a credential reached an unauthenticated 503 body"
-    assert "/opt/app/data/records.csv" in reason, "the reason must stay diagnostic after redaction"
-    assert reason == redact_secrets(REASON), (
-        "the body and the log line must be scrubbed by the same function; two spellings of "
-        "'scrub a credential' is how one of them goes stale"
+    assert (fresh.status_code, memoised.status_code) == (503, 503)
+    assert recorder.calls == 1, "the second probe must be the memo, or this test proves half of it"
+
+    for label, response in (("fresh", fresh), ("memoised", memoised)):
+        reason = str(response.json()["reason"])
+        assert SECRET not in reason, f"a credential reached the {label} unauthenticated 503 body"
+        assert "/opt/app/data/records.csv" in reason, "the reason must stay diagnostic"
+        assert reason == redact_secrets(REASON), (
+            f"the {label} body and the log line must be scrubbed by the same function; two "
+            "spellings of 'scrub a credential' is how one of them goes stale"
+        )
+    assert fresh.json()["reason"] == memoised.json()["reason"], (
+        "a cached 503 and a freshly computed one said different things"
     )
 
 

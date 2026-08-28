@@ -519,20 +519,36 @@ def connector_app(
         **Cheap to call repeatedly only on the path that succeeds**, and this docstring used to
         claim it for both. Every loader behind a readiness check is `lru_cache`d, and `lru_cache`
         does not cache *exceptions* — so on the one path the route exists for, a failing corpus,
-        every probe re-ran the whole check. Measured: 41 requests produced 41 full readiness
-        invocations, 40 concurrent probes peaked at 47 threads against a baseline of 2, and the
-        work landed in the default executor, which on `calc` is the same pool a tool call offloads
-        a calculation into. A pod that cannot answer would have been spending its CPU proving it.
+        every probe re-ran the whole check. Measured over ASGI, counting only threads the *server*
+        creates: 40 concurrent probes from cold produced **40** full readiness invocations spread
+        over **8** `asyncio_*` threads — the interpreter's default executor, which on `calc` is the
+        same pool every tool offloads a calculation into and the one `engine/admission.py`'s
+        ceiling does not govern. A pod that cannot answer would have been spending the CPU of the
+        calls it could still answer on proving that it cannot.
 
         So the failure is memoised for `READINESS_FAILURE_TTL_SECONDS` and the check is
-        single-flighted behind one lock, on a pool of one thread of its own. A recovered pod is
-        still readied within a probe interval, because the memo is seconds rather than minutes.
+        single-flighted behind one lock, on a pool of one thread of its own: the same 40 probes
+        now run the check **once**, on one thread named for the server. A recovered pod is still
+        readied within a probe interval, because the memo is seconds rather than minutes.
+
+        (An earlier draft of this paragraph said "peaked at 47 threads against a baseline of 2".
+        That number was measured with a 40-thread HTTP client and so was mostly the *harness*;
+        the figures above count `asyncio_*` and the named pool only. A wrong number in prose is
+        the thing this repository keeps writing decisions about, so it is corrected rather than
+        quietly dropped.)
 
         **The reason is redacted, because this route is in `OPEN_PATHS`.** The body of a 503 is
         served to anything that can reach the pod, with no credential, and `str(exc)` on a loader
         failure is exactly the text a path, a DSN or a token ends up in — measured: a 503 carrying
         `PGPASSWORD=hunter2 token=Bearer abc123...` while the log line for the same exception was
-        correctly scrubbed. `redact_secrets` is exported from `logging.py` for this.
+        correctly scrubbed. `redact_secrets` is exported from `logging.py` for this, and #37 landed
+        the same one-line conclusion on `main` from the other direction.
+
+        **The memo is why that is two claims rather than one.** The reason string now lives in a
+        second place, so "scrub what you return" and "scrub what you cache" can come apart:
+        measured, with the return scrubbed and the memo holding `str(exc)`, the first probe's body
+        was clean and every probe for the next five seconds leaked. The scrub therefore happens
+        *once*, before the memo is written, and both bodies are the same string by construction.
         """
         nonlocal readiness_failure
         payload: dict[str, object] = {
@@ -561,6 +577,19 @@ def connector_app(
                     await asyncio.get_running_loop().run_in_executor(readiness_pool, readiness)
                 )
             except Exception as exc:
+                # `/healthz` carries no bearer check — a kubelet probe has no identity — so this
+                # reason reaches anything that can open a socket to the pod, unauthenticated. The
+                # log line below passes through `SecretRedactingFilter`; this body does not go
+                # through logging at all, so it needs the same scrub applied directly.
+                # `_sanitize_tool_errors` replaces a tool fault's text before the model ever sees
+                # it, and this was the one other place a raw exception reached a caller verbatim —
+                # the one with no credential guarding it. (That is #37's finding and its wording;
+                # it and this branch's memo were written against the same defect from two sides.)
+                #
+                # **Scrubbed once, here, and the memo holds the *redacted* string** — which is what
+                # makes the two fixes compose rather than layer. A memo holding `str(exc)` would
+                # have reintroduced the leak on every cached 503 while the freshly computed one
+                # stayed clean, and nothing would have said the two disagreed.
                 reason = redact_secrets(str(exc))
                 readiness_failure = (time.monotonic() + READINESS_FAILURE_TTL_SECONDS, reason)
                 logger.exception("server %s is not ready: %s", name, exc)
