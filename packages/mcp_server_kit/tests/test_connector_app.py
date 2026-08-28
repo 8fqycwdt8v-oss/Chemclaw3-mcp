@@ -27,14 +27,17 @@ import socket
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 import httpx
 import pytest
 import uvicorn
+from fastapi import FastAPI
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit import Dataset
 from mcp_server_kit.app import connector_app
 
 TOKEN = "test-token-for-the-kit"
@@ -42,6 +45,14 @@ TOKEN_ENV = "MCP_KIT_PROBE_TOKEN"
 # Small enough that an oversize body is cheap to send, large enough that a real MCP handshake and
 # tool call fit under it comfortably.
 MAX_BYTES = 8_192
+
+# What one real call supplies, written out so the exposition can be asked about these exact strings
+# rather than about the words that happen to name them today. Every one is something a caller
+# controls: three identity headers and a tool argument.
+ACTOR = "alice@example.test"
+SESSION = "session-7f3a91c4"
+CORRELATION = "4bf92f3577b34da6a3ce929d0e0e4736"
+CALLER_ARGUMENT = "CC(=O)Oc1ccccc1C(=O)O"
 
 
 def _probe_server() -> FastMCP:
@@ -102,15 +113,111 @@ def running_server() -> Iterator[str]:
 
 
 @asynccontextmanager
-async def _session(base: str) -> AsyncIterator[ClientSession]:
-    """An initialised MCP session against the running server, carrying the bearer token."""
+async def _session(
+    base: str, *, identity: dict[str, str] | None = None
+) -> AsyncIterator[ClientSession]:
+    """An initialised MCP session against the running server, carrying the bearer token.
+
+    `identity` adds the `X-Chemclaw-*` headers a real call from Chemclaw3 carries, so a test can
+    ask what happened to those *values* rather than to the words that name them.
+    """
+    headers = {"Authorization": f"Bearer {TOKEN}", **(identity or {})}
     async with (
-        httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,
+        httpx.AsyncClient(headers=headers) as http_client,
         streamable_http_client(f"{base}/mcp", http_client=http_client) as (rx, tx, _),
         ClientSession(rx, tx) as session,
     ):
         await session.initialize()
         yield session
+
+
+@contextmanager
+def _serving(app: FastAPI) -> Iterator[str]:
+    """Run one `connector_app` under uvicorn on a free loopback port for one test's duration.
+
+    Distinct from the `running_server` fixture above: that one is module-scoped and waits for
+    `/healthz` to answer **200** specifically, which a failing `readiness` callable never does.
+    This waits for the port to accept a connection at all — uvicorn's lifespan has then completed,
+    whatever `/healthz` itself reports — because a readiness probe answering 503 is a successful
+    HTTP response, not a startup failure.
+    """
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            httpx.get(f"{base}/healthz", timeout=1.0)
+            break
+        except httpx.HTTPError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - only reached if the app never accepts a connection
+        pytest.fail("the server did not accept a connection within 30 s")
+    try:
+        yield base
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+def test_readiness_failure_is_a_503_naming_the_reason() -> None:
+    """The failure mode `readiness` exists to catch, exercised over the real transport.
+
+    Before `readiness` existed, `/healthz` was a constant 200 in every server — evidence the
+    session manager was running and nothing about whether the server could answer, which is
+    precisely how a `chem` pod with a corpus that failed its checksum passed the probe, took
+    traffic, and failed every tool call (see `mcp_server_kit.app.connector_app`'s docstring).
+    That mechanism shipped with no test anywhere in this fleet driving a failing callable through
+    a live `/healthz` — every server's own test only exercises the success path. This is that
+    test, once, at the one place every server's readiness check is the same code.
+    """
+
+    def _broken() -> list[Dataset]:
+        raise RuntimeError("PGPASSWORD=hunter2 could not verify the solvent table")
+
+    app = connector_app(_probe_server(), name="probe-unready", readiness=_broken)
+    with _serving(app) as base:
+        response = httpx.get(f"{base}/healthz", timeout=5.0)
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "unready"
+        assert body["server"] == "probe-unready"
+        assert "could not verify the solvent table" in body["reason"]
+        # `/healthz` carries no bearer check, so this reason reaches anything that can open a
+        # socket to the pod — unlike a tool fault, which `_sanitize_tool_errors` never lets carry
+        # its raw text past a `ValueError`. The secret this exception happens to name must never
+        # reach an unauthenticated caller here, whatever the readiness callable raised.
+        assert "hunter2" not in response.text
+        assert "PGPASSWORD=***" in body["reason"]
+
+        exposition = httpx.get(f"{base}/metrics", timeout=5.0).text
+        assert 'chemclaw_mcp_ready{server="probe-unready"} 0.0' in exposition
+
+
+def test_readiness_success_names_the_verified_datasets() -> None:
+    """The companion path: a `readiness` that succeeds is what `/healthz` reports back."""
+    verified = Dataset(
+        name="solvent-table",
+        version="3",
+        licence="CC0",
+        retrieved_from="internal",
+        description="probe",
+        sha256="0" * 64,
+        records_path=Path("/dev/null"),
+    )
+
+    app = connector_app(_probe_server(), name="probe-ready", readiness=lambda: [verified])
+    with _serving(app) as base:
+        response = httpx.get(f"{base}/healthz", timeout=5.0)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["datasets"] == ["solvent-table@3"]
+
+        exposition = httpx.get(f"{base}/metrics", timeout=5.0).text
+        assert 'chemclaw_mcp_ready{server="probe-ready"} 1.0' in exposition
 
 
 def test_a_declared_oversize_body_is_refused(running_server: str) -> None:
@@ -227,7 +334,7 @@ def test_upstream_still_chains_a_tool_fault_and_still_does_not_chain_unknown_too
     assert "from" not in source.split("Unknown tool")[1].split("\n")[0]
 
 
-def test_metrics_is_open_and_carries_no_identity(running_server: str) -> None:
+async def test_metrics_is_open_and_carries_no_identity(running_server: str) -> None:
     """`/metrics` is unauthenticated on purpose, so what it may carry is the whole control.
 
     It is *not* "counts only" and never was: `generate_latest(REGISTRY)` on the default registry
@@ -237,16 +344,60 @@ def test_metrics_is_open_and_carries_no_identity(running_server: str) -> None:
     stay open has to be the true one, and the true one is: no request content, no caller identity,
     no tool argument.
 
-    Asserted as an absence over the live exposition, because the failure this guards is somebody
-    adding `tool_calls_total{tool=..., actor=...}` on the strength of a docstring.
+    **The assertion is about the values, and it used to be about six words.** Scanning for `actor`,
+    `session_id` and `correlation` catches only a developer who names the new label the way the
+    docstring does — `principal="alice@example.com"` and `cid="4bf92f35..."` passed every one of
+    those assertions, and the bare word `session` and the dry-run header were not in the list at
+    all. So a real call carries real identity through the whole stack first, and what is asserted
+    absent is the strings that call sent: nothing a caller supplies may name a series, whatever the
+    label is called.
     """
+    identity = {
+        "X-Chemclaw-Actor": ACTOR,
+        "X-Chemclaw-Session": SESSION,
+        "X-Chemclaw-Correlation-Id": CORRELATION,
+        "X-Chemclaw-Dry-Run": "true",
+    }
+    async with _session(running_server, identity=identity) as session:
+        await session.call_tool("echo", {"text": CALLER_ARGUMENT})
+
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
-    exposition = response.text.lower()
+    exposition = response.text
+    for supplied in (ACTOR, SESSION, CORRELATION, CALLER_ARGUMENT, TOKEN):
+        assert supplied not in exposition, (
+            f"/metrics is unauthenticated and published {supplied!r}, which the caller supplied; a "
+            "labelled metric on this endpoint must never take an actor, a session, a correlation "
+            "id or a tool argument as a label, whatever that label is named"
+        )
+    lowered = exposition.lower()
     for forbidden in ("actor", "session_id", "correlation", "smiles", "authorization", "bearer"):
-        assert forbidden not in exposition, (
+        assert forbidden not in lowered, (
             f"/metrics is unauthenticated and published {forbidden!r}; a labelled metric on this "
             "endpoint must never carry an actor, a session, a correlation id or a tool argument"
+        )
+
+
+def test_the_egress_counter_is_unlabelled(running_server: str) -> None:
+    """The destination host of a refused connection is attacker-influenced, so it is not a label.
+
+    `metrics.py` states it, `CLAUDE.md` says this file asserts it, and until now this file did not
+    — a bare word in a prose document is exactly the shape of claim this repository's own rules
+    say to check. A label here would be unbounded by construction: anything that can make the pod
+    try to resolve a name it chose would mint a series.
+    """
+    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
+    lines = [
+        line
+        for line in exposition.splitlines()
+        if line.startswith("chemclaw_mcp_egress_refused_total")
+    ]
+    assert lines, "the egress counter is not published at all"
+    for line in lines:
+        assert "{" not in line, (
+            f"chemclaw_mcp_egress_refused_total carries a label ({line!r}); the only thing there "
+            "is to label it with is the destination host, which a caller influences and nothing "
+            "bounds"
         )
 
 
@@ -306,3 +457,50 @@ async def test_an_unknown_tool_name_cannot_mint_a_metric_series(running_server: 
     assert 'chemclaw_mcp_tool_calls_total{outcome="refused",server="probe",tool="<unknown>"}' in (
         exposition
     ), "an unknown tool name must still be counted, under the sentinel"
+
+
+def test_metrics_counts_the_requests_it_refused(running_server: str) -> None:
+    """A counter whose help says "HTTP requests served" must see the ones nothing served.
+
+    `chemclaw_mcp_requests_total` was booked inside `CallerLogMiddleware`, and `connector_app` adds
+    the credential check and the body cap *after* it — so Starlette's add-order put both outside
+    the counter, and both short-circuit. Measured against this stack: three 401s and two 413s
+    produced **zero** series between them, which makes `rate(...{status=~"4.."})` permanently 0 —
+    the one expression an operator writes to see a fleet-wide credential or payload problem.
+
+    Both refusals are driven over a real socket, because both happen in ASGI layers a
+    `TestClient`-less in-process call never reaches.
+    """
+    for _ in range(3):
+        refused = httpx.post(f"{running_server}/mcp", content=b"{}", timeout=10.0)
+        assert refused.status_code == 401
+    oversize = httpx.post(
+        f"{running_server}/mcp",
+        headers={"authorization": f"Bearer {TOKEN}"},
+        content=b"x" * (MAX_BYTES * 2),
+        timeout=10.0,
+    )
+    assert oversize.status_code == 413
+
+    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
+    for expected in (
+        'chemclaw_mcp_requests_total{path="/mcp",server="probe",status="401"}',
+        'chemclaw_mcp_requests_total{path="/mcp",server="probe",status="413"}',
+    ):
+        assert expected in exposition, (
+            f"/metrics does not publish {expected!r}; the request counter cannot see the requests "
+            "the layers outside it refuse"
+        )
+
+
+def test_connector_app_refuses_to_wrap_one_capability_twice() -> None:
+    """Wrapping is not idempotent, so a second call must be an error rather than a double count.
+
+    Each of the four behaviours is a wrapper that captures the previous `call_tool`; a second call
+    stacks a second set. Measured on a twice-wrapped server: one `tools/call` booked
+    `chemclaw_mcp_tool_calls_total 2.0`, and nothing at the call site said so.
+    """
+    server = _probe_server()
+    connector_app(server, name="twice-probe")
+    with pytest.raises(RuntimeError, match="already wrapped"):
+        connector_app(server, name="twice-probe")

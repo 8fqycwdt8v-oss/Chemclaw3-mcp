@@ -75,6 +75,9 @@ def running_server() -> Iterator[str]:
 
 def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """Uvicorn accepts connections only after the lifespan ran, so a 200 means it did."""
+    from chemclaw_mcp_rxnpredict.engine.config import DATA_DIR
+    from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import priors_dataset
+
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
     # `revision` is part of the probe payload since the handshake started carrying the
@@ -82,7 +85,17 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # for a test process, which is not built from a Containerfile — that the *image*
     # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
     # fills is a provenance record that quietly says nothing.
-    assert response.json() == {"status": "ok", "server": "rxnpredict", "revision": "unknown"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["server"] == "rxnpredict"
+    assert body["revision"] == "unknown"
+    # `/healthz` used to be a constant 200 here — `app.py` carried no `readiness` callable, unlike
+    # every other server with a vendored corpus, even though `get_settings()` reads and checksums
+    # `trust_priors.json` lazily, inside the first tool call. A truncated or swapped priors file
+    # would have passed this probe, taken traffic, and failed every prediction. Naming the dataset
+    # here is what proves the readiness callable actually ran the load rather than merely existing.
+    dataset = priors_dataset(DATA_DIR)
+    assert body["datasets"] == [f"{dataset.name}@{dataset.version}"]
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:

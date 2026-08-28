@@ -13,9 +13,18 @@ These are the fleet-wide metrics' complement, not a duplicate of them.
 a process group was killed at 3600 s or a SMILES failed to parse in 3 ms, and those need different
 responses — the first is an undersized pod or an oversized molecule, the second is a caller error.
 
-Every label here is a **binary name** (`xtb`, `crest`), which is bounded by what the image
-installs. `/metrics` is unauthenticated, so the rule `mcp_server_kit/metrics.py` states applies
-unchanged: no actor, no session, no correlation id, and no argument — a molecule is an argument.
+Two label sets, and both are bounded by something the image or this file fixes rather than by
+anything a caller sends. The subprocess metrics are labelled by **binary name** (`xtb`, `crest`),
+bounded by what the image installs. `INLINE_BUDGET_EXCEEDED` is labelled by **what** ran out of
+budget, which is a bounded literal `Deadline.check` is called with — and it carried no label at
+all until now, so an operator could see that an inline budget was spent and not whether it was a
+Hessian's or a geometry optimisation's, which are different decisions: a Hessian scales with the
+molecule and an optimisation with the surface. (The header here said "every label is a binary
+name", which was false in the direction that hid the gap.)
+
+`/metrics` is unauthenticated, so the rule `mcp_server_kit/metrics.py` states applies unchanged: no
+actor, no session, no correlation id, and no argument — a molecule is an argument, and `what` is
+not one.
 """
 
 from __future__ import annotations
@@ -56,4 +65,5 @@ PROCESS_GROUP_KILLS = Counter(
 INLINE_BUDGET_EXCEEDED = Counter(
     "chemclaw_mcp_calc_inline_budget_exceeded_total",
     "In-process calculations stopped because their inline wall-clock budget was spent.",
+    ("what",),
 )

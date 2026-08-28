@@ -151,3 +151,39 @@ def test_a_single_point_under_the_ceiling_still_runs() -> None:
     """
     result = compute_properties(XtbSpec(task="properties"), structure_from_smiles("O"))
     assert result.total_energy_hartree < 0
+
+
+def test_an_exceeded_inline_budget_says_which_loop_spent_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare counter cannot tell an undersized Hessian budget from an undersized optimisation one.
+
+    `chemclaw_mcp_calc_inline_budget_exceeded_total` had no labels at all — while
+    `engine/metrics.py`'s own header said "every label here is a binary name", which was false in
+    the direction that hid the gap. The two loops behind it scale with different things: a Hessian
+    is 6N + 1 single points and grows with the molecule, an optimisation grows with the surface, so
+    an operator seeing the counter rise has two different decisions to make and the metric said
+    nothing about which. `Deadline.check`'s `what` is a literal written at the call site, so it is
+    bounded by this repository rather than by a caller — which is the condition an unauthenticated
+    `/metrics` puts on any label.
+
+    Both loops are driven, because one series proves the label exists and two prove it separates.
+    """
+    from chemclaw_mcp_calc.engine.metrics import INLINE_BUDGET_EXCEEDED
+
+    before = {
+        what: INLINE_BUDGET_EXCEEDED.labels(what)._value.get()
+        for what in ("geometry optimization", "Hessian")
+    }
+    monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 1e-6)
+    water = structure_from_smiles("O")
+    with pytest.raises(ValueError):
+        optimize_structure(OptSpec(engine="tblite"), water)
+    with pytest.raises(ValueError):
+        compute_hessian(HessianSpec(engine="tblite"), water)
+
+    for what, was in before.items():
+        assert INLINE_BUDGET_EXCEEDED.labels(what)._value.get() == was + 1, (
+            f"the inline-budget counter did not separate {what!r}; an operator cannot tell which "
+            "budget is undersized"
+        )

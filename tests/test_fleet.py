@@ -570,3 +570,33 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
             f"{server.name}/Containerfile pins {name}=={version} while uv.lock resolves "
             f"{expected}: the audited version and the shipped version have drifted apart"
         )
+
+
+def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:
+    """`_PUBLISHED_VALUES` is a literal, so something has to hold it against what is published.
+
+    `mcp_server_kit.logging` refuses to redact the credentials this repository commits, because a
+    value anybody can read is not a secret and scrubbing it only corrupts logs. The set that says
+    which ones those are is written out by hand; the `Makefile` is where they are actually
+    published. A default added there and not here is silently redacted out of every `make run-*`
+    log, and a value left here after the Makefile stops using it is a real credential this fleet
+    has quietly exempted — so both directions are the same check, run against the file rather than
+    against a memory of it.
+    """
+    from mcp_server_kit.logging import _PUBLISHED_VALUES
+
+    makefile = (Path(__file__).resolve().parents[1] / "Makefile").read_text()
+    defaults = set(re.findall(r"\$\$\{CHEMCLAW_[A-Z_]+_TOKEN:-([^}]+)\}", makefile))
+    assert defaults, "no `CHEMCLAW_*_TOKEN` default found in the Makefile; has the pattern changed?"
+    unexempted = defaults - _PUBLISHED_VALUES
+    assert not unexempted, (
+        f"the Makefile publishes {sorted(unexempted)!r} as a token default and "
+        "mcp_server_kit.logging does not exempt it, so every local log line mentioning it is "
+        "rewritten to ***"
+    )
+    stale = _PUBLISHED_VALUES - defaults
+    assert not stale, (
+        f"{sorted(stale)!r} is exempted from redaction and is no longer a "
+        "published default; an exemption that outlives its reason is a credential this fleet has "
+        "decided not to hide"
+    )

@@ -44,6 +44,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 TOKEN = "test-token-for-tracing"
 TOKEN_ENV = "MCP_KIT_TRACING_TOKEN"
@@ -63,8 +64,14 @@ SECOND_TRACEPARENT = f"00-{SECOND_TRACE_ID}-{SECOND_PARENT_SPAN_ID}-01"
 EXPORTER = InMemorySpanExporter()
 
 
+# The two strings the leak measurement looks for, written out so a reader can see exactly what must
+# not reach a collector: a credential the *log* path redacts correctly, and a caller's own argument.
+SECRET = "hunter2"
+CALLER_ARGUMENT = "CCO-secret-molecule"
+
+
 def _probe_server() -> FastMCP:
-    """One tool, because this file is about the transport's span and not about any chemistry."""
+    """Three tools: one that answers, and the two failures whose span records differ."""
     server = FastMCP("tracing-probe")
 
     @server.tool()
@@ -72,7 +79,37 @@ def _probe_server() -> FastMCP:
         """Return what was passed in."""
         return text
 
+    @server.tool()
+    def boom_internal() -> str:
+        """Raise the kind of fault whose text must never leave this process."""
+        raise RuntimeError(f"PGPASSWORD={SECRET} at postgres.internal:5432")
+
+    @server.tool()
+    def boom_domain() -> str:
+        """Raise the kind of refusal that is the whole content of a correct answer."""
+        raise ValueError(f"unknown solvent {CALLER_ARGUMENT!r}; see the vendored solvent table")
+
     return server
+
+
+def _span_text(span: object) -> str:
+    """Every string a collector would receive for `span`, concatenated.
+
+    Written as one blob deliberately: the assertions below are about a *value* never leaving the
+    process, and naming the attribute it would leave through would have to be updated by whoever
+    added the next attribute — which is the reader the assertion exists to catch.
+    """
+    parts = [
+        str(getattr(span, "name", "")),
+        str(getattr(getattr(span, "status", None), "description", "")),
+    ]
+    for key, value in dict(getattr(span, "attributes", None) or {}).items():
+        parts.append(f"{key}={value}")
+    for event in getattr(span, "events", ()) or ():
+        parts.append(event.name)
+        for key, value in dict(event.attributes or {}).items():
+            parts.append(f"{key}={value}")
+    return "".join(parts)
 
 
 def _free_port() -> int:
@@ -289,3 +326,77 @@ async def test_an_unknown_tool_name_cannot_mint_a_span_name(
         "mcp.server": "tracing-probe",
         "mcp.tool": UNKNOWN_TOOL,
     }
+
+
+async def test_a_fault_puts_neither_its_text_nor_its_stack_on_the_span(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one channel that bypassed both the sanitiser and the log redaction.
+
+    `start_as_current_span` defaults to `record_exception=True`, and `_sanitize_tool_errors`
+    replaces the *message* while preserving the cause (`raise ToolError(...) from exc.__cause__`)
+    — so `format_exception` walked the whole chain into an `exception.stacktrace` attribute bound
+    for a third-party collector. Measured against this server before the fix: `hunter2` and the
+    bearer token in clear on the span, while the log line for the same fault read `PGPASSWORD=***`.
+
+    Asserted as an absence of the secret *and* of the stack, because a redacted stacktrace would
+    still be a rendered call stack of this process on somebody else's host, and `tracing.py`'s
+    claim is "identifiers only".
+    """
+    monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
+    async with _session(running_server, traceparent=TRACEPARENT) as (session, _client):
+        result = await session.call_tool("boom_internal", {})
+    assert result.isError is True
+
+    span = next(s for s in EXPORTER.get_finished_spans() if s.name == "mcp.tool/boom_internal")
+    blob = _span_text(span)
+    assert SECRET not in blob, (
+        "a credential reached a span; spans go to a collector this repository does not own, and "
+        "this is the one path that passes neither the error sanitiser nor `redact_secrets`"
+    )
+    assert "Traceback" not in blob and "exception.stacktrace" not in blob
+    assert span.events == ()
+
+
+async def test_a_refusal_is_not_an_error_span_and_never_quotes_the_caller(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The span's outcome is the metric's, and a refusal is a correct answer in both.
+
+    Every `ToolError` that propagates is an exception, so recording "did something raise" made a
+    call `chemclaw_mcp_tool_calls_total` books as `outcome="refused"` into an ERROR span — the
+    dashboard and the trace view disagreeing about the same call. And a refusal's whole content is
+    a domain message, which is where a caller's molecule was landing in `exception.message`.
+    """
+    monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
+    async with _session(running_server, traceparent=TRACEPARENT) as (session, _client):
+        result = await session.call_tool("boom_domain", {})
+    assert result.isError is True
+    assert CALLER_ARGUMENT in str(result.content), "the refusal must still reach the model in full"
+
+    span = next(s for s in EXPORTER.get_finished_spans() if s.name == "mcp.tool/boom_domain")
+    assert span.status.status_code is not StatusCode.ERROR, (
+        "a refusal is the answer the caller asked for; an ERROR span here contradicts the "
+        '`outcome="refused"` the counter books for the same call'
+    )
+    assert CALLER_ARGUMENT not in _span_text(span)
+
+
+async def test_a_hostile_tool_name_cannot_become_a_span_name(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A span name is as caller-supplied as a metric label, and is clamped the same way.
+
+    `_served_tool_name` sat two functions above this wrapper and was used only by the counter, so
+    the exposition folded an unknown name onto `<unknown>` while the span beside it recorded the
+    string verbatim. Measured: `mcp.tool/../../etc/passwd?a=b`, and a 318-character span name.
+    """
+    monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
+    hostile = "../../etc/passwd?a=b"
+    async with _session(running_server, traceparent=TRACEPARENT) as (session, _client):
+        await session.call_tool(hostile, {})
+        await session.call_tool("N" * 309, {})
+
+    names = [span.name for span in EXPORTER.get_finished_spans()]
+    assert names == ["mcp.tool/<unknown>", "mcp.tool/<unknown>"], names
+    assert not any(hostile in name for name in names)

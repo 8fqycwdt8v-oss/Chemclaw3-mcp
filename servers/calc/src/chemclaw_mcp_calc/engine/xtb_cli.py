@@ -177,6 +177,12 @@ def scratch_dir(prefix: str) -> Iterator[Path]:
             )
 
 
+# How long to wait for a killed group's pipes after the timeout. A killed process closes them at
+# once, so this is only ever reached in the branch where `killpg` was not: there the process may
+# still be alive, and the caller's budget is already spent.
+_REAP_TIMEOUT_SECONDS = 5.0
+
+
 def run_isolated(
     argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float, label: str
 ) -> subprocess.CompletedProcess[str]:
@@ -205,9 +211,11 @@ def run_isolated(
         cwd: The scratch directory the run owns.
         env: The scrubbed environment (`_ENV_ALLOWLIST`), never the parent's.
         timeout: Wall-clock budget in seconds, after which the whole group is killed.
-        label: What this run is, for the log line and the metric — the calculation, not the
-            molecule. Required rather than derived from `argv[0]`, which is a filesystem path and
-            says `xtb` for a single point, an optimisation and a Hessian alike.
+        label: What this run is, for the log line — the calculation, not the molecule. Required
+            rather than derived from `argv[0]`, which is a filesystem path and says `xtb` for a
+            single point, an optimisation and a Hessian alike. It reaches no metric and must not:
+            the metrics here are labelled by *binary* only, which is bounded by what the image
+            installs (`engine/metrics.py`).
 
     Raises:
         subprocess.TimeoutExpired: the budget was spent; the group has been killed by then.
@@ -228,26 +236,41 @@ def run_isolated(
     except subprocess.TimeoutExpired:
         # The group leader's pgid is its own pid (start_new_session guarantees the child is the
         # leader of a fresh group), so this reaches every process the run forked. A race where the
-        # process has already exited between the timeout and here is not an error.
-        killed = -1
+        # process has already exited between the timeout and here is not an error — and it is the
+        # branch that made this accounting lie: `killed` was seeded to `-1` and the counter was
+        # incremented outside the `suppress`, so a run nothing killed booked a kill and logged
+        # "SIGKILLed process group -1". Measured with `os.getpgid` raising: exactly that line, and
+        # `chemclaw_mcp_calc_process_group_kills_total 1.0`. A counter an operator reads as "this
+        # pod is killing runs" must only count kills that happened, so both the count and the claim
+        # now live inside the block that reached `killpg`.
+        killed: int | None = None
         with suppress(ProcessLookupError):
-            killed = os.getpgid(process.pid)
-            os.killpg(killed, signal.SIGKILL)
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+            killed = pgid
+            PROCESS_GROUP_KILLS.labels(binary).inc()
         elapsed = time.monotonic() - started
         SUBPROCESS_DURATION.labels(binary).observe(elapsed)
         SUBPROCESS_TIMEOUTS.labels(binary).inc()
-        PROCESS_GROUP_KILLS.labels(binary).inc()
         logger.warning(
-            "%s %s exceeded its %gs budget after %.1fs; SIGKILLed process group %d",
+            "%s %s exceeded its %gs budget after %.1fs; %s",
             binary,
             label,
             timeout,
             elapsed,
-            killed,
+            f"SIGKILLed process group {killed}"
+            if killed is not None
+            else "the process had already exited, so no process group was killed",
         )
-        # Reap the now-dead group leader and collect whatever it had written; the pipes are closed
-        # and the process is gone, so this returns immediately rather than blocking again.
-        stdout, stderr = process.communicate()
+        # Collect whatever the run had written. Bounded, and that is not belt-and-braces: this
+        # returns immediately only when the group was actually killed. In the branch above where
+        # `killpg` was never reached the process may still be running, and an unbounded wait here
+        # would hold a caller whose budget is already spent — the comment that stood here claimed
+        # the prompt return unconditionally.
+        try:
+            stdout, stderr = process.communicate(timeout=_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
         raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr) from None
     elapsed = time.monotonic() - started
     SUBPROCESS_DURATION.labels(binary).observe(elapsed)
