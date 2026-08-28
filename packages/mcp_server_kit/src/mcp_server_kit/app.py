@@ -68,7 +68,7 @@ from mcp_server_kit.identity import (
     bind_caller,
     reset_caller,
 )
-from mcp_server_kit.logging import configure_logging, register_secret_env
+from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
 from mcp_server_kit.tracing import tool_call_span
 
@@ -443,8 +443,16 @@ def connector_app(
         except Exception as exc:
             READY.labels(name).set(0)
             logger.exception("server %s is not ready: %s", name, exc)
+            # `/healthz` carries no bearer check — a kubelet probe has no identity — so this reason
+            # reaches anything that can open a socket to the pod, unauthenticated. The log line
+            # above passes through `SecretRedactingFilter`; this body does not go through logging
+            # at all, so it needs the same scrub applied directly. Measured against exactly this
+            # gap: `_sanitize_tool_errors` replaces a tool fault's text before the model ever sees
+            # it, and this was the one other place a raw exception reached a caller verbatim — the
+            # one with no credential guarding it.
             return JSONResponse(
-                {**payload, "status": "unready", "reason": str(exc)}, status_code=503
+                {**payload, "status": "unready", "reason": redact_secrets(str(exc))},
+                status_code=503,
             )
         READY.labels(name).set(1)
         payload["datasets"] = [f"{corpus.name}@{corpus.version}" for corpus in verified]

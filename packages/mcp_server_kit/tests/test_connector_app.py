@@ -27,14 +27,17 @@ import socket
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 import httpx
 import pytest
 import uvicorn
+from fastapi import FastAPI
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit import Dataset
 from mcp_server_kit.app import connector_app
 
 TOKEN = "test-token-for-the-kit"
@@ -111,6 +114,95 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
     ):
         await session.initialize()
         yield session
+
+
+@contextmanager
+def _serving(app: FastAPI) -> Iterator[str]:
+    """Run one `connector_app` under uvicorn on a free loopback port for one test's duration.
+
+    Distinct from the `running_server` fixture above: that one is module-scoped and waits for
+    `/healthz` to answer **200** specifically, which a failing `readiness` callable never does.
+    This waits for the port to accept a connection at all — uvicorn's lifespan has then completed,
+    whatever `/healthz` itself reports — because a readiness probe answering 503 is a successful
+    HTTP response, not a startup failure.
+    """
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            httpx.get(f"{base}/healthz", timeout=1.0)
+            break
+        except httpx.HTTPError:
+            time.sleep(0.05)
+    else:  # pragma: no cover - only reached if the app never accepts a connection
+        pytest.fail("the server did not accept a connection within 30 s")
+    try:
+        yield base
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+def test_readiness_failure_is_a_503_naming_the_reason() -> None:
+    """The failure mode `readiness` exists to catch, exercised over the real transport.
+
+    Before `readiness` existed, `/healthz` was a constant 200 in every server — evidence the
+    session manager was running and nothing about whether the server could answer, which is
+    precisely how a `chem` pod with a corpus that failed its checksum passed the probe, took
+    traffic, and failed every tool call (see `mcp_server_kit.app.connector_app`'s docstring).
+    That mechanism shipped with no test anywhere in this fleet driving a failing callable through
+    a live `/healthz` — every server's own test only exercises the success path. This is that
+    test, once, at the one place every server's readiness check is the same code.
+    """
+
+    def _broken() -> list[Dataset]:
+        raise RuntimeError("PGPASSWORD=hunter2 could not verify the solvent table")
+
+    app = connector_app(_probe_server(), name="probe-unready", readiness=_broken)
+    with _serving(app) as base:
+        response = httpx.get(f"{base}/healthz", timeout=5.0)
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "unready"
+        assert body["server"] == "probe-unready"
+        assert "could not verify the solvent table" in body["reason"]
+        # `/healthz` carries no bearer check, so this reason reaches anything that can open a
+        # socket to the pod — unlike a tool fault, which `_sanitize_tool_errors` never lets carry
+        # its raw text past a `ValueError`. The secret this exception happens to name must never
+        # reach an unauthenticated caller here, whatever the readiness callable raised.
+        assert "hunter2" not in response.text
+        assert "PGPASSWORD=***" in body["reason"]
+
+        exposition = httpx.get(f"{base}/metrics", timeout=5.0).text
+        assert 'chemclaw_mcp_ready{server="probe-unready"} 0.0' in exposition
+
+
+def test_readiness_success_names_the_verified_datasets() -> None:
+    """The companion path: a `readiness` that succeeds is what `/healthz` reports back."""
+    verified = Dataset(
+        name="solvent-table",
+        version="3",
+        licence="CC0",
+        retrieved_from="internal",
+        description="probe",
+        sha256="0" * 64,
+        records_path=Path("/dev/null"),
+    )
+
+    app = connector_app(_probe_server(), name="probe-ready", readiness=lambda: [verified])
+    with _serving(app) as base:
+        response = httpx.get(f"{base}/healthz", timeout=5.0)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["datasets"] == ["solvent-table@3"]
+
+        exposition = httpx.get(f"{base}/metrics", timeout=5.0).text
+        assert 'chemclaw_mcp_ready{server="probe-ready"} 1.0' in exposition
 
 
 def test_a_declared_oversize_body_is_refused(running_server: str) -> None:
