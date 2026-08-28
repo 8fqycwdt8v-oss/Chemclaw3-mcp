@@ -191,3 +191,59 @@ async def test_a_recovered_server_is_readied_once_the_memo_expires(
 
     assert recovered.status_code == 200
     assert recovered.json()["datasets"] == ["probe-corpus@1"]
+
+
+async def test_a_success_is_never_memoised_so_a_corpus_going_bad_is_seen_at_once() -> None:
+    """The memo holds failures only, and this is the half that says so.
+
+    The route caches a *failure* for `READINESS_FAILURE_TTL_SECONDS`, and everything above asserts
+    that the cached 503 is honest. The asymmetry is the point and nothing checked it: a memoised
+    *success* would be strictly worse than no memo at all, because a pod whose corpus went bad
+    would keep answering 200 to the kubelet for as long as the window lasted while failing every
+    tool call — which is the exact defect `readiness` was added to close, reintroduced by its own
+    optimisation.
+
+    So: succeed, then fail, and the very next probe must be the 503. That also pins the cost of the
+    healthy path — every probe re-runs the check — which is what makes it safe: the loaders behind
+    a real `readiness` are `lru_cache`d, so a passing check is a dictionary lookup.
+    """
+    healthy = Dataset(
+        name="probe-corpus",
+        version="1",
+        licence="CC0",
+        retrieved_from="vendored",
+        description="a probe",
+        sha256="0" * 64,
+        records_path=Path("/nonexistent/probe-corpus.csv"),
+    )
+    calls = 0
+    broken = False
+
+    def readiness() -> tuple[Dataset, ...]:
+        """Healthy until `broken` is set, the way a mount going away looks from in here."""
+        nonlocal calls
+        calls += 1
+        if broken:
+            raise RuntimeError(REASON)
+        return (healthy,)
+
+    app = connector_app(
+        FastMCP("readiness-staleness"),
+        name="readiness-staleness",
+        token_env=None,
+        readiness=readiness,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://readiness.test"
+    ) as client:
+        assert (await client.get("/healthz")).status_code == 200
+        assert (await client.get("/healthz")).status_code == 200
+        assert calls == 2, "a healthy probe must re-run the check; a memoised 200 is the old bug"
+        broken = True
+        gone_bad = await client.get("/healthz")
+
+    assert gone_bad.status_code == 503, (
+        "the pod kept passing its readiness probe after its corpus went bad; a memoised success "
+        "would take traffic it cannot answer for the whole TTL"
+    )
+    assert SECRET not in str(gone_bad.json()["reason"])

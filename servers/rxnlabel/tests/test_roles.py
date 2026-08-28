@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 from chemclaw_mcp_rxnlabel.engine import agents, mapping, roles, species
+from rdkit import Chem
 
 BUCHWALD = (
     "Brc1ccccc1.NC1CCCCC1"
@@ -172,8 +173,6 @@ def test_every_functional_group_pattern_compiles(name: str, smarts: str) -> None
     That leniency is right at runtime — one bad pattern must not fail every classification — and it
     means a typo would silently narrow the vocabulary. This is where it is caught instead.
     """
-    from rdkit import Chem
-
     assert Chem.MolFromSmarts(smarts) is not None, f"{name} has an uncompilable SMARTS"
 
 
@@ -285,3 +284,180 @@ class TestASpeciesIsParsedWholeOrNotAtAll:
     def test_a_surrounding_newline_is_still_a_copy_paste_artefact(self) -> None:
         """Stripped rather than refused, the same call `chem.require_molecule` makes."""
         assert species.canonical_smiles("\n CCO \n") == "CCO"
+
+
+class TestEveryHandWrittenPatternIsChecked:
+    """The three tables in `agents.py` had 12 of 60 literals covered. Measured, by mutation.
+
+    `_matches_any`'s docstring says a pattern that does not compile is skipped rather than raised
+    on, "and the server's own tests assert each pattern individually". That last clause was not
+    true: the only per-pattern assertion in this file was over `species.FUNCTIONAL_GROUPS`, and
+    nothing looked at `_LIGAND_SMARTS`, `_BASE_SMARTS` or `_SOLVENT_SMILES` at all.
+
+    So each of the 60 literals was replaced, one at a time, with a string that does not compile
+    (a SMILES token with one that does not parse), and this server's suite re-run:
+
+    - `_SOLVENT_SMILES` — 40 tokens, **2** caught (acetonitrile and THF, both incidental to a
+      Buchwald and a Suzuki fixture). 38 could be corrupted with the suite green.
+    - `_LIGAND_SMARTS` — 7 patterns, **1** caught (the phosphine).
+    - `_BASE_SMARTS` — 13 patterns, **8** caught; hydroxide, hydride, the silyl amide, the
+      dialkylamide and the amidine/guanidine rule were all free.
+
+    A dropped pattern is silent in the direction that costs most: the species falls through to
+    `additive` or `reagent` — labelled, so it looks answered — which is exactly the bicarbonate
+    failure this file already records. The compile checks below close the whole class; the
+    behavioural ones after them close the narrower and more valuable one, that a pattern which
+    compiles matches the reagents its own comment names.
+    """
+
+    @pytest.mark.parametrize("smarts", agents._LIGAND_SMARTS)
+    def test_every_ligand_pattern_compiles(self, smarts: str) -> None:
+        """A ligand pattern that does not compile narrows the vocabulary and says nothing."""
+        assert Chem.MolFromSmarts(smarts) is not None, f"uncompilable ligand SMARTS: {smarts}"
+
+    @pytest.mark.parametrize("smarts", agents._BASE_SMARTS)
+    def test_every_base_pattern_compiles(self, smarts: str) -> None:
+        """Same for a base motif — and a lost base is a missing row in a conditions table."""
+        assert Chem.MolFromSmarts(smarts) is not None, f"uncompilable base SMARTS: {smarts}"
+
+    @pytest.mark.parametrize("token", agents._SOLVENT_SMILES.split())
+    def test_every_solvent_token_parses(self, token: str) -> None:
+        """`SOLVENTS` is built with a comprehension that drops what does not parse.
+
+        So a typo does not fail the build, it removes a solvent — and `is_solvent` then answers
+        `False` for something a chemist poured, which reads downstream as "this reaction had no
+        solvent" rather than as a broken table.
+        """
+        assert Chem.MolFromSmiles(token) is not None, f"unparseable solvent SMILES: {token}"
+
+    def test_no_solvent_is_written_twice(self) -> None:
+        """40 tokens, 39 solvents: a second spelling of one already there is a solvent missing.
+
+        `is_solvent` canonicalises its argument before the lookup, so the spelling in this table
+        buys nothing — two tokens for one molecule are one token and one slot where a solvent the
+        author meant to add is not.
+        """
+        tokens = agents._SOLVENT_SMILES.split()
+        canonical = [Chem.CanonSmiles(token) for token in tokens]
+        duplicated = {name for name in canonical if canonical.count(name) > 1}
+        assert not duplicated, (
+            f"{len(tokens)} tokens produce {len(set(canonical))} solvents; written twice: "
+            f"{sorted(duplicated)}"
+        )
+
+
+class TestALigandMotifIsRecognisedByThePatternThatNamesIt:
+    """Each ligand rule, against the reagents its own comment names. Two did not match them.
+
+    The comments in `_LIGAND_SMARTS` are the specification — "PPh3, PCy3, XPhos, SPhos, dppf,
+    BINAP", "bipyridine, phenanthroline", "TMEDA" — and only the phosphine line had a test. Two of
+    the seven were measured matching nothing they claim:
+
+    - **The N-heterocyclic carbene.** The pattern demanded `[#6X2-1]` — a carbon carrying a formal
+      **-1** charge — and an imidazol-2-ylidene is a *neutral* divalent carbon. Measured: IMe, IMes
+      and IPr all parse and none matched; the only thing that did was `Cn1cc[n+](C)[c-]1`, a
+      zwitterionic spelling of the imidazolium nobody writes. Its aromatic `:` bonds were the
+      second half of the same problem — a free carbene's ring is not aromatic to RDKit, and the
+      C=C of the unsaturated ring is a double bond, which SMARTS' default bond (single or
+      aromatic) does not match.
+    - **The phosphoramidite.** The comment reads "Phosphite and phosphoramidite: P(III) with
+      heteroatom substituents"; the pattern demanded three oxygens, which no phosphoramidite has —
+      it has a nitrogen where one of them would be. Measured: `CN(C)P(OC)OC`, the Feringa
+      monodentate ligand and a DNA-synthesis amidite core all failed, as did the phosphonites and
+      phosphinites the same sentence covers. The Feringa case needed `[#15X3]` rather than
+      `[PX3]` as well: RDKit perceives its dioxaphosphepine ring as aromatic, and `P` in SMARTS is
+      *aliphatic* phosphorus.
+    """
+
+    METAL_PRESENT = agents.ReactionContext(has_transition_metal=True)
+
+    @pytest.mark.parametrize(
+        ("name", "smiles"),
+        [
+            # Phosphine — the one rule that already had a test, kept so widening cannot lose it.
+            ("PPh3", "c1ccc(P(c2ccccc2)c2ccccc2)cc1"),
+            ("PCy3", "C1CCCCC1P(C1CCCCC1)C1CCCCC1"),
+            ("XPhos", "CC(C)c1cc(C(C)C)c(-c2ccccc2P(C2CCCCC2)C2CCCCC2)c(C(C)C)c1"),
+            ("SPhos", "COc1cccc(OC)c1-c1ccccc1P(C1CCCCC1)C1CCCCC1"),
+            # Phosphite, and the three heteroatom P(III) classes the same comment claims.
+            ("triethyl phosphite", "CCOP(OCC)OCC"),
+            ("dimethyl N,N-dimethylphosphoramidite", "CN(C)P(OC)OC"),
+            ("Feringa monodentate phosphoramidite", "CC(C)N(C(C)C)P1Oc2ccccc2-c2ccccc2O1"),
+            ("a DNA-synthesis amidite core", "CC(C)N(C(C)C)P(OCCC#N)OC"),
+            ("methyl diphenylphosphinite", "COP(c1ccccc1)c1ccccc1"),
+            # N-heterocyclic carbene, free, saturated and unsaturated.
+            ("IMe, the free carbene", "CN1C=CN(C)[C]1"),
+            ("IMes, the free carbene", "Cc1cc(C)c(N2C=CN([C]2)c2c(C)cc(C)cc2C)c(C)c1"),
+            ("IPr, the free carbene", "CC(C)c1cccc(C(C)C)c1N1C=CN([C]1)c1c(C(C)C)cccc1C(C)C"),
+            ("SIMes, the saturated free carbene", "Cc1cc(C)c(N2CCN([C]2)c2c(C)cc(C)cc2C)c(C)c1"),
+            # The imidazolium precursor, which is what is usually charged.
+            ("1,3-dimethylimidazolium", "C[n+]1ccn(C)c1"),
+            ("IMes.HCl as the cation", "Cc1cc(C)c(-[n+]2ccn(-c3c(C)cc(C)cc3C)c2)c(C)c1"),
+            # Diimine and chelating diamine.
+            ("2,2'-bipyridine", "c1ccnc(-c2ccccn2)c1"),
+            ("1,10-phenanthroline", "c1cnc2c(c1)ccc1cccnc12"),
+            ("TMEDA", "CN(C)CCN(C)C"),
+        ],
+    )
+    def test_a_ligand_a_process_chemist_charges_is_classified_as_one(
+        self, name: str, smiles: str
+    ) -> None:
+        assert agents.is_ligand(smiles, self.METAL_PRESENT), (
+            f"in: {smiles} ({name})  out: is_ligand=False"
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "smiles"),
+        [
+            ("HMPA — P(V), a polar additive rather than a ligand", "O=P(N(C)C)(N(C)C)N(C)C"),
+            ("triphenyl phosphate — P(V)", "O=P(Oc1ccccc1)(Oc1ccccc1)Oc1ccccc1"),
+            ("K3PO4 — a base", "[O-]P(=O)([O-])[O-]"),
+            ("imidazole — the ring without the carbene", "c1c[nH]cn1"),
+            ("N-methylimidazole — a base in the same slot", "Cn1ccnc1"),
+            ("benzimidazole", "c1ccc2[nH]cnc2c1"),
+            ("caffeine — two fused imidazole-type rings", "Cn1c(=O)c2c(ncn2C)n(C)c1=O"),
+            ("pyridine — a base, and one nitrogen short of a diimine", "c1ccncc1"),
+            ("triethylamine", "CCN(CC)CC"),
+            ("DMF", "CN(C)C=O"),
+        ],
+    )
+    def test_what_is_not_a_ligand_is_still_not_one(self, name: str, smiles: str) -> None:
+        """The two widened rules must not start claiming the bases that share the agent slot."""
+        assert not agents.is_ligand(smiles, self.METAL_PRESENT), (
+            f"in: {smiles} ({name})  out: is_ligand=True"
+        )
+
+    def test_a_ligand_is_still_only_a_ligand_where_there_is_a_metal(self) -> None:
+        """The context rule is why this module takes a reaction; widening must not lose it."""
+        no_metal = agents.ReactionContext(has_transition_metal=False)
+        for smiles in ("CCOP(OCC)OCC", "CN1C=CN(C)[C]1", "CN(C)CCN(C)C"):
+            assert not agents.is_ligand(smiles, no_metal), smiles
+
+
+class TestABaseMotifIsRecognisedByThePatternThatNamesIt:
+    """The five base rules the mutation run found free, against the reagents they name.
+
+    Hydroxide, hydride, the silyl amide, the dialkylamide and the amidine/guanidine rule could each
+    be replaced with an uncompilable string and this server's suite stayed green — so each is
+    asserted here on what its own comment says it is for.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "smiles"),
+        [
+            ("sodium hydroxide", "[Na+].[OH-]"),
+            ("bare hydroxide", "[OH-]"),
+            ("sodium hydride", "[Na+].[H-]"),
+            ("potassium hydride", "[K+].[H-]"),
+            ("LiHMDS", "C[Si](C)(C)[N-][Si](C)(C)C"),
+            ("NaHMDS", "[Na+].C[Si](C)(C)[N-][Si](C)(C)C"),
+            ("LDA", "CC(C)[N-]C(C)C"),
+            ("DBU", "C1CCC2=NCCCN2CC1"),
+            ("TBD", "C1CN2CCCN=C2N1"),
+            ("tetramethylguanidine", "CN(C)C(=N)N(C)C"),
+        ],
+    )
+    def test_a_base_the_mutation_run_found_untested_is_classified_as_one(
+        self, name: str, smiles: str
+    ) -> None:
+        assert agents.is_base(smiles), f"in: {smiles} ({name})  out: is_base=False"

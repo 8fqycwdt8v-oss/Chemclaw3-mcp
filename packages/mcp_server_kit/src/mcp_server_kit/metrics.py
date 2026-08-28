@@ -17,8 +17,13 @@ judgement Chemclaw3 makes for `chemclaw_repeated_tool_calls_total{tool}`.
 anything it does not have, so an unclamped counter mints a series per string a confused model or a
 hostile caller sends. Measured in the audit's prototype: a probe calling `nope` minted
 `tool="nope"`. `app.py` therefore resolves every name against the manager's own registry and folds
-anything else into `UNKNOWN_TOOL`, and `tests/test_metrics.py` drives a real unknown-tool call to
-prove it.
+anything else into `UNKNOWN_TOOL`, and
+`packages/mcp_server_kit/tests/test_connector_app.py::test_an_unknown_tool_name_cannot_mint_a_metric_series`
+drives a real unknown-tool call over the transport to prove it. (That sentence named a
+"tests/test_metrics.py" which has never existed in this repository. The check it pointed at is
+real and lives in the file above; the citation was not, and
+`tests/test_fleet.py::test_every_test_file_a_docstring_cites_actually_exists` is what stops the
+next one.)
 
 The same rule is why `chemclaw_mcp_egress_refused_total` carries **no** label at all: the
 destination host of a refused connection is attacker-influenced and unbounded, and `rate(...) > 0`
