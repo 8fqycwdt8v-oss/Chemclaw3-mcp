@@ -43,11 +43,20 @@ RUN python -m pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         "rxnmapper==0.4.3" "rxn-insight==0.1.3"
 
+# The HuggingFace cache the bake writes and the runtime reads. Named explicitly and identically on
+# both sides: the bake runs as root, the server runs as the `app` UID, and an unset `HF_HOME`
+# resolves to each one's `~/.cache` — so the weights would land under `/root` and the server would
+# look under `/home/app`, find nothing, and try to fetch. Set here so the bake below fills it, made
+# world-readable so the app UID can read it, and carried into the runtime ENV block with the offline
+# switches.
+ENV HF_HOME=/opt/models/hf
+
 # **The bake.** Constructing an `RXNMapper` is what pulls the checkpoint, so doing it here at build
 # time is what puts the weights in the image. It is also the check: a build whose model cannot be
 # constructed fails here, loudly, rather than shipping an image that reports `mapper@absent` in
 # production and silently labels the whole corpus at a coarser resolution.
-RUN python -c "from rxnmapper import RXNMapper; RXNMapper(); print('rxnmapper weights baked')"
+RUN python -c "from rxnmapper import RXNMapper; RXNMapper(); print('rxnmapper weights baked')" \
+    && chmod -R a+rX /opt/models
 
 # Rxn-INSIGHT's SMIRKS ship inside its wheel, so there is nothing to fetch — but importing it once
 # here fails the build on a broken install for the same reason.
@@ -59,7 +68,16 @@ EXPOSE 8865
 # The egress guard is armed on import and is left at its default. `MCP_EGRESS_ALLOW` is not set
 # here, and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside
 # this file denies egress at the network layer regardless.
-ENV MCP_EGRESS_GUARD=on
+#
+# The two HuggingFace offline switches are the other half of "answer from the baked weights, never
+# the hub". Without them, `RXNMapper()` still consults the hub on construction — a metadata check
+# even for a model it already has — which the armed guard turns into an `EgressForbidden` (an
+# `OSError`) that `mapping._mapper`'s `except Exception` swallows: the mapper reports itself absent
+# and the whole corpus is labelled at a coarser resolution, silently. `HF_HOME` is set above the
+# bake so both sides agree on the cache location.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    MCP_EGRESS_GUARD=on
 
 # The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a

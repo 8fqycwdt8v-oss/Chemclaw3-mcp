@@ -64,6 +64,8 @@ servers/<name>/
 ├── deploy/networkpolicy.yaml    # policyTypes includes Egress; egress: []
 ├── deploy/service.yaml          # one port named `http`; what the ServiceMonitor resolves through
 ├── deploy/servicemonitor.yaml   # path /metrics, port: http — a *name*, not a number
+├── deploy/deployment.yaml       # the workload: runAsNonRoot, drop ALL caps, seccomp, limits, no SA token
+│                                # — pod label must equal the NetworkPolicy podSelector
 ├── src/chemclaw_mcp_<name>/
 │   ├── engine/                  # pure computation — no FastAPI, no MCP, no network
 │   ├── tools.py                 # the FastMCP surface
@@ -169,6 +171,13 @@ What a *new server* still owes:
    The NetworkPolicy already admits the monitoring namespace; these are what tell Prometheus to use
    it. `tests/test_fleet.py` requires both files and `tests/test_deploy.py` holds their port against
    the Containerfile and the manifest.
+5. **`deploy/deployment.yaml`**, copied from any server and renamed. It carries the pod hardening —
+   `runAsNonRoot`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`,
+   `automountServiceAccountToken: false`, resource requests/limits, and a `/healthz` readiness and
+   liveness probe. Its pod-template label **must equal** the NetworkPolicy's `podSelector`, or the
+   default-deny egress policy does not select the workload and the no-egress promise is void for it;
+   `tests/test_deploy.py` checks the two against each other. Set `readOnlyRootFilesystem: true`
+   unless the server writes at runtime (`calc`'s scratch, `pyexec`'s sandbox) — those set it false.
 
 ## The tool docstrings
 

@@ -5,16 +5,34 @@ from __future__ import annotations
 import logging
 import re
 
+from mcp_server_kit.limits import atom_count_error, smiles_length_error
+
 logger = logging.getLogger(__name__)
+
+_MAX_ECHO_CHARS = 120
+
+
+def _truncate(text: str, limit: int = _MAX_ECHO_CHARS) -> str:
+    """The caller's string for a message, capped so a megastring cannot flood the log or context."""
+    return text if len(text) <= limit else f"{text[:limit]}… ({len(text)} chars)"
 
 
 def canonical_smiles(smiles: str) -> str:
-    """Return canonical SMILES via RDKit. Raises ValueError if invalid."""
+    """Return canonical SMILES via RDKit. Raises ValueError if invalid.
+
+    Refuses an over-length string or an over-large molecule *before* canonicalisation: `MolToSmiles`
+    on a large linear molecule overflows the C stack (an uncatchable SIGSEGV that kills the pod).
+    See `mcp_server_kit.limits`.
+    """
     from rdkit import Chem  # local import: RDKit is heavy
 
+    if reason := smiles_length_error(smiles, subject="this SMILES"):
+        raise ValueError(reason)
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"Invalid SMILES: {smiles!r}")
+        raise ValueError(f"Invalid SMILES: {_truncate(smiles)!r}")
+    if reason := atom_count_error(mol.GetNumAtoms(), subject="this SMILES"):
+        raise ValueError(reason)
     return Chem.MolToSmiles(mol)
 
 

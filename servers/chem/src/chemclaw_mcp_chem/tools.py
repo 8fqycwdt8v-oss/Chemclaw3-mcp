@@ -27,10 +27,15 @@ from `props`, and for a measured reason rather than a stylistic one.
 from __future__ import annotations
 
 import asyncio
+import functools
+import os
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 
 from chemclaw_mcp_chem.engine import stoichiometry
+from chemclaw_mcp_chem.engine.admission import ADMISSION_MARKER, Admission
 from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
 from chemclaw_mcp_chem.engine.depiction import render_svg
 from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
@@ -48,6 +53,50 @@ from chemclaw_mcp_chem.engine.species import (
 from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candidates
 
 server = FastMCP("chem")
+
+# The pod's ceiling on concurrent depictions. Built at import; a test that needs a different ceiling
+# replaces this attribute, so the number a gate enforces is the number it was built from.
+_admission = Admission(int(os.environ.get("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", "8")))
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _release_slot(task: asyncio.Task[Any]) -> None:
+    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
+
+    Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
+    left to receive its failure, and asyncio logs "exception was never retrieved" at exit for each
+    one — noise in the logs of exactly the incident this gate exists for.
+    """
+    _admission.release()
+    if not task.cancelled():
+        task.exception()
+
+
+def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how many depictions run at once, refusing promptly when the pod is full.
+
+    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
+    `ADMISSION_MARKER` so a coverage test can check the gated set rather than a second hand-kept
+    list. `asyncio.shield` releases the slot when the work finishes rather than when the caller
+    stops waiting: cancelling the awaiting coroutine does not stop the worker thread, so releasing
+    on cancellation would hand a slot to a retry while the original render kept burning a core.
+
+    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
+    from `inspect.signature`, which follows `__wrapped__` back to the real signature. Without it the
+    tool would advertise `(*args, **kwargs)`.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        _admission.acquire(work.__name__)
+        task = asyncio.ensure_future(work(*args, **kwargs))
+        task.add_done_callback(_release_slot)
+        return await asyncio.shield(task)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
 
 
 @server.tool()
@@ -169,6 +218,7 @@ async def green_metrics(
 
 
 @server.tool()
+@_admitted
 async def render_structure(smiles: str, highlight_atoms: list[int] | None = None) -> str:
     """Draw a molecule or reaction as an SVG the chat surface can show inline.
 

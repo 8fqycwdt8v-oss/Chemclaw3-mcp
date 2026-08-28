@@ -28,9 +28,11 @@ since):
 - **A tool's unexpected exception must not reach the model verbatim.** `Tool.run` folds `str(e)`
   into the error result, so an unhandled internal error arrives at the agent carrying whatever the
   exception happened to mention. `ValueError` (the family this repository uses for deliberately
-  worded, caller-safe messages) passes through; everything else is replaced and logged — with an
-  `error_id` in *both* halves, because a notice the model can quote and a traceback nobody can
-  find it in are two records of one fault that cannot be joined.
+  worded, caller-safe messages) passes through **redacted** — a pydantic `ValidationError`, a
+  `UnicodeDecodeError` and a `JSONDecodeError` are all `ValueError`s, and a validation message
+  routinely quotes the input that failed, which is where a mounted secret would land; everything
+  else is replaced and logged — with an `error_id` in *both* halves, because a notice the model can
+  quote and a traceback nobody can find it in are two records of one fault that cannot be joined.
 - **The trace must be continued per tool call, for the same reason the caller must.** Chemclaw3
   sends `traceparent` on every call and this fleet dropped it, so a connector's work was an orphan
   trace rather than a span inside the turn. It is picked up from the same request the caller is,
@@ -276,7 +278,17 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
             return await wrapped(*args, **kwargs)
         except ToolError as exc:
             if _is_caller_safe(exc):
-                raise
+                # A caller-safe message still passes through `redact_secrets`. The family is wide —
+                # a pydantic `ValidationError`, a `UnicodeDecodeError` and a `JSONDecodeError` are
+                # all `ValueError`s — and a validation message routinely quotes the input that
+                # failed, which is exactly where a mounted secret env value would land. The 503
+                # readiness path already redacts; this branch did not, so a secret in a
+                # caller-safe message reached the model verbatim. Re-raised unchanged when
+                # redaction is a no-op, so the common case keeps its original traceback.
+                redacted = redact_secrets(str(exc))
+                if redacted == str(exc):
+                    raise
+                raise ToolError(redacted) from exc.__cause__
             # A short random token, minted here and put in *both* places: the operator's traceback
             # and the model's notice. Without it the two are unjoinable — the line said only which
             # server, so two concurrent faults in one second were indistinguishable and "the agent

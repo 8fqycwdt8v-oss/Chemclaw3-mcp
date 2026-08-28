@@ -12,6 +12,12 @@ writing into the temp directory being cleaned up around it. So the child is star
 `start_new_session=True`, which gives it a session and a process group of its own, and a timeout
 sends `SIGKILL` to the whole group.
 
+**The group kill reaches only what stays in the group, and that is why it is paired with a fork
+bound.** A grandchild that forks and then `setsid`/`setpgid`s becomes its own session leader, and
+this `killpg` of the *original* group never touches it — an orphan outlived the kill in a measured
+escape. The half that forecloses it is `Limits.process_headroom = 0` in `runner.py`: the child
+cannot `fork` at all, so no such grandchild exists. See `Limits.wall_seconds`/`process_headroom`.
+
 **The environment is built, never filtered.** Deleting known-dangerous variables from a copy of
 `os.environ` fails the moment somebody adds a variable nobody thought of, and this server runs in a
 pod whose environment carries a bearer token for itself. So the child's environment is assembled

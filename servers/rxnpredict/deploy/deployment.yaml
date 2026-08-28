@@ -1,0 +1,95 @@
+# The Deployment for the `rxnpredict` server, and the file that carries its pod hardening.
+#
+# `deploy/` shipped a NetworkPolicy, a Service and a ServiceMonitor but **no workload**, so nothing
+# in-cluster set `runAsNonRoot`, dropped Linux capabilities, applied a seccomp profile, or bounded
+# CPU and memory — every one of those defaulted to the cluster's, which on a plain cluster is root,
+# all capabilities, unconfined and unbounded. This is the workload, and every hardening field on it
+# is asserted by `tests/test_deploy.py`.
+#
+# **The pod's label must equal the NetworkPolicy's `podSelector`.** The default-deny egress policy
+# only governs pods it selects, so a one-character drift here silently exempts this workload from
+# the very control the fleet's no-egress promise rests on — which is why the test checks the two
+# against each other rather than each against a literal.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chemclaw-mcp-rxnpredict
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-rxnpredict
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-rxnpredict
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chemclaw-mcp-rxnpredict
+        app.kubernetes.io/part-of: chemclaw3
+    spec:
+      # No API access: this server never talks to the Kubernetes API, so it is handed no token to
+      # steal. Set at the pod level so it covers the container regardless of the ServiceAccount.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          # Replaced at deploy time with the registry path for this build; the tag is pinned by the
+          # release pipeline, not left at a floating `latest` in production.
+          image: chemclaw3/chemclaw-mcp-rxnpredict:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8857
+          # The container-level context is what a Pod Security "restricted" admitter reads. Every
+          # field here is deny-by-default: no privilege escalation, every Linux capability dropped,
+          # the runtime's seccomp profile, and a non-root UID.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          # a ReactionT5 checkpoint loaded from the baked, read-only model tree.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          readinessProbe:
+            # `/healthz` is real readiness here (503 until the corpus/model/backend loads), not a
+            # constant 200 — see `mcp_server_kit.app.connector_app`.
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            # A writable scratch mount so `tempfile` works with a read-only root filesystem; the
+            # only path this process writes at runtime.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

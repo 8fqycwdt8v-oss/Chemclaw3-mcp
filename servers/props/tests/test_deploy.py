@@ -93,3 +93,62 @@ def test_the_scrape_is_wired_end_to_end() -> None:
         "name through the Service and reports no targets and no error when it misses"
     )
     assert endpoints[0]["path"] == "/metrics"
+
+
+# --- Pod hardening (added with the securityContext Deployments) -------------------------------
+DEPLOYMENT = POLICY.parent / "deployment.yaml"
+
+
+def _deployment() -> dict[str, object]:
+    """The parsed Deployment."""
+    loaded = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def test_the_pod_is_hardened() -> None:
+    """Every deny-by-default securityContext field is present and set — the fields a plain cluster
+    otherwise leaves at root/all-capabilities/unconfined/unbounded, since `deploy/` shipped no
+    workload at all until these files were added.
+    """
+    dep = _deployment()
+    spec = dep["spec"]["template"]["spec"]  # type: ignore[index]
+    assert spec["automountServiceAccountToken"] is False
+    pod_sc = spec["securityContext"]
+    assert pod_sc["runAsNonRoot"] is True
+    assert pod_sc["seccompProfile"]["type"] == "RuntimeDefault"
+    assert int(pod_sc["runAsUser"]) >= 1000
+
+    container = spec["containers"][0]
+    csc = container["securityContext"]
+    assert csc["allowPrivilegeEscalation"] is False
+    assert csc["runAsNonRoot"] is True
+    assert csc["capabilities"]["drop"] == ["ALL"]
+    assert csc["seccompProfile"]["type"] == "RuntimeDefault"
+    # Present and a boolean either way: true for a server that writes nothing, false for one that
+    # needs scratch (`calc`, `pyexec`).
+    assert isinstance(csc["readOnlyRootFilesystem"], bool)
+
+    resources = container["resources"]
+    assert resources["requests"]["cpu"] and resources["requests"]["memory"]
+    assert resources["limits"]["cpu"] and resources["limits"]["memory"]
+
+    for probe in ("readinessProbe", "livenessProbe"):
+        assert container[probe]["httpGet"]["path"] == "/healthz"
+        assert container[probe]["httpGet"]["port"] == "http"
+
+
+def test_the_pod_label_matches_the_networkpolicy_selector() -> None:
+    """The highest-value check here: a one-character drift between the Deployment's pod label and
+    the NetworkPolicy's `podSelector` silently exempts this workload from default-deny egress, and
+    the no-egress promise is void for it with nothing red. So the two are checked against each
+    other, not against a literal.
+    """
+    dep = _deployment()
+    pod_label = dep["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/name"]  # type: ignore[index]
+    policy = yaml.safe_load(POLICY.read_text(encoding="utf-8"))
+    selector = policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
+    assert pod_label == selector, (
+        f"Deployment pod label {pod_label!r} != NetworkPolicy podSelector {selector!r}: "
+        "the egress policy would not select this workload"
+    )

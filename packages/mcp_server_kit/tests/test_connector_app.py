@@ -74,6 +74,16 @@ def _probe_server() -> FastMCP:
         """Raise the kind of refusal that is the whole content of the answer."""
         raise ValueError("unknown solvent 'unobtainium'; see the vendored solvent table")
 
+    @server.tool()
+    def boom_domain_with_secret() -> str:
+        """A caller-safe `ValueError` whose text happens to carry a secret — e.g. a validation
+
+        message quoting an input that was a connection string. `UnicodeDecodeError`,
+        `JSONDecodeError` and pydantic `ValidationError` are all `ValueError`s and routinely echo
+        the offending input, so the caller-safe branch must redact.
+        """
+        raise ValueError("could not parse config PGPASSWORD=hunter2 at postgres.internal:5432")
+
     return server
 
 
@@ -311,6 +321,28 @@ async def test_a_domain_refusal_still_passes_through(running_server: str) -> Non
         result = await session.call_tool("boom_domain", {})
         assert result.isError is True
         assert "unobtainium" in str(result.content)
+
+
+async def test_a_caller_safe_message_is_redacted_before_the_model_sees_it(
+    running_server: str,
+) -> None:
+    """A `ValueError` passes through, but not with a secret in it.
+
+    The caller-safe branch used to re-raise verbatim, so a validation message quoting a connection
+    string reached the model unredacted — the 503 readiness path redacted, this one did not. The
+    redaction is the same `redact_secrets` both paths share, applied so the family of `ValueError`
+    subclasses that echo their input (pydantic `ValidationError`, `UnicodeDecodeError`,
+    `JSONDecodeError`) cannot leak a mounted secret. The surrounding worded text still passes.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool("boom_domain_with_secret", {})
+        assert result.isError is True
+        content = str(result.content)
+        assert "hunter2" not in content
+        assert "PGPASSWORD=***" in content
+        # The message is still the worded refusal, not the generic internal-error notice.
+        assert "an internal error occurred" not in content
+        assert "could not parse config" in content
 
 
 def test_upstream_still_chains_a_tool_fault_and_still_does_not_chain_unknown_tool() -> None:
