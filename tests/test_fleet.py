@@ -520,3 +520,53 @@ def test_the_revision_reaches_the_handshake_and_the_probe() -> None:
             "an unstamped build must say so rather than report the MCP SDK's version, which is a "
             "true fact about the wrong thing"
         )
+
+
+# A version specifier written as a literal inside a Containerfile's `pip install`, e.g.
+# `"rxnmapper==0.4.3"`. Quoted because that is how a shell-safe specifier is written; the operator
+# is captured so a floating one can be named in the failure rather than merely rejected.
+_PIP_SPECIFIER = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)(==|>=|<=|~=|>|<)([0-9][^"]*)"')
+
+
+def _locked_versions() -> dict[str, str]:
+    """Every distribution `uv.lock` resolves, name to version — the set `make deps-audit` reads."""
+    import tomllib
+
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    packages = lock["package"]
+    assert isinstance(packages, list)
+    return {str(entry["name"]): str(entry["version"]) for entry in packages}
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: Path) -> None:
+    """An image's direct install of a locked package is pinned to the version the audit read.
+
+    **`make deps-audit` audits `uv.lock`, and no image consumes it** — none copies it, none passes
+    `--constraint`, none runs `uv sync`. Every image re-resolves with pip at build time, so the
+    audited closure and the shipped closure are two resolutions of the same declarations taken on
+    different days. That gap cannot be closed from here: closing it means the images installing
+    from the lock, which is a delivery change.
+
+    What *can* be held here is the sharpest instance of it, and it was open: `rxnlabel`'s
+    Containerfile installed `"rxnmapper>=0.4" "rxn-insight>=0.1.2"` straight from PyPI, so the one
+    install that names its packages explicitly agreed with the audited version only by luck — and
+    the audit's argued vulnerability suppressions, each written against a specific version, were
+    being applied to versions nobody had checked. A specifier written into an image is pinned, and
+    pinned to the lock, so `uv lock` moving it is what proposes the bump in a pull request.
+    """
+    text = (server / "Containerfile").read_text(encoding="utf-8")
+    locked = _locked_versions()
+    for name, operator, version in _PIP_SPECIFIER.findall(text):
+        if name.lower().replace("_", "-") not in locked:
+            continue  # not something `uv.lock` resolves, so this audit has nothing to say about it
+        expected = locked[name.lower().replace("_", "-")]
+        assert operator == "==", (
+            f"{server.name}/Containerfile installs {name}{operator}{version} from the index: an "
+            "open bound re-resolves on every build, so what ships is not what `make deps-audit` "
+            f"read. Pin it to =={expected}, the version in uv.lock"
+        )
+        assert version == expected, (
+            f"{server.name}/Containerfile pins {name}=={version} while uv.lock resolves "
+            f"{expected}: the audited version and the shipped version have drifted apart"
+        )
