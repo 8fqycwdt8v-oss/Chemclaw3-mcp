@@ -43,9 +43,14 @@ mount: backend
 name: calc
 description: >-
   Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic
-  properties, condensed Fukui site reactivity, geometry optimization and RRHO thermochemistry with an
-  IR spectrum; plus the xTB pKa predictor, an ESOL aqueous-solubility baseline, pH-dependent logD and
-  an RDKit developability panel. Every result carries the `calc_version` that produced it — and, where
+  properties, condensed Fukui site reactivity, geometry optimization, and the second derivatives and
+  IR intensities a vibrational analysis is built from; plus the xTB pKa predictor, an ESOL
+  aqueous-solubility baseline, pH-dependent logD and an RDKit developability panel. **The RRHO
+  thermochemistry and the IR spectrum themselves are not here** — the normal-mode projection and the
+  partition functions over them are pure arithmetic and stayed in Chemclaw3 with the tools that
+  report them, which is the same primitive/composite split that keeps `compute_thermochemistry` off
+  this server. `compute_hessian` returns matrices, not a spectrum. Every result carries the
+  `calc_version` that produced it — and, where
   the calculation is keyable, the full `calc_type@calc_version:input_hash:params_hash` string — because
   those are assembled from the tblite/RDKit builds and any xtb binary installed *here* and cannot be
   re-derived by a caller. No calculation cache, no artifact store, no calibration ledger, no durable
