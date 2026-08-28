@@ -174,6 +174,12 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
     a span parented on the handshake's trace would put every subsequent call inside whichever turn
     happened to open the connection.
 
+    **The tool name is clamped the way a metric label is**, through `_served_tool_name`. A span name
+    and a span attribute leave the pod for a collector, and the name in a `tools/call` is
+    caller-supplied — so counting it verbatim mints one operation name per string a confused model
+    retries with, which is the same unbounded cardinality `/metrics` refuses, one hop further out.
+    Nothing accumulates in this process, which is why the two halves of one rule diverged quietly.
+
     Inert unless a deployment enables it, and it never exports anything itself — `tracing.py` holds
     that argument. With no request context (a direct call in a test) there is nothing to continue,
     so the tool runs unchanged.
@@ -187,7 +193,7 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
         headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
         if headers is None:
             return await wrapped(*args, **kwargs)
-        tool = str(args[0]) if args else str(kwargs.get("name", ""))
+        tool = _served_tool_name(manager, _requested_tool(args, kwargs))
         with tool_call_span(headers, server=name, tool=tool):
             return await wrapped(*args, **kwargs)
 
