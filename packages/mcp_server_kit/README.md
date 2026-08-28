@@ -35,7 +35,11 @@ quiet — no count, because the one written here said four over five bullets bef
   itself: every server in this fleet read the identity headers beside it and dropped the trace
   context, so a CREST search produced no span at all on this side. Per tool call for the same reason
   the caller is bound there — one MCP session carries many calls, and a span parented on the
-  handshake would put all of them inside whichever turn opened the connection.
+  handshake would put all of them inside whichever turn opened the connection. That last sentence
+  is a claim a test now holds: `test_tracing.py` sends two calls down one session with two
+  different traces, because every other test there opens a session, sends one call, and would pass
+  against a handshake-scoped implementation. The tool name on the span takes the clamp `/metrics`
+  takes, for the same cardinality reason one hop further out.
 - **Refusing an oversized body before a handler reads it.** The counter alone bounds only what
   somebody *reads*: a route that ignores the body never pulls from the receive channel, so an
   oversized request to it was served 200 with the cap installed and silent. The declared

@@ -32,9 +32,16 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
 # The models, and then their weights. `--extra-index-url` for the CPU build of torch: this server
 # does inference on a handful of reactions at a time in a background drain, and a CUDA closure is
 # ~2 GB of image for a GPU no pod in this fleet has.
+#
+# **Pinned to the versions `make deps-audit` reads**, not to this server's `pyproject.toml` bounds.
+# Nothing here consumes `uv.lock` — every image re-resolves with pip at build time — so an open
+# `>=` on the one install that names its packages directly meant the audited version and the
+# shipped version agreed only by luck, and the audit's six argued suppressions were being applied
+# to versions nobody had checked. `tests/test_fleet.py` keeps these two literals equal to the lock;
+# `uv lock` moving them is what proposes the bump, in a pull request a person reads.
 RUN python -m pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
-        "rxnmapper>=0.4" "rxn-insight>=0.1.2"
+        "rxnmapper==0.4.3" "rxn-insight==0.1.3"
 
 # **The bake.** Constructing an `RXNMapper` is what pulls the checkpoint, so doing it here at build
 # time is what puts the weights in the image. It is also the check: a build whose model cannot be
