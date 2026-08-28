@@ -134,7 +134,9 @@ class CallerLogMiddleware(BaseHTTPMiddleware):
       repository were `identity.py` and its own test.
     - Nothing said which build answered, so a log line could not be tied to an image.
 
-    So it moves into a `finally`, and carries the status, the duration and the revision. What it
+    So it moves into a `finally`, and carries the status, the duration and the revision. The
+    *counter* for the same event is not booked here — `RequestMetrics` does that from outside
+    every middleware that can refuse a request, for the reason that class gives. What this line
     deliberately still cannot say is *which tool* was called — `path` is `/mcp` for every one of
     them, because the tool name is inside a JSON-RPC body this middleware must not parse. That
     question is answered by `chemclaw_mcp_tool_calls_total` instead, which is the right place for
@@ -167,7 +169,6 @@ class CallerLogMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            REQUESTS.labels(self._server, _labelled_path(path), str(status)).inc()
             # Logged *before* the reset, deliberately. `ContextFilter` stamps every record from the
             # ambient caller, so resetting first left this one line — the request line — carrying
             # `[-/-]` where every line inside the request carried the ids. Measured against a
@@ -188,6 +189,57 @@ class CallerLogMiddleware(BaseHTTPMiddleware):
                 self._revision,
             )
             reset_caller(tokens)
+
+
+class RequestMetrics:
+    """Count every HTTP request this process answers — from outside everything that can refuse one.
+
+    **A counter whose help says "HTTP requests served, by route and response status" has to be the
+    outermost thing in the stack, and this one was not.** It was booked in `CallerLogMiddleware`,
+    and `connector_app` adds `BearerAuthMiddleware` and `BodySizeLimit` *after* it — so Starlette's
+    add-order puts both outside the counter, and both short-circuit. Measured against a running
+    server: three 401s and two 413s produced **zero** `chemclaw_mcp_requests_total` series between
+    them, so `rate(chemclaw_mcp_requests_total{status=~"4.."})` — the expression an operator writes
+    to see a fleet-wide credential or payload problem — was permanently 0. The one 4xx series that
+    did appear was wrong: the chunked-oversize path books the *inner* app's 400, which the size cap
+    then discards in favour of its own 413.
+
+    Pure ASGI rather than `BaseHTTPMiddleware`, for the reason `BodySizeLimit` is: this has to sit
+    outside a middleware that answers by writing directly to `send`, and it must observe the status
+    that actually went out rather than a `Response` object some layer above may replace.
+
+    The label set is unchanged and still bounded — the server's name, the path folded onto the
+    fixed route set by `_labelled_path`, and the status. `/metrics` is unauthenticated, so nothing
+    about the *caller* may join them; see `mcp_server_kit.metrics`.
+    """
+
+    def __init__(self, app: ASGIApp, *, server: str) -> None:
+        """Wrap `app`, booking one series per request it answers."""
+        self._app = app
+        self._server = server
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Serve the request, recording the status of the response that reached the client."""
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        # The default is what an unhandled exception produces: nothing below ever starts a
+        # response, and uvicorn answers 500 itself. Booking it is the point — a request that ended
+        # in a fault is the one an operator most needs counted.
+        status = 500
+
+        async def counting_send(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = int(message["status"])
+            await send(message)
+
+        try:
+            await self._app(scope, receive, counting_send)
+        finally:
+            REQUESTS.labels(
+                self._server, _labelled_path(str(scope.get("path", ""))), str(status)
+            ).inc()
 
 
 class BodySizeLimit:

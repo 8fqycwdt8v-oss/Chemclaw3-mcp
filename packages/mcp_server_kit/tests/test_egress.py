@@ -231,3 +231,50 @@ def test_binding_and_resolving_the_unspecified_address_is_not_egress() -> None:
         listener.listen(1)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
             client.connect(("0.0.0.0", listener.getsockname()[1]))
+
+
+def test_recording_a_refusal_cannot_re_enter_the_guard() -> None:
+    """The refusal's own log line is egress when a handler writes to the network.
+
+    `_check` logs and counts before it raises, and a `SysLogHandler`, a `SocketHandler` or anything
+    a deployment wires through uvicorn's `--log-config` connects on emit — so the record of a
+    refusal became a refusal, which was recorded, which connected again. Measured before the fix
+    with a `SocketHandler` pointed at an unreachable collector: **one** refused `connect` booked
+    **83** on `chemclaw_mcp_egress_refused_total`, and 82 of the 83 log lines named the *log
+    server* instead of the destination that was actually refused. `rate(...) > 0` is the whole
+    alert this counter exists for, and it was firing at 83 times the real rate on one event, with
+    the one diagnostic line an operator needed buried under its own echoes.
+
+    The inner connection is still refused — only its *record* is suppressed, which is what the
+    surviving line asserts.
+    """
+    import logging.handlers
+
+    from mcp_server_kit.metrics import EGRESS_REFUSED
+
+    kept: list[str] = []
+
+    class Keeper(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            kept.append(record.getMessage())
+
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    # Connects lazily, on the first record it is asked to emit — which is the refusal's own line.
+    network_handler = logging.handlers.SocketHandler("10.0.0.1", 5140)
+    root.handlers = [Keeper(), network_handler]
+    root.setLevel(logging.ERROR)
+    before = EGRESS_REFUSED._value.get()
+    try:
+        with pytest.raises(egress.EgressForbidden):
+            socket.socket().connect(("example.com", 443))
+    finally:
+        network_handler.close()
+        root.handlers, root.level = handlers, level
+
+    booked = EGRESS_REFUSED._value.get() - before
+    assert booked == 1, f"one refused connect booked {booked} on the counter an alert reads"
+    assert kept == ["egress refused: host='example.com'"], (
+        f"the refusal's log lines were {kept!r}; the line naming the real destination is the one "
+        "an operator greps for and it must not be lost under the log server's own refusals"
+    )

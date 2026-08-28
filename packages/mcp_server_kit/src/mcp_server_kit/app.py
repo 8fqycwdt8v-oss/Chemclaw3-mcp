@@ -36,8 +36,15 @@ since):
   trace rather than a span inside the turn. It is picked up from the same request the caller is,
   because the serving request is only reachable there — see `tracing.py` for why nothing here
   exports anything.
-- **`configure_logging()` must force.** `FastMCP.__init__` calls `basicConfig` at import of the
-  server's `tools.py`, so anything that does not pass `force=True` here silently loses to it.
+- **`configure_logging()` must force, and must not run at import.** `FastMCP.__init__` calls
+  `basicConfig` at import of the server's `tools.py`, so anything that does not pass `force=True`
+  silently loses to it. But every server builds its app at *module scope*, so calling it from
+  `connector_app` made reconfiguring the host process's root logger a side effect of an `import`:
+  measured, importing `chemclaw_mcp_props.app` removed a handler the importer had installed, moved
+  the root level from DEBUG to INFO, and added two filters to `logging.lastResort` permanently. It
+  runs from the app's `lifespan` instead, which is still after upstream's `basicConfig` and after
+  uvicorn's own `dictConfig` (`Config.__init__` runs that before it imports the app), so the
+  ordering `force=True` exists for is unchanged and importing a module no longer changes a process.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ import os
 import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -59,7 +67,12 @@ from mcp.server.lowlevel.server import request_ctx
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from starlette.responses import Response
 
-from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit, CallerLogMiddleware
+from mcp_server_kit.auth import (
+    BearerAuthMiddleware,
+    BodySizeLimit,
+    CallerLogMiddleware,
+    RequestMetrics,
+)
 from mcp_server_kit.datasets import Dataset
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
@@ -81,6 +94,16 @@ Readiness = Callable[[], Iterable[Dataset]]
 # One JSON-RPC call carrying chemistry-sized arguments. Far below a web front door's cap, because
 # nothing legitimate on this surface is a file upload.
 DEFAULT_MAX_REQUEST_BYTES = 1_000_000
+
+# How long a failed readiness check is believed before it is run again. Short enough that a pod
+# which has recovered is readied within one kubelet probe interval of recovering, long enough that
+# a fleet of probes and scrapes against a *failing* pod cannot re-run the check per request. See
+# `connector_app`'s `/healthz`.
+READINESS_FAILURE_TTL_SECONDS = 5.0
+
+# Set on a `FastMCP` the first time `connector_app` wraps it, so a second call is refused rather
+# than silently doubling every count. See `_claim_server`.
+_WRAPPED_BY = "_mcp_server_kit_wrapped_as"
 
 
 def _requested_tool(args: tuple[Any, ...], kwargs: dict[str, Any]) -> object:
@@ -177,18 +200,34 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
     Inert unless a deployment enables it, and it never exports anything itself — `tracing.py` holds
     that argument. With no request context (a direct call in a test) there is nothing to continue,
     so the tool runs unchanged.
+
+    **The two things a span may say about a call are the two the metric already says**, and this
+    wrapper reads them from the same functions the counter does rather than restating either.
+    `_served_tool_name` clamps the name, because a span name is as caller-supplied as a metric
+    label and was recorded verbatim — measured, `mcp.tool/../../etc/passwd?a=b` and a 318-character
+    name. `_is_caller_safe` decides whether a propagating exception is this server's fault, because
+    every `ToolError` is an exception and a *refusal* was therefore an ERROR span while the counter
+    for the same call booked `outcome="refused"`.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
         return
     wrapped = manager.call_tool
 
+    def is_refusal(exc: BaseException) -> bool:
+        """The counter's `refused`/`failed` split, as a span sees it.
+
+        Anything that is not a `ToolError` never reached the sanitiser's judgement and is a fault
+        by definition — the same reading `_instrument_tool_calls` makes of the same exception.
+        """
+        return isinstance(exc, ToolError) and _is_caller_safe(exc)
+
     async def call_tool(*args: Any, **kwargs: Any) -> Any:
         headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
         if headers is None:
             return await wrapped(*args, **kwargs)
-        tool = str(args[0]) if args else str(kwargs.get("name", ""))
-        with tool_call_span(headers, server=name, tool=tool):
+        tool = _served_tool_name(manager, _requested_tool(args, kwargs))
+        with tool_call_span(headers, server=name, tool=tool, is_refusal=is_refusal):
             return await wrapped(*args, **kwargs)
 
     manager.call_tool = call_tool
@@ -296,6 +335,31 @@ def _instrument_tool_calls(server: FastMCP, *, name: str) -> None:
     manager.call_tool = call_tool
 
 
+def _claim_server(server: FastMCP, *, name: str) -> None:
+    """Refuse to wrap one `FastMCP` twice, because wrapping is not idempotent.
+
+    Every one of the four behaviours `connector_app` installs is a wrapper around
+    `_tool_manager.call_tool` that captures the previous value. A second call therefore *stacks* a
+    second set: measured, one `tools/call` against a twice-wrapped server booked
+    `chemclaw_mcp_tool_calls_total 2.0`, timed itself twice, opened two nested spans and ran the
+    sanitiser twice. Nothing about that is visible at the call site, and every number the pod
+    publishes is then wrong by a factor nobody can see.
+
+    A raise rather than a silent skip: two apps over one capability is a mistake in the caller
+    either way, and returning a second app whose wrappers belong to the first would be a stranger
+    thing to debug than an exception naming the problem. A server that genuinely wants two apps
+    builds two `FastMCP`s — which is what every test in this repository already does.
+    """
+    claimed = getattr(server, _WRAPPED_BY, None)
+    if claimed is not None:
+        raise RuntimeError(
+            f"connector_app() has already wrapped this FastMCP as {claimed!r}; wrapping it again "
+            f"as {name!r} would stack a second set of tool-call wrappers, so every metric, span "
+            "and log line for one call would be recorded twice. Build a second FastMCP instead."
+        )
+    setattr(server, _WRAPPED_BY, name)
+
+
 def server_revision() -> str:
     """The build this process is, or `"unknown"` — the one place that decides.
 
@@ -361,11 +425,12 @@ def connector_app(
 
     Returns:
         A FastAPI app exposing `GET /healthz`, `GET /metrics`, and the MCP endpoint at `/mcp`.
+
+    Raises:
+        RuntimeError: `server` has already been wrapped by a previous `connector_app` call. This
+            is not idempotent and cannot be — see `_claim_server`.
     """
-    # First, and with `force=True` underneath it. `FastMCP.__init__` ran at import of the server's
-    # `tools.py` and has already called `basicConfig`, so anything that does not force is a no-op
-    # and the process keeps upstream's timestamp-free `"%(message)s"`. See `logging.py`.
-    configure_logging()
+    _claim_server(server, name=name)
     if token_env:
         # The credential this server checks on every request, into the redaction inventory — so it
         # cannot reach a log line through an exception message, an environment dump or a `repr`.
@@ -381,22 +446,45 @@ def connector_app(
     # is exactly what `ok`/`refused`/`failed` is splitting on. See the function.
     _instrument_tool_calls(server, name=name)
     # Outermost of the four, so the span covers the whole call — the binding, the tool body, the
-    # sanitiser's decision about what the caller is told, and the counter that records it. A span
-    # that ended before the metric was booked would put the two records of one call fractionally
-    # out of step, which is the sort of skew nobody debugs and everybody mistrusts.
+    # sanitiser's decision about what the caller is told, and the counter that records it. That is
+    # a duration argument and nothing more: the span and the counter agree about the *outcome*
+    # because both read `_is_caller_safe`, not because of the order they run in. Ordering was the
+    # wrong axis and this comment used to name it as the right one — a refusal was an ERROR span
+    # against a `refused` counter no matter which wrapper was outside which.
     _continue_trace_per_tool_call(server, name=name)
     mcp_app = server.streamable_http_app()
+    # A pool of exactly one, and its own rather than the default. `asyncio.to_thread` hands work to
+    # the *default* executor — the same pool every `servers/calc` tool offloads a calculation into,
+    # and the one `engine/admission.py`'s ceiling does not govern — so a readiness check that
+    # blocks is a readiness check competing with the tool calls it is meant to be reporting on.
+    # Threads are created lazily, so a server with no `readiness` pays nothing for this.
+    readiness_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{name}-readiness")
+    readiness_lock = asyncio.Lock()
+    readiness_failure: tuple[float, str] | None = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Run the MCP session manager for the app's lifetime — the mount does not run it."""
-        async with server.session_manager.run():
-            report = asyncio.create_task(on_start()) if on_start is not None else None
-            try:
-                yield
-            finally:
-                if report is not None:
-                    report.cancel()
+        """Configure logging, then run the MCP session manager — the mount does not run it.
+
+        **Logging is configured here rather than in `connector_app` itself**, because every server
+        calls `connector_app` at module scope: doing it there made tearing out the host process's
+        root handlers, forcing its level to INFO and permanently filtering `logging.lastResort` a
+        side effect of `import chemclaw_mcp_<name>.app`. Startup is the first moment this process
+        is unambiguously the one being configured, and it is still late enough for the ordering
+        `force=True` exists for — `FastMCP.__init__`'s `basicConfig` ran at import of `tools.py`,
+        and uvicorn's own `dictConfig` runs in `Config.__init__`, before it imports the app.
+        """
+        configure_logging()
+        try:
+            async with server.session_manager.run():
+                report = asyncio.create_task(on_start()) if on_start is not None else None
+                try:
+                    yield
+                finally:
+                    if report is not None:
+                        report.cancel()
+        finally:
+            readiness_pool.shutdown(wait=False, cancel_futures=True)
 
     app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
     app.add_middleware(CallerLogMiddleware, server=name, revision=server_revision())
@@ -405,6 +493,10 @@ def connector_app(
     app.add_middleware(BearerAuthMiddleware, server=name, token_env=token_env)
     if max_request_bytes:
         app.add_middleware(BodySizeLimit, max_bytes=max_request_bytes)
+    # Last, therefore outermost of everything: the request counter has to see the requests the
+    # layers above refuse, and both of those refuse before anything below them runs. Booked from
+    # inside the caller log — one layer in — it saw neither a 401 nor a 413. See `RequestMetrics`.
+    app.add_middleware(RequestMetrics, server=name)
 
     @app.get("/healthz")
     async def healthz() -> Response:
@@ -424,9 +516,41 @@ def connector_app(
         route runs it: 503 with the reason on failure, and on success the corpora it verified, so
         an operator can confirm which version of which table a pod is serving without a shell.
 
-        Cheap to call repeatedly by construction — every loader behind it is `lru_cache`d, so the
-        checksum is paid once per process and the probe thereafter reads a dict.
+        **Cheap to call repeatedly only on the path that succeeds**, and this docstring used to
+        claim it for both. Every loader behind a readiness check is `lru_cache`d, and `lru_cache`
+        does not cache *exceptions* — so on the one path the route exists for, a failing corpus,
+        every probe re-ran the whole check. Measured over ASGI, counting only threads the *server*
+        creates: 40 concurrent probes from cold produced **40** full readiness invocations spread
+        over **8** `asyncio_*` threads — the interpreter's default executor, which on `calc` is the
+        same pool every tool offloads a calculation into and the one `engine/admission.py`'s
+        ceiling does not govern. A pod that cannot answer would have been spending the CPU of the
+        calls it could still answer on proving that it cannot.
+
+        So the failure is memoised for `READINESS_FAILURE_TTL_SECONDS` and the check is
+        single-flighted behind one lock, on a pool of one thread of its own: the same 40 probes
+        now run the check **once**, on one thread named for the server. A recovered pod is still
+        readied within a probe interval, because the memo is seconds rather than minutes.
+
+        (An earlier draft of this paragraph said "peaked at 47 threads against a baseline of 2".
+        That number was measured with a 40-thread HTTP client and so was mostly the *harness*;
+        the figures above count `asyncio_*` and the named pool only. A wrong number in prose is
+        the thing this repository keeps writing decisions about, so it is corrected rather than
+        quietly dropped.)
+
+        **The reason is redacted, because this route is in `OPEN_PATHS`.** The body of a 503 is
+        served to anything that can reach the pod, with no credential, and `str(exc)` on a loader
+        failure is exactly the text a path, a DSN or a token ends up in — measured: a 503 carrying
+        `PGPASSWORD=hunter2 token=Bearer abc123...` while the log line for the same exception was
+        correctly scrubbed. `redact_secrets` is exported from `logging.py` for this, and #37 landed
+        the same one-line conclusion on `main` from the other direction.
+
+        **The memo is why that is two claims rather than one.** The reason string now lives in a
+        second place, so "scrub what you return" and "scrub what you cache" can come apart:
+        measured, with the return scrubbed and the memo holding `str(exc)`, the first probe's body
+        was clean and every probe for the next five seconds leaked. The scrub therefore happens
+        *once*, before the memo is written, and both bodies are the same string by construction.
         """
+        nonlocal readiness_failure
         payload: dict[str, object] = {
             "status": "ok",
             "server": name,
@@ -435,25 +559,42 @@ def connector_app(
         if readiness is None:
             READY.labels(name).set(1)
             return JSONResponse(payload)
-        try:
-            # Off the event loop: a readiness check reads and hashes a corpus, and on `calc` it can
-            # reach a subprocess. Blocking here would stall every in-flight SSE stream in the pod
-            # for the duration of a probe — the same trap `calc`'s `on_start` hoist exists for.
-            verified = list(await asyncio.to_thread(readiness))
-        except Exception as exc:
+
+        def unready(reason: str) -> Response:
+            """The 503, with the same redacted reason the memo holds."""
             READY.labels(name).set(0)
-            logger.exception("server %s is not ready: %s", name, exc)
-            # `/healthz` carries no bearer check — a kubelet probe has no identity — so this reason
-            # reaches anything that can open a socket to the pod, unauthenticated. The log line
-            # above passes through `SecretRedactingFilter`; this body does not go through logging
-            # at all, so it needs the same scrub applied directly. Measured against exactly this
-            # gap: `_sanitize_tool_errors` replaces a tool fault's text before the model ever sees
-            # it, and this was the one other place a raw exception reached a caller verbatim — the
-            # one with no credential guarding it.
-            return JSONResponse(
-                {**payload, "status": "unready", "reason": redact_secrets(str(exc))},
-                status_code=503,
-            )
+            return JSONResponse({**payload, "status": "unready", "reason": reason}, status_code=503)
+
+        async with readiness_lock:
+            if readiness_failure is not None and time.monotonic() < readiness_failure[0]:
+                return unready(readiness_failure[1])
+            try:
+                # Off the event loop: a readiness check reads and hashes a corpus, and on `calc` it
+                # can reach a subprocess. Blocking here would stall every in-flight SSE stream in
+                # the pod for the duration of a probe — the same trap `calc`'s `on_start` hoist
+                # exists for.
+                verified = list(
+                    await asyncio.get_running_loop().run_in_executor(readiness_pool, readiness)
+                )
+            except Exception as exc:
+                # `/healthz` carries no bearer check — a kubelet probe has no identity — so this
+                # reason reaches anything that can open a socket to the pod, unauthenticated. The
+                # log line below passes through `SecretRedactingFilter`; this body does not go
+                # through logging at all, so it needs the same scrub applied directly.
+                # `_sanitize_tool_errors` replaces a tool fault's text before the model ever sees
+                # it, and this was the one other place a raw exception reached a caller verbatim —
+                # the one with no credential guarding it. (That is #37's finding and its wording;
+                # it and this branch's memo were written against the same defect from two sides.)
+                #
+                # **Scrubbed once, here, and the memo holds the *redacted* string** — which is what
+                # makes the two fixes compose rather than layer. A memo holding `str(exc)` would
+                # have reintroduced the leak on every cached 503 while the freshly computed one
+                # stayed clean, and nothing would have said the two disagreed.
+                reason = redact_secrets(str(exc))
+                readiness_failure = (time.monotonic() + READINESS_FAILURE_TTL_SECONDS, reason)
+                logger.exception("server %s is not ready: %s", name, exc)
+                return unready(reason)
+            readiness_failure = None
         READY.labels(name).set(1)
         payload["datasets"] = [f"{corpus.name}@{corpus.version}" for corpus in verified]
         return JSONResponse(payload)

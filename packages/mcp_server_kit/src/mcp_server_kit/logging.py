@@ -21,11 +21,15 @@ And one cost that is not about any single server: Chemclaw3 emits JSON with `tim
 unparseable bare strings from every pod in this fleet. **The record shape here is deliberately the
 same one** (`chemclaw.core.logging.JsonFormatter`), so the two halves of one system are one stream.
 
-**`configure_logging()` is called from `connector_app` with `force=True`**, which is the whole
-reason it works regardless of import order: `FastMCP` is constructed at `tools.py` import time,
-long before `app.py` runs, and `basicConfig` without `force` is a no-op once the root has a
-handler. `tests/test_logging.py` asserts that ordering against the *installed* `mcp` — the
-`test_upstream_surface.py` habit Chemclaw3 keeps for exactly this class of coupling.
+**`configure_logging()` is called from the app's `lifespan` with `force=True`**, and both halves
+of that matter. `force` is the whole reason it works regardless of import order: `FastMCP` is
+constructed at `tools.py` import time, long before any app starts, and `basicConfig` without
+`force` is a no-op once the root has a handler. *Startup* rather than `connector_app` is where it
+runs because every server builds its app at module scope, so calling it there made reconfiguring
+the importing process's root logger a side effect of an `import` — measured, and a library that
+does that to its host is a library nobody can embed. `tests/test_logging.py` asserts both against
+the *installed* `mcp` — the `test_upstream_surface.py` habit Chemclaw3 keeps for exactly this class
+of coupling.
 
 Three knobs, `MCP_`-prefixed like every other variable this fleet reads: `MCP_LOG_LEVEL`,
 `MCP_LOG_FORMAT`, `MCP_LOG_JSON`.
@@ -37,6 +41,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -87,6 +92,30 @@ def register_secret_env(name: str) -> None:
         _SECRET_ENVS.add(name)
 
 
+# Secret-shaped values this repository **publishes**, and therefore must not hide. A value anybody
+# can read in the `Makefile`, the `README` or `docs/` is not a credential, and redacting it does
+# nothing but corrupt logs: `make run-*` defaults every `CHEMCLAW_*_TOKEN` to `dev-token`, which is
+# nine characters and so over `_MIN_REDACTABLE` — so a developer running a server locally had every
+# line mentioning it, including the ones explaining the flow, rewritten to `***`. Held against the
+# Makefile by `tests/test_fleet.py`, so a new published default cannot quietly diverge from this.
+_PUBLISHED_VALUES = frozenset({"dev-token"})
+
+
+def _dsn_password(value: str) -> str:
+    """The password inside a `scheme://user:password@host` DSN, or `""`.
+
+    Worth matching on its own, and not only as part of the whole string: libpq accepts several
+    spellings, and a connection error may quote only the credential rather than the DSN it came
+    from — measured here, `"the credential hunter2pass was rejected"` passed through untouched
+    while the DSN containing it was in the inventory. The structural `PASSWORD=` rule covers the
+    key-anchored spelling; this covers the bare one.
+    """
+    if "://" not in value or "@" not in value:
+        return ""
+    userinfo = value.split("://", 1)[1].split("@", 1)[0]
+    return userinfo.split(":", 1)[1] if ":" in userinfo else ""
+
+
 def _secret_values() -> tuple[str, ...]:
     """The distinct secret values this process holds, longest first.
 
@@ -97,8 +126,18 @@ def _secret_values() -> tuple[str, ...]:
     measured and recorded: a value that becomes secret mid-process must be redacted on the *next*
     line, not on the next line after a cache window expires.
     """
-    values = {os.environ.get(name, "") for name in _SECRET_ENVS}
-    return tuple(sorted((v for v in values if len(v) >= _MIN_REDACTABLE), key=len, reverse=True))
+    values: set[str] = set()
+
+    def consider(candidate: str) -> None:
+        """Add `candidate` unless it is too short to match safely, or published in this repo."""
+        if len(candidate) >= _MIN_REDACTABLE and candidate not in _PUBLISHED_VALUES:
+            values.add(candidate)
+
+    for name in _SECRET_ENVS:
+        value = os.environ.get(name, "")
+        consider(value)
+        consider(_dsn_password(value))
+    return tuple(sorted(values, key=len, reverse=True))
 
 
 # A credential carried in a URL's userinfo — `scheme://user:secret@host`, which is how a password
@@ -343,6 +382,91 @@ class SecretRedactingFilter(logging.Filter):
         record.__dict__[_REDACTED_MARK] = True
 
 
+def _redacted_for_diagnostic(value: object) -> str:
+    """One field of logging's own error diagnostic, rendered and scrubbed, never raising.
+
+    `repr` for a non-string, because that is what `handleError` would have printed anyway, and a
+    bare `***` if even rendering raises: this runs *inside* logging's error path, on a record that
+    has already failed to render once, so a `msg` whose `__str__` raises or an argument with a
+    hostile `__repr__` is the expected input rather than an exotic one. A diagnostic that cannot be
+    produced safely must not become a second exception in the handler that was reporting the first.
+    """
+    try:
+        return redact_secrets(value if isinstance(value, str) else repr(value))
+    except Exception:
+        return _REDACTED
+
+
+def _install_redacting_handle_error(handler: logging.Handler) -> None:
+    r"""Bind a `handleError` on `handler` that scrubs the record before stderr sees it.
+
+    **The leak this closes, and the reason it was open.** `SecretRedactingFilter.filter` is
+    deliberately fail-open — a record it cannot process is kept and passed on, because a silently
+    dropped log line is worse than a malformed one. That paragraph was ported here from Chemclaw3
+    and the mitigation beside it was not, so this module carried the docstring naming the
+    consequence and nothing acting on it: the record continues carrying its **original** `msg` and
+    `args`, and a record the filter could not render is one `Formatter.format` cannot render
+    either, so `Handler.emit` raises and `Handler.handleError` runs. Read from CPython 3.11,
+    `handleError` writes
+
+        'Message: %r\nArguments: %s\n' % (record.msg, record.args)
+
+    straight to `sys.stderr` — the pre-redaction message *and* the pre-redaction arguments, which
+    is precisely where a credential lives (`logger.info("dsn=%s", dsn)` keeps the DSN in `args`
+    until format time). Measured against this kit before the port: an ordinary `%`-format mismatch
+    printed a DSN password and a bearer token verbatim. `logging.raiseExceptions` defaults to True,
+    so the path is live in every deployment and is reached by the ordinary malformations the filter
+    was hardened to survive rather than by anything unusual.
+
+    **Not `logging.raiseExceptions = False`.** That is the tempting one-liner and it is the wrong
+    fix: it closes the leak by silencing *every* handler diagnostic in the process — a failing
+    `emit`, a broken formatter, a closed stream all stop being reported anywhere at all. It trades
+    one credential for a permanent, process-wide blind spot over the logging stack itself, which is
+    the component you most need to be able to see fail. Redacting the two fields the diagnostic
+    prints keeps the diagnostic.
+
+    **Idempotent by construction**, because `configure_logging()` is documented safe to call more
+    than once: the bound function delegates to `type(handler).handleError` — the class
+    implementation — never to whatever this attribute held before. A second call therefore rebinds
+    an equivalent function instead of stacking a wrapper around the first, and a `Handler` subclass
+    with its own `handleError` still gets its own behaviour.
+    """
+
+    def handle_error(record: logging.LogRecord) -> None:
+        """Print logging's own diagnostic for `record` with its credentials removed.
+
+        **Nothing here may raise, and the diagnostic must print even if the scrubbing fails.**
+        `Handler.handleError` is the one method in the logging stack that is defensive to the point
+        of re-raising only `RecursionError`, because anything it lets escape surfaces at the
+        application's own `logger.info(...)` line — logging crashing its caller. So the scrub is
+        attempted, any failure drops the arguments rather than propagating, and the delegation sits
+        outside the `try` where it always runs.
+        """
+        msg, args = record.msg, record.args
+        try:
+            record.msg = _redacted_for_diagnostic(msg)
+            if isinstance(args, tuple):
+                record.args = tuple(_redacted_for_diagnostic(arg) for arg in args)
+            elif isinstance(args, Mapping):
+                record.args = {key: _redacted_for_diagnostic(value) for key, value in args.items()}
+            elif args is not None:
+                record.args = _redacted_for_diagnostic(args)
+        except Exception:
+            # An unscrubbable argument is dropped, never printed: this runs because formatting
+            # already failed once, so the value is exactly the kind that might carry a secret.
+            record.args = None
+        try:
+            type(handler).handleError(handler, record)
+        finally:
+            # Restored, because the record is not ours. The logger hands the same object to every
+            # handler in turn, so a later handler must format the caller's own values — a `%d`
+            # argument left replaced by its rendered text would spread one handler's failure to
+            # all of them.
+            record.msg, record.args = msg, args
+
+    handler.handleError = handle_error  # type: ignore[method-assign]
+
+
 class JsonFormatter(logging.Formatter):
     """One JSON object per line, in the record shape Chemclaw3's log stack already parses.
 
@@ -423,6 +547,12 @@ def configure_logging(*, force: bool = True) -> None:
     is not consulted for records that propagate up from a child, and every module here logs through
     `getLogger(__name__)`. On the handler, nothing reaches an output stream unfiltered.
 
+    Each handler also gets a redacting `handleError` (`_install_redacting_handle_error`), which is
+    the *other* path a record takes to an output stream: the filter is fail-open, so a record it
+    could not process goes on to a formatter that cannot process it either, and logging then prints
+    the unscrubbed `msg` and `args` to stderr itself. Measured here before the port: a `%`-format
+    mismatch printed a DSN password and a bearer token in clear.
+
     Args:
         force: Replace any handlers the root already has. Pass `False` only to layer this on top of
             a configuration a caller established deliberately.
@@ -441,6 +571,10 @@ def configure_logging(*, force: bool = True) -> None:
         if not any(isinstance(existing, SecretRedactingFilter) for existing in handler.filters):
             handler.addFilter(context)
             handler.addFilter(redaction)
+        # Unconditionally, and outside the guard above: the filter is fail-open by design, so the
+        # handler's own error path is where a record it could not process ends up — carrying the
+        # message and arguments nothing has scrubbed. Rebinding is idempotent by construction.
+        _install_redacting_handle_error(handler)
         if as_json:
             handler.setFormatter(JsonFormatter())
 

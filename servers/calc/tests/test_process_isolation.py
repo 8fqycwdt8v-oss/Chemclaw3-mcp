@@ -157,3 +157,59 @@ def test_the_naive_form_leaks_a_forked_worker() -> None:
         )
     finally:
         _kill(worker)
+
+
+def test_a_kill_that_did_not_happen_is_neither_counted_nor_claimed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The `ProcessLookupError` branch: nothing was killed, so nothing may say one was.
+
+    `os.getpgid` raising means the process is already gone between the timeout and the kill — a
+    race, not an error. The branch handled it by seeding `killed = -1` and incrementing
+    `PROCESS_GROUP_KILLS` *outside* the `suppress`, so the run booked a kill it had not made and
+    logged `SIGKILLed process group -1`. Measured before the fix, with `getpgid` raising:
+    `chemclaw_mcp_calc_process_group_kills_total{binary="python3"} 1.0` for a run nothing killed.
+
+    That counter is what an operator reads as "this pod is killing calculations", which is the
+    signal for an undersized budget or an oversized molecule. A count of events that did not happen
+    is worse than no count: it is a decision made on a number nobody can reproduce.
+
+    The timeout itself must still be reported — the caller's budget really is spent — so
+    `TimeoutExpired` and `chemclaw_mcp_calc_subprocess_timeouts_total` are asserted in the same
+    breath as the kill's absence.
+    """
+    import logging
+
+    from chemclaw_mcp_calc.engine.metrics import PROCESS_GROUP_KILLS, SUBPROCESS_TIMEOUTS
+
+    def already_gone(_pid: int) -> int:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "getpgid", already_gone)
+    # `run_isolated` labels by the basename of `argv[0]`, which for this stand-in is the
+    # interpreter's own name rather than `xtb`.
+    binary = Path(sys.executable).name
+    kills = PROCESS_GROUP_KILLS.labels(binary)._value.get()
+    timeouts = SUBPROCESS_TIMEOUTS.labels(binary)._value.get()
+
+    with tempfile.TemporaryDirectory() as directory:
+        argv = [sys.executable, "-c", "import time; time.sleep(30)"]
+        with caplog.at_level(logging.WARNING), pytest.raises(subprocess.TimeoutExpired):
+            run_isolated(
+                argv,
+                cwd=Path(directory),
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout=0.3,
+                label="single point",
+            )
+
+    assert PROCESS_GROUP_KILLS.labels(binary)._value.get() == kills, (
+        "a run whose process group was never killed booked a kill; that counter is the one an "
+        "operator reads as 'this pod is killing calculations'"
+    )
+    assert SUBPROCESS_TIMEOUTS.labels(binary)._value.get() == timeouts + 1, (
+        "the timeout itself must still be counted — the caller's budget really was spent"
+    )
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "process group -1" not in logged, f"the warning claimed a kill it did not make: {logged}"
+    assert "no process group was killed" in logged
