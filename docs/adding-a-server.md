@@ -41,13 +41,17 @@ variance between servers should be in what they compute, not in how they are sha
      habitual one and dying mid-calculation;
    - a docstring that tells the model what it is asking for;
    - a `calculation_key`-style probe, if a caller is expected to cache it;
-   - and a **ceiling on how many of it may run at once**, refused promptly rather than queued. This
+   - and a **ceiling on how much of it may run at once**, refused promptly rather than queued. This
      is not the first bullet again: `servers/calc` bounded every individual call's atom count and
      its wall clock and still had no answer for twenty of them arriving together on an image that
      pins one thread per calculation. Queueing is the wrong answer for a tool this slow — the held
      call comes back after `request_timeout` has expired — so a full server refuses, in a message
-     naming the ceiling and the setting that raises it. See
-     `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
+     naming the ceiling and the setting that raises it. **Count what the pod actually spends, not
+     calls**: that same ceiling was derived from the `OMP_NUM_THREADS=1` pin and then applied to a
+     CREST search, whose scrubbed child environment never inherits it and which is told to use four
+     threads — so four admitted searches were sixteen runnable threads on a four-core pod, measured
+     at 4.2x the wall clock of one alone. A tool that spawns a subprocess is charged what it
+     spawns. See `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
 ## The files
 
@@ -128,13 +132,21 @@ statement at all. Nobody skipped a step; there was no step.
 
 Most of it you get for free and must not re-implement:
 
-- **Logging is configured by `connector_app`** (`mcp_server_kit.logging`), with `force=True`
-  because `FastMCP.__init__` has already called `basicConfig` by then. Never call `basicConfig`,
-  `dictConfig` or `setLevel` in a server: `MCP_LOG_LEVEL`, `MCP_LOG_FORMAT` and `MCP_LOG_JSON` are
-  the knobs, and a module just does `logging.getLogger(__name__)`.
-- **Every line already carries the caller** — actor, session and correlation id, stamped by
-  `ContextFilter` — and every credential this process holds is already scrubbed from the message,
-  the traceback and the `extra=` fields. Do not format an identifier into a message by hand.
+- **Logging is configured by the app `connector_app` returns** (`mcp_server_kit.logging`), from its
+  `lifespan` and with `force=True` — because `FastMCP.__init__` has already called `basicConfig` by
+  then, and because doing it in `connector_app` itself made reconfiguring the *importing* process's
+  root logger a side effect of `import <your server>.app`. Never call `basicConfig`, `dictConfig`
+  or `setLevel` in a server: `MCP_LOG_LEVEL`, `MCP_LOG_FORMAT` and `MCP_LOG_JSON` are the knobs,
+  and a module just does `logging.getLogger(__name__)`.
+- **Every record carries the caller** — actor, session and correlation id, stamped onto the record
+  by `ContextFilter` — and every credential this process holds is already scrubbed from the
+  message, the traceback, the `extra=` fields and logging's own error diagnostic. Do not format an
+  identifier into a message by hand.
+
+  **What a *rendered line* shows is a format question, and the two are not the same claim.** The
+  default text format is `[%(correlation)s/%(session)s]`, so the actor is on the record and not in
+  the line; `MCP_LOG_JSON=true` publishes all three as `correlation_id`, `session_id` and `actor`,
+  which is the shape Chemclaw3's log stack parses and what a deployment should set.
 - **Every tool call is already counted and timed**, by server, tool and `ok`/`refused`/`failed`.
   Do not add a per-tool counter in a server; it would be a second answer to one question.
 

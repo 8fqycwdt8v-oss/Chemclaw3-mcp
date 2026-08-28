@@ -46,6 +46,7 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -154,6 +155,40 @@ def _host_of(address: Any) -> str | None:
     return None
 
 
+# Set while a refusal is being recorded, so the recording cannot record itself. Thread-local
+# rather than a module flag: two threads refusing two different destinations at the same instant
+# are two events, and a shared flag would drop one of them. See `_report`.
+_reporting = threading.local()
+
+
+def _report(host: str) -> None:
+    """Count and log one refusal, unless this is the *recording* of a refusal calling back in.
+
+    **The record is what re-entered the guard.** `logger.error` runs whatever handlers the
+    deployment configured, and a network-backed one — `SysLogHandler`, `SocketHandler`, anything
+    wired through uvicorn's `--log-config` — connects on emit. That connect is egress, so it lands
+    back in `_check`, which counts it, logs it, and connects again. Measured with a `SocketHandler`
+    pointed at an unreachable collector: **one** refused `connect` booked **83** on
+    `chemclaw_mcp_egress_refused_total` and produced 83 log lines, 82 of them naming the *log
+    server* rather than the destination that was actually refused — so the one line an operator
+    needs was buried, and `rate(chemclaw_mcp_egress_refused_total) > 0`, the alert this counter
+    exists for, fired at 83 times the real rate. The recursion itself ended in a `RecursionError`
+    that logging's own error path swallowed, so nothing said any of this had happened.
+
+    The inner connection is still **refused** — `_check` raises for it exactly as before, which is
+    the guard doing its job. It is only the second, third and eighty-third *record* of one event
+    that is dropped.
+    """
+    if getattr(_reporting, "active", False):
+        return
+    _reporting.active = True
+    try:
+        EGRESS_REFUSED.inc()
+        logger.error("egress refused: host=%r", host)
+    finally:
+        _reporting.active = False
+
+
 def _check(address: Any) -> None:
     """Raise `EgressForbidden` unless `address` is loopback or explicitly allowed.
 
@@ -170,12 +205,15 @@ def _check(address: Any) -> None:
     out, which is what a stack trace ending here is for; the payload of a refused `sendto` is not
     this log line's business. `EGRESS_REFUSED` is unlabelled for the reason `metrics.py` gives —
     the host is attacker-influenced and unbounded, and a bare counter is all `rate(...) > 0` needs.
+
+    **The recording is itself re-entrant, and `_report` is where that is handled** — a log handler
+    that writes to the network connects, and that connect arrives back here. The refusal is
+    unconditional either way; only the count and the line are guarded.
     """
     host = _host_of(address)
     if host is None or _is_loopback(host) or host.strip("[]").lower() in _allowed:
         return
-    EGRESS_REFUSED.inc()
-    logger.error("egress refused: host=%r", host)
+    _report(host)
     raise EgressForbidden(
         f"outbound connection to {host!r} refused: servers in this repository answer from "
         f"vendored data and never call out at request time. If a build-time ingestion step needs "

@@ -70,14 +70,19 @@ class Deadline:
 
         Args:
             what: The calculation in progress, phrased to complete "a <what> exceeded …" — the
-                caller's only lever is its size, so the message has to say what was running.
+                caller's only lever is its size, so the message has to say what was running. It is
+                also the counter's label, so it must stay a **literal written at the call site**:
+                `/metrics` is unauthenticated and a label built from anything a caller supplies is
+                an unbounded series set. Two exist today, `"Hessian"` and `"geometry optimization"`,
+                and telling them apart is the point — an undersized Hessian budget and an
+                undersized optimisation budget are different decisions.
 
         Raises:
             ValueError: the budget is spent. Worded for the model, which is what receives it.
         """
         if self.elapsed <= self.seconds:
             return
-        INLINE_BUDGET_EXCEEDED.inc()
+        INLINE_BUDGET_EXCEEDED.labels(what).inc()
         logger.warning(
             "inline budget exceeded: a %s spent %.1fs of a %gs budget and was stopped",
             what,

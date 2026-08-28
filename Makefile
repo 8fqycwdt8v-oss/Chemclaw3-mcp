@@ -113,9 +113,23 @@ AUDIT_IGNORE := \
 
 .PHONY: deps-audit
 deps-audit: ## Check the locked dependency closure for known vulnerabilities (supply chain).
-	@# Against the *lockfile* rather than the environment: the exact versions an image installs, not
-	@# whatever is resolved in a developer's venv. `--no-deps` because the export is already the
-	@# fully-resolved set — re-resolving would audit a different closure than ships.
+	@# Against the *lockfile* rather than the environment: the exact versions `uv sync` installs
+	@# here and in CI, not whatever a developer's venv has drifted to. `--no-deps` because the
+	@# export is already the fully-resolved set — re-resolving would audit a different closure.
+	@#
+	@# **It is not the closure an image installs, and the sentence that stood here said it was.** No
+	@# Containerfile in this repository reads `uv.lock`: none copies it, none passes `--constraint`,
+	@# none runs `uv sync`. All seven re-resolve independently with pip at build time from the open
+	@# lower bounds in each server's `pyproject.toml`, so the lock moves only when somebody runs
+	@# `uv lock` while an image re-resolves on every build. Measured 2026-08-28, resolving exactly
+	@# what the rxnpredict image installs and diffing it against this export: 11 of 100 packages
+	@# differ, `pandas` by a major version. So this is a *proxy* for the images — a close one, since
+	@# they install the same packages from the same declarations — and image drift is **unaudited**.
+	@# Closing that gap means the images installing from the lock (an exported requirements file
+	@# installed `--require-hashes`, or `uv sync --frozen`), which is a delivery change rather than
+	@# a comment. What is held today is narrower and is a test: an image that installs a package
+	@# straight from the index pins it to the version this audit read
+	@# (`tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read`).
 	@#
 	@# **`--all-packages --all-extras` is what makes this cover anything at all, and that is a
 	@# property of this workspace rather than a preference.** The root package declares
