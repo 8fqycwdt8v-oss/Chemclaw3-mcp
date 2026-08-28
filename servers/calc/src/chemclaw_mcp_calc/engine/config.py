@@ -130,16 +130,24 @@ class CalcSettings(BaseSettings):
     # worker thread — so a caller that gave up left the CPU burning, and its retry started a second
     # burn beside the first. Raise it deliberately, on a deployment whose caller waits longer.
     xtb_inline_timeout_seconds: float = 900.0
-    # How many calculations this server will run **at once**, refused rather than queued past it.
-    # The pair on Chemclaw3's side is `calc_backend_max_concurrent_requests`, which is what it will
-    # not exceed when it dials this server; this is the backstop for every other caller and for the
-    # case where the two disagree.
+    # How much this server will run **at once**, refused rather than queued past it — counted in
+    # slots of one core, not in calls. The pair on Chemclaw3's side is
+    # `calc_backend_max_concurrent_requests`, which is what it will not exceed when it dials this
+    # server — and it counts *requests*, so the two numbers only mean the same thing while every
+    # request costs one slot. This is the backstop for every other caller and for exactly that
+    # disagreement: four CREST searches from a caller keeping to its own limit are still four times
+    # this pod's cores, and are refused here.
     #
     # Not keyed, and it must not be: like the timeouts, it decides whether an answer comes back, not
-    # what it is. 4 because the image pins `OMP_NUM_THREADS=1` — one in-process calculation is one
-    # core — and `CHEMCLAW_CREST_THREADS=4` already assumes a pod with about that many. Raise it
-    # deliberately, on a pod sized for more; `engine/admission.py` has the argument for why a full
-    # gate refuses instead of queueing.
+    # what it is. **4 because that is the pod's core count**, which is the only quantity this
+    # number can honestly be. An in-process calculation costs one slot, because the image pins
+    # `OMP_NUM_THREADS=1` and the BLAS equivalents; a CREST search costs `crest_threads`, because
+    # that pin is scrubbed out of the sampler's environment and `-T` tells it to use more. Deriving
+    # the *call* ceiling from the thread pin was the defect: `CHEMCLAW_CREST_THREADS=4` made four
+    # admitted searches sixteen runnable threads on a four-core pod, measured at 4.2x the
+    # single-search wall clock. Raise it deliberately, on a pod sized for more;
+    # `engine/admission.py` has the measurement and the argument for why a full gate refuses
+    # instead of queueing.
     calc_max_concurrent_requests: int = Field(default=4, ge=1)
     # **CREST sampling temperature, and the only survivor of the thermochemistry block.** It keeps
     # Chemclaw3's name and value because it keeps Chemclaw3's *meaning*: it is passed to `crest

@@ -359,17 +359,31 @@ themselves to the *node* rather than to the container's CPU limit and then fight
 concurrency belongs at the request level, where the server can see it. Raise it deliberately, on a
 pod sized for it.
 
-**And it is now bounded there.** One calculation is one core under that pinning, so aggregate load
-was whatever the callers happened to send: a burst thrashes the pod, every call takes longer than it
-would have alone, the caller's timeout fires, and its retry lands beside a calculation that never
-stopped. `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` (default 4) is the ceiling, and a call arriving at a
-full pod is **refused promptly rather than queued** — a queued minute-long calculation comes back
-long after `request_timeout`, computed at the expense of one somebody is waiting for. The three tools
-that run no SCF (`calculation_key`, `embed_structure`, `combine_structures`) are outside the gate on
-purpose: `calculation_key` is how a client avoids work, so refusing it under load adds work.
-Chemclaw3 declares the same number as `calc_backend_max_concurrent_requests` and keeps under it; this
-is the backstop for every other caller and for the case where the two disagree. See
-`engine/admission.py`.
+**And it is now bounded there.** One in-process calculation is one core under that pinning, so
+aggregate load was whatever the callers happened to send: a burst thrashes the pod, every call takes
+longer than it would have alone, the caller's timeout fires, and its retry lands beside a
+calculation that never stopped. `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` (default 4) is the ceiling,
+and a call arriving at a full pod is **refused promptly rather than queued** — a queued minute-long
+calculation comes back long after `request_timeout`, computed at the expense of one somebody is
+waiting for.
+
+**The ceiling is a budget of cores, not a count of calls**, and CREST is why. The
+`OMP_NUM_THREADS=1` pin binds this process; it is scrubbed out of the sampler's environment, which
+is then given `-T`/`OMP_NUM_THREADS` from `CHEMCLAW_CREST_THREADS` (4 in this image). So an
+in-process calculation costs one slot and a CREST search costs `crest_threads` — counting calls
+admitted four searches, i.e. sixteen runnable threads on a four-core pod, measured at 4.2x the
+wall clock of one search alone. A search on a pod configured smaller than that runs alone rather
+than being refused forever.
+
+The tools outside the gate are the manifest's `read_only` ones (`calculation_key`,
+`embed_structure`, `combine_structures`), and the split is that classification rather than a cost
+judgement: `calculation_key` is how a client avoids work, so refusing it under load adds work.
+Cheapness is *not* the rule — `predict_solubility` and `predict_developability_profile` run no SCF
+either, cost a few milliseconds, and are gated, because both manifests classify them
+`state_changing`. Chemclaw3 declares the same number as `calc_backend_max_concurrent_requests`, which counts
+*requests* rather than slots and so agrees with this one only while every request costs one; this is
+the backstop for every other caller and for exactly that disagreement.
+See `engine/admission.py`.
 
 ## The Hessian on the wire
 

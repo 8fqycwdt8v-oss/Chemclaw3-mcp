@@ -61,8 +61,10 @@ losing.
 **And how many of those threads may run at once is bounded** — by
 `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS`, enforced by `_admitted` below over every tool the
 manifest calls `state_changing`. The hop keeps one call off the event loop; it says nothing about
-twenty arriving together on an image that pins one thread per calculation. `engine/admission.py`
-has the argument for refusing rather than queueing.
+twenty arriving together. The budget is counted in *slots*, one per core: an in-process calculation
+costs one because the image pins the numerical stack to one thread, and a CREST search costs what
+the sampler is told to use, because that pin is scrubbed out of its environment.
+`engine/admission.py` has the measurement, and the argument for refusing rather than queueing.
 """
 
 from __future__ import annotations
@@ -131,20 +133,45 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
-def _release_slot(task: asyncio.Task[Any]) -> None:
-    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
+def _release_slots(task: asyncio.Task[Any], *, charge: int) -> None:
+    """Give the slots back when the *work* finishes, not when whoever asked for it stops waiting.
 
     Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
     left to receive its failure, and asyncio logs "exception was never retrieved" at exit for
     every one of them — noise in the logs of exactly the incident this gate exists for.
     """
-    _admission.release()
+    _admission.release(charge)
     if not task.cancelled():
         task.exception()
 
 
-def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
-    """Bound how many calculations run at once, refusing promptly when the pod is full.
+def _one_slot() -> int:
+    """What an in-process calculation costs: one core, because the image pins the stack to one."""
+    return 1
+
+
+def _crest_slots() -> int:
+    """What one CREST search costs, in slots — and it is never one.
+
+    `crest_cli` passes `-T` and sets `OMP_NUM_THREADS` from `CHEMCLAW_CREST_THREADS` (4 in the
+    shipped image) into a *scrubbed* child environment, so the image's `OMP_NUM_THREADS=1` cannot
+    reach it and one search is that many runnable threads. Charging it one slot is what let four
+    searches become sixteen threads on a pod sized for four; `engine/admission.py` has the
+    measurement.
+
+    Unset (`0`) means nothing tells CREST how wide to be, and its own OpenMP then sizes itself from
+    `/proc/cpuinfo` — the *node's* cores, which a container limit does not change. There is no
+    honest number smaller than "all of it" for that case, so such a search is charged the whole
+    budget and runs alone. Read at call time, from the gate that is actually enforcing, so a test
+    or an operator changing either sees the same number in both.
+    """
+    return settings.crest_threads or _admission.limit
+
+
+def _admitted(
+    work: Callable[_P, Awaitable[_T]], *, cost: Callable[[], int] = _one_slot
+) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how much CPU runs at once, refusing promptly when the pod is full.
 
     Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
     `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the manifest's
@@ -166,13 +193,21 @@ def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, 
 
     @functools.wraps(work)
     async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
-        _admission.acquire(work.__name__)
+        charge = _admission.acquire(work.__name__, cost())
         task = asyncio.ensure_future(work(*args, **kwargs))
-        task.add_done_callback(_release_slot)
+        task.add_done_callback(functools.partial(_release_slots, charge=charge))
         return await asyncio.shield(task)
 
     setattr(_guarded, ADMISSION_MARKER, True)
     return _guarded
+
+
+def _admitted_crest(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """`_admitted` for the two tools that spawn a sampler wider than one core.
+
+    See `_crest_slots` for what such a call is charged and why it is not one.
+    """
+    return _admitted(work, cost=_crest_slots)
 
 
 __all__ = [
@@ -920,7 +955,7 @@ async def scan_point(
 
 
 @server.tool()
-@_admitted
+@_admitted_crest
 async def search_conformer_ensemble(
     structure: Structure,
     search: crest_search.EnsembleSearch = "conformers",
@@ -967,7 +1002,7 @@ async def search_conformer_ensemble(
 
 
 @server.tool()
-@_admitted
+@_admitted_crest
 async def search_binding_modes(
     structure: Structure,
     effort: crest_cli.CrestEffort = "quick",

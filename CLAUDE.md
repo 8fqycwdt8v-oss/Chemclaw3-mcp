@@ -293,7 +293,10 @@ every individual call's atom count and its wall clock and still had no answer fo
 arriving together, on an image that pins one thread per calculation. `engine/admission.py` is the
 worked example, and the shape generalises — a full pod refuses promptly rather than queueing,
 because a queued minute-long calculation returns after `request_timeout` has expired, computed at
-the expense of one somebody is still waiting for. See `docs/adding-a-server.md`.
+the expense of one somebody is still waiting for. **And the ceiling counts what the pod spends
+rather than calls**, because that same pin does not reach a subprocess: CREST is handed a scrubbed
+environment and told to use four threads, so a call-counting ceiling of four admitted sixteen
+runnable threads on a four-core pod. See `docs/adding-a-server.md`.
 
 **That bound belongs in the engine, not in the transport, and the reason is measurable.** A
 per-tool-call wall clock in `connector_app` looks like the general answer and is not: every heavy
