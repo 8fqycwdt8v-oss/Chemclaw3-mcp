@@ -18,15 +18,27 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import lru_cache
 from pathlib import Path
 
-from mcp_server_kit import load_dataset
+from mcp_server_kit import Dataset, load_dataset
 
 from chemclaw_mcp_rxnpredict.engine.meta.classifier import CLASS_OTHER
 
 logger = logging.getLogger(__name__)
 
 PRIORS_FILE = "trust_priors.json"
+
+
+@lru_cache(maxsize=1)
+def priors_dataset(directory: Path) -> Dataset:
+    """The vendored `trust_priors.json`, checksum-verified. Cached: the checksum is paid once.
+
+    Split out of `load_vendored_priors` so `app.py`'s `/healthz` readiness check can name the
+    version of the table this pod serves without re-reading and re-hashing the file — the same
+    reason `load_dataset` calls are `lru_cache`d everywhere else in this fleet.
+    """
+    return load_dataset(directory, records_file=PRIORS_FILE)
 
 
 def _coerce(data: object, source: str) -> dict[str, dict[str, float]]:
@@ -55,7 +67,7 @@ def load_vendored_priors(directory: Path) -> dict[str, dict[str, float]]:
             deliberately fatal — a ranking weight that silently reverted to a default is a change
             in every answer nobody would notice.
     """
-    dataset = load_dataset(directory, records_file=PRIORS_FILE)
+    dataset = priors_dataset(directory)
     return _coerce(json.loads(dataset.records_path.read_text(encoding="utf-8")), str(directory))
 
 
