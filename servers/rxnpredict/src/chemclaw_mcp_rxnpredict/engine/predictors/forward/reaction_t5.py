@@ -22,6 +22,11 @@ from ..base import BaseForwardPredictor
 logger = logging.getLogger(__name__)
 
 _MODEL_ID = "sagawa/ReactionT5v2-forward"
+# The immutable commit the build baked (see `scripts/fetch_models.py`). Loading pins the same SHA so
+# the served weights are provably the reviewed ones, and `local_files_only=True` forbids any hub
+# call at load — a metadata check an "offline" server would otherwise still make on first use, which
+# the armed guard turns into an error. Keep this in sync with `fetch_models.MODELS`.
+_MODEL_REVISION = "933114058cb2604dc1bf536dbebdfcefbe83d4fc"
 
 
 class ReactionT5V2Forward(BaseForwardPredictor):
@@ -44,9 +49,13 @@ class ReactionT5V2Forward(BaseForwardPredictor):
 
         settings = get_settings()
         self._device = settings.resolve_device()
-        logger.info("Loading %s on %s", _MODEL_ID, self._device)
-        self._tokenizer = AutoTokenizer.from_pretrained(_MODEL_ID)
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(_MODEL_ID).to(self._device)
+        logger.info("Loading %s@%s on %s", _MODEL_ID, _MODEL_REVISION, self._device)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            _MODEL_ID, revision=_MODEL_REVISION, local_files_only=True
+        )
+        self._model = AutoModelForSeq2SeqLM.from_pretrained(
+            _MODEL_ID, revision=_MODEL_REVISION, local_files_only=True
+        ).to(self._device)
         self._model.eval()
         # Eager attribute so torch is referenced (silences lints in some envs)
         _ = torch.zeros(1, device=self._device)

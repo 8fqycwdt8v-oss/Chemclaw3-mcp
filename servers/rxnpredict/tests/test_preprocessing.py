@@ -70,3 +70,25 @@ def test_build_reaction_smiles_canonicalises_both_sides():
         for smi in side.split("."):
             assert canonical_smiles(smi) == smi
     assert agents == ""
+
+
+def test_canonical_smiles_refuses_a_megamolecule_not_crash():
+    """A 20k-atom SMILES is refused before `MolToSmiles`, which would segfault the process.
+
+    `MolToSmiles` overflows the C stack (uncatchable SIGSEGV) on a large linear molecule; the bound
+    in `canonical_smiles` (via `mcp_server_kit.limits`) turns it into a `ValueError`. This process
+    surviving to assert is the regression proof. The atom bound also bites under the char bound.
+    """
+    with pytest.raises(ValueError):
+        canonical_smiles("C" * 20000)
+    with pytest.raises(ValueError):
+        canonical_smiles("C" * 3000)
+    assert canonical_smiles("CCO") == "CCO"
+
+
+def test_an_invalid_megastring_is_not_echoed_in_full():
+    """A 500 KB invalid SMILES must not be echoed whole into the refusal (log/context flood)."""
+    payload = "not_a_smiles!" * 50_000
+    with pytest.raises(ValueError) as raised:
+        canonical_smiles(payload)
+    assert payload not in str(raised.value)

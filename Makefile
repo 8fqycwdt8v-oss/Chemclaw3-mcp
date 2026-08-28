@@ -87,8 +87,10 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     rootless image whose model tree is mounted read-only.
 #   PYSEC-2026-3447   setuptools 80.10.2, fixed in 83.0.0 — which nothing in this closure can take
 #                     yet (`uv lock --upgrade-package setuptools` resolves to the same version, held
-#                     by torch's own bound). The defect is in `FileList`'s MANIFEST.in matching when
-#                     *building an sdist*; no server runs a build at request time or at all.
+#                     by `rxn-insight==0.1.3`'s `setuptools<81` cap; not torch's — Chemclaw3 carries
+#                     setuptools 83 with the same torch). The defect is in `FileList`'s MANIFEST.in
+#                     matching when *building an sdist*; no server runs a build at request time or at
+#                     all.
 #   PYSEC-2025-217    transformers 4.57.6, no fix released. RCE via a crafted X-CLIP *checkpoint
 #                     conversion*, which is a build-time script here and not shipped.
 #   PYSEC-2026-2288   transformers, fixed in 5.0.0. `Trainer._load_rng_state` calls `torch.load`

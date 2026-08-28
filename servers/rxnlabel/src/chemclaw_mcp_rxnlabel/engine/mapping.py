@@ -22,6 +22,7 @@ import logging
 import threading
 from typing import Any
 
+from mcp_server_kit.limits import atom_count_error
 from rdkit import Chem
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,9 @@ def contributing_reactants(mapped: str | None) -> set[str] | None:
     contributing = set()
     for token in parts[0].split("."):
         mol = Chem.MolFromSmiles(token)
-        if mol is None:
+        if mol is None or atom_count_error(mol.GetNumAtoms()) is not None:
+            # An oversize component is dropped rather than canonicalised: `MolToSmiles` on a large
+            # linear molecule overflows the C stack (an uncatchable SIGSEGV). See `mcp_server_kit`.
             continue
         if _labels(token) & product_labels:
             # Re-canonicalised *without* the map, because that is the form every other module in

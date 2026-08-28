@@ -28,9 +28,18 @@ class Limits:
     wall_seconds: float = 20.0
     """Hard wall clock, enforced by the parent with `killpg`.
 
-    The one bound that holds whatever the child does to itself: a program that blocks in an
-    uninterruptible syscall, ignores signals, or spawns children still dies here, because the parent
-    kills the whole process *group* rather than the one pid it launched.
+    Holds against a program that blocks in an uninterruptible syscall or ignores signals: the parent
+    kills the whole process *group* rather than the one pid it launched, so a child in that group
+    dies with it.
+
+    **It does not, on its own, reach a child that leaves the group**, and an earlier version of this
+    docstring claimed it did. `killpg` targets one process group; a forked grandchild that calls
+    `setsid()` (or `setpgid()`) becomes its own session/group leader, and the parent's `killpg` of
+    the *original* group never touches it — measured, an orphan outlived the kill by seconds, still
+    running, still holding the scratch directory open. What actually forecloses that is
+    `process_headroom = 0`: with no headroom the child cannot `fork` at all, so there is no
+    grandchild to escape. The wall clock and the fork bound are two halves of one guarantee, not
+    one.
     """
 
     cpu_seconds: int = 15
@@ -59,14 +68,37 @@ class Limits:
     """`RLIMIT_NOFILE`. Descriptor exhaustion is a denial of service against the pod, not just the
     run."""
 
-    process_headroom: int = 16
+    process_headroom: int = 0
     """How many *more* tasks than already exist the child may create, via `RLIMIT_NPROC`.
 
     Expressed as headroom rather than an absolute because Linux counts `RLIMIT_NPROC` per real user
     id and against tasks, threads included — so an absolute number would either be too low to let
-    the BLAS keep the threads it already made, or high enough to be no bound at all. The child reads
-    its own task count after warming and adds this, which makes the limit mean "no fork bomb"
-    without meaning "no threads".
+    the libraries keep the threads they already made, or high enough to be no bound at all. The
+    child reads its own task count after warming and adds this.
+
+    **Zero, deliberately, and this is the other half of the wall-clock guarantee.** The parent's
+    `killpg` cannot reach a child that forks and then `setsid`/`setpgid`s out of the killed process
+    group (see `wall_seconds`), so the escape is closed at the source: with zero headroom the child
+    cannot `fork` at all — there is no grandchild to orphan, and no fork bomb either. Measured as a
+    non-root uid (which is how this server runs — `USER 1001`): headroom `16` let a `fork`+`setsid`
+    orphan survive the kill; headroom `0` refused the `fork` with `EAGAIN`. `RLIMIT_NPROC` is
+    unenforced for root, so this bound relies on the rootless image, exactly as the `RLIMIT_*`
+    bounds the child cannot raise back do.
+
+    It costs the child the ability to spawn a *thread* too, and that is affordable here rather than
+    incidental: the analysis is single-process arithmetic, the environment pins every BLAS to one
+    thread (`OMP_NUM_THREADS=1` and its siblings in `sandbox._environment`), and `threading` and
+    `concurrent.futures` are not on `runner.ALLOWED_IMPORTS` — so no legitimate program has a worker
+    thread to lose. Measured: a run importing numpy, pandas, `scipy.stats` and RDKit and computing
+    over them completes unchanged at headroom `0`.
+
+    **The residual, stated because it is real.** This closes the fork-based escape and the fork
+    bomb; it does *not* close a same-uid signal against the parent, nor give the child a private
+    network stack. Both need a **PID/NET namespace**, which needs `CAP_SYS_ADMIN` or a user
+    namespace — neither promised to a rootless OpenShift pod (`sandbox._seal_from_children` records
+    the same limit for `/proc`). The process boundary, the undumpable-parent seal, the in-child
+    `socket` neutralisation and the `egress: []` NetworkPolicy remain the backstops for what a
+    namespace would otherwise cover.
     """
 
     stdout_chars: int = 10_000

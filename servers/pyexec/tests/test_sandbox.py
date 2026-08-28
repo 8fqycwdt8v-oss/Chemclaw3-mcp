@@ -12,6 +12,7 @@ mechanism rather than the number.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -483,3 +484,40 @@ def test_the_scratch_directory_goes_even_when_the_run_is_killed() -> None:
     outcome = run("while True:\n    pass", limits=_fast(wall_seconds=2.0, cpu_seconds=60))
     assert outcome.timed_out is True
     assert set(scratch.glob("pyexec-*")) == before
+
+
+def test_the_default_fork_headroom_is_zero() -> None:
+    """The config default that closes the fork-based escape — asserted where a change would show.
+
+    `Limits.process_headroom` is 0 so `RLIMIT_NPROC` refuses the child any new task. Raising it
+    back re-opens the window in which a program can fork a grandchild and `setsid` it out of the
+    process group the wall-clock kill targets, which is the escape this value forecloses.
+    """
+    assert Limits().process_headroom == 0
+
+
+@_needs_a_second_uid
+def test_a_forked_grandchild_cannot_escape_the_kill_group() -> None:
+    """The setsid-orphan escape is closed at the fork, not at the kill.
+
+    `killpg` reaches one process group; a grandchild that forks and calls `setsid()` leaves that
+    group and survives the wall-clock kill — measured, an orphan outlived it. With
+    `process_headroom = 0` the child cannot `fork` at all: `RLIMIT_NPROC` refuses it with `EAGAIN`,
+    so there is no grandchild to orphan. Meaningful only as a non-root uid, since `RLIMIT_NPROC` is
+    unenforced for root — hence `_needs_a_second_uid`, the same gate the seal tests use.
+    """
+    answered = _through_a_stand_in_server(
+        _ESCAPED
+        + "try:\n"
+        + "    pid = os.fork()\n"
+        + "    if pid == 0:\n"
+        + "        os.setsid()\n"
+        + "        os._exit(0)\n"
+        + "    os.waitpid(pid, 0)\n"
+        + "    result = {'forked': True}\n"
+        + "except OSError as exc:\n"
+        + "    result = {'fork_errno': exc.errno}\n"
+    )
+    decoded = json.loads(answered["result_json"] or "null")
+    assert decoded == {"fork_errno": errno.EAGAIN}, answered
+    assert decoded != {"forked": True}

@@ -17,11 +17,21 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 # The one sanctioned moment this fleet reaches a network, and it is a build step in a stage that is
 # thrown away. `MCP_EGRESS_ALLOW` is set only here; it appears in no runtime environment and in no
 # deployment.
+#
+# **The guard stays ON for the fetch, which is what makes `MCP_EGRESS_ALLOW` mean anything.** The
+# guard is armed on import of `mcp_server_kit`, and `MCP_EGRESS_ALLOW` is the allowlist it consults —
+# so with the guard *off* (the old form) the allowlist was never installed and this step ran with
+# egress wide open: a compromised build dependency could reach any host while a checkpoint was being
+# unpickled. With the guard on, the allowlist is the restriction it was written to be — the fetch may
+# resolve and reach only the model hosts, and anything else is refused at `getaddrinfo`.
+# The allowlist matches on hostname; a build with direct egress that reaches an allowed host by its
+# resolved IP is still bounded by the runtime NetworkPolicy, and a fetch that cannot complete fails
+# the build loudly rather than shipping an unfetched image — fail-closed either way.
 ENV HF_HOME=/opt/models/hf
-ARG MODEL_HOSTS=huggingface.co,cdn-lfs.huggingface.co
+ARG MODEL_HOSTS=huggingface.co,cdn-lfs.huggingface.co,cdn-lfs-us-1.huggingface.co,cdn-lfs-eu-1.huggingface.co
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
-    && MCP_EGRESS_ALLOW="${MODEL_HOSTS}" MCP_EGRESS_GUARD=off \
+    && MCP_EGRESS_ALLOW="${MODEL_HOSTS}" MCP_EGRESS_GUARD=on \
        python /build/servers/rxnpredict/scripts/fetch_models.py \
     && find /opt/models -type f -print0 | xargs -0 sha256sum > /opt/models/SHA256SUMS
 

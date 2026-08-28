@@ -37,5 +37,18 @@ endpoint:
   # building the plan a human is asked to approve — and an analysis that cannot run until after
   # approval is an analysis that cannot inform it. "Which of these two routes has the lower E-factor"
   # is a question that has to be answerable *before* somebody signs off on one of them.
+  #
+  # RISK ACCEPTANCE (recorded rather than implied): `read_only` here means arbitrary, LLM-authored
+  # Python is *executable before human approval* — the plan gate lets a read-only tool run while the
+  # plan is still being built. That is accepted, and it is accepted only because the effect of the
+  # code is bounded to a throwaway compute, not because the input is trusted. The acceptance rests
+  # entirely on the sandbox boundary in `engine/`, which `README.md` states in full and holds even
+  # granting a complete escape from the import guard: a separate, disposable process killed by
+  # process group on a wall clock, **paired with zero fork headroom so a child cannot `setsid` out
+  # of that group**, hard rlimits a non-root process cannot raise, an allowlisted environment, an
+  # undumpable parent, an in-child network neutralisation, a per-call scratch directory removed on
+  # every path, a rootless read-only-root image, and an `egress: []` NetworkPolicy. Weaken any of
+  # those and this classification is no longer safe: a `state_changing` reading would be the correct
+  # response to a sandbox that could reach the filesystem, the network, or a credential.
   read_only:
     - run_python

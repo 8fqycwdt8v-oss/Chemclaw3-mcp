@@ -11,6 +11,13 @@ on the first two, which makes it worse than no check: it reports a clean scan.
 `socket` is on the list even though it is stdlib and the guard patches it, because a server here has
 no legitimate reason to hold one — and a module that imports it can also un-patch the guard.
 
+**`_socket` is on the list too, and it is the one the runtime guard cannot reach.** `socket.socket`
+subclasses the C type `_socket.socket`, and `egress.arm()` rebinds the Python subclass — a
+`_socket.socket().connect(...)` goes straight to the C method the guard never touched (measured: a
+real TCP connection completed with the guard armed). The C type cannot be monkeypatched, so this
+static scan is the *only* in-repo layer that can see the import; `make offline-run` is the only
+runtime one. A server has no more reason to hold the private C socket than the public wrapper.
+
 **`exempt` exists for exactly one shape, and it is narrower than it looks.** That last sentence is a
 statement about code running *in the server process*. `servers/pyexec` ships a file that never
 does: `engine/runner.py` is executed as a script in a disposable child, and it imports `socket` in
@@ -43,6 +50,7 @@ FORBIDDEN_MODULES = frozenset(
         "requests",
         "smtplib",
         "socket",
+        "_socket",
         "telnetlib",
         "urllib.request",
         "urllib3",

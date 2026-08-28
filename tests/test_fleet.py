@@ -66,6 +66,14 @@ def test_a_server_ships_the_whole_set(server: Path) -> None:
         # and nothing was told to go through it.
         "deploy/service.yaml",
         "deploy/servicemonitor.yaml",
+        # The workload itself, and the file that carries every pod-hardening field — runAsNonRoot,
+        # dropped capabilities, seccomp, resource limits, no service-account token. `deploy/` used
+        # to ship the NetworkPolicy/Service/ServiceMonitor but *no* Deployment, so nothing
+        # in-cluster set any of those and each defaulted to the cluster's — root, all capabilities,
+        # unconfined, unbounded. A new server copying a directory without one would inherit that
+        # gap silently, which is why the requirement lives here rather than only in each
+        # `test_deploy.py`.
+        "deploy/deployment.yaml",
         "tests/test_no_egress.py",
         "tests/test_server.py",
     ):

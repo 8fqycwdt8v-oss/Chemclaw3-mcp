@@ -23,6 +23,7 @@ list stored for an unreadable species is counted as a negative by every later qu
 
 from __future__ import annotations
 
+from mcp_server_kit.limits import atom_count_error, smiles_length_error
 from rdkit import Chem
 
 __all__ = ["read_molecule"]
@@ -42,5 +43,15 @@ def read_molecule(smiles: str) -> Chem.Mol | None:
         return None
     if not stripped.isascii():
         return None
+    # A megastring or a megamolecule is treated as "could not be read", the same lenient answer
+    # this server gives any unusable species — but the bound must precede canonicalisation, since
+    # `MolToSmiles` on a large linear molecule overflows the C stack (an uncatchable SIGSEGV) and
+    # one such row in a corpus scan would take the whole server down. See `mcp_server_kit.limits`.
+    if smiles_length_error(stripped) is not None:
+        return None
     mol = Chem.MolFromSmiles(stripped)
-    return mol if mol is not None and mol.GetNumAtoms() > 0 else None
+    if mol is None or mol.GetNumAtoms() == 0:
+        return None
+    if atom_count_error(mol.GetNumAtoms()) is not None:
+        return None
+    return mol

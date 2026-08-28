@@ -54,7 +54,7 @@ the boundary would be a control that exists in order to be pointed at.
 | Control | Where |
 | --- | --- |
 | A separate, disposable process — never `exec` in the server | `engine/sandbox.py` |
-| Killed by **process group** on the wall clock, so children die with it | `engine/sandbox.py` |
+| Killed by **process group** on the wall clock — paired with a **zero fork headroom** so no child can `setsid` out of that group and survive | `engine/sandbox.py`, `engine/runner.py` |
 | `RLIMIT_CPU`, `AS`, `FSIZE`, `NOFILE`, `NPROC` — **soft and hard**, so they cannot be raised back | `engine/runner.py` |
 | An environment **built from an allowlist**, so no credential is in it | `engine/sandbox.py` |
 | The parent made **undumpable before it forks**, so the child cannot read `/proc/<ppid>/environ` | `engine/sandbox.py` |
@@ -84,6 +84,21 @@ to fd 1 directly went past it, and every byte was read into *this* process and t
 serving rather than of the one run. Nothing here ever wanted those bytes, so the child's stdout is
 `DEVNULL` and its stderr goes to a file inside the scratch directory, where the child's own
 `RLIMIT_FSIZE` bounds it and the parent reads a 4 KiB tail for the one line it needs.
+
+**The group kill was not the whole of "children die with it", and an escape proved that too.**
+`killpg` reaches one process group; a program that reached `os`, forked, and had the grandchild call
+`setsid()` put it in a *new* session, and the kill of the original group left it running — an orphan
+that outlived the wall clock by seconds, still holding the scratch directory. The fix is not a
+bigger kill but a foreclosed fork: `Limits.process_headroom` is **0**, so `RLIMIT_NPROC` refuses the
+child any new task and there is no grandchild to orphan (nor any fork bomb). Measured as a non-root
+uid, which is how this runs: headroom `16` let the orphan survive, headroom `0` refused the `fork`
+with `EAGAIN`. It costs a worker *thread* too, which is free here — the analysis is single-process,
+every BLAS is pinned to one thread, and `threading`/`concurrent.futures` are not importable — and a
+run over numpy/pandas/scipy/RDKit is unchanged by it. `RLIMIT_NPROC` is unenforced for root, so this
+leans on `USER 1001` exactly as the other rlimits do. What it does **not** close — a same-uid signal
+to the parent, and a private network stack — needs a PID/NET namespace, which a rootless pod is not
+promised; those stay covered by the process boundary, the parent seal, the in-child `socket`
+neutralisation and the `egress: []` policy.
 
 **What the boundary does not cover, stated rather than implied.** The per-call scratch directory is
 private to a run and is removed on every path, the kill included — but it is not a *confinement*.

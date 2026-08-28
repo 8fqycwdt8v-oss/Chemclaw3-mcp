@@ -103,3 +103,18 @@ def test_a_string_rdkit_would_truncate_is_refused(written: str) -> None:
     """The negative half of the contract, and the half RDKit itself does not enforce."""
     with pytest.raises(InvalidSmilesError):
         require_canonical_smiles(written)
+
+
+def test_a_megamolecule_is_refused_not_crashed() -> None:
+    """A 20k-atom SMILES is refused before canonicalisation, not a segfault that kills the pod.
+
+    `MolToSmiles` overflows the C stack (uncatchable SIGSEGV) on a large linear molecule, and every
+    screen here canonicalises through `require_molecule` — so the bound there (via
+    `mcp_server_kit.limits`) is what stands between one authenticated call and a hazard screen that
+    stops answering for everyone. This process surviving to assert is the regression proof.
+    """
+    with pytest.raises(InvalidSmilesError):
+        require_canonical_smiles("C" * 20000)
+    with pytest.raises(InvalidSmilesError):
+        require_canonical_smiles("C" * 3000)
+    assert require_canonical_smiles("CCO") == "CCO"

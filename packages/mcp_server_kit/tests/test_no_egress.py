@@ -57,6 +57,22 @@ def test_the_scanner_names_forbidden_modules_as_data_and_imports_none() -> None:
     assert network_imports(NO_EGRESS) == []
 
 
+def test_the_private_c_socket_type_is_flagged(tmp_path: Path) -> None:
+    """`import _socket` is the runtime guard's blind spot, so the static scan must catch it.
+
+    `socket.socket` subclasses `_socket.socket`; `egress.arm()` rebinds only the Python subclass,
+    so `_socket.socket().connect(...)` reaches the network with the guard armed (measured: a real
+    TCP connection completed). The C type cannot be monkeypatched, which makes this scan the only
+    in-repo layer that can see the import — so it must.
+    """
+    offender = tmp_path / "sneaky.py"
+    offender.write_text("import _socket\n", encoding="utf-8")
+    assert network_imports(offender) == ["_socket"]
+    also = tmp_path / "sneaky_from.py"
+    also.write_text("from _socket import socket\n", encoding="utf-8")
+    assert network_imports(also) == ["_socket"]
+
+
 def test_the_helper_s_only_network_import_is_httpx() -> None:
     """`testing.py` earns its exemption by driving a running server, and by nothing else."""
     assert network_imports(TESTING) == ["httpx"]

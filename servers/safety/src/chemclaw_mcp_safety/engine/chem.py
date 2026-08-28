@@ -29,6 +29,7 @@ table. None of the three tools here asks either question, so neither is present.
 
 from __future__ import annotations
 
+from mcp_server_kit.limits import atom_count_error, smiles_length_error
 from rdkit import Chem
 
 __all__ = ["InvalidSmilesError", "require_canonical_smiles", "require_molecule"]
@@ -43,6 +44,19 @@ class InvalidSmilesError(ValueError):
     screen's refusal has to be actionable — a chemist told "internal error" would re-ask the same
     malformed question.
     """
+
+
+_MAX_ECHO_CHARS = 120
+
+
+def _echo(smiles: str, limit: int = _MAX_ECHO_CHARS) -> str:
+    """The caller's string for a refusal message, truncated so a megastring cannot flood the log.
+
+    A refusal quotes what was rejected so a chemist can fix it, but a 500 KB invalid SMILES echoed
+    into three messages is a log-flooding channel in its own right. The head is enough to recognise;
+    the length is appended so nothing about the size is hidden.
+    """
+    return smiles if len(smiles) <= limit else f"{smiles[:limit]}… ({len(smiles)} chars)"
 
 
 def require_molecule(smiles: str) -> Chem.Mol:
@@ -71,14 +85,19 @@ def require_molecule(smiles: str) -> Chem.Mol:
     Raises:
         InvalidSmilesError: `smiles` is empty, holds whitespace or non-ASCII, or does not parse.
     """
+    if reason := smiles_length_error(smiles, subject="this SMILES"):
+        raise InvalidSmilesError(reason)
     stripped = smiles.strip()
+    echoed = _echo(smiles)
     if not stripped or any(ch.isspace() for ch in stripped):
-        raise InvalidSmilesError(f"invalid SMILES (empty or contains whitespace): {smiles!r}")
+        raise InvalidSmilesError(f"invalid SMILES (empty or contains whitespace): {echoed!r}")
     if not stripped.isascii():
-        raise InvalidSmilesError(f"invalid SMILES (non-ASCII characters): {smiles!r}")
+        raise InvalidSmilesError(f"invalid SMILES (non-ASCII characters): {echoed!r}")
     mol = Chem.MolFromSmiles(stripped)
     if mol is None or mol.GetNumAtoms() == 0:
-        raise InvalidSmilesError(f"invalid SMILES: {smiles!r}")
+        raise InvalidSmilesError(f"invalid SMILES: {echoed!r}")
+    if reason := atom_count_error(mol.GetNumAtoms(), subject="this SMILES"):
+        raise InvalidSmilesError(reason)
     return mol
 
 
