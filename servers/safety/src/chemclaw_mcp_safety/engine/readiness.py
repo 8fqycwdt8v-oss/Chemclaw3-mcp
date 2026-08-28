@@ -1,10 +1,13 @@
 """What this server has to have loaded before it can answer — and the corpora that proves.
 
 `/healthz` used to be a constant 200, and on this server that was the most dangerous version of
-that defect in the fleet. All four tables load *lazily*, on the first tool call that needs them, so
-a pod whose `rules.yaml` failed its checksum passed the kubelet probe, took traffic, and refused
-every screen — while `load_dataset`'s own docstring says a bad corpus "fails at startup with the
-two hashes in the message", which is true only of a server that touches its corpus at import.
+that defect in the fleet. All **five** tables load *lazily*, on the first tool call that needs them
+— the structural rules, the genotoxic alerts, ICH Q3C, ICH Q3D and the reagent table — so a pod
+whose `rules.yaml` failed its checksum passed the kubelet probe, took traffic, and refused every
+screen, while `load_dataset`'s own docstring says a bad corpus "fails at startup with the two
+hashes in the message", which is true only of a server that touches its corpus at import. (This
+paragraph said "four" while the two below said five and the function returns five: exactly the
+class of defect `CLAUDE.md` calls out, in the file whose job is to know how many tables there are.)
 
 Written against the **public** screening entry points rather than the loaders behind them, because
 readiness here means "this server can answer", not "these five files hash correctly": the alert and

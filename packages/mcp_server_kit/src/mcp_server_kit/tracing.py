@@ -39,6 +39,27 @@ never an argument, a result or a caller. The `X-Chemclaw-*` identity headers are
 attached: they are provenance for this server's own logs, and putting an actor on a span would
 publish per-actor call volumes to whatever the collector shows.
 
+**That sentence was false for as long as an exception could reach the span, and the leak was the
+one channel bypassing every other control.** `start_as_current_span` defaults to
+`record_exception=True` and `set_status_on_exception=True`, so a propagating exception put
+`format_exception`'s whole rendered chain into an `exception.stacktrace` attribute and `str(exc)`
+into the status description — neither of which passes through `_sanitize_tool_errors` (which
+replaces the *message* but keeps the cause: `raise ToolError(...) from exc.__cause__`) or through
+`SecretRedactingFilter` (which sees log records, not spans). Measured against a running server with
+an in-memory SDK exporter: a tool raising `RuntimeError("PGPASSWORD=hunter2 ... bearer=abc123...")`
+produced a span carrying **`hunter2`** and the bearer in clear, while the log line for the same
+fault read `PGPASSWORD=***`; a `ValueError` naming a caller's molecule put that molecule in
+`exception.message`. Both defaults are therefore off, and the only thing an outcome writes is a
+bare `StatusCode.ERROR` — a status is one enum value and cannot carry text.
+
+**And the outcome the status records is the metric's, not the transport's.** Every `ToolError` that
+propagates is an exception, so recording "did something raise" made a *refusal* — the answer
+`chemclaw_mcp_tool_calls_total` books as `outcome="refused"`, and the whole content of a correct
+answer — an ERROR span, while the counter for the same call said the server was fine. The caller
+passes `is_refusal`, which is `app._is_caller_safe`: one discriminator, read by the sanitiser, the
+counter and the span alike, because two spellings of it is how an operator's trace view comes to
+disagree with the dashboard beside it about the same call.
+
 **Trace context is safe to trust from outside, unlike those headers**, and the difference is worth
 stating where both arrive on the same request. Authorization happened in Chemclaw3; a forged
 `X-Chemclaw-Actor` would be an unauthenticated string reaching a decision. The worst a forged
@@ -49,7 +70,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -81,7 +102,13 @@ def tracing_enabled() -> bool:
 
 
 @contextmanager
-def tool_call_span(headers: Mapping[str, str], *, server: str, tool: str) -> Iterator[None]:
+def tool_call_span(
+    headers: Mapping[str, str],
+    *,
+    server: str,
+    tool: str,
+    is_refusal: Callable[[BaseException], bool],
+) -> Iterator[None]:
     """Run one tool call inside a span, parented on the incoming `traceparent` when there is one.
 
     Args:
@@ -89,7 +116,12 @@ def tool_call_span(headers: Mapping[str, str], *, server: str, tool: str) -> Ite
             by the propagator; nothing else on the request reaches the span.
         server: The server's manifest name — the same string the directory, the package suffix and
             `CHEMCLAW_CONNECTOR_URLS` use.
-        tool: The tool being called.
+        tool: The tool being called, already clamped to the served surface by the caller. A span
+            name is as caller-supplied as a metric label and is folded the same way: unclamped,
+            this recorded `mcp.tool/../../etc/passwd?a=b` and a 318-character name.
+        is_refusal: Whether a propagating exception is a refusal the caller asked for rather than a
+            fault of this server's. The caller's own discriminator, so the span's outcome and the
+            counter's cannot drift apart. Nothing about the exception itself reaches the span.
 
     Yields:
         Nothing. The block runs inside the span, or unchanged when tracing is off, the API is not
@@ -102,6 +134,7 @@ def tool_call_span(headers: Mapping[str, str], *, server: str, tool: str) -> Ite
         from opentelemetry import context as otel_context
         from opentelemetry import trace
         from opentelemetry.propagate import extract
+        from opentelemetry.trace import Status, StatusCode
     except ImportError:
         # The `otel` extra is not installed. Debug rather than a warning: a server that never
         # enabled tracing on purpose should not log on every call, and one that did will find the
@@ -115,9 +148,22 @@ def tool_call_span(headers: Mapping[str, str], *, server: str, tool: str) -> Ite
     token = otel_context.attach(extract(dict(headers)))
     try:
         tracer = trace.get_tracer(TRACER_NAME)
-        with tracer.start_as_current_span(f"mcp.tool/{tool}") as span:
+        # Both recording defaults off: `record_exception` writes the rendered exception chain into
+        # a span attribute, and `set_status_on_exception` writes `str(exc)` into the status
+        # description. Neither passes the sanitiser or the log redaction, so both are leaks by
+        # construction rather than by accident — see the module docstring.
+        with tracer.start_as_current_span(
+            f"mcp.tool/{tool}", record_exception=False, set_status_on_exception=False
+        ) as span:
             span.set_attribute("mcp.server", server)
             span.set_attribute("mcp.tool", tool)
-            yield
+            try:
+                yield
+            except BaseException as exc:
+                # A bare enum value and no description. An ERROR span says "this server failed the
+                # call"; what failed is in the log line the `error_id` joins it to.
+                if not is_refusal(exc):
+                    span.set_status(Status(StatusCode.ERROR))
+                raise
     finally:
         otel_context.detach(token)

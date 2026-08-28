@@ -87,20 +87,57 @@ def test_fastmcp_still_configures_the_root_logger_behind_our_backs() -> None:
 
 
 def test_connector_app_wins_that_race(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A server built the normal way ends up with *our* format, not upstream's.
+    """A server started the normal way ends up with *our* format, not upstream's.
 
     The whole point of `force=True`, asserted end to end in the order a real server does it:
-    `FastMCP` first (as `tools.py` import does), `connector_app` second.
+    `FastMCP` first (as importing `tools.py` does), then the app's startup.
+
+    Driven through `TestClient`, because the configuration moved out of `connector_app` and into
+    the `lifespan` — see `test_building_an_app_does_not_reconfigure_the_importing_process`. Merely
+    *building* the app must no longer touch the root logger, so a test that asserted the format
+    after the constructor would now be asserting the wrong seam.
     """
+    from fastapi.testclient import TestClient
+
     logging.getLogger().handlers = []
     monkeypatch.delenv("MCP_LOG_JSON", raising=False)
     monkeypatch.setenv("MCP_LOG_FORMAT", "%(levelname)s|%(name)s|%(message)s")
     server = FastMCP("probe-force")
-    connector_app(server, name="probe-force")
+    app = connector_app(server, name="probe-force")
+    with TestClient(app) as client:
+        client.get("/healthz")
     formats = {
         handler.formatter._fmt for handler in logging.getLogger().handlers if handler.formatter
     }
     assert formats == {"%(levelname)s|%(name)s|%(message)s"}
+
+
+def test_building_an_app_does_not_reconfigure_the_importing_process() -> None:
+    """`connector_app` is called at module scope by every server, so it must not touch the root.
+
+    Measured before the move: `import chemclaw_mcp_props.app` removed a handler the importing
+    process had installed, forced the root level from DEBUG to INFO, and added this module's two
+    filters to `logging.lastResort` for the life of the process. A library that does that to its
+    host is one nothing can embed — a test runner, a script, `scripts/offline_check.py` — and it
+    happened on an `import`, where nobody looks for it.
+
+    The configuration is not lost, only moved: the test above drives the same app through its
+    `lifespan` and finds the format applied.
+    """
+    root = logging.getLogger()
+    root.handlers = []
+    host = logging.StreamHandler()
+    root.addHandler(host)
+    root.setLevel(logging.DEBUG)
+    last_resort_filters = len(logging.lastResort.filters) if logging.lastResort else 0
+
+    connector_app(FastMCP("probe-import-purity"), name="probe-import-purity")
+
+    assert host in root.handlers, "building an app tore out a handler its host had installed"
+    assert root.level == logging.DEBUG, "building an app changed its host's root log level"
+    assert (len(logging.lastResort.filters) if logging.lastResort else 0) == last_resort_filters, (
+        "building an app filtered the interpreter's `lastResort` handler"
+    )
 
 
 def test_a_line_carries_the_correlation_id_that_joins_it_to_the_audit_trail() -> None:
@@ -211,3 +248,84 @@ def test_the_level_is_an_environment_switch(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("MCP_LOG_LEVEL", "debug")
     configure_logging()
     assert logging.getLogger().level == logging.DEBUG
+
+
+def test_loggings_own_error_path_does_not_print_the_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The leak the fail-open docstring named and nothing in this kit acted on.
+
+    `SecretRedactingFilter` keeps a record it cannot render — deliberately, because a dropped log
+    line is worse than a malformed one. The record then reaches a formatter that cannot render it
+    either, `Handler.emit` raises, and CPython's `Handler.handleError` prints `record.msg` and
+    `record.args` straight to `sys.stderr` **before** any redaction: `args` is exactly where a
+    credential lives, since `logger.info("dsn=%s", dsn)` keeps the value there until format time.
+
+    Driven by an ordinary `%`-format mismatch rather than by anything exotic, because that is the
+    class of malformation the filter was hardened to survive — measured here before the fix, on
+    stderr: `Arguments: ('postgresql://chemclaw:supersecret123@db.internal:5432/chemclaw',
+    's3cret-bearer-value-0123456789')`.
+
+    The diagnostic itself must survive: `logging.raiseExceptions = False` would close the leak by
+    blinding the process to every handler failure, which is the wrong trade and is why this is a
+    scrub rather than a silence.
+    """
+    import io
+    import sys
+
+    dsn = "postgresql://chemclaw:supersecret123@db.internal:5432/chemclaw"
+    monkeypatch.setenv(TOKEN_ENV, TOKEN)
+    register_secret_env(TOKEN_ENV)
+    configure_logging()
+
+    captured = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", captured)
+    # `%d` against a string: `getMessage()` raises, the filter swallows it and keeps the record,
+    # and the formatter then fails the same way.
+    logging.getLogger("probe").info("connecting to %s as %d", dsn, TOKEN)
+    printed = captured.getvalue()
+
+    assert "Message:" in printed, (
+        "logging's diagnostic disappeared; the fix must scrub the record, not silence the report "
+        "of a handler that could not emit"
+    )
+    assert "supersecret123" not in printed, "a DSN password reached stderr through handleError"
+    assert TOKEN not in printed, "the server's own bearer token reached stderr through handleError"
+    assert "db.internal" in printed, "the diagnostic must stay diagnostic after redaction"
+
+
+def test_the_published_dev_token_is_not_treated_as_a_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A credential anybody can read in the `Makefile` is not a credential, and redacting it lies.
+
+    `make run-*` defaults every `CHEMCLAW_*_TOKEN` to `dev-token` — nine characters, so over
+    `_MIN_REDACTABLE` — and `README.md`, `docs/integration.md` and two server READMEs print it. So
+    a developer running a server locally had every line mentioning it rewritten to `***`, including
+    the ones explaining the flow. That is Chemclaw3's `_published_values()` guard, which was not
+    ported with the rest of this module; the shipped default's *password* is published for the same
+    reason its DSN is.
+    """
+    monkeypatch.setenv(TOKEN_ENV, "dev-token")
+    register_secret_env(TOKEN_ENV)
+    line = "the dev-token default is what `make run-props` uses"
+    assert redact_secrets(line) == line, (
+        "the repository's own published dev credential was scrubbed out of its own logs"
+    )
+
+
+def test_a_dsn_password_is_redacted_on_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """libpq quotes the credential without the DSN it came from, and only whole values matched.
+
+    Measured before the port: with the DSN in the inventory, `"the credential hunter2pass was
+    rejected"` passed through untouched — the structural `PASSWORD=` rule needs a key anchor this
+    line does not have, and the value rule was comparing whole strings. `_dsn_password` is the
+    other half, and it is one function so the inventory and any published-defaults set decide the
+    same thing about the same string.
+    """
+    dsn_env = "MCP_LOGGING_PROBE_DSN"
+    monkeypatch.setenv(dsn_env, "postgresql://svc:hunter2pass@warehouse.internal:5432/eln")
+    register_secret_env(dsn_env)
+    redacted = redact_secrets("the credential hunter2pass was rejected by warehouse.internal")
+    assert "hunter2pass" not in redacted
+    assert "warehouse.internal" in redacted, "redaction must keep what makes the line diagnostic"
