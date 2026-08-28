@@ -608,3 +608,54 @@ def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> No
         "published default; an exemption that outlives its reason is a credential this fleet has "
         "decided not to hide"
     )
+
+
+# A citation of one of this repository's own test files, in prose or a docstring: a backtick-quoted
+# path ending in `tests/test_<something>.py`, optionally with a `::test_name` selector.
+_TEST_CITATION = re.compile(r"`([A-Za-z0-9_/.-]*tests/test_[a-z0-9_]+\.py)(::[A-Za-z0-9_]+)?`")
+
+
+def test_every_test_file_a_docstring_cites_actually_exists() -> None:
+    """A named test is how this repository turns a claim into a gate; a wrong name is neither.
+
+    `mcp_server_kit.metrics` said the metric label clamp was proved by a "tests/test_metrics.py".
+    That file has never existed here. The clamp *is* proved — over the transport, in
+    `test_connector_app.py` — so nothing was unguarded; what was wrong is the one thing a reader
+    checks when they want to know whether a rule is enforced or merely written down. The same
+    sentence is what `CLAUDE.md` says a README is not, and a citation nobody resolves is a README.
+
+    Citations of the *other* repositories in this family are exempt and stay prose: `test_pairs.py`
+    names Chemclaw3's `tests/test_safety_pairs.py` deliberately, and a test that read a checkout
+    which may not be present would be asserting something this suite cannot see — the same argument
+    `CLAUDE.md` makes about that repository's port numbers.
+    """
+    # The tree this repository owns, named rather than globbed from the root: `.venv` sits there
+    # too, and walking it in order to throw it away is the slow way to read these directories. No
+    # count here, for the reason `MODULES.md` gives about counts in prose.
+    roots = [ROOT / "packages", SERVERS, ROOT / "tests", ROOT / "docs", ROOT / "scripts"]
+    names = {
+        path.name
+        for root in roots
+        for path in root.rglob("test_*.py")
+        if path.parent.name == "tests"
+    }
+    sources = [
+        path
+        for root in roots
+        for pattern in ("*.py", "*.md")
+        for path in root.rglob(pattern)
+        if "__pycache__" not in path.parts
+    ]
+    sources += sorted(ROOT.glob("*.md"))
+    dangling: list[str] = []
+    for source in sources:
+        for line in source.read_text(encoding="utf-8").splitlines():
+            if "Chemclaw3" in line or "chemclaw2" in line:
+                continue
+            for cited, _ in _TEST_CITATION.findall(line):
+                if Path(cited).name not in names:
+                    dangling.append(f"{source.relative_to(ROOT)}: cites {cited}")
+    assert not dangling, (
+        "a docstring names a test file this repository does not have; the rule it claims to "
+        "enforce is unverifiable by whoever reads it:\n  " + "\n  ".join(sorted(dangling))
+    )

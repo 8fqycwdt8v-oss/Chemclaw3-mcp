@@ -76,7 +76,7 @@ TRANSITION_METALS = frozenset(
 # list overlaps it and is not derived from it.
 _SOLVENT_SMILES = """
 O CO CCO CC(C)O CCCCO CC(C)(C)O
-CC#N CC(C)=O CCOC(C)=O CC(=O)OC COC(C)=O
+CC#N CC(C)=O CCOC(C)=O CC(=O)OC
 C1CCOC1 CC1CCCO1 COCCOC C1COCCO1 CCOCC CC(C)OC(C)C
 CN(C)C=O CN(C)C(C)=O CS(C)=O CN1CCCC1=O
 ClCCl ClC(Cl)Cl ClCCCl ClC(Cl)(Cl)Cl
@@ -104,10 +104,25 @@ _LIGAND_SMARTS = (
     # Phosphine: three-coordinate P with only carbon substituents. PPh3, PCy3, XPhos, SPhos,
     # dppf, BINAP — the whole cross-coupling shelf.
     "[PX3](-[#6])(-[#6])-[#6]",
-    # Phosphite and phosphoramidite: P(III) with heteroatom substituents.
-    "[PX3](-[OX2])(-[OX2])-[OX2]",
+    # Phosphite, phosphoramidite, phosphonite, phosphinite: three-coordinate phosphorus carrying
+    # at least one N or O donor. The pattern was `[PX3](-[OX2])(-[OX2])-[OX2]` — three oxygens —
+    # while this comment already said "phosphoramidite", which has a nitrogen where one of them
+    # would be and so could never match. Measured: `CN(C)P(OC)OC`, the Feringa monodentate ligand
+    # and a DNA-synthesis amidite core all failed, and so did the phosphonites and phosphinites the
+    # same sentence covers. `#15` rather than `P`, because `P` in SMARTS is *aliphatic* phosphorus
+    # and RDKit perceives the Feringa ligand's dioxaphosphepine ring — phosphorus included — as
+    # aromatic. P(V) is excluded by `X3`, which is what keeps HMPA, triphenyl phosphate and the
+    # phosphate bases out; the phosphine rule above covers the all-carbon case.
+    "[#15X3]([#7,#8])",
     # N-heterocyclic carbene, and its imidazolium precursor — which is what is usually charged.
-    "[#6X2-1]1:[#7]:[#6]:[#6]:[#7]:1",
+    # The carbene pattern demanded `[#6X2-1]`, a carbon with a formal **-1** charge, and an
+    # imidazol-2-ylidene is a *neutral* divalent carbon: measured, IMe, IMes and IPr all parse and
+    # none matched, while the only thing that did was `Cn1cc[n+](C)[c-]1`, a zwitterionic spelling
+    # of the imidazolium nobody writes. The `:` bonds were the other half — a free carbene's ring
+    # is not aromatic to RDKit, and the unsaturated ring's C=C is a double bond, which SMARTS'
+    # default bond (single or aromatic) does not match either. `~` covers the saturated and
+    # unsaturated rings with one pattern.
+    "[#6X2H0;r5]1~[#7]~[#6]~[#6]~[#7]~1",
     "[#7+1]1:[#6]:[#7]:[#6]:[#6]:1",
     # Bidentate diimine: bipyridine, phenanthroline.
     "c1ccnc(-c2ccccn2)c1",
@@ -219,8 +234,15 @@ def _matches_any(smiles: str, patterns: tuple[str, ...]) -> bool:
 
     A pattern that does not compile is skipped rather than raised on: these are constants in this
     file, so a bad one is a bug to fix in review — but failing every classification in the corpus
-    because one pattern has a typo is a worse failure than silently narrowing the rules, and the
-    server's own tests assert each pattern individually.
+    because one pattern has a typo is a worse failure than silently narrowing the rules.
+
+    **That leniency is only safe because every pattern is asserted individually, and for a long
+    time it was not.** This sentence used to claim the tests as a fact; measured by mutation, 1 of
+    the 7 ligand patterns and 8 of the 13 base patterns were caught when replaced with a string
+    that does not compile, and `_SOLVENT_SMILES` caught 2 of its 40 tokens. A dropped pattern is
+    silent in the expensive direction — the species falls through to `additive` or `reagent`, so it
+    looks labelled. `tests/test_roles.py::TestEveryHandWrittenPatternIsChecked` is what makes the
+    claim true.
     """
     mol = read_molecule(smiles)
     if mol is None:
