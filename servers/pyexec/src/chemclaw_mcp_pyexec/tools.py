@@ -43,7 +43,10 @@ class RunResult(BaseModel):
     result: Any = Field(
         default=None,
         description="Whatever the program assigned to `result`, decoded from JSON. `null` when it "
-        "assigned nothing — which is not the same as a computation that produced null.",
+        "assigned nothing — which is not the same as a computation that produced null. A raw "
+        "`bytes`/`bytearray` value anywhere inside it — top-level or nested in a dict or list — "
+        'comes back as {"__b64__": "<base64 text>"}; decode with base64.b64decode(...) to get '
+        "the bytes back.",
     )
     error: str | None = Field(
         default=None,
@@ -75,21 +78,32 @@ async def run_python(code: str, data: dict[str, Any] | None = None) -> RunResult
 
     Use it for the arithmetic between tool calls — fitting a curve to points another tool returned,
     aggregating a table, converting units, canonicalising a SMILES, computing a descriptor, checking
-    a mass balance. It is a calculator with a scientific library on it, not a workspace.
+    a mass balance, rendering a plot. It is a calculator with a scientific library on it, not a
+    persistent workspace.
 
     **How data gets in and out.** Whatever you pass as `data` is bound in the program's namespace as
-    a dict called `data`. Whatever the program assigns to `result` is returned. Those are the only
-    two channels: there is no filesystem, so nothing can be read from disk or left behind for a
-    later call.
+    a dict called `data`. Whatever the program assigns to `result` is returned.
 
-    **Available:** numpy, pandas, scipy, rdkit, and the arithmetic, container, text and date parts
-    of the standard library. Anything else raises rather than being silently unavailable — the error
+    A third channel exists for this one call only: `open(path, mode)` reads and writes files, but
+    every path — relative or absolute — is confined to this call's own throwaway scratch directory,
+    which is also the program's working directory. `open("plot.png", "wb")` and
+    `open("./plot.png", "rb")` both land there; `open("/etc/passwd")` or `open("../elsewhere")` is
+    refused with a `SandboxPathError` naming the sandbox, not a crash. **Nothing written there
+    survives the call** — the directory and everything in it is destroyed the moment this tool
+    returns, so it is scratch space for one analysis, never a place to hand off a file to a later
+    call. A binary file you read back — a saved plot, for instance — should be assigned into
+    `result`; see the note on `result` below for how bytes cross back out.
+
+    **Available:** numpy, pandas, scipy, matplotlib, sympy, scikit-learn (`import sklearn`), rdkit,
+    openbabel (`from openbabel import pybel`), and the arithmetic, container, text and date parts of
+    the standard library. Anything else raises rather than being silently unavailable — the error
     lists what there is.
 
-    **Not available, and do not plan around them:** no network, no files, no `open`, no
-    `subprocess`, no `os`, and no state between calls. Each call is a fresh process, destroyed when
-    it returns, so a variable set in one call does not exist in the next. Send the whole analysis
-    in one program.
+    **Not available, and do not plan around them:** no network, no `subprocess`, no `os`, no
+    `pathlib`, and no state between calls — a variable set in one call does not exist in the next,
+    and neither does a file written to the scratch directory. Send the whole analysis in one
+    program. `open` is real but jailed to this call's own scratch directory (see above); it is not a
+    way to reach the rest of the container or to persist anything.
 
     **What it is not evidence of.** This tool runs *your* arithmetic; it is not a data source and it
     knows nothing. A number it returns is only as good as the numbers you put into `data` — cite
@@ -97,10 +111,12 @@ async def run_python(code: str, data: dict[str, Any] | None = None) -> RunResult
     except what you copy into `data` yourself.
 
     **Bounds.** Roughly 20 s of wall clock and 15 s of CPU, which includes importing whatever the
-    program imports — pandas costs about 0.4 s and `scipy.stats` about 1.6 s, so a program that
-    only needs `math` starts in about 10 ms. Memory is capped, printed output is truncated at
-    10,000 characters, and a returned table is cut to 200 rows. Exceeding any of them is reported,
-    never silent.
+    program imports — pandas costs about 0.4 s, `scipy.stats` about 1.6 s, and `matplotlib.pyplot`
+    about 1.4 s, so a program that only needs `math` starts in about 10 ms. Memory is capped,
+    printed output is truncated at 10,000 characters, and a returned table or result is cut to 200
+    rows / 20,000 characters — a large plot should be kept small (low DPI, small figure size) or it
+    will come back truncated rather than as a valid image. Exceeding any of them is reported, never
+    silent.
 
     Args:
         code: The program. Runs top to bottom in its own namespace, with `data` and `result` already

@@ -1,8 +1,9 @@
 # `pyexec` — run a short Python analysis, offline and bounded
 
 One tool, `run_python`. The agent sends a program and a JSON payload; the program runs in a
-disposable child process with **numpy, pandas, scipy and RDKit** importable, and whatever it assigns
-to `result` comes back.
+disposable child process with **numpy, pandas, scipy, matplotlib, sympy, scikit-learn, RDKit and
+OpenBabel** importable, and whatever it assigns to `result` comes back — files it writes and reads
+back along the way stay confined to that one call's own scratch directory.
 
 It exists because the arithmetic between tool calls had nowhere to happen. Fitting a curve to points
 another tool returned, aggregating a table, converting units, canonicalising a SMILES, checking a
@@ -26,7 +27,10 @@ these two routes has the lower E-factor" has to be answerable before somebody si
 - **Not a shell.** There is no `subprocess`, no `os`, no command line.
 - **Not a notebook.** Nothing the tool offers survives a call. A name bound in one run does not
   exist in the next, so the whole analysis goes in one program.
-- **Not a file tool.** `open` is not in builtins. `data` in and `result` out are the only channels.
+- **Not persistent storage.** `open` is in builtins again (2026-08-29), but every path it resolves —
+  relative or absolute — is jailed to that one call's own scratch directory, which is destroyed with
+  the rest of the call. `data` in, `result` out, and a file for the *duration of one call* are the
+  three channels; there is no way to leave something for a later call to find.
 - **Not a data source.** It computes over what the caller gives it and knows nothing itself. A
   number it returns is only as good as the numbers in `data` — cite those, not this.
 
@@ -40,14 +44,24 @@ to the first is the change that matters.
 
 | Control | Where |
 | --- | --- |
-| A guarded `__import__` in the analysis namespace, allowlisting ~30 modules | `engine/runner.py` |
-| `open`, `eval`, `exec`, `compile`, `input`, `breakpoint`, `exit`, `quit` withheld from builtins | `engine/runner.py` |
+| A guarded `__import__` in the analysis namespace, allowlisting ~35 modules | `engine/runner.py` |
+| A guarded `open`, resolving every path against the call's own scratch directory | `engine/runner.py` |
+| `eval`, `exec`, `compile`, `input`, `breakpoint`, `exit`, `quit` withheld from builtins | `engine/runner.py` |
 | `socket.connect`, `connect_ex` and `create_connection` replaced with a refusal | `engine/runner.py` |
 
 These make the sandbox's shape obvious to an honest caller and raise the cost for a dishonest one.
 **They are not a wall.** `numpy` is reachable and the attribute graph hanging off a live library is
 large; a Python-level sandbox is a research area rather than a solved problem. Treating this half as
 the boundary would be a control that exists in order to be pointed at.
+
+**The guarded `open` belongs in this half, not the next one, and that is worth being explicit
+about.** It is ergonomics and defence in depth exactly like the import guard: it makes "files stay
+under your own scratch directory" the honest shape of `open()`'s behaviour for an honest caller, and
+it is exactly as porous — a library the analysis reaches through an *allowed* module (`rdkit`,
+`matplotlib`) can still write wherever *its own*, unrestricted `open` reference points, because that
+call never goes through the guard at all (see `_guarded_open`'s docstring). What actually keeps a
+write from leaving the pod is the next table: the read-only root filesystem and the deployment, not
+the jail.
 
 ### The boundary — holds even granting a complete escape from the half above
 
@@ -103,13 +117,25 @@ neutralisation and the `egress: []` policy.
 **What the boundary does not cover, stated rather than implied.** The per-call scratch directory is
 private to a run and is removed on every path, the kill included — but it is not a *confinement*.
 The pod's `/tmp` is an emptyDir shared by every call for the pod's lifetime, and a program that has
-escaped the guard can write an absolute path into it and have a later call read it back (measured;
-bounded by `RLIMIT_FSIZE` per file and by the pod's lifetime). Nothing in this process can close
-that without a mount namespace, so it is written down here instead of being promised away: what
-holds is that each call gets its own directory and leaves none behind, and what bounds the rest is
-the deployment — a read-only root filesystem, the emptyDir's lifetime, and the pod itself.
+escaped the import guard (reached a raw `os` reference) can write an absolute path into it and have
+a later call read it back (measured; bounded by `RLIMIT_FSIZE` per file and by the pod's lifetime).
+Nothing in this process can close that without a mount namespace, so it is written down here instead
+of being promised away: what holds is that each call gets its own directory and leaves none behind,
+and what bounds the rest is the deployment — a read-only root filesystem, the emptyDir's lifetime,
+and the pod itself.
 
-## Two design decisions worth knowing before you edit
+**The guarded `open` sits inside that same residual, not outside it, and this is the second half of
+the two-decisions section below spelled out here.** A library the analysis passes a path to —
+`rdkit.Chem.MolToMolFile(mol, path)`, `matplotlib.pyplot.savefig(path)` — writes through its *own*
+unrestricted `open` reference, never through `_guarded_open`, because that call is made from the
+library's own frame with the real, untouched `builtins`. So an absolute path handed to a library is
+still the caller's own responsibility exactly as it was before `open` was restored: the guard governs
+what the analysis's *own* `open(...)` calls can reach, not what a library does with a path it is
+given. What bounds a library-internal write to the same degree as everything else is unchanged —
+the read-only root filesystem and the rootless uid refuse a write anywhere but the scratch directory
+and the documented shared-`/tmp` residual above.
+
+## Three design decisions worth knowing before you edit
 
 **The import guard is a replaced `__import__`, and the obvious design was worse.** Purging modules
 from `sys.modules` and refusing them from a `sys.meta_path` finder was built, measured and thrown
@@ -125,6 +151,18 @@ RDKit so the caller's CPU budget would not be spent on our imports. Measured: an
 full by an analysis needing only `math`. The lazy-import problem it protected against is solved by
 the guard instead, so it bought latency and nothing else. A program now pays for what it imports,
 and `cpu_seconds` includes that.
+
+**`os` and `pathlib` stay off `ALLOWED_IMPORTS` even though `open` is back, and that is a decision
+rather than an oversight.** `pathlib.Path`'s own methods (`.open()`, `.read_text()`,
+`.write_bytes()`, …) call `io.open` through *pathlib's own* module globals, not through the analysis
+namespace's restricted `__builtins__` — the identical bypass the import-guard section above already
+describes: a library's own reference to a name resolves from the real, unrestricted `builtins` and
+`sys.modules`, because only the caller's own frame was ever given the guarded mapping. Adding
+`pathlib` to the allowlist would not extend the jail to it; it would hand back a second, unguarded
+filesystem door dressed up as though it were the guarded one, and the same reasoning is why `os`
+(`os.open`, `os.fdopen`, and every path-taking call in it) stays out too — a door with no jail on it
+at all. `_guarded_open` in `engine/runner.py` is written up as the one filesystem primitive the
+analysis namespace gets, for exactly this reason.
 
 ## `runner.py` is exempt from the egress scan, and owes a test for it
 
@@ -149,10 +187,22 @@ Defaults are in `engine/limits.py`; every one is a field with its reasoning besi
 | Memory | 2 GiB | `RLIMIT_AS`; the container limit is the real ceiling |
 | Output | 10,000 chars | a cap on the caller's *context*, never silent |
 | Result | 20,000 chars / 200 rows | frames are cut by row, so what returns still parses |
+| One file | `RLIMIT_FSIZE`, 16 MiB | `engine/limits.py`'s `file_bytes`; unchanged by the jail |
+
+**There is deliberately no separate cap on the scratch directory's *total* size.** `RLIMIT_FSIZE`
+already bounds any single file a program writes — a plot, a scratch CSV, an intermediate mol2 — the
+same pattern this server already uses for `RLIMIT_AS` against the container's own memory limit: a
+coarse process-level bound, backstopped by a deployment-level one rather than a second in-process
+counter. Total ephemeral usage across a pod's *concurrent* calls is that deployment's to bound —
+today's `deploy/deployment.yaml` sets CPU and memory requests/limits but no `ephemeral-storage`
+entry, which is a gap in the same family as those two rather than something this change closes; a
+pod-level `ephemeral-storage` limit belongs beside the CPU/memory pair there whenever that gap is
+picked up, not as a per-run field in `engine/limits.py` — `RLIMIT_FSIZE` already answers "how much
+can one program write", and a per-run counter cannot answer "how much can this pod hold at once".
 
 ## Running it
 
 ```sh
 make run-pyexec                 # 127.0.0.1:8899 with a dev token
-uv run pytest servers/pyexec    # 52 tests, ~25 s
+uv run pytest servers/pyexec    # 72 tests, ~25 s
 ```

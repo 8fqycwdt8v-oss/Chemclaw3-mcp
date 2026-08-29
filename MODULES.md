@@ -310,17 +310,20 @@ its port is taken from the top of the block for the same reason.
 ### `pyexec` — a bounded, offline Python analysis sandbox · port 8899 · **built**
 
 One tool, `run_python(code, data)`. Runs a short program in a disposable child process with numpy,
-pandas, scipy and RDKit importable, and returns whatever it assigned to `result`. For the work
-between tool calls — fitting a curve to points another tool returned, aggregating a table,
-converting units, canonicalising a structure, checking a mass balance. Classified `read_only`,
-because it writes nothing and an analysis that cannot run until after a plan is approved is an
-analysis that cannot inform it.
+pandas, scipy, matplotlib, sympy, scikit-learn, RDKit and OpenBabel importable, and returns whatever
+it assigned to `result`. For the work between tool calls — fitting a curve to points another tool
+returned, aggregating a table, converting units, canonicalising a structure, checking a mass
+balance, rendering a plot. Classified `read_only`, because nothing it writes outlives the call and
+an analysis that cannot run until after a plan is approved is an analysis that cannot inform it.
 
 *Offline:* **no vendored dataset, and no corpus to be sufficient.** What "offline" means here is
-stronger and narrower than elsewhere in the fleet: the child holds no credential, has no filesystem
-door (`open` is not in its builtins), cannot import a network module, and cannot connect through a
-reference to one that a library already holds. `tests/test_no_egress.py` proves the last of those by
-reaching for a connection from inside the sandbox rather than by pointing at a table.
+stronger and narrower than elsewhere in the fleet: the child holds no credential, cannot import a
+network module, and cannot connect through a reference to one that a library already holds.
+`tests/test_no_egress.py` proves the last of those by reaching for a connection from inside the
+sandbox rather than by pointing at a table. `open()` is back in its builtins (2026-08-29), but every
+path it resolves is jailed to that one call's own scratch directory, which is destroyed with the
+rest of the call — so the offline claim is unaffected: nothing written there is a door to anywhere
+else, and nothing written there survives the call that wrote it.
 
 *Provenance:* first-party, and built to answer a question Chemclaw3 had left open. Its
 `agent/scratchpad.py` withholds deepagents' `execute` verb, correctly — the two sandboxes that
@@ -330,10 +333,11 @@ agent's own process with no way for it to reach them. This server is the way to 
 not need the verb.
 
 **The one thing to understand before editing it: half its controls are a boundary and half are
-not.** The import guard and the withheld builtins are defence in depth and porous by construction;
-the process, the hard rlimits, the built-not-filtered environment together with the undumpable
-parent that keeps the *server's own* environment out of `/proc`, and the empty `egress:` are what
-hold. `servers/pyexec/README.md` states which is which, and that division is the design.
+not.** The import guard, the guarded `open`, and the other withheld builtins are defence in depth
+and porous by construction; the process, the hard rlimits, the built-not-filtered environment
+together with the undumpable parent that keeps the *server's own* environment out of `/proc`, and
+the empty `egress:` are what hold. `servers/pyexec/README.md` states which is which, and that
+division is the design.
 
 ---
 

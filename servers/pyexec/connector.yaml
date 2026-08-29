@@ -8,12 +8,15 @@
 # content egress and an unrestricted local shell. This is neither, and it needs none of that seam.
 name: pyexec
 description: >-
-  Run a short Python analysis in a bounded, offline child process: numpy, pandas, scipy and RDKit,
-  plus the arithmetic, container, text and date parts of the standard library. For the work between
-  tool calls — fitting a curve to returned points, aggregating a table, converting units,
-  canonicalising a structure, checking a mass balance. Data goes in as a JSON dict and comes back as
-  whatever the program assigns to `result`; there is no filesystem, no network and no state between
-  calls. Not a data source: it computes over what the caller gives it and knows nothing itself.
+  Run a short Python analysis in a bounded, offline child process: numpy, pandas, scipy, matplotlib,
+  sympy, scikit-learn, RDKit and OpenBabel, plus the arithmetic, container, text and date parts of
+  the standard library. For the work between tool calls — fitting a curve to returned points,
+  aggregating a table, converting units, canonicalising a structure, checking a mass balance,
+  rendering a plot. Data goes in as a JSON dict and comes back as whatever the program assigns to
+  `result` (a raw bytes/bytearray value comes back base64-wrapped); a jailed `open()` reads and
+  writes files under the call's own scratch directory only, and nothing written there survives past
+  the call — no persistence between calls, no network, no access outside the jail. Not a data
+  source: it computes over what the caller gives it and knows nothing itself.
 
 endpoint:
   transport: http
@@ -30,25 +33,33 @@ endpoint:
     token_env: CHEMCLAW_PYEXEC_TOKEN
   tools:
     - run_python
-  # `read_only`, and this is a deliberate reading rather than a technicality. The tool writes
-  # nothing, persists nothing, and has no effect that outlives the call: the child's working
-  # directory is deleted before the tool returns, and `open` is not in its builtins, so there is no
-  # door to anything else. What the classification decides is whether the agent may use it while
-  # building the plan a human is asked to approve — and an analysis that cannot run until after
-  # approval is an analysis that cannot inform it. "Which of these two routes has the lower E-factor"
-  # is a question that has to be answerable *before* somebody signs off on one of them.
+  # `read_only`, and this is a deliberate reading rather than a technicality. The tool persists
+  # nothing and has no effect that outlives the call: the child's scratch directory — the only place
+  # its jailed `open()` can reach — is deleted before the tool returns, whatever the program wrote
+  # into it. What the classification decides is whether the agent may use it while building the plan
+  # a human is asked to approve — and an analysis that cannot run until after approval is an analysis
+  # that cannot inform it. "Which of these two routes has the lower E-factor" is a question that has
+  # to be answerable *before* somebody signs off on one of them.
   #
   # RISK ACCEPTANCE (recorded rather than implied): `read_only` here means arbitrary, LLM-authored
   # Python is *executable before human approval* — the plan gate lets a read-only tool run while the
   # plan is still being built. That is accepted, and it is accepted only because the effect of the
   # code is bounded to a throwaway compute, not because the input is trusted. The acceptance rests
   # entirely on the sandbox boundary in `engine/`, which `README.md` states in full and holds even
-  # granting a complete escape from the import guard: a separate, disposable process killed by
-  # process group on a wall clock, **paired with zero fork headroom so a child cannot `setsid` out
-  # of that group**, hard rlimits a non-root process cannot raise, an allowlisted environment, an
-  # undumpable parent, an in-child network neutralisation, a per-call scratch directory removed on
-  # every path, a rootless read-only-root image, and an `egress: []` NetworkPolicy. Weaken any of
-  # those and this classification is no longer safe: a `state_changing` reading would be the correct
-  # response to a sandbox that could reach the filesystem, the network, or a credential.
+  # granting a complete escape from the import guard *and* the jailed `open()` (both are ergonomics
+  # and defence in depth, not the boundary — see `README.md`'s controls table): a separate,
+  # disposable process killed by process group on a wall clock, **paired with zero fork headroom so
+  # a child cannot `setsid` out of that group**, hard rlimits a non-root process cannot raise, an
+  # allowlisted environment, an undumpable parent, an in-child network neutralisation, a per-call
+  # scratch directory removed on every path, a rootless read-only-root image, and an `egress: []`
+  # NetworkPolicy. Restoring `open()` (2026-08-29) did not touch any of those: the jail decides what
+  # an *honest* program's paths mean, not what an escape can reach — the read-only root filesystem
+  # already refuses a write anywhere but the scratch directory and the pod's shared `/tmp`, and the
+  # latter was already the one residual `README.md` records rather than promises away (a call-scoped
+  # write there can be read by a *later* call within the same pod's lifetime; it still cannot leave
+  # the pod, and `RLIMIT_FSIZE` still bounds any one file). Nothing about the jail changes that
+  # residual or that bound. Weaken any of the boundary controls above and this classification is no
+  # longer safe: a `state_changing` reading would be the correct response to a sandbox that could
+  # reach the network, a credential, or a write that outlives the call inside the jail itself.
   read_only:
     - run_python

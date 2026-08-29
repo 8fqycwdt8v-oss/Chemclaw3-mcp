@@ -49,6 +49,16 @@ porous by construction — `numpy` is reachable and the attribute graph hanging 
 large — and treating it as a wall would be the mistake this repository files rows about, where a
 control exists in order to be pointed at.
 
+**The guarded `open` is the same kind of control, for the same reason.** It makes "you can write
+and read files under your own scratch directory, nothing else" the honest shape of what `open()`
+does, and it is exactly as porous as the import guard: a library the analysis reaches through an
+allowed module can still write wherever *its own* unrestricted `open` reference points (see
+`_guarded_open`).
+What actually stops a write from leaving the pod is unrelated to `open` at all — the read-only root
+filesystem, the rootless uid, and the fact that the scratch directory itself is destroyed on every
+path out of the call. The jail is what makes an honest program's paths behave the way its author
+expects; it is not why an escape cannot reach the filesystem.
+
 **The boundary is the process and the deployment**, and it holds even granting a complete escape
 from everything in this file: a separate process killed by process group on a wall clock, hard
 resource limits a non-root process cannot raise back, an environment built from an allowlist so no
@@ -65,14 +75,17 @@ half that matters more — what it does not.
 
 from __future__ import annotations
 
+import base64
 import builtins
 import io
 import json
+import os
 import resource
 import sys
 import traceback
 from collections.abc import Mapping, Sequence
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -93,6 +106,16 @@ ALLOWED_IMPORTS: frozenset[str] = frozenset(
         "pandas",
         "scipy",
         "rdkit",
+        "matplotlib",
+        "sympy",
+        "sklearn",  # scikit-learn's import name; see pyproject.toml for the package name.
+        "openbabel",
+        # `from openbabel import pybel` imports root `openbabel` (the `from` name is not the root
+        # `__import__` checks), so this line is not needed for that spelling. It is here anyway
+        # because OpenBabel's own packaging has, on other platforms, shipped `pybel` as a second,
+        # standalone top-level module — allowing the name costs nothing when it does not resolve
+        # (`ModuleNotFoundError`, not a sandbox refusal) and avoids a surprise if it ever does here.
+        "pybel",
         # Arithmetic and numbers.
         "math",
         "cmath",
@@ -134,17 +157,80 @@ ALLOWED_IMPORTS: frozenset[str] = frozenset(
 
 #: Builtins removed from the namespace a program runs in.
 #:
-#: `open` is the important one, and it is what makes `data` in and `result` out the only channel:
-#: with no file object there is no way to read the container's filesystem or to leave anything
-#: behind. The rest are either interactive (`input`, `help`, `breakpoint`), fatal to the runner
-#: (`exit`, `quit`), or a second front door to the compiler that would skip the guarded `__import__`
-#: entirely (`eval`, `exec`, `compile`).
+#: `open` used to be here — see `_guarded_open` below for why it is a replacement instead of a
+#: withholding, the same move `__import__` already made. The rest are either interactive (`input`,
+#: `help`, `breakpoint`), fatal to the runner (`exit`, `quit`), or a second front door to the
+#: compiler that would skip the guarded `__import__` entirely (`eval`, `exec`, `compile`).
 #:
-#: `__build_class__` stays, or no `class` statement works. `__import__` is not withheld but
-#: *replaced* — see the module docstring.
+#: `__build_class__` stays, or no `class` statement works. `__import__` and `open` are not withheld
+#: but *replaced* — see the module docstring and `_guarded_open`.
 WITHHELD_BUILTINS: frozenset[str] = frozenset(
-    {"open", "input", "help", "breakpoint", "exit", "quit", "eval", "exec", "compile"}
+    {"input", "help", "breakpoint", "exit", "quit", "eval", "exec", "compile"}
 )
+
+
+class SandboxPathError(ValueError):
+    """A program's `open()` call named a path outside its own scratch directory.
+
+    Its own class, for the same reason as `SandboxImportError`: a chemist reading `ValueError:
+    ... resolves outside the sandbox` can fix their program, where a bare `PermissionError` or
+    `OSError` would read like the deployment, not the code, was broken.
+    """
+
+
+def _guarded_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+    """`open()` for the analysis namespace: resolve against the scratch directory, then the real
+    `open`.
+
+    The scratch directory is the child's cwd (`sandbox.py` starts the process with `cwd=scratch`,
+    which is also `HOME` and `TMPDIR`), so the jail is "wherever this run already is" rather than a
+    second path this file has to be told. A relative path resolves against that cwd exactly as an
+    unguarded `open` would; an absolute one is checked against it instead of trusted. Resolving
+    through `Path.resolve()` — which follows `..` segments *and* symlinks — before the containment
+    check is what catches both an absolute escape (`/etc/passwd`) and a relative one
+    (`../../etc/passwd`), and a symlink planted inside the jail pointing out of it.
+
+    **This is the only filesystem primitive the analysis namespace gets, and that is deliberate.**
+    `os` and `pathlib` are not on `ALLOWED_IMPORTS` and must not be added for this: `pathlib.Path`'s
+    own methods (`.open()`, `.read_text()`, `.write_bytes()`, …) call `io.open` through *pathlib's
+    own* module globals, not through the analysis namespace's restricted `__builtins__` — the exact
+    bypass this module's docstring already describes for `import` (a library's own reference to a
+    name resolves from the real `builtins`/`sys.modules`, untouched, because only the caller's own
+    frame was given the restricted mapping). Exposing `pathlib` would hand back a second, unguarded
+    filesystem door labelled as though it were the guarded one. The same reasoning is why `os` stays
+    out: `os.open`/`os.fdopen` are a second door with no jail on them at all.
+
+    A file descriptor (`open(3)`) is refused for the same reason a bypass would be: an int names
+    whatever fd the child process already has open, which nothing here can jail after the fact — an
+    escaped `os` reference (a library import someone else already made) could hand the analysis a
+    descriptor for something outside the scratch directory, so the type is refused up front rather
+    than resolved.
+
+    **What this does not, and cannot, cover.** A library that receives a path from the analysis and
+    opens it *through its own, unrestricted `open` reference* —
+    `rdkit.Chem.MolToMolFile(mol, path)`, `matplotlib.pyplot.savefig(path)` — does not go through
+    this function at all, for the identical reason `pathlib` cannot be made safe by adding it to the
+    allowlist: the library's internal call resolves the real `builtins.open`, not the analysis
+    namespace's guarded one. That write lands wherever the path argument points, jail or not. See
+    `README.md`'s residual-risks paragraph.
+    """
+    if isinstance(file, int):
+        raise SandboxPathError(
+            "open() does not accept a file descriptor in the analysis sandbox; pass a path"
+        )
+    jail = Path.cwd().resolve()
+    candidate = Path(os.fspath(file))
+    target = candidate if candidate.is_absolute() else jail / candidate
+    resolved = target.resolve()
+    try:
+        resolved.relative_to(jail)
+    except ValueError:
+        raise SandboxPathError(
+            f"{file!r} resolves outside the sandbox's scratch directory ({jail}); a program may "
+            "only read and write files under its own working directory, and nothing written there "
+            "survives the call"
+        ) from None
+    return builtins.open(resolved, mode, *args, **kwargs)
 
 
 class SandboxImportError(ImportError):
@@ -224,8 +310,6 @@ def _task_count() -> int:
     to be no bound at all. One on a kernel that does not expose `/proc`, which makes the limit
     stricter rather than absent.
     """
-    import os
-
     try:
         return len(os.listdir("/proc/self/task"))
     except OSError:  # pragma: no cover — /proc is present on every supported platform.
@@ -273,17 +357,28 @@ def _neutralise_network() -> None:
 
 
 def _restricted_builtins() -> dict[str, Any]:
-    """The builtins a program sees: everything except `WITHHELD_BUILTINS`, plus a guarded import."""
+    """The builtins a program sees: everything except `WITHHELD_BUILTINS`, plus the two guarded
+    replacements — `__import__` and `open` — that stand in for what would otherwise be withheld
+    outright."""
     namespace = {
         name: value for name, value in vars(builtins).items() if name not in WITHHELD_BUILTINS
     }
     namespace["__import__"] = _guarded_import
+    namespace["open"] = _guarded_open
     return namespace
 
 
 # --------------------------------------------------------------------------------------------
 # Step 5 — run it, and encode what came back.
 # --------------------------------------------------------------------------------------------
+
+
+#: The envelope a raw `bytes`/`bytearray` value is wrapped in to cross the JSON boundary.
+#:
+#: One key, chosen to be both unambiguous (nothing a program's own `dict` would plausibly use) and
+#: documented to the model in `tools.py`'s docstring, since decoding it is the caller's job on the
+#: other side: `base64.b64decode(value["__b64__"])`.
+BYTES_ENVELOPE_KEY = "__b64__"
 
 
 def _encode(value: Any, limits: dict[str, Any]) -> Any:
@@ -296,6 +391,12 @@ def _encode(value: Any, limits: dict[str, Any]) -> Any:
 
     Frames and arrays are truncated by row here rather than by character later, so what comes back
     is still valid data instead of a JSON document cut in half.
+
+    Recurses into `dict`/`list`/`tuple`, because the realistic shape for a binary result is nested
+    — `{"plot_png": open("plot.png", "rb").read()}` — not a bare `bytes` assigned straight to
+    `result`. `json.dumps`'s own traversal would otherwise reach an un-encoded `bytes` value and
+    fall through to `default=repr`, producing a Python `repr` string rather than the documented
+    envelope.
     """
     numpy = sys.modules.get("numpy")
     pandas = sys.modules.get("pandas")
@@ -314,6 +415,12 @@ def _encode(value: Any, limits: dict[str, Any]) -> Any:
             return listed[:rows] if value.ndim == 1 else listed
         if isinstance(value, numpy.generic):
             return value.item()
+    if isinstance(value, (bytes, bytearray)):
+        return {BYTES_ENVELOPE_KEY: base64.b64encode(bytes(value)).decode("ascii")}
+    if isinstance(value, dict):
+        return {str(key): _encode(item, limits) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode(item, limits) for item in value]
     if isinstance(value, (set, frozenset)):
         return sorted(str(item) for item in value)
     if isinstance(value, ModuleType):

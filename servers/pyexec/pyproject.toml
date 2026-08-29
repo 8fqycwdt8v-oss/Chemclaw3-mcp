@@ -3,13 +3,38 @@ name = "chemclaw-mcp-pyexec"
 version = "0.1.0"
 description = "MCP server: run a short Python analysis in a bounded, offline child process."
 requires-python = ">=3.11"
-# Four scientific libraries, and each one is here because the tool's whole value is that a chemist's
+# Scientific libraries, and each one is here because the tool's whole value is that a chemist's
 # analysis can reach it. That is the argument this file is supposed to carry: `props` states that a
 # heavy dependency must be argued in the pull request that adds it, and these are the argument —
 # numpy and pandas for tables and arithmetic, scipy for fitting and statistics, RDKit for structures.
-# Nothing else. In particular there is no plotting library: an image cannot cross the JSON boundary
-# this server returns through, so shipping one would add ~100 MB to the image for no reachable
-# capability.
+#
+# matplotlib — plotting, added once `result` could carry `bytes`. It was excluded at first for the
+# reason recorded here until then: "an image cannot cross the JSON boundary this server returns
+# through". That reason no longer holds — `engine/runner.py::_encode` now wraps `bytes`/`bytearray`
+# in a `{"__b64__": ...}` envelope, so `result = {"plot_png": open("plot.png", "rb").read()}` after a
+# `savefig` round-trips through the tool. Backend is forced to `Agg` in `sandbox.py`'s `_environment`
+# so a transitive import never tries to reach a display.
+#
+# sympy — pure-Python symbolic math, for the unit algebra, kinetics and equation balancing a
+# chemist's ad-hoc analysis reaches for that numeric `scipy` does not cover. Low footprint: it adds
+# no compiled extension and no meaningful startup cost of its own.
+#
+# scikit-learn (imported as `sklearn`) — the standard toolkit for the fitting, classification and
+# clustering a chemist's analysis needs one level past `scipy`'s curve-fitting primitives. It already
+# depends on numpy and scipy, both already here, so the marginal cost is scikit-learn's own code.
+#
+# openbabel (imported as `openbabel`/`pybel`) — argued explicitly, since it overlaps RDKit's job:
+# structure format interconversion. It earns the second implementation because OpenBabel's format
+# coverage is broader in exactly the corner RDKit is weak in — round-tripping legacy mol2/PDB/xyz
+# and other force-field/simulation formats a chemist's file actually arrives in — not because it is a
+# better everyday cheminformatics library; RDKit stays the tool for SMILES/structure work. Ships a
+# prebuilt manylinux wheel (~35 MB installed), so it costs image size and nothing else: no build
+# step, no compiler, and importing `openbabel.pybel` triggers no subprocess and no network call
+# (`openbabel.executable.run` shells out to a bundled CLI binary, but that submodule is never
+# imported by `pybel` itself, and reaching it from the analysis namespace still hits the same
+# zero-fork-headroom rlimit that already refuses `os.fork()` — see `engine/limits.py`).
+#
+# RDKit for structures. Nothing else beyond these six.
 dependencies = [
     "mcp-server-kit",
     # Imported directly by this server's own engine metrics, not only through the kit.
@@ -19,6 +44,10 @@ dependencies = [
     "pandas>=2.2",
     "scipy>=1.11",
     "rdkit>=2024.3",
+    "matplotlib>=3.8",
+    "sympy>=1.12",
+    "scikit-learn>=1.4",
+    "openbabel>=3.1",
 ]
 
 [project.optional-dependencies]
