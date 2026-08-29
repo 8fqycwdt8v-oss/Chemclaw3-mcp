@@ -212,6 +212,77 @@ def test_a_file_descriptor_is_refused_rather_than_resolved() -> None:
     assert "file descriptor" in outcome.error
 
 
+def test_a_chdir_does_not_relocate_the_jail() -> None:
+    """A regression test for a bypass measured against an earlier version of this file: the jail
+    used to be `Path.cwd().resolve()`, re-read on every `open()` call, and `os` is reachable through
+    an already-allowed module's own attributes (`uuid.os`) with no import-guard escape needed — so
+    `os.chdir('/')` followed by an ordinary `open('etc/passwd')` read the real file. The jail is now
+    pinned once, in `main()`, before `exec()` ever runs, so relocating `cwd` only moves where a
+    *relative* path is joined from, never what it is checked against."""
+    outcome = run(
+        "import uuid\nos = uuid.os\nos.chdir('/')\nresult = open('etc/passwd').read()",
+        limits=_fast(),
+    )
+    assert outcome.error is not None
+    # The jail did not move, so `etc/passwd` is checked as (and does not exist as) a path *inside*
+    # the original scratch directory — an ordinary FileNotFoundError, not a successful read.
+    assert "FileNotFoundError" in outcome.error
+    assert "root:" not in (outcome.stdout + (outcome.result_json or ""))
+
+
+def test_open_does_not_accept_a_custom_opener() -> None:
+    """A regression test for a second bypass: `open()`'s own `opener=` callback receives `(name,
+    flags)` and may return a descriptor for any path, ignoring `name` entirely — forwarding it would
+    let a harmless-looking, in-jail `file=` argument be paired with an opener that reads or writes
+    somewhere else altogether. The guarded `open()`'s signature has no `**kwargs`, so passing
+    `opener` fails before any path is even checked."""
+    outcome = run(
+        "import uuid\nos = uuid.os\n"
+        "def sneaky(path, flags):\n"
+        "    return os.open('/etc/passwd', flags)\n"
+        "with open('dummy.txt', 'r', opener=sneaky) as f:\n"
+        "    result = f.read()",
+        limits=_fast(),
+    )
+    assert outcome.error is not None
+    assert "unexpected keyword argument 'opener'" in outcome.error
+    assert "root:" not in (outcome.stdout + (outcome.result_json or ""))
+
+
+def test_a_self_referential_result_degrades_to_repr_instead_of_crashing_the_runner() -> None:
+    """A regression test: recursing into `dict`/`list`/`tuple` to find nested bytes (see `_encode`)
+    means a cyclic container now recurses forever unless it is caught explicitly. Before that cycle
+    guard existed, this raised an uncaught `RecursionError` that killed the runner before it could
+    write any result at all — for a caller mistake that `json.dumps`'s own cycle detection used to
+    turn into a graceful `repr()` fallback."""
+    outcome = run("result = []\nresult.append(result)", limits=_fast())
+    assert outcome.error is None, outcome.error
+    assert not outcome.timed_out
+    assert outcome.result_json is not None
+
+
+def test_leaked_file_handles_are_closed_before_the_result_is_written() -> None:
+    """A regression test: `open()` existing at all means a careless (not malicious) program can
+    exhaust `RLIMIT_NOFILE` by never closing what it opens — and before this fix, the *runner's
+    own* final write of `result.json` shared that same exhausted budget and failed right after the
+    caller's program had already computed a perfectly good answer, discarding it. Opened handles
+    are now closed once `exec()` returns, reclaiming the budget before the runner needs it."""
+    outcome = run(
+        "fs = []\n"
+        "try:\n"
+        "    for i in range(1000):\n"
+        "        fs.append(open(f'f{i}.txt', 'w'))\n"
+        "except OSError as e:\n"
+        "    caught = str(e)\n"
+        "result = {'caught': caught, 'opened': len(fs)}",
+        limits=_fast(),
+    )
+    assert outcome.error is None, outcome.error
+    decoded = json.loads(outcome.result_json or "null")
+    assert "Too many open files" in decoded["caught"]
+    assert decoded["opened"] > 0
+
+
 def test_nothing_written_in_the_jail_survives_into_the_next_call() -> None:
     """Persistence was deliberately not built: the scratch directory is still destroyed per call."""
     first = run(

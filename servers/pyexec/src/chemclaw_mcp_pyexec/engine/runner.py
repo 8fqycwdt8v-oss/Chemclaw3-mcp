@@ -77,13 +77,14 @@ from __future__ import annotations
 
 import base64
 import builtins
+import contextlib
 import io
 import json
 import os
 import resource
 import sys
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import ModuleType
@@ -178,59 +179,121 @@ class SandboxPathError(ValueError):
     """
 
 
-def _guarded_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-    """`open()` for the analysis namespace: resolve against the scratch directory, then the real
-    `open`.
+def _make_guarded_open(jail: Path, opened: list[Any]) -> Callable[..., Any]:
+    """Build `open()` for one run: jailed to `jail`, tracking every handle it returns in `opened`.
 
-    The scratch directory is the child's cwd (`sandbox.py` starts the process with `cwd=scratch`,
-    which is also `HOME` and `TMPDIR`), so the jail is "wherever this run already is" rather than a
-    second path this file has to be told. A relative path resolves against that cwd exactly as an
-    unguarded `open` would; an absolute one is checked against it instead of trusted. Resolving
-    through `Path.resolve()` — which follows `..` segments *and* symlinks — before the containment
-    check is what catches both an absolute escape (`/etc/passwd`) and a relative one
-    (`../../etc/passwd`), and a symlink planted inside the jail pointing out of it.
+    A **factory** rather than a free function, and both of the things it closes over fix a real
+    bypass measured against an earlier version of this file that computed the jail from `Path.cwd()`
+    fresh on every call.
 
-    **This is the only filesystem primitive the analysis namespace gets, and that is deliberate.**
-    `os` and `pathlib` are not on `ALLOWED_IMPORTS` and must not be added for this: `pathlib.Path`'s
-    own methods (`.open()`, `.read_text()`, `.write_bytes()`, …) call `io.open` through *pathlib's
-    own* module globals, not through the analysis namespace's restricted `__builtins__` — the exact
-    bypass this module's docstring already describes for `import` (a library's own reference to a
-    name resolves from the real `builtins`/`sys.modules`, untouched, because only the caller's own
-    frame was given the restricted mapping). Exposing `pathlib` would hand back a second, unguarded
-    filesystem door labelled as though it were the guarded one. The same reasoning is why `os` stays
-    out: `os.open`/`os.fdopen` are a second door with no jail on them at all.
+    **The jail must be pinned before the analysis runs, not re-derived while it runs.**
+    `Path.cwd()` is process state, and this sandbox's import guard is porous by construction (see
+    the module docstring): `os` hangs off the attribute graph of modules already on
+    `ALLOWED_IMPORTS` (`uuid.os` resolves without any guard refusing it), so a program that never
+    writes `import os` can still reach `os.chdir()` and relocate what "here" means to a
+    `Path.cwd()`-based check. Measured: with the jail re-read per call,
+    `import uuid; uuid.os.chdir("/"); open("etc/passwd").read()` returned the real file — no
+    import-guard escape, just an allowed import's own attribute. Computing `jail` once, in
+    `main()`, before `exec()` ever runs, and closing over that value here removes the dependency on
+    mutable process state entirely: the containment check is against a value the analysis namespace
+    holds no reference to and cannot move.
 
-    A file descriptor (`open(3)`) is refused for the same reason a bypass would be: an int names
-    whatever fd the child process already has open, which nothing here can jail after the fact — an
-    escaped `os` reference (a library import someone else already made) could hand the analysis a
-    descriptor for something outside the scratch directory, so the type is refused up front rather
-    than resolved.
-
-    **What this does not, and cannot, cover.** A library that receives a path from the analysis and
-    opens it *through its own, unrestricted `open` reference* —
-    `rdkit.Chem.MolToMolFile(mol, path)`, `matplotlib.pyplot.savefig(path)` — does not go through
-    this function at all, for the identical reason `pathlib` cannot be made safe by adding it to the
-    allowlist: the library's internal call resolves the real `builtins.open`, not the analysis
-    namespace's guarded one. That write lands wherever the path argument points, jail or not. See
-    `README.md`'s residual-risks paragraph.
+    **Every handle this returns is appended to `opened`, so `main()` can close all of them before
+    it writes its own result.** `open()` existing at all means a program can now leak file
+    descriptors — open many files and close none, which does not require malice, just an unclosed
+    loop — and `RLIMIT_NOFILE` is shared with the runner's own bookkeeping. Measured: a program
+    that opens 1,000 files without closing any of them exhausts the descriptor budget, and the
+    *runner's own* subsequent `open(argv[2], "w")` — writing a `result` the program had already
+    computed correctly — then fails with the same `OSError`, discarding a good answer and
+    reporting the run as `"killed"`, the same bucket a genuine memory or CPU ceiling uses.
+    `main()` closes every handle in `opened` once `exec()` is done, successfully or not,
+    reclaiming the budget before it needs any of it.
     """
-    if isinstance(file, int):
-        raise SandboxPathError(
-            "open() does not accept a file descriptor in the analysis sandbox; pass a path"
-        )
-    jail = Path.cwd().resolve()
-    candidate = Path(os.fspath(file))
-    target = candidate if candidate.is_absolute() else jail / candidate
-    resolved = target.resolve()
-    try:
-        resolved.relative_to(jail)
-    except ValueError:
-        raise SandboxPathError(
-            f"{file!r} resolves outside the sandbox's scratch directory ({jail}); a program may "
-            "only read and write files under its own working directory, and nothing written there "
-            "survives the call"
-        ) from None
-    return builtins.open(resolved, mode, *args, **kwargs)
+
+    def _guarded_open(
+        file: Any,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> Any:
+        """`open()` for the analysis namespace: resolve against the pinned jail, then the real
+        `open`.
+
+        **No `**kwargs`, and that is the control, not an oversight.** Real `open()` also accepts
+        `opener=`, a callback invoked as `opener(name, flags)` that may return a file descriptor for
+        *any* path — it is not required to honour `name` at all. Forwarding it here would let a
+        program pass a harmless in-jail `file=` argument alongside an `opener` that hands back a
+        descriptor for something else entirely, defeating the containment check below without
+        needing to reach `os`. Measured: with `opener` forwarded, `open("safe.txt", opener=lambda
+        *_: os.open("/etc/passwd", os.O_RDONLY))` returned `/etc/passwd`'s contents while the
+        checked path stayed `"safe.txt"`. There is no legitimate reason an analysis needs a custom
+        opener, so the fix is not a check on its value — it is that this signature has nowhere to
+        put it. `closefd` is dropped the same way; it only means something when `file` is already a
+        descriptor, which is refused below regardless.
+
+        A relative path resolves against `jail` exactly as an unguarded `open` would resolve against
+        cwd; an absolute one is checked against it instead of trusted. Resolving through
+        `Path.resolve()` — which follows `..` segments *and* symlinks — before the containment check
+        is what catches both an absolute escape (`/etc/passwd`) and a relative one
+        (`../../etc/passwd`), and a symlink planted inside the jail pointing out of it.
+
+        **This is the only filesystem primitive the analysis namespace gets, and that is
+        deliberate.** `os` and `pathlib` are not on `ALLOWED_IMPORTS` and must not be added for
+        this: `pathlib.Path`'s own methods (`.open()`, `.read_text()`, `.write_bytes()`, …) call
+        `io.open` through *pathlib's own* module globals, not through the analysis namespace's
+        restricted `__builtins__` — the exact bypass this module's docstring already describes for
+        `import` (a library's own reference to a name resolves from the real `builtins`/
+        `sys.modules`, untouched, because only the caller's own frame was given the restricted
+        mapping). Exposing `pathlib` would hand back a second, unguarded filesystem door labelled as
+        though it were the guarded one. The same reasoning is why `os` stays out: `os.open`/
+        `os.fdopen` are a second door with no jail on them at all.
+
+        A file descriptor (`open(3)`) is refused for the same reason a bypass would be: an int names
+        whatever fd the child process already has open, which nothing here can jail after the fact —
+        an escaped `os` reference could hand the analysis a descriptor for something outside the
+        scratch directory, so the type is refused up front rather than resolved.
+
+        **What this does not, and cannot, cover.** A library that receives a path from the
+        analysis and opens it *through its own, unrestricted `open` reference* —
+        `rdkit.Chem.MolToMolFile(mol, path)`, `matplotlib.pyplot.savefig(path)` — does not go
+        through this function at all, for the identical reason `pathlib` cannot be made safe by
+        adding it to the allowlist: the library's internal call resolves the real
+        `builtins.open`, not the analysis namespace's guarded one. That write lands wherever the
+        path argument points, jail or not. See `README.md`'s residual-risks paragraph.
+        """
+        if isinstance(file, int):
+            raise SandboxPathError(
+                "open() does not accept a file descriptor in the analysis sandbox; pass a path"
+            )
+        candidate = Path(os.fsdecode(file))
+        target = candidate if candidate.is_absolute() else jail / candidate
+        resolved = target.resolve()
+        try:
+            resolved.relative_to(jail)
+        except ValueError:
+            raise SandboxPathError(
+                f"{file!r} resolves outside the sandbox's scratch directory ({jail}); a program "
+                "may only read and write files under its own working directory, and nothing "
+                "written there survives the call"
+            ) from None
+        # A context manager isn't an option: the handle must outlive this call and be returned to
+        # the analysis, which is exactly why `opened` exists — `main()` closes it once `exec()`
+        # is done rather than leaving it to the caller's own (possibly absent) `close()`.
+        handle = builtins.open(resolved, mode, buffering, encoding, errors, newline)  # noqa: SIM115
+        opened.append(handle)
+        return handle
+
+    # Named `open`, not `_guarded_open`: Python's own argument-binding `TypeError` (e.g. for a
+    # rejected `opener=`) quotes a callable's `__qualname__`, and a chemist seeing "open() got an
+    # unexpected keyword argument" can act on it, where "_make_guarded_open.<locals>._guarded_open()
+    # got an unexpected keyword argument" reads like the deployment is broken rather than the
+    # program — the same "name the sandbox, not the internals" reasoning `SandboxPathError` and
+    # `SandboxImportError` are already for.
+    _guarded_open.__name__ = "open"
+    _guarded_open.__qualname__ = "open"
+    return _guarded_open
 
 
 class SandboxImportError(ImportError):
@@ -356,15 +419,20 @@ def _neutralise_network() -> None:
     socket.gethostbyname_ex = _refuse
 
 
-def _restricted_builtins() -> dict[str, Any]:
+def _restricted_builtins(jail: Path, opened: list[Any]) -> dict[str, Any]:
     """The builtins a program sees: everything except `WITHHELD_BUILTINS`, plus the two guarded
     replacements — `__import__` and `open` — that stand in for what would otherwise be withheld
-    outright."""
+    outright.
+
+    Takes `jail` and `opened` rather than deriving them itself, so the value `open()` is jailed to
+    is fixed at the moment this namespace is built — before `exec()` runs — and cannot be re-read
+    from process state the analysis could already have changed. See `_make_guarded_open`.
+    """
     namespace = {
         name: value for name, value in vars(builtins).items() if name not in WITHHELD_BUILTINS
     }
     namespace["__import__"] = _guarded_import
-    namespace["open"] = _guarded_open
+    namespace["open"] = _make_guarded_open(jail, opened)
     return namespace
 
 
@@ -381,7 +449,7 @@ def _restricted_builtins() -> dict[str, Any]:
 BYTES_ENVELOPE_KEY = "__b64__"
 
 
-def _encode(value: Any, limits: dict[str, Any]) -> Any:
+def _encode(value: Any, limits: dict[str, Any], _stack: set[int] | None = None) -> Any:
     """Turn whatever a program assigned to `result` into something JSON can carry.
 
     JSON rather than pickle, and that is a security decision rather than a convenience one:
@@ -397,7 +465,22 @@ def _encode(value: Any, limits: dict[str, Any]) -> Any:
     `result`. `json.dumps`'s own traversal would otherwise reach an un-encoded `bytes` value and
     fall through to `default=repr`, producing a Python `repr` string rather than the documented
     envelope.
+
+    `_stack` tracks which containers are on the *current recursion path* (by `id()`), added on
+    entry and discarded on exit — the same scheme `json.dumps`'s own C encoder uses internally,
+    and for the same reason: a value referenced twice from different branches of an otherwise
+    ordinary structure is fine and must not be flagged, but a container that reaches itself is not
+    something this function can render, ever, so recursing further into it does not help. Before
+    recursion was added here, `json.dumps` caught this itself and raised `ValueError`, which
+    `_dumps` below already turns into a `repr()` fallback — an easy accident
+    (`result = []; result.append(result)`, e.g. while assembling a graph or tree) degraded
+    gracefully. Without an equivalent check here, `_encode`'s own recursion walked the cycle with
+    plain Python calls until it hit Python's recursion limit and raised `RecursionError`,
+    uncaught, crashing the whole runner before it could write a result — for the same caller
+    mistake that used to be an ordinary, reported error.
     """
+    if _stack is None:
+        _stack = set()
     numpy = sys.modules.get("numpy")
     pandas = sys.modules.get("pandas")
     rows = int(limits["result_rows"])
@@ -417,10 +500,17 @@ def _encode(value: Any, limits: dict[str, Any]) -> Any:
             return value.item()
     if isinstance(value, (bytes, bytearray)):
         return {BYTES_ENVELOPE_KEY: base64.b64encode(bytes(value)).decode("ascii")}
-    if isinstance(value, dict):
-        return {str(key): _encode(item, limits) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_encode(item, limits) for item in value]
+    if isinstance(value, (dict, list, tuple)):
+        marker = id(value)
+        if marker in _stack:
+            raise ValueError("circular reference in result")
+        _stack.add(marker)
+        try:
+            if isinstance(value, dict):
+                return {str(key): _encode(item, limits, _stack) for key, item in value.items()}
+            return [_encode(item, limits, _stack) for item in value]
+        finally:
+            _stack.discard(marker)
     if isinstance(value, (set, frozenset)):
         return sorted(str(item) for item in value)
     if isinstance(value, ModuleType):
@@ -434,7 +524,9 @@ def _dumps(value: Any, limits: dict[str, Any]) -> tuple[str | None, bool]:
         return None, False
     try:
         text = json.dumps(_encode(value, limits), default=repr)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
+        # `RecursionError` is a backstop for a merely very deep (not cyclic) structure — the cycle
+        # itself is caught above, inside `_encode`, well before Python's own recursion limit fires.
         text = json.dumps(repr(value))
     cap = int(limits["result_chars"])
     return (text[:cap], True) if len(text) > cap else (text, False)
@@ -485,9 +577,15 @@ def main(argv: list[str]) -> int:
     _neutralise_network()
     _apply_runtime_limits(limits)
 
+    # Pinned here, before `exec()` ever runs, and never re-read afterwards — see
+    # `_make_guarded_open`'s docstring for the escape this closes (an analysis relocating `cwd`
+    # and taking a `Path.cwd()`-based jail with it).
+    jail = Path.cwd().resolve()
+    opened_files: list[Any] = []
+
     namespace: dict[str, Any] = {
         "__name__": "__analysis__",
-        "__builtins__": _restricted_builtins(),
+        "__builtins__": _restricted_builtins(jail, opened_files),
         "data": payload.get("data") or {},
         "result": None,
     }
@@ -500,6 +598,12 @@ def main(argv: list[str]) -> int:
             exec(compiled, namespace)  # Running it is the whole capability.
     except BaseException as failure:  # A program's own failure is data, `SystemExit` included.
         error = _caller_traceback(failure)
+    finally:
+        # Reclaim every descriptor the analysis opened and never closed, before this runner spends
+        # any of its own `RLIMIT_NOFILE` budget writing the result — see `_make_guarded_open`.
+        for handle in opened_files:
+            with contextlib.suppress(OSError):
+                handle.close()
 
     stdout, out_cut = _truncate(out.getvalue() + err.getvalue(), int(limits["stdout_chars"]))
     encoded, result_cut = _dumps(namespace.get("result"), limits)
