@@ -12,6 +12,7 @@ mechanism rather than the number.
 
 from __future__ import annotations
 
+import base64
 import errno
 import json
 import os
@@ -144,11 +145,170 @@ def test_the_dunder_import_route_is_refused_too() -> None:
     assert "SandboxImportError" in outcome.error
 
 
-def test_open_is_not_in_builtins() -> None:
-    """No file object is what makes `data` in and `result` out the only channel."""
+def test_open_reads_a_path_outside_the_jail_the_same_way_it_always_refused_it() -> None:
+    """`open` is guarded now, not withheld — the refusal moved from `NameError` to
+    `SandboxPathError`, and this is that refusal, not a lost capability. See the jail tests below
+    for what `open` now *does* do."""
     outcome = run("result = open('/etc/passwd').read()", limits=_fast())
     assert outcome.error is not None
-    assert "name 'open' is not defined" in outcome.error
+    assert "SandboxPathError" in outcome.error
+    assert "resolves outside the sandbox" in outcome.error
+
+
+# --------------------------------------------------------------------------------------------
+# The jailed filesystem. `open` was restored so a program could write a plot or read one back
+# inside its own call; these tests are the boundary of that restoration.
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_file_written_in_the_jail_can_be_read_back_in_the_same_call() -> None:
+    """The whole point of restoring `open`: a program's own scratch file round-trips."""
+    outcome = run(
+        "with open('scratch.txt', 'w') as f:\n"
+        "    f.write('hello sandbox')\n"
+        "with open('scratch.txt') as f:\n"
+        "    result = f.read()",
+        limits=_fast(),
+    )
+    assert outcome.error is None, outcome.error
+    assert json.loads(outcome.result_json or "null") == "hello sandbox"
+
+
+def test_a_relative_traversal_out_of_the_jail_is_refused() -> None:
+    """`../../etc/passwd` is a `..` walk out of the scratch directory, not a path inside it."""
+    outcome = run("result = open('../../etc/passwd').read()", limits=_fast())
+    assert outcome.error is not None
+    assert "SandboxPathError" in outcome.error
+    assert "resolves outside the sandbox" in outcome.error
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "/proc/1/environ"])
+def test_an_absolute_path_outside_the_jail_is_refused(path: str) -> None:
+    """An absolute path is checked against the jail, never trusted because it looks well-formed."""
+    outcome = run(f"result = open({path!r}).read()", limits=_fast())
+    assert outcome.error is not None
+    assert "SandboxPathError" in outcome.error
+    assert "resolves outside the sandbox" in outcome.error
+
+
+def test_a_symlink_planted_inside_the_jail_cannot_point_out_of_it() -> None:
+    """`Path.resolve()` follows symlinks before the containment check, not after."""
+    outcome = run(
+        "import uuid\nos = uuid.os\n"
+        "os.symlink('/etc/passwd', 'escape')\n"
+        "result = open('escape').read()",
+        limits=_fast(),
+    )
+    assert outcome.error is not None
+    assert "SandboxPathError" in outcome.error
+
+
+def test_a_file_descriptor_is_refused_rather_than_resolved() -> None:
+    """An int names whatever fd the child already holds; nothing here can jail that after the
+    fact."""
+    outcome = run("result = open(1, 'w').write('x')", limits=_fast())
+    assert outcome.error is not None
+    assert "SandboxPathError" in outcome.error
+    assert "file descriptor" in outcome.error
+
+
+def test_nothing_written_in_the_jail_survives_into_the_next_call() -> None:
+    """Persistence was deliberately not built: the scratch directory is still destroyed per call."""
+    first = run(
+        "with open('leftover.txt', 'w') as f:\n    f.write('from the first run')\nresult = 'wrote'",
+        limits=_fast(),
+    )
+    assert first.error is None
+    second = run(
+        "result = 'leftover.txt exists' if __import__('uuid').os.path.exists('leftover.txt') "
+        "else 'gone'",
+        limits=_fast(),
+    )
+    assert json.loads(second.result_json or "null") == "gone"
+
+
+def test_a_bytes_result_comes_back_as_the_documented_base64_envelope() -> None:
+    """A program that returns raw bytes gets the `{"__b64__": ...}` envelope `tools.py`
+    documents."""
+    outcome = run("result = b'\\x89PNG raw bytes'", limits=_fast())
+    assert outcome.error is None, outcome.error
+    decoded = json.loads(outcome.result_json or "null")
+    assert set(decoded) == {"__b64__"}
+    assert base64.b64decode(decoded["__b64__"]) == b"\x89PNG raw bytes"
+
+
+def test_bytes_nested_inside_a_dict_result_are_also_encoded() -> None:
+    """The realistic shape — `{"plot_png": open(path, "rb").read()}` — not a bare top-level
+    value."""
+    outcome = run(
+        "result = {'name': 'plot', 'plot_png': bytearray(b'fake-png-bytes')}",
+        limits=_fast(),
+    )
+    assert outcome.error is None, outcome.error
+    decoded = json.loads(outcome.result_json or "null")
+    assert decoded["name"] == "plot"
+    assert base64.b64decode(decoded["plot_png"]["__b64__"]) == b"fake-png-bytes"
+
+
+def test_a_plot_can_be_written_read_back_and_returned_as_bytes() -> None:
+    """The end-to-end path the matplotlib dependency exists for: savefig, guarded open, base64 out.
+
+    A small, low-DPI figure on purpose: the base64 envelope is ~1.33x the PNG's own bytes, and this
+    keeps the encoded result comfortably under the default 20,000-character result cap so the test
+    is about the round-trip rather than about the truncation `result_chars` already has its own test
+    for.
+    """
+    outcome = run(
+        "import matplotlib.pyplot as plt\n"
+        "fig, ax = plt.subplots(figsize=(1, 1), dpi=40)\n"
+        "ax.plot([1, 2, 3], [1, 4, 9])\n"
+        "fig.savefig('plot.png')\n"
+        "with open('plot.png', 'rb') as f:\n"
+        "    result = {'plot_png': f.read()}\n",
+        limits=_fast(wall_seconds=15.0, cpu_seconds=10),
+    )
+    assert outcome.error is None, outcome.error
+    decoded = json.loads(outcome.result_json or "null")
+    png_bytes = base64.b64decode(decoded["plot_png"]["__b64__"])
+    assert len(png_bytes) > 100
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_sympy_solves_a_trivial_equation() -> None:
+    outcome = run(
+        "import sympy as sp\n"
+        "x = sp.symbols('x')\n"
+        "result = [float(s) for s in sp.solve(sp.Eq(2 * x + 4, 0), x)]",
+        limits=_fast(),
+    )
+    assert outcome.error is None, outcome.error
+    assert json.loads(outcome.result_json or "null") == [-2.0]
+
+
+def test_scikit_learn_fits_a_trivial_linear_regression() -> None:
+    outcome = run(
+        "import numpy as np\n"
+        "from sklearn.linear_model import LinearRegression\n"
+        "X = np.array([[1], [2], [3], [4]])\n"
+        "y = np.array([2, 4, 6, 8])\n"
+        "model = LinearRegression().fit(X, y)\n"
+        "result = float(model.coef_[0])",
+        limits=_fast(),
+    )
+    assert outcome.error is None, outcome.error
+    assert json.loads(outcome.result_json or "null") == pytest.approx(2.0)
+
+
+def test_openbabel_converts_a_smiles_string_to_another_format() -> None:
+    """OpenBabel's reason for being here: format interconversion RDKit covers less well."""
+    outcome = run(
+        "from openbabel import pybel\n"
+        "mol = pybel.readstring('smi', 'c1ccccc1O')\n"
+        "result = mol.write('mol2')",
+        limits=_fast(),
+    )
+    assert outcome.error is None, outcome.error
+    assert "TRIPOS" in json.loads(outcome.result_json or "null")
 
 
 @pytest.mark.parametrize("name", ["eval", "exec", "compile", "input", "breakpoint"])
