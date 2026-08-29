@@ -61,5 +61,16 @@ endpoint:
   # residual or that bound. Weaken any of the boundary controls above and this classification is no
   # longer safe: a `state_changing` reading would be the correct response to a sandbox that could
   # reach the network, a credential, or a write that outlives the call inside the jail itself.
+  #
+  # The jail itself shipped broken on 2026-08-29 and was fixed the same day, and both defects were
+  # ordinary allowed code, not an escape from anything: `open()`'s own `opener=` argument was
+  # forwarded unchecked, so a caller-supplied opener could return a descriptor for any path while
+  # the checked `file=` argument stayed innocuous; and the jail was `Path.cwd().resolve()` re-read
+  # on every call, so `import uuid; uuid.os.chdir("/")` (an already-allowed import's own attribute,
+  # no import-guard bypass needed) relocated it. Neither one reached the network, a credential, or
+  # a write outliving the call — read/write was bounded to what the pod's own uid could already
+  # reach, which the paragraph above already treats as inside the accepted risk — so this
+  # classification did not need to change while they were open, but they are recorded here because
+  # the paragraph above had, until then, understated how easily the jail moved.
   read_only:
     - run_python

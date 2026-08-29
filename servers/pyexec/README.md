@@ -45,7 +45,7 @@ to the first is the change that matters.
 | Control | Where |
 | --- | --- |
 | A guarded `__import__` in the analysis namespace, allowlisting ~35 modules | `engine/runner.py` |
-| A guarded `open`, resolving every path against the call's own scratch directory | `engine/runner.py` |
+| A guarded `open`, resolving every path against a jail pinned before the analysis runs | `engine/runner.py` |
 | `eval`, `exec`, `compile`, `input`, `breakpoint`, `exit`, `quit` withheld from builtins | `engine/runner.py` |
 | `socket.connect`, `connect_ex` and `create_connection` replaced with a refusal | `engine/runner.py` |
 
@@ -135,6 +135,28 @@ given. What bounds a library-internal write to the same degree as everything els
 the read-only root filesystem and the rootless uid refuse a write anywhere but the scratch directory
 and the documented shared-`/tmp` residual above.
 
+**The jail was pinned to the wrong thing for a while, and two measured bypasses proved it — neither
+one was an escape from anything, both were ordinary allowed code.** The first version of
+`_guarded_open` computed `jail = Path.cwd().resolve()` fresh on every call, trusting the process's
+current working directory as the containment boundary. `os` hangs off the attribute graph of modules
+already on `ALLOWED_IMPORTS` (`uuid.os`, for one) — the import guard's own porousness, stated above —
+so a program never importing `os` directly could still reach `os.chdir("/")` and relocate what "here"
+meant to every `open()` call after it. Measured: `import uuid; uuid.os.chdir("/");
+open("etc/passwd").read()` returned the real file. Separately, `_guarded_open` forwarded `*args` and
+`**kwargs` straight to the real `open()` after checking only `file`, and real `open()` accepts an
+`opener=` callback that receives `(name, flags)` and may return a descriptor for any path at all,
+independent of `name`. Measured: `open("safe.txt", opener=lambda *_: os.open("/etc/passwd",
+os.O_RDONLY))` returned `/etc/passwd`'s contents while the checked path stayed `"safe.txt"`. Fixed
+the same day (2026-08-29): the jail is now computed once, in `main()`, before `exec()` ever runs, and
+closed over by the `open()` a run's namespace gets, so nothing the analysis does afterward can move
+it; and `_guarded_open`'s signature takes no `**kwargs` at all, so `opener` (and `closefd`, which only
+ever meant anything for a descriptor `_guarded_open` already refuses) has nowhere to be passed.
+Neither bypass reached the network, a credential, or a write outliving the call — both were bounded
+to what the pod's own uid could already read or write, the same ceiling the residual paragraphs above
+already accept — so the `read_only` classification never needed to change while they were open; they
+are recorded here because until this fix, "the jail decides what an honest program's paths mean" was
+true of the *intent* and not, for these two shapes of call, of the code.
+
 ## Three design decisions worth knowing before you edit
 
 **The import guard is a replaced `__import__`, and the obvious design was worse.** Purging modules
@@ -204,5 +226,5 @@ can one program write", and a per-run counter cannot answer "how much can this p
 
 ```sh
 make run-pyexec                 # 127.0.0.1:8899 with a dev token
-uv run pytest servers/pyexec    # 72 tests, ~25 s
+uv run pytest servers/pyexec    # 76 tests, ~25 s
 ```
