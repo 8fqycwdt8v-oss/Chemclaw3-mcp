@@ -217,3 +217,77 @@ async def test_without_the_hold_open_the_caller_never_gets_an_answer(
                     await asyncio.wait_for(
                         session.call_tool("slow", {}), timeout=SLOW_TOOL_SECONDS * 2
                     )
+
+
+@pytest.mark.parametrize("interfering", ["ping", "tools/list"])
+async def test_a_second_request_does_not_reap_the_call_in_flight(
+    serving: Callable[..., Any], mcp_session: Callable[..., Any], interfering: str
+) -> None:
+    """The arm the first hold-open test could not see: a session carrying *other* traffic.
+
+    Holding the deadline off from inside the tool call is only half of it, because upstream pushes
+    the same deadline forward on **every** request for an existing session — a ping and a
+    `tools/list` included — which overwrites `math.inf` with `now + timeout` and hands the
+    calculation the very cancellation the hold-open exists to prevent. Measured before the
+    re-assert, with a 1 s timeout and a 2.5 s tool interfered with at 0.5 s: the call answers in
+    **2.51 s** alone, and is cut at **1.51 s** with zero bytes written the moment anything else
+    speaks on the session — which is the arithmetic exactly, 0.5 s of interference plus the 1 s
+    deadline it re-armed. This docstring shipped saying 5.12 s and ~1.8 s, neither reproducible,
+    while `sessions.py` said 1.5 s three lines away: two contradicting figures for one cut, inside
+    the commit that fixes the thing they describe.
+
+    The trigger is not hypothetical. Chemclaw3's `core/mcp_session.py` sends a `PingRequest` as a
+    cancellation flush when one call of a fan-out times out, so a `calc` session doing exactly what
+    it is designed to do destroys the *other* CREST search running beside it.
+    """
+    app = connector_app(_probe_server("interfered"), name="interfered", token_env=TOKEN_ENV)
+    with serving(app) as base:
+        async with mcp_session(base, token=TOKEN) as session:
+            call = asyncio.ensure_future(session.call_tool("slow", {}))
+            await asyncio.sleep(IDLE_TIMEOUT_SECONDS / 2)
+            if interfering == "ping":
+                await session.send_ping()
+            else:
+                await session.list_tools()
+            result = await asyncio.wait_for(call, timeout=SLOW_TOOL_SECONDS * 3)
+            assert not result.isError, result.content
+            assert "finished" in result.content[0].text
+
+
+async def test_a_politely_deleted_session_is_reclaimed(
+    serving: Callable[..., Any], mcp_session: Callable[..., Any]
+) -> None:
+    """The half the idle reaper does not cover: a client that says goodbye properly.
+
+    Upstream's only unconditional removal from `_server_instances` is in `run_server`'s `finally`,
+    guarded by `and not http_transport.is_terminated` — and `terminate()` sets that flag as its
+    first statement, so a `DELETE` takes exactly the branch that skips the `del`. The entry and its
+    transport then stay for the life of the process, and no idle deadline can reach them because
+    the scope's task is already gone.
+
+    **This is the fleet's happy path**, which is why it hid: Chemclaw3 sends its `DELETE` from a
+    `finally`, and the module's docstring reasoned only about the case where that `finally` is not
+    reached. Measured over 300 sessions (`initialize`, `tools/call`, `DELETE`): 300 of 300 stayed
+    in the map, every one `is_terminated`, while an abandoned session in the same run was reaped
+    correctly. With the sweep, RSS goes flat after the allocator warms — 76 kB/session on the first
+    batch of 300 and 81, 40 and 13 bytes on the next three, against a count that climbed by exactly
+    300 per batch without it.
+
+    Two sessions rather than one, and one of them never calls a tool: the per-transport wrappers
+    are installed from inside `call_tool`, so a session that only initializes and leaves is the
+    case a hook on those wrappers would miss.
+    """
+    server = _probe_server("reclaimed")
+    app = connector_app(server, name="reclaimed", token_env=TOKEN_ENV)
+    with serving(app) as base:
+        instances = server.session_manager._server_instances
+        async with mcp_session(base, token=TOKEN) as session:
+            await session.call_tool("echo", {"text": "hello"})
+        async with mcp_session(base, token=TOKEN):
+            pass
+        assert instances == {}, (
+            f"{len(instances)} session(s) survived their own DELETE: "
+            f"{[(sid, getattr(t, 'is_terminated', None)) for sid, t in instances.items()]}; "
+            "upstream skips its own cleanup for a terminated transport, so nothing else reclaims "
+            "these and the idle deadline cannot reach them"
+        )

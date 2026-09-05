@@ -25,7 +25,11 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_pyexec.engine import sandbox
-from chemclaw_mcp_pyexec.engine.admission import ADMISSION_MARKER, Admission
+from chemclaw_mcp_pyexec.engine.admission import (
+    ADMISSION_MARKER,
+    DEFAULT_MAX_CONCURRENT_RUNS,
+    Admission,
+)
 from chemclaw_mcp_pyexec.engine.limits import Limits, default_memory_bytes
 from chemclaw_mcp_pyexec.engine.runner import ALLOWED_IMPORTS
 
@@ -37,7 +41,9 @@ server = FastMCP("pyexec")
 # which is what makes the sandbox's `RLIMIT_AS` a bound that can actually fire. Built at import so
 # the number a gate enforces is the number the limits were derived from; `engine/admission.py` has
 # the measurement and the argument for refusing rather than queueing.
-_MAX_CONCURRENT_RUNS = int(os.environ.get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS", "2"))
+_MAX_CONCURRENT_RUNS = int(
+    os.environ.get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS", str(DEFAULT_MAX_CONCURRENT_RUNS))
+)
 _admission = Admission(_MAX_CONCURRENT_RUNS)
 _LIMITS = Limits(memory_bytes=default_memory_bytes(_MAX_CONCURRENT_RUNS))
 

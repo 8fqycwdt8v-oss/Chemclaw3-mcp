@@ -22,6 +22,15 @@ and `deploy/deployment.yaml` sets `limits.cpu` to the same number. It is also wh
 `limits.default_memory_bytes` divides the pod's memory limit by, so the two resources are bounded by
 one number instead of two.
 
+**That is a two-way coupling to a file this package cannot import, and for one commit nothing
+checked either half.** Both this paragraph and `tests/test_capacity.py` — which said it ran "against
+the numbers `deploy/deployment.yaml` actually ships" — held their own transcribed copies of the
+Deployment's CPU and memory limits, so lowering `limits.cpu` to `"1"` put two runs on one core, the
+exact breakage this gate exists to end, with the suite still green. The default now lives here
+beside its argument, and that test reads the shipped Deployment — CPU limit, memory limit, and any
+`env:` overriding the ceiling — so a change to either side lands on an assertion instead of on a
+sentence. `servers/chem/tests/test_depiction_bound.py` is where that pattern comes from.
+
 **Refused rather than queued**, which is the same argument `servers/calc` and `servers/chem` make
 and it is sharper here: a program held at the back of a queue burns its 20 s wall clock waiting and
 is then killed for it, so queueing does not delay a run, it destroys one. A prompt `ValueError` is
@@ -36,12 +45,22 @@ from __future__ import annotations
 
 import threading
 
-__all__ = ["ADMISSION_MARKER", "Admission"]
+__all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_RUNS", "Admission"]
 
 # The attribute `tools._admitted` stamps on a gated tool, and the only thing that tells the coverage
 # test which tools are gated. A name rather than a hand-kept list, because the thing that must not
 # be forgotten is exactly the thing a forgetful change adds.
 ADMISSION_MARKER = "__admission_gated__"
+
+#: How many analyses run at once by default — the ceiling, and the divisor of the pod's memory.
+#:
+#: **Two, because a slot is a core and `deploy/deployment.yaml` gives this pod two of them.** A run
+#: is a single-threaded child, so admitting more runs than the container's `limits.cpu` is what
+#: turns a 15-CPU-second program into a wall-clock kill; admitting fewer leaves a core idle while a
+#: caller is refused. Overridable with `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS`, read in `tools.py`;
+#: the number lives here so it sits beside the argument for it, and so `tests/test_capacity.py` can
+#: hold it against the Deployment without importing a transport.
+DEFAULT_MAX_CONCURRENT_RUNS = 2
 
 
 class Admission:
