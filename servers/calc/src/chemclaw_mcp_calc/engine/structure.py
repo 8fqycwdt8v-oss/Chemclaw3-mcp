@@ -27,6 +27,7 @@ Coordinates are in **Angstrom** — the interchange unit of RDKit, XYZ files, an
 from __future__ import annotations
 
 import numpy as np
+from mcp_server_kit.limits import atom_count_error
 from pydantic import BaseModel, Field, computed_field, model_validator
 from rdkit import Chem
 
@@ -225,6 +226,27 @@ def structure_from_smiles(
     """
     canonical = require_canonical_smiles(smiles)
     mol = parse_molecule(canonical)
+    # **Refused here, before the embedding, because `Structure`'s own ceiling is checked after it.**
+    # `_normalize_and_validate` rejects a molecule over `xtb_max_atoms`, and it runs on the finished
+    # `Structure` — i.e. after ETKDG and MMFF have already done the work. The kit's SMILES guard
+    # bounds the *crash* at 2,000 atoms and not the cost, so the interval between the two ceilings
+    # was paid in full and then thrown away. Measured, one process each:
+    #
+    #     "C"*120 -> 362 atoms,  13.49 s, accepted
+    #     "C"*200 -> 602 atoms,  66.68 s, refused after the work
+    #     "C"*300 -> 902 atoms, 206.23 s, refused after the work
+    #
+    # That is ~n^2.8, so a 2 kB SMILES — inside the body cap and inside the kit's guard — is hours
+    # of one core. `embed_structure` and `calculation_key` are `read_only`, so they carry no
+    # `engine.admission` slot and four such calls own a four-core pod; `MODULES.md` calls them
+    # "helpers that compute nothing" and `tools.py` calls them "cheap — RDKit only, no SCF", which
+    # is true about the SCF and not about the cost. Asking the same question of the parsed molecule
+    # first makes the refusal 4 ms.
+    oversized = atom_count_error(
+        mol.GetNumAtoms(), subject="this molecule", max_atoms=settings.xtb_max_atoms
+    )
+    if oversized:
+        raise ValueError(oversized)
     formal_charge = Chem.GetFormalCharge(mol)
     if charge is None:
         charge = formal_charge
