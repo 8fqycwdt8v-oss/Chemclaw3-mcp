@@ -9,6 +9,7 @@ data and the two functions the error messages need.
 **The names were measured, not recalled.** `ALPB_SOLVENTS` is every name tblite accepts for
 `alpb-solvation`, obtained by probing the solvent-name table compiled into `_libtblite` against a
 live `Calculator`. That distinction matters, because tblite has *two* tables and rejects a name
+
 from each with a different message: a name absent from the dielectric database fails with "String
 value for epsilon was not found" (`2-methyltetrahydrofuran`, `mtbe`), while a name present there
 but lacking Born parameters for the Hamiltonian fails with "No ALPB/GBSA parameters found for the
@@ -27,6 +28,8 @@ a name the method knows.
 from __future__ import annotations
 
 from difflib import get_close_matches
+
+from chemclaw_mcp_calc.engine.chem import _echo
 
 __all__ = [
     "ALPB_SOLVENTS",
@@ -216,8 +219,16 @@ def require_supported_solvent(name: str | None) -> None:
     """
     if name is None or is_supported(name):
         return
+    # **Bounded for the reason `chem._echo` exists, on the argument that was missed.** `_echo`
+    # was added because a 3,000-character SMILES produced a 3,018-character refusal that
+    # `connector_app` hands to the model verbatim; `solvent` is the *other* caller-controlled
+    # string, taken by eleven of this server's tools, and it was still interpolated raw. Measured
+    # through the tools, a 900,000-character solvent name produced a **900,636-character**
+    # `ValidationError` — 300x the defect the bound was written for — in the context window of the
+    # turn that asked.
     raise ValueError(
-        f"GFN2-xTB's ALPB solvation model has no parameters for {name!r}{did_you_mean(name)}. "
+        f"GFN2-xTB's ALPB solvation model has no parameters for {_echo(name)!r}"
+        f"{did_you_mean(name)}. "
         "It is an implicit model with a fixed set of parameterized solvents, so an unlisted one "
         "cannot be approximated — pick the closest supported solvent, or run in the gas phase. "
         f"Commonly used supported solvents: {', '.join(SUGGESTED_SOLVENTS)}."

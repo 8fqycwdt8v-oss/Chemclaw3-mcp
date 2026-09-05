@@ -16,6 +16,17 @@ The copy is not free, and the cost is specific. If either drifts:
 So the contract is written as **data**: an input and the exact string it must produce, taken by
 running Chemclaw3's own code rather than by reading this repository's copy and agreeing with it.
 
+**Every `params_hash` here moved when `CALCULATION_EPOCH` went 2 -> 3, and that is the mechanism
+working rather than a re-pin to wave through.** The epoch is folded into `params_hash`, so a bump
+necessarily rewrites every literal below — which is what makes an *accidental* change to the key
+derivation impossible to land quietly, and what makes a deliberate one a visible diff. The bump
+itself is argued in `engine/key.py`'s changelog: the Fukui payload had been truncated to
+`xtb_fukui_top_n` before caching under a key that excludes `top_n` and `mode`, so every row an
+earlier release stored holds 15 of 21 sites under a byte-identical key. Nothing validates
+`len(sites) == total_atoms`, so serving one to `ranked_for(mode)` returns a ranking missing six
+sites with `total_atoms: 21` beside it. Re-deriving these strings is therefore the *evidence* the
+invalidation happened, not paperwork after it.
+
 **The reproduction command has to name modules Chemclaw3 still has, and for a while it did not.**
 It imported `chemclaw.science.calc.xtb` and `chemclaw.science.calc.xtb_spec`, both of which left
 with the physics — so the one instruction telling a future session how to re-derive these values
@@ -179,10 +190,10 @@ def test_the_flat_key_format_is_the_one_chemclaw3_parses() -> None:
         calc_type="xtb.sp",
         calc_version="GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2",
         input_hash="389b625b3220108a",
-        params_hash="74c818075e77fec2",
+        params_hash="3628a586478ee4c7",
     )
     assert key.as_str() == (
-        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:74c818075e77fec2"
+        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:3628a586478ee4c7"
     )
 
 
@@ -199,9 +210,9 @@ def test_build_folds_the_epoch_into_params_and_nothing_else() -> None:
         inputs={"smiles": "CCO"},
     )
     assert key.input_hash == "a7d334ebee616d78"
-    assert key.params_hash == "3ba6ef80c850abd1"
+    assert key.params_hash == "b333fbca8b29df38"
     assert key.as_str() == (
-        "solubility@esol-delaney@2004/rdkit-2026.3.5/u-0.75:a7d334ebee616d78:3ba6ef80c850abd1"
+        "solubility@esol-delaney@2004/rdkit-2026.3.5/u-0.75:a7d334ebee616d78:b333fbca8b29df38"
     )
 
 
@@ -278,5 +289,5 @@ def test_the_whole_key_is_stable_on_the_versions_this_test_observes() -> None:
     structure = _sp_structure("CCO", 0)
     assert structure.structure_id == "st_739a222f45be0c3a"
     assert XtbSpec(task="sp").cache_key(structure).as_str() == (
-        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:74c818075e77fec2"
+        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:3628a586478ee4c7"
     )

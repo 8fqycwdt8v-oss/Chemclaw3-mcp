@@ -82,7 +82,25 @@ __all__ = ["CALCULATION_EPOCH", "CalculationKey", "Keyed"]
 #       geometry — but every row written under epoch 1 is now *incomplete*, and an incomplete row
 #       is exactly what this constant exists to invalidate: the new fields are required, so a
 #       pre-change row cannot come back claiming a panel it never carried.
-CALCULATION_EPOCH = "2"
+#
+#   3 — the Fukui payload stopped being truncated. `tools.py` sliced `sites` to `xtb_fukui_top_n`
+#       *before* the payload was cached, while `identity.py` excludes `mode` and `top_n` from the
+#       key on the correct ground that neither changes the computation. They do change the
+#       *payload*, so an epoch-2 row holds 15 of 21 sites, ranked by whichever `mode` arrived
+#       first, under a key byte-identical to the one the complete row now writes:
+#
+#           HEAD        xtb.fukui@…:7ce3832fa9df3c56:74c818075e77fec2  sites 21, total_atoms 21
+#           epoch 2     xtb.fukui@…:7ce3832fa9df3c56:74c818075e77fec2  sites 15, total_atoms 21
+#
+#       Serving one of those to `ranked_for(mode)` re-sorts the *other* mode's fifteen and returns
+#       a ranking missing six sites with `total_atoms: 21` beside it — which `models.ranked_for`
+#       names as "a confidently wrong regiochemistry answer, with nothing raising anywhere", the
+#       outcome it exists to prevent and cannot, because the atoms are not in the row. Nothing
+#       validates `len(sites) == total_atoms` on either side, and the ensemble path is quieter
+#       still: `compose._per_atom` intersects atom indices across conformers, so one stale row
+#       clamps a whole ensemble average. The fix that removed the truncation shipped without this
+#       bump; a bump costs CPU, and not bumping cost correctness on every row already stored.
+CALCULATION_EPOCH = "3"
 
 
 class CalculationKey(BaseModel):
