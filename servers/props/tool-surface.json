@@ -1,0 +1,76 @@
+{
+  "boiling_point_at_pressure": {
+    "name": {
+      "required": true,
+      "type": "string"
+    },
+    "pressure_mbar": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "compare_solvent_properties": {
+    "names": {
+      "required": true,
+      "type": "array"
+    }
+  },
+  "list_solvents": {},
+  "solvent_properties": {
+    "name": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "solvent_swap_candidates": {
+    "allow_worse_greenness": {
+      "default": false,
+      "required": false,
+      "type": "boolean"
+    },
+    "exclude_peroxide_formers": {
+      "default": false,
+      "required": false,
+      "type": "boolean"
+    },
+    "max_bp_c": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "max_ich_class": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "min_bp_c": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "name": {
+      "required": true,
+      "type": "string"
+    },
+    "require_water_miscibility": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "top_n": {
+      "default": 5,
+      "required": false,
+      "type": "integer"
+    }
+  },
+  "vapour_pressure": {
+    "name": {
+      "required": true,
+      "type": "string"
+    },
+    "temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  }
+}

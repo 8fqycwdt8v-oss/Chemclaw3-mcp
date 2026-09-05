@@ -257,10 +257,11 @@ repository that has a skills layer. See `servers/safety/README.md`.
 
 ### `calc` — the physics behind Chemclaw3's calculators · port 8860 · **built**
 
-Seventeen tools in three groups, none of them on any agent's surface — Chemclaw3 keeps its own
+Twenty tools in three groups, none of them on any agent's surface — Chemclaw3 keeps its own
 `calc` tools and calls this server from inside `cached_compute` and from Temporal activities.
-**Eight** back its SMILES-in tools one for one: GFN2-xTB single-point
-energy, electronic properties, condensed Fukui site reactivity, geometry optimisation, the xTB pKa
+**Ten** back its SMILES-in tools one for one: GFN2-xTB single-point
+energy, electronic properties, condensed Fukui site reactivity, per-atom descriptors, the
+electrostatic-potential surface extrema, geometry optimisation, the xTB pKa
 predictor, an ESOL solubility baseline with an applicability-domain check, pH-dependent logD and an
 RDKit developability panel. **Seven** structure-in primitives Chemclaw3's durable-job activities
 compose — `relax_structure`, `compute_properties_at`, `compute_fukui_at`, `compute_hessian`,
@@ -269,6 +270,9 @@ geometry-taking twin of `predict_site_reactivity` and shares its `xtb.fukui` row
 molecule's site ranking is a property of the conformer, so averaging it over an ensemble means
 asking per conformer, and only the caller holds those geometries. **Three** helpers that compute nothing:
 `embed_structure`, `combine_structures` and `calculation_key`.
+
+Those three counts are held against the manifest by `servers/calc/tests/test_declared_counts.py`,
+because the row shipped saying seventeen over a breakdown that summed to eighteen.
 
 *Offline:* **no vendored dataset at all** — the first server in the fleet with none. Every number is
 computed from tblite's compiled GFN parameters, RDKit's Crippen/QED tables and closed-form

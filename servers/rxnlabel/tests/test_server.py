@@ -85,7 +85,17 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # for a test process, which is not built from a Containerfile — that the *image*
     # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
     # fills is a provenance record that quietly says nothing.
-    assert response.json() == {"status": "ok", "server": "rxnlabel", "revision": "unknown"}
+    # `datasets` is present and empty because this server vendors no corpus. Its presence is the
+    # assertion: `connector_app` adds the field only when a `readiness` callable actually ran, and
+    # this server passed none — so a pod whose atom-mapper checkpoint failed to load answered a
+    # constant 200 and wrote coarse labels indistinguishable from a deployment that never installed
+    # one. See `engine/readiness.py`.
+    assert response.json() == {
+        "status": "ok",
+        "server": "rxnlabel",
+        "revision": "unknown",
+        "datasets": [],
+    }
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
@@ -150,7 +160,7 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 
         # The manifest is a claim about this surface; here is where the claim is checked against
         # the server that is actually running.
-        assert_manifest_matches(MANIFEST, names)
+        assert_manifest_matches(MANIFEST, listed.tools)
 
 
 async def test_a_bad_argument_reaches_the_agent_as_a_usable_message(running_server: str) -> None:

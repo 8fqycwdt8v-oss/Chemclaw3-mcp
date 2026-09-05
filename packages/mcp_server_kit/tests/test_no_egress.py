@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 import mcp_server_kit
-from mcp_server_kit.no_egress import assert_no_egress_sources, network_imports
+from mcp_server_kit.no_egress import assert_no_egress_sources, host_literals, network_imports
 
 PACKAGE = Path(mcp_server_kit.__file__).parent
 EGRESS = PACKAGE / "egress.py"
@@ -125,3 +125,75 @@ def test_the_helper_s_dependencies_are_declared_where_they_are_used() -> None:
     assert not ({"httpx", "pyyaml"} & runtime), (
         "a test helper's dependency became a runtime one; it belongs in the `testing` extra"
     )
+
+
+def test_a_dynamic_import_with_a_literal_name_is_flagged(tmp_path: Path) -> None:
+    """`__import__("httpx")` is an `ast.Call`, and the scan walked only `Import`/`ImportFrom`.
+
+    This module's own docstring named `__import__("urllib")` as one of the three spellings AST
+    catches and text does not — while `network_imports` could not see it at all. Measured before
+    the fix: `assert_no_egress_sources` returned **clean** on a file whose whole body was
+    `h = __import__("httpx"); h.get(...)`, and on `importlib.import_module("socket")`. `socket` is
+    on the forbidden list precisely because "a module that imports it can also un-patch the
+    guard", and that is the spelling that reaches it.
+    """
+    builtin = tmp_path / "builtin_import.py"
+    builtin.write_text('def go():\n    return __import__("httpx")\n', encoding="utf-8")
+    assert network_imports(builtin) == ["httpx"]
+
+    module = tmp_path / "importlib_import.py"
+    module.write_text(
+        "import importlib\n\n\ndef go():\n    return importlib.import_module('socket')\n",
+        encoding="utf-8",
+    )
+    assert network_imports(module) == ["socket"]
+
+    unqualified = tmp_path / "from_importlib.py"
+    unqualified.write_text(
+        "from importlib import import_module\n\n\ndef go():\n"
+        "    return import_module('urllib.request')\n",
+        encoding="utf-8",
+    )
+    assert network_imports(unqualified) == ["urllib.request"]
+
+
+def test_a_dynamic_import_of_a_computed_name_is_deliberately_not_flagged(tmp_path: Path) -> None:
+    """A name the scan cannot read is not an offence here, and the reason is a real caller.
+
+    `servers/rxnpredict/engine/predictors/__init__.py` loads its optional predictor plug-ins with
+    `importlib.import_module(modname)` over a discovered list — a legitimate dynamic import whose
+    argument no static reader can evaluate. Flagging the *shape* would make that server's own
+    no-egress test fail on correct code, and an exemption granted to work around a false positive
+    is how a scan stops being read.
+
+    So the boundary is stated rather than assumed: what a computed import loads is the runtime
+    guard's job and `make offline-run`'s, exactly as it is for a child process or a `ctypes` call.
+    """
+    dynamic = tmp_path / "plugins.py"
+    dynamic.write_text(
+        "import importlib\n\n\ndef load(name: str) -> object:\n"
+        "    return importlib.import_module(name)\n",
+        encoding="utf-8",
+    )
+    assert network_imports(dynamic) == []
+
+
+def test_a_host_split_across_string_literals_is_still_a_host(tmp_path: Path) -> None:
+    """`"http://" + "example" + ".com"` is one address written in three pieces.
+
+    `host_literals` is a regex over the file's text, so a concatenation — and Python's implicit
+    adjacency, which is the same thing without the operator — read as three harmless fragments.
+    The literals are folded through the AST now, which covers exactly the constant case: a name
+    assembled at runtime is not visible to any static reader, and is the runtime guard's business.
+    """
+    split = tmp_path / "split.py"
+    split.write_text('URL = "http://" + "example" + ".com"\n', encoding="utf-8")
+    assert host_literals(split) == ["http://example.com"]
+
+    adjacent = tmp_path / "adjacent.py"
+    adjacent.write_text('URL = "http://" "weights.example.org/model"\n', encoding="utf-8")
+    assert host_literals(adjacent) == ["http://weights.example.org"]
+
+    loopback = tmp_path / "loopback.py"
+    loopback.write_text('URL = "http://127." + "0.0.1:8850/healthz"\n', encoding="utf-8")
+    assert host_literals(loopback) == []

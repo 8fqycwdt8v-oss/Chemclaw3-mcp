@@ -242,6 +242,23 @@ alone instead of drawing on the node's disk and evicting its neighbours. A per-r
 never have answered "how much can this pod hold at once", which is why the answer is a deployment
 field rather than a field in `engine/limits.py`.
 
+## `/healthz` forks
+
+Every other server in the fleet is unready when a *file* will not load; this one is unready when a
+*process* will not run. Nothing touches the sandbox at import, so the interpreter on the image,
+`runner.py` beside it, the `prctl` seal the parent applies before forking and the limits the child
+sets on itself were all first exercised by whichever caller arrived first — and until 2026-09 this
+server passed no `readiness=` at all, so a pod with a broken interpreter or an unwritable scratch
+directory answered a constant 200 and failed every call. `engine/readiness.py` runs one trivial
+program through the same `sandbox.run` a tool call uses and checks what came back; a failure is a
+503 naming the reason.
+
+It is cached for the life of the process, deliberately. A fresh probe forks, and at a ten-second
+probe interval that is both ~66 ms of CPU each time and one increment of
+`chemclaw_mcp_pyexec_runs_total{outcome="ok"}` — about 8,600 a day of the server watching itself,
+buried in the counter that exists to describe callers. What the probe checks is an image property.
+`lru_cache` does not cache exceptions, so a pod that starts broken is re-probed and stays 503.
+
 ## Running it
 
 ```sh

@@ -616,3 +616,102 @@ def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> No
         "published default; an exemption that outlives its reason is a credential this fleet has "
         "decided not to hide"
     )
+
+
+def _env_pairs(node: object) -> list[tuple[str, str]]:
+    """Every `{name:, value:}` environment entry anywhere in a parsed manifest, however nested.
+
+    Recursive rather than pathed, because the shape differs between a Deployment's container and
+    anything a server may add later — and a check that only looks where the variable is *expected*
+    finds it exactly where it is not a problem.
+    """
+    found: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        name = node.get("name")
+        if isinstance(name, str) and "value" in node:
+            found.append((name, str(node["value"])))
+        for value in node.values():
+            found.extend(_env_pairs(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_env_pairs(item))
+    return found
+
+
+def _egress_offences(label: str, text: str) -> list[str]:
+    """Every way one shipped file departs from the posture: guard on, allowlist empty.
+
+    `label` names the file in the message and decides how it is read — a deployment manifest is
+    YAML with `env:` entries, a Containerfile is `ENV NAME=value` lines. Split out from the test so
+    the ratchet can be shown to bite on a widened manifest without one existing in the tree.
+    """
+    offences: list[str] = []
+    if label.endswith(".yaml"):
+        settings = _env_pairs(list(yaml.safe_load_all(text)))
+        if "envFrom" in text:
+            offences.append(f"{label}: uses envFrom, which can carry MCP_EGRESS_* unseen")
+    else:
+        settings = [
+            (match.group(1), match.group(2).strip().strip("\"'"))
+            for match in re.finditer(r"^ENV\s+(MCP_EGRESS_[A-Z_]+)=(.*)$", text, re.MULTILINE)
+        ]
+    for name, value in settings:
+        if name == "MCP_EGRESS_ALLOW":
+            offences.append(f"{label}: sets MCP_EGRESS_ALLOW={value!r}")
+        if name == "MCP_EGRESS_GUARD" and value.strip().lower() in {"off", "0", "false", "no"}:
+            offences.append(f"{label}: disables the egress guard ({value!r})")
+    return offences
+
+
+def test_no_shipped_deployment_widens_the_egress_allowlist() -> None:
+    """`MCP_EGRESS_ALLOW` is empty in every shipped deployment — asserted, not asserted *about*.
+
+    `CLAUDE.md` states that in the same breath as `chemclaw_mcp_egress_guard_armed`, which is the
+    gauge that made "the guard is installed" a fact a scrape can check. The allowlist was the half
+    nothing checked at either end: the gauge said `1` with `MCP_EGRESS_ALLOW=evil.example.com` set
+    (fixed — `chemclaw_mcp_egress_allowed_hosts` publishes the count now), and no test anywhere
+    read what this repository actually ships. Both halves are needed, because they fail
+    differently: the gauge catches a *running* pod somebody widened, and this catches the widening
+    arriving in a pull request, which is when it is cheap to argue about.
+
+    `MCP_EGRESS_GUARD` is checked in the same pass for the same reason — a shipped `off` would
+    disable the guard for every request, and the only in-repo record of that today is the ENV line
+    in each Containerfile setting it explicitly `on`.
+
+    **What this cannot see, stated rather than implied:** an `envFrom` block, which pulls values
+    from a ConfigMap or Secret this repository does not hold, and a pod `env:` a cluster operator
+    adds outside these files. The first is flagged where it appears; the second is what
+    `chemclaw_mcp_egress_allowed_hosts` exists to make visible from a scrape.
+    """
+    shipped = sorted(SERVERS.glob("*/deploy/*.yaml")) + sorted(SERVERS.glob("*/Containerfile"))
+    assert shipped, "no deployment manifests found; has the layout changed?"
+    offences = [
+        offence
+        for manifest in shipped
+        for offence in _egress_offences(
+            str(manifest.relative_to(ROOT)), manifest.read_text(encoding="utf-8")
+        )
+    ]
+    assert not offences, "the shipped posture is no egress and no allowlist:\n  " + "\n  ".join(
+        offences
+    )
+
+
+def test_the_allowlist_check_bites() -> None:
+    """A ratchet that passes on everything is not a ratchet, so it is shown failing on purpose.
+
+    The tree it guards is clean today — which is exactly why the check above cannot demonstrate
+    that it works. These three inputs are the shapes a widening would arrive in.
+    """
+    widened = _egress_offences(
+        "servers/x/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n      env:\n"
+        "        - name: MCP_EGRESS_ALLOW\n          value: weights.example.org\n",
+    )
+    assert widened == [
+        "servers/x/deploy/deployment.yaml: sets MCP_EGRESS_ALLOW='weights.example.org'"
+    ]
+    assert _egress_offences("servers/x/Containerfile", "ENV MCP_EGRESS_GUARD=off\n") == [
+        "servers/x/Containerfile: disables the egress guard ('off')"
+    ]
+    assert _egress_offences("servers/x/Containerfile", "ENV MCP_EGRESS_GUARD=on\n") == []

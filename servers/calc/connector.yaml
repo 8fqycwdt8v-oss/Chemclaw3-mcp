@@ -6,7 +6,7 @@
 #
 # `chem` and `safety` are connectors Chemclaw3 dials (D-2026-08-09-a-connector-we-do-not-run):
 # drop their directory on the path and the capability appears with no core edit. **This one is
-# not.** Chemclaw3 keeps its own `calc` bundle and all fifteen of its tools; what moved here is
+# not.** Chemclaw3 keeps its own `calc` bundle and every tool in it; what moved here is
 # the *physics* behind them — its calculators and its durable jobs' activities alike — and
 # Chemclaw3 calls this server from inside
 # `science/calc/store.py::cached_compute` as a backend on a cache miss.
@@ -86,7 +86,7 @@ endpoint:
     mode: bearer
     token_env: CHEMCLAW_CALC_TOKEN
   tools:
-    # The eight backing Chemclaw3's own SMILES-in tools, one for one. Its bundle is what an agent
+    # The ten backing Chemclaw3's own SMILES-in tools, one for one. Its bundle is what an agent
     # sees; these are what its tool bodies call.
     - compute_xtb_energy
     - compute_electronic_properties
@@ -98,7 +98,7 @@ endpoint:
     - predict_solubility
     - predict_logd
     - predict_developability_profile
-    # The six primitives Chemclaw3's durable-job activities compose: a structure in, a structure or
+    # The seven primitives Chemclaw3's durable-job activities compose: a structure in, a structure or
     # a matrix out. Individually keyed, which is the point — Chemclaw3 caches one row per primitive
     # instead of one per job, so a solvent screen that gains a seventh solvent reuses the other six
     # and a scan that gains two points reuses the twenty-four it had.

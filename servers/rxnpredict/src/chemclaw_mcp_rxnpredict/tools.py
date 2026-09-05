@@ -11,7 +11,8 @@ Two properties of this server shape every tool below:
 - **It is an ensemble, and the spread is information.** `per_model` and `contributing_models` come
   back with every prediction precisely so the agent can say "four of five models agree" or "only the
   rule-based one produced this". A consensus of one is not a consensus, and `n_models_succeeded`
-  is how you tell.
+  is how you tell. A consensus of *none* is not an answer at all, and the ensemble tools refuse
+  rather than return one — see `_survivors`, which is the floor under that degradation.
 - **Predictors that are not installed are reported, not hidden.** `list_available_models` names
   every predictor this build knows about, whether it loaded, and why not. An answer computed from
   one predictor when the deployment expected five is a silent degradation otherwise.
@@ -24,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Annotated
+from typing import Annotated, Any, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -167,6 +168,56 @@ def _not_served(kind: str, model_name: str, served: list[object]) -> ValueError:
     )
 
 
+_Prediction = TypeVar("_Prediction")
+
+
+def _survivors(
+    kind: str,
+    predictors: list[object],
+    results: list[Any],
+) -> dict[str, list[_Prediction]]:
+    """Pair each predictor with its result, drop the ones that failed, and refuse if none is left.
+
+    **One predictor failing must not cost the ensemble; every predictor failing must not cost the
+    caller the truth.** `gather(..., return_exceptions=True)` degrades an ensemble one model at a
+    time, which is right, and it kept degrading all the way to nothing: with every installed
+    predictor raising, both tools returned `consensus: []`, `per_model: {}`,
+    `n_models_succeeded: 0` and no error at all. So a vanished checkpoint mount — or the egress
+    guard refusing every weight fetch, which arrives as `EgressForbidden`, an `OSError` — read from
+    outside the pod as a healthy server answering a hard question: `chemclaw_mcp_tool_calls_total`
+    booked `outcome="ok"`, and the `refused`/`failed` split that exists for exactly this showed
+    nothing. A consensus over zero models is not a weak answer, it is the absence of one.
+
+    Written once for both tools because the loop was already identical in both, and a rule about
+    when this server refuses that held in one of them would be the more dangerous half of a bug.
+
+    Raises:
+        ValueError: every queried predictor failed. Worded for the model — `connector_app` passes a
+            `ValueError` through verbatim — which is also why it names each fault by its exception
+            *type* and never its message: a predictor's own text is where a checkpoint path, a DSN
+            or a token would be. The full `repr` goes to the log beside it, under the same
+            predictor name, so the two are one fault an operator can join.
+    """
+    per_model: dict[str, list[_Prediction]] = {}
+    failures: list[str] = []
+    for predictor, result in zip(predictors, results, strict=True):
+        name = predictor.name  # type: ignore[attr-defined]
+        if isinstance(result, BaseException):
+            logger.warning("%s predictor %s failed: %r", kind, name, result)
+            failures.append(f"{name} ({type(result).__name__})")
+            continue
+        per_model[name] = result
+    if not per_model:
+        raise ValueError(
+            f"every {kind} predictor this deployment queried failed, so there is no prediction "
+            f"to report: {', '.join(failures)}. This is a fault in the server rather than a "
+            "statement about the chemistry — a checkpoint that will not load, or an environment "
+            "that refuses what a model tries to fetch. Call list_available_models to see what "
+            "this build has, and do not re-ask the same question until it is fixed."
+        )
+    return per_model
+
+
 def _no_predictors(kind: str) -> ValueError:
     """The error an agent should see when this build has nothing to answer with.
 
@@ -218,7 +269,10 @@ async def predict_forward_reaction(
         ranked output under `per_model`, how many were queried and how many succeeded, and `source`.
 
     Raises:
-        ValueError: if this deployment has no forward predictor installed.
+        ValueError: if this deployment has no forward predictor installed, or if every predictor it
+            queried failed. The second is a fault in the server — an unloadable checkpoint, an
+            environment refusing what a model tries to fetch — and not a statement about the
+            chemistry, so do not re-ask the same question until it is fixed.
     """
     settings = get_settings()
     predictors = _forward_predictors(models)
@@ -229,15 +283,7 @@ async def predict_forward_reaction(
         *(p.predict(reactants, top_k) for p in predictors),  # type: ignore[attr-defined]
         return_exceptions=True,
     )
-    per_model: dict[str, list[ForwardPrediction]] = {}
-    for predictor, result in zip(predictors, results, strict=True):
-        name = predictor.name  # type: ignore[attr-defined]
-        if isinstance(result, BaseException):
-            # One predictor failing must not cost the ensemble: the answer is worth less, and
-            # `n_models_succeeded` is how the caller learns that it is.
-            logger.warning("forward predictor %s failed: %r", name, result)
-            continue
-        per_model[name] = result
+    per_model: dict[str, list[ForwardPrediction]] = _survivors("forward", predictors, results)
 
     return ForwardResponse(
         consensus=aggregate_forward(per_model, settings, top_k, reactants=reactants),
@@ -287,7 +333,9 @@ async def predict_reaction_conditions(
         `source`. Temperatures are in degrees Celsius; `null` means the model offered none.
 
     Raises:
-        ValueError: if this deployment has no condition predictor installed.
+        ValueError: if this deployment has no condition predictor installed, or if every predictor
+            it queried failed — which is a fault in the server rather than a statement about the
+            chemistry, and the message says which predictors and what kind of fault.
     """
     settings = get_settings()
     predictors = _conditions_predictors(models)
@@ -298,13 +346,8 @@ async def predict_reaction_conditions(
         *(p.predict(reactants, product, top_k) for p in predictors),  # type: ignore[attr-defined]
         return_exceptions=True,
     )
-    per_model: dict[str, list[ConditionsPrediction]] = {}
-    for predictor, result in zip(predictors, results, strict=True):
-        name = predictor.name  # type: ignore[attr-defined]
-        if isinstance(result, BaseException):
-            logger.warning("conditions predictor %s failed: %r", name, result)
-            continue
-        per_model[name] = result
+    per_model: dict[str, list[ConditionsPrediction]]
+    per_model = _survivors("conditions", predictors, results)
 
     return ConditionsResponse(
         consensus=aggregate_conditions(

@@ -152,7 +152,7 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 
         # The manifest is a claim about this surface; here is where the claim is checked against
         # the server that is actually running.
-        assert_manifest_matches(MANIFEST, names)
+        assert_manifest_matches(MANIFEST, listed.tools)
 
 
 async def test_an_unknown_name_comes_back_as_a_result_not_an_error(running_server: str) -> None:

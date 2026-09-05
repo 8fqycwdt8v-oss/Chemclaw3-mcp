@@ -13,6 +13,7 @@ from collections.abc import Iterator
 
 import pytest
 from mcp_server_kit import egress
+from prometheus_client import REGISTRY, generate_latest
 
 
 @pytest.fixture(autouse=True)
@@ -321,3 +322,58 @@ def test_recording_a_refusal_cannot_re_enter_the_guard() -> None:
         f"the refusal's log lines were {kept!r}; the line naming the real destination is the one "
         "an operator greps for and it must not be lost under the log server's own refusals"
     )
+
+
+def _sample(name: str) -> float:
+    """One unlabelled sample's value, read off the exposition a Prometheus scrape would get."""
+    prefix = f"{name} "
+    for line in generate_latest(REGISTRY).decode("utf-8").splitlines():
+        if line.startswith(prefix):
+            return float(line[len(prefix) :])
+    raise AssertionError(f"{name} is not published; a scrape cannot see it")
+
+
+def test_a_widened_allowlist_is_visible_from_a_scrape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`chemclaw_mcp_egress_guard_armed` was truthful about *armed* and silent about *widened*.
+
+    Measured on a live `/metrics`: `MCP_EGRESS_GUARD=on` with `MCP_EGRESS_ALLOW=evil.example.com`
+    published `chemclaw_mcp_egress_guard_armed 1.0` and nothing else — while `allowed_hosts()` held
+    the host. So the configuration `CLAUDE.md` calls the more dangerous one, and asserts is "empty
+    in every shipped deployment", was exactly the half a scrape could not check.
+
+    The **count** and never the host: a destination is attacker-influenced and unbounded, which is
+    why `chemclaw_mcp_egress_refused_total` is bare, and it does not become a safe label because
+    an operator put it there on purpose. `> 0` is the whole alert.
+    """
+    monkeypatch.setenv("MCP_EGRESS_ALLOW", "evil.example.com, cache.example.com")
+    egress.disarm()
+    egress.arm()
+    assert _sample("chemclaw_mcp_egress_allowed_hosts") == 2.0
+    assert "evil.example.com" not in generate_latest(REGISTRY).decode("utf-8"), (
+        "/metrics is unauthenticated and a destination host cannot be clamped; only the count "
+        "may be published"
+    )
+
+    monkeypatch.delenv("MCP_EGRESS_ALLOW")
+    egress.disarm()
+    egress.arm()
+    assert _sample("chemclaw_mcp_egress_allowed_hosts") == 0.0
+
+
+def test_a_disabled_guard_still_publishes_the_widening_it_was_configured_with(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`MCP_EGRESS_GUARD=off` is the same question asked of `arm_from_env`, the other entry point.
+
+    A deployment that turns the guard off permits everything, which
+    `chemclaw_mcp_egress_guard_armed 0` already says. The allowlist it *also* carried is still
+    worth publishing: the two together are what an operator reads to know whether this pod's
+    posture is the shipped one.
+    """
+    monkeypatch.setenv("MCP_EGRESS_GUARD", "off")
+    monkeypatch.setenv("MCP_EGRESS_ALLOW", "weights.example.org")
+    egress.disarm()
+    egress.arm_from_env()
+    assert not egress.armed()
+    assert _sample("chemclaw_mcp_egress_guard_armed") == 0.0
+    assert _sample("chemclaw_mcp_egress_allowed_hosts") == 1.0

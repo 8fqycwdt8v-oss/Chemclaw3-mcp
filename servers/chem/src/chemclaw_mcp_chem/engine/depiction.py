@@ -28,7 +28,7 @@ from chemclaw_mcp_chem.engine.chem import (
     require_whole_string,
 )
 
-__all__ = ["RENDER_SIZE_PX", "render_svg"]
+__all__ = ["MAX_DEPICTION_CHARS", "RENDER_SIZE_PX", "render_svg"]
 
 # Edge length of a rendered depiction, in pixels; a reaction is drawn twice as wide as it is tall.
 #
@@ -50,6 +50,30 @@ RENDER_SIZE_PX = int(os.environ.get("CHEMCLAW_CHEM_RENDER_SIZE_PX", "320"))
 # below this: 250 atoms in a 320 px square is an unreadable tangle, so the limit costs no real
 # drawing. Config, not a constant, so a deployment rendering poster-size cards can raise it.
 MAX_DEPICTION_ATOMS = int(os.environ.get("CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS", "250"))
+
+# The largest SVG document this server will hand back, in characters.
+#
+# `MAX_DEPICTION_ATOMS` bounds what a depiction costs *this pod* and bounds nothing about what
+# leaves it. Measured on the installed RDKit at the shipped 320 px: ethanol 1,995 characters,
+# ibuprofen 7,240, atorvastatin 24,354, erythromycin 34,526, and a 250-atom molecule — admitted by
+# the atom ceiling — **126,348**, or **244,522** with every atom highlighted. Chemclaw3 cuts one
+# tool result at 60,000 characters *divided by the width of the batch it was called in*, head and
+# tail, so those last two arrive as a truncated XML fragment: the chemist gets no picture and the
+# model still pays for the fragment. Refusing is strictly better than that, and it is the rule the
+# rest of this server already follows — every enumeration here refuses past its bound rather than
+# returning a partial set.
+#
+# **50,000 is set from the two ends it has to sit between.** Above: erythromycin, 51 heavy atoms
+# and about as large as a drug substance gets, measures 34,526 — 31% of headroom — and the bound
+# stays under Chemclaw3's own 60,000 single-result ceiling with room for the JSON envelope around
+# it. Below: a 65-atom peptide already measures 52,843 and is an unreadable tangle in a 320 px
+# square, so the refusal costs no drawing anybody could read. Highlighting roughly doubles the
+# document, so a fully highlighted structure refuses at about half that atom count, which is why
+# the message names the highlights.
+#
+# Config, not a constant, for the same reason as the two bounds above it: a deployment whose chat
+# surface renders poster-size cards, or whose caller has a larger result ceiling, raises it.
+MAX_DEPICTION_CHARS = int(os.environ.get("CHEMCLAW_CHEM_MAX_DEPICTION_CHARS", "50000"))
 
 
 def render_svg(smiles: str, highlight_atoms: Sequence[int] | None = None) -> str:
@@ -95,7 +119,37 @@ def render_svg(smiles: str, highlight_atoms: Sequence[int] | None = None) -> str
         atoms = _checked_atoms(mol, highlight_atoms)
         drawer.DrawMolecule(mol, highlightAtoms=atoms, highlightBonds=_spanned_bonds(mol, atoms))
     drawer.FinishDrawing()
-    return str(drawer.GetDrawingText())
+    return _within_bound(str(drawer.GetDrawingText()), highlight_atoms)
+
+
+def _within_bound(svg: str, highlight_atoms: Sequence[int] | None) -> str:
+    """Return `svg` if it is inside `MAX_DEPICTION_CHARS`, and refuse it whole if it is not.
+
+    Measured on the *finished* drawing rather than predicted from the atom count, because a
+    prediction that refused a molecule which would have fitted is a worse answer than a wasted
+    render — and the render is already bounded by `MAX_DEPICTION_ATOMS`, so the cost of finding out
+    is capped. Highlights are what make the count unpredictable: they roughly double the document,
+    so the same molecule fits undecorated and does not fit marked up.
+
+    The refusal is whole, never a prefix. A cut SVG is not a smaller picture; it is a truncated XML
+    document that renders nothing, and it is what the caller's own head-and-tail cut would produce
+    if this returned the oversized string. The message says which of the two levers the caller
+    holds — drop the highlights, or draw less of the molecule.
+    """
+    if len(svg) <= MAX_DEPICTION_CHARS:
+        return svg
+    lever = (
+        "drawing it without the atom highlights (they roughly double the document), or "
+        if highlight_atoms
+        else ""
+    )
+    raise InvalidSmilesError(
+        f"this depiction is {len(svg)} characters, above the {MAX_DEPICTION_CHARS}-character "
+        "limit on what one drawing may return. It is refused whole rather than cut, because a "
+        "truncated SVG renders nothing at all. Try "
+        f"{lever}drawing a fragment of the molecule instead; raise "
+        "CHEMCLAW_CHEM_MAX_DEPICTION_CHARS if this deployment's chat surface can carry it."
+    )
 
 
 def _refuse_if_too_large(num_atoms: int, subject: str) -> None:

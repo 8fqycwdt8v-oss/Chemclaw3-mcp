@@ -16,8 +16,17 @@ and the tool docstrings tell the model to quote it.
 
 Nothing here is extrapolated past the point of embarrassment: a temperature outside the range the
 Antoine constants were fitted over falls back to the boiling-point route rather than evaluating a
-fit where it is known to diverge, and both routes refuse below the melting point, where a liquid
-vapour pressure is not the quantity anybody wants.
+fit where it is known to diverge, and both routes refuse outside the range where there is a liquid
+to describe — below the melting point, where a liquid vapour pressure is not the quantity anybody
+wants, and above the estimated critical temperature, where there is no liquid at all.
+
+**That second half was missing and the axis was refused on one side only.** Toluene at 5000 °C came
+back as 15,606 bar, `method="clausius_clapeyron"`, with a caveat about being "progressively
+optimistic" — a description of an approximation, for a substance that is not in the phase the
+question assumes. `MAX_TEMPERATURE_TB_RATIO` is the bound and Guldberg's rule is where it comes
+from. The corpus carries no critical temperature and none is invented to fill the gap, so that
+bound is a *sanity ceiling* rather than a phase boundary and its docstring says what the looseness
+costs. A sourced critical-temperature column is the better fix and is not this one.
 
 **That sentence used to be false, and the cost was measurable.** There was no range in the corpus
 and no check in the code, so the only condition `_antoine_bar` could raise on was the correlation's
@@ -31,6 +40,7 @@ answer is the Clausius-Clapeyron route saying so -- which at 200 °C is +3.9%, n
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Literal
 
@@ -62,6 +72,41 @@ ANTOINE_EXTRAPOLATION_K = 20.0
 # it systematically *underestimates* ΔHvap for hydrogen-bonding liquids (alcohols, acids, water),
 # which is why every answer that uses it says so rather than quietly widening its own error bar.
 TROUTON_J_PER_MOL_K = 88.0
+# The upper end of the temperature axis, as a multiple of the normal boiling point in kelvin.
+#
+# **This end had no bound at all, and the rule that produces the lower one produces this one too.**
+# Below the melting point there is no liquid, so a liquid vapour pressure is not the quantity being
+# asked for and the answer is a refusal. Above the *critical* temperature there is likewise no
+# liquid — and nothing here said so. Measured for toluene before this bound existed: 400 °C read
+# 88.6 bar, 1000 °C read 1,448 bar and 5000 °C read 15,606 bar, every one of them labelled
+# `clausius_clapeyron` and carrying a caveat about being "progressively optimistic", which
+# describes an approximation rather than a substance that is not there.
+#
+# **`records.csv` carries no critical temperature and none is invented here** — a column of numbers
+# nobody sourced is what this corpus's own rules forbid, and it is the reason this bound is a rule
+# of thumb rather than a datum. The textbook rule is **Guldberg's** (1890): the normal boiling
+# point is about two-thirds of the critical temperature, so `Tc ≈ 1.5 x Tb` in kelvin.
+#
+# **1.5 is the centre of that rule and it is measurably too tight for this table, so the ratio is
+# set loose at 1.8.** The ratio is not one number across liquid families: hydrogen-bonding liquids
+# sit well above it and lightly-associating ones below, and both are in this corpus. Measured, at
+# 1.5 the ceiling for water lands at 286.6 °C — which refuses water at 300 °C, a question this
+# server answers at 98.0 bar against the steam-table 85.879 bar already pinned in
+# `tests/test_tools.py`. A bound that refuses a question the correlation answers to within about
+# 14% is worse than the runaway it was added to stop, and it is the kind of bound that gets raised
+# without thought the first time somebody hits it.
+#
+# **So this is a sanity ceiling, not a phase boundary, and the refusal says so.** What the looser
+# setting costs is measurable too and is not hidden: at 1.8 the largest pressure still admitted
+# anywhere in this table is about 404 bar, for 2-propanol at 367 °C, which is above 2-propanol's
+# critical point — an extrapolation nobody should quote, and exactly the number a sourced critical
+# temperature would refuse. Adding that column is the better fix and it needs real values, not
+# recalled ones.
+#
+# Config, not a magic number, for the reason `ANTOINE_EXTRAPOLATION_K` above it is: a deployment
+# with a real critical temperature in hand, or a supercritical question it means to ask, changes it
+# without editing code.
+MAX_TEMPERATURE_TB_RATIO = float(os.environ.get("CHEMCLAW_PROPS_MAX_TB_RATIO", "1.8"))
 
 Method = Literal["antoine", "clausius_clapeyron", "clausius_clapeyron_trouton"]
 
@@ -121,6 +166,19 @@ def _clausius_clapeyron_bar(solvent: Solvent, temperature_k: float) -> tuple[flo
     return ATM_BAR * math.exp(exponent), method
 
 
+def max_temperature_c(solvent: Solvent) -> float:
+    """The highest temperature this server will report a liquid vapour pressure at, in Celsius.
+
+    `MAX_TEMPERATURE_TB_RATIO` times the normal boiling point in kelvin, converted back — Guldberg's
+    estimate of the critical temperature, above which there is no liquid to have a vapour pressure.
+    Exposed rather than inlined because `boiling_point_at` has to clamp its own bracket to exactly
+    this number: it brackets by *evaluating* `vapour_pressure`, so a bracket that ran past the
+    ceiling would make the forward refusal fire from inside the inverse and arrive as an internal
+    error rather than as the worded answer it is.
+    """
+    return MAX_TEMPERATURE_TB_RATIO * (solvent.bp_c + KELVIN) - KELVIN
+
+
 def vapour_pressure(solvent: Solvent, temperature_c: float) -> VapourPressure:
     """The vapour pressure of `solvent` at `temperature_c`, with the route that produced it.
 
@@ -134,12 +192,28 @@ def vapour_pressure(solvent: Solvent, temperature_c: float) -> VapourPressure:
 
     Raises:
         ValueError: below the melting point, where a liquid vapour pressure is not the quantity
-            being asked for — the answer there is a sublimation pressure this server does not carry.
+            being asked for — the answer there is a sublimation pressure this server does not carry
+            — or above the estimated critical temperature, where there is no liquid at all. Both
+            refusals are the same rule: this server answers about a liquid, and says so rather than
+            extrapolating a correlation into a region with nothing to correlate.
     """
     if temperature_c < solvent.mp_c:
         raise ValueError(
             f"{temperature_c} °C is below the melting point of {solvent.name} ({solvent.mp_c} °C); "
             "this server carries liquid vapour pressures only"
+        )
+    ceiling_c = max_temperature_c(solvent)
+    if temperature_c > ceiling_c:
+        raise ValueError(
+            f"{temperature_c} °C is above {ceiling_c:.1f} °C, where this server stops reporting a "
+            f"vapour pressure for {solvent.name}: {MAX_TEMPERATURE_TB_RATIO:g} x its normal "
+            f"boiling point of {solvent.bp_c + KELVIN:.1f} K. Above the critical temperature there "
+            "is no liquid and so no vapour pressure, and the correlation would keep returning a "
+            "number for a substance that is not there. The table carries no critical temperature, "
+            "so this bound is Guldberg's rule of thumb set deliberately loose — a sanity ceiling "
+            "rather than a phase boundary, which means a number just below it can already be "
+            "supercritical nonsense. If you need this region, get the real critical temperature "
+            "and raise CHEMCLAW_PROPS_MAX_TB_RATIO deliberately"
         )
     temperature_k = temperature_c + KELVIN
     fitted_range = solvent.antoine_range_k
@@ -217,7 +291,11 @@ def boiling_point_at(solvent: Solvent, pressure_mbar: float) -> float:
     if pressure_mbar <= 0:
         raise ValueError("pressure must be positive")
     target_bar = pressure_mbar / 1000.0
-    low, high = solvent.mp_c, max(solvent.bp_c + 200.0, 400.0)
+    # Clamped to the forward direction's own ceiling. The habitual `max(bp + 200, 400)` sits above
+    # it for every solvent boiling under about 176 °C, and evaluating there would make
+    # `vapour_pressure`'s refusal fire from inside this function — an internal error where the
+    # honest answer is "no boiling point at that pressure".
+    low, high = solvent.mp_c, min(max(solvent.bp_c + 200.0, 400.0), max_temperature_c(solvent))
     if vapour_pressure(solvent, low).pressure_bar > target_bar:
         raise ValueError(
             f"{solvent.name} reaches {pressure_mbar} mbar only below its melting point "
@@ -227,7 +305,7 @@ def boiling_point_at(solvent: Solvent, pressure_mbar: float) -> float:
     if ceiling_mbar < pressure_mbar:
         raise ValueError(
             f"{solvent.name} never reaches {pressure_mbar} mbar in this correlation: at "
-            f"{high} °C, the top of the range this server models, its vapour pressure is still "
+            f"{high:.1f} °C, the top of the range this server models, its vapour pressure is still "
             f"{ceiling_mbar:.0f} mbar. There is no boiling point to report at that pressure"
         )
     for _ in range(200):

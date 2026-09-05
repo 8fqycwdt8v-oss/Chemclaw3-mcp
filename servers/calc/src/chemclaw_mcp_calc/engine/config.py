@@ -105,9 +105,6 @@ class CalcSettings(BaseSettings):
     # Wiberg bond order above which a pair of atoms is reported as bonded. 0.5 keeps real bonds (a
     # single bond is ~1.0) and drops the long-range tail.
     xtb_bond_order_threshold: float = 0.5
-    # Default number of atoms a site-reactivity ranking reports. Enough to see the ordering of a
-    # ring plus its substituents without flooding the agent's context.
-    xtb_fukui_top_n: int = 15
     # Geometry optimization. Convergence is on the largest absolute gradient component in
     # Hartree/Angstrom; 5e-4 is ~2.6e-4 Hartree/Bohr, tighter than xtb's own "normal" setting
     # because the finite-difference Hessian is only as clean as the stationary point under it.

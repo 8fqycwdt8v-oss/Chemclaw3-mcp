@@ -1,13 +1,13 @@
 # `calc` — the physics behind Chemclaw3's calculators · port 8860
 
-Seventeen tools, and **no model reads any of them**: Chemclaw3 keeps its own `calc` bundle and its
+Twenty tools, and **no model reads any of them**: Chemclaw3 keeps its own `calc` bundle and its
 own agent-facing surface, and calls this server from inside `cached_compute` and from Temporal
-activities. **Eight** back its SMILES-in tools one for one, **six** are structure-in primitives its
+activities. **Ten** back its SMILES-in tools one for one, **seven** are structure-in primitives its
 durable-job activities compose, and **three** are helpers that compute nothing. No cache, no
 artifact store, no calibration ledger, no job records, no resumption, and no network call at any
 point — Chemclaw3 keeps orchestration and the cache; this server holds the physics.
 
-**Eight tools backing Chemclaw3's own**, a SMILES in and a chemist's answer out. They keep its
+**Ten tools backing Chemclaw3's own**, a SMILES in and a chemist's answer out. They keep its
 model-facing docstrings word for word, so a divergence between what the two claim shows up in a diff
 rather than only in an answer:
 
@@ -17,18 +17,20 @@ rather than only in an answer:
 | `compute_electronic_properties` | HOMO/LUMO/gap (eV), dipole (Debye), Mulliken charges, Wiberg bond orders and per-atom Wiberg/free valence. |
 | `predict_site_reactivity` | Condensed Fukui indices (f⁻/f⁺/f⁰, dual descriptor, local softness, local electrophilicity) plus the conceptual-DFT global panel, atoms ranked by susceptibility to attack. All of it from the same three single points — the global panel is the ion *energies* the Fukui path used to compute and discard. |
 | `compute_atomic_descriptors` | Per-atom polarisability, C6, covalent coordination number and atomic multipoles, plus the electrostatic-potential extrema on request. **Binary only** — tblite exposes none of these — and it refuses by name where no `xtb` is installed rather than returning nulls. |
+| `compute_surface_potential` | The most positive and most negative electrostatic potential on the molecular surface (kcal/mol) — the maximum is the acidic patch or a halogen's σ-hole, the minimum a lone pair or π face. Extrema over a grid, not a map. **Binary only**, on the same terms as the panel above, and keyed apart from it because an `--esp` run cannot also produce the atomic multipoles. |
 | `optimize_geometry` | Relaxation to a stationary point of the GFN2 surface. |
 | `predict_pka` | pKa of the most acidic O-H/S-H site, or a base's conjugate acid (pKaH). |
 | `predict_solubility` | Aqueous log S from the ESOL (Delaney 2004) baseline, with a domain check. |
 | `predict_logd` | pH-dependent logD, for singly-ionisable molecules only. |
 | `predict_developability_profile` | MW, cLogP, TPSA, H-bond counts, sp3 fraction, QED, Ro5/Veber flags. |
 
-**Six primitives**, structure-in, for Chemclaw3's durable-job activities to compose:
+**Seven primitives**, structure-in, for Chemclaw3's durable-job activities to compose:
 
 | Primitive | What it computes |
 | --- | --- |
 | `relax_structure` | An optimisation that hands the coordinates back, with atoms optionally frozen. |
 | `compute_properties_at` | One SCF at a given geometry — energy, orbitals, charges, bond orders. |
+| `compute_fukui_at` | The Fukui ranking at a given geometry — the twin of `predict_site_reactivity`, sharing its `xtb.fukui` row, because a flexible molecule's site ranking is a property of the conformer and only the caller holds those. |
 | `compute_hessian` | Second derivatives plus dipole derivatives, as base64 `.npy`. |
 | `scan_point` | Drive an internal coordinate, freeze it, relax the rest. One point of a profile. |
 | `search_conformer_ensemble` | CREST conformer / tautomer / protomer sampling. |
@@ -96,7 +98,7 @@ wrong** — so it is not reachable from there any more. Its manifest is register
 Chemclaw3's `extra="forbid"` manifest model refuses; a deployment that points a path at that
 directory anyway fails at startup naming the file rather than serving a reduced surface.
 
-Chemclaw3 keeps its `calc` bundle and all fifteen of its tools. What moved here is the *computation*
+Chemclaw3 keeps its `calc` bundle and every tool in it. What moved here is the *computation*
 behind them; six of that bundle's tools have no computation to move at all, because they **are**
 the state:
 
@@ -114,7 +116,7 @@ error** — and take those six tools and every durable job off the agent's surfa
 is this repository's own declaration of the served surface, checked against the running server by
 `tests/test_server.py`; it is not an instruction to point Chemclaw3 at it.
 
-**Two things follow from that, and the second is the answer to "isn't seventeen tools a lot?".**
+**Two things follow from that, and the second is the answer to "isn't twenty tools a lot?".**
 Because this server is never on the agent's surface, its tool count costs no prompt: the six
 structure-in primitives are addressed by Chemclaw3's activities and would only ever reach a model
 through the wiring the paragraph above already forbids. That is one more consequence of an existing
@@ -156,7 +158,7 @@ to parse — `calc_version` legitimately contains both `@` and `:` (`esol-delane
 `cal-0.28733:-29.3116`), so a caller splitting the flat form is one delimiter from a key that misses
 forever. The flat `calc_key` comes back beside it, and the compute result carries the same string, so
 asserting the two against each other is a free check that both paths agree.
-`tests/test_calculation_key.py` asserts exactly that property for every tool — the eight SMILES-in
+`tests/test_calculation_key.py` asserts exactly that property for every tool — the ten SMILES-in
 and the primitives alike — which is what the whole design rests on. "Cheap" is asserted too: every route through `Calculator` is made to raise and all
 every identity still comes back.
 
@@ -362,8 +364,9 @@ What that buys and what it costs:
 - **Nothing is cached in this process**, deliberately. That is what `calculation_key` is for: the
   caller checks its own store and only reaches a compute tool on a miss.
 - Every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts
-  the hop for all fifteen that dispatch one. One call on the event loop would stop every other
-  connected turn on this process for its whole duration — which, here, could be an hour.
+  the hop for every one that dispatches one — deriving that set from the served surface rather than
+  from a count written here, which is why no count is written here. One call on the event loop would
+  stop every other connected turn on this process for its whole duration — which could be an hour.
 
 **What would make something belong on the other side of the seam**: wanting to persist anything.
 A job record, a resumable checkpoint, a progress channel, a partial-result cache. None exists here,

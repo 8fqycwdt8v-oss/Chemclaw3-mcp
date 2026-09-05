@@ -263,6 +263,15 @@ def vapour_pressure(name: str, temperature_c: float) -> VapourPressureResult:
     so it reads high below the boiling point. Quote `method` and `caveat` whenever you report the
     value; a chemist sizing a condenser needs to know which of the three they were given.
 
+    **Both ends of the temperature axis are refused, and for one reason.** Below the melting point
+    there is no liquid; above the critical temperature there is no liquid either, and a correlation
+    asked there keeps returning pressures for a substance that is not in that phase — toluene at
+    5000 °C used to come back as 15,606 bar. The table carries no critical temperature, so the
+    upper bound is Guldberg's rule of thumb (the boiling point is about two-thirds of the critical
+    temperature) set deliberately loose. It is a sanity ceiling rather than a phase boundary: a
+    number returned just below it can already be supercritical, which is one more reason to quote
+    `caveat` rather than the pressure alone.
+
     Args:
         name: The solvent, in any spelling the table answers to.
         temperature_c: Temperature in degrees Celsius.
@@ -271,8 +280,10 @@ def vapour_pressure(name: str, temperature_c: float) -> VapourPressureResult:
         The pressure in mbar, bar and mmHg, plus `method`, `caveat` and `source`.
 
     Raises:
-        ValueError: if the solvent is unknown, or the temperature is below its melting point —
-            this server carries liquid vapour pressures only.
+        ValueError: if the solvent is unknown, the temperature is below its melting point — this
+            server carries liquid vapour pressures only — or above the estimated critical
+            temperature, where there is no liquid to have a vapour pressure. The message names the
+            ceiling and the rule it came from.
     """
     solvent = records.require(name)
     result = correlations.vapour_pressure(solvent, temperature_c)
@@ -313,6 +324,8 @@ def boiling_point_at_pressure(name: str, pressure_mbar: float) -> BoilingPointRe
             freeze before boiling at that vacuum, or the pressure is one it never reaches in the
             range this server models — a pressurised question above the correlation's ceiling gets
             a refusal naming the ceiling, never the ceiling itself dressed up as a boiling point.
+            That ceiling is the same one `vapour_pressure` refuses above, so the two directions
+            agree about where this server stops.
     """
     solvent = records.require(name)
     temperature = correlations.boiling_point_at(solvent, pressure_mbar)

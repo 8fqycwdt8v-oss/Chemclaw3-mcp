@@ -195,8 +195,11 @@ class FukuiSite(BaseModel):
 class SiteReactivityResult(Keyed):
     """Atoms ranked by susceptibility to the requested attack.
 
-    `sites` is ordered most-susceptible first by the index named in `ranked_by`, and truncated to
-    the most susceptible `len(sites)` of `total_atoms`. The ranking is valid *within* this molecule
+    `sites` is ordered most-susceptible first by the index named in `ranked_by`, and holds **one
+    entry per atom** — `len(sites) == total_atoms`, always. That is what makes `ranked_for` sound
+    and what a caller's cache needs: `mode` is outside this calculation's key, so a stored row has
+    to answer every mode's ranking, and a row shortened to the interesting few cannot. Presenting a
+    shortlist is the caller's step. The ranking is valid *within* this molecule
     only: Fukui indices are normalized per molecule, so comparing them between molecules is
     meaningless, and they describe electronic susceptibility alone — sterics and the specific
     reagent are not in the model.

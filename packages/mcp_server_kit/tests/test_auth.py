@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from fastapi import FastAPI
-from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit
+from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit, _is_open
 
 TOKEN_ENV = "TEST_SERVER_TOKEN"
 
@@ -122,17 +122,27 @@ async def test_an_oversized_body_is_refused(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.parametrize("path", ["/healthz/", "/metrics/"])
-async def test_a_probe_path_with_a_trailing_slash_is_still_open(
+async def test_a_probe_path_with_a_trailing_slash_is_not_refused(
     monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
-    """`OPEN_PATHS` was an exact-match set, so `/healthz/` returned 401 instead of the redirect.
+    """`OPEN_PATHS` was an exact-match set, so `/healthz/` returned 401 instead of being served.
 
     Not a security hole — the opposite — but a diagnosable condition turned into an undiagnosable
     one: a kubelet `httpGet` configured as `path: /healthz/` would never make the pod ready, while
     the server log said "refused an unauthenticated request to /healthz/", which reads as a
     credential problem and is not.
+
+    **This test can only see half of that, and saying so is the point.** The app here carries the
+    middleware and nothing else, so what it proves is that `_is_open` exempts the path — the
+    decision this module owns. It used to assert `status_code != 401` and stop there, which a
+    **404** satisfies: measured against every server under real uvicorn, that is exactly what
+    `GET /healthz/` returned, because `connector_app` mounts the MCP transport at `/` and the
+    mount swallows the redirect. Whether the probe actually *answers* is a property of the route
+    table, and it is asserted as a 200 over a real socket in
+    `test_connector_app.py::test_a_probe_path_with_a_trailing_slash_answers`.
     """
     monkeypatch.setenv(TOKEN_ENV, "s3cret")
+    assert _is_open(path), "the middleware must not decide a probe path needs a credential"
     response = await _call(_app(token_env=TOKEN_ENV), "GET", path)
     assert response.status_code != 401
 

@@ -57,6 +57,15 @@ declares bearer and enforces it even on the loopback dev URL.
 carries the same knob as `settings.structure_render_size_px`, for deployments whose chat surface
 renders larger cards.
 
+Two bounds sit on `render_structure`, and they bound different things.
+`CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS` (default 250) bounds what a drawing costs *this pod*, because
+`Compute2DCoords` is superlinear. `CHEMCLAW_CHEM_MAX_DEPICTION_CHARS` (default 50,000) bounds what
+leaves it: the SVG grows with the molecule — ethanol 1,995 characters, erythromycin 34,526, a
+250-atom chain 126,348, and 244,522 with every atom highlighted — against a caller that cuts one
+tool result at 60,000 characters divided by the width of the batch it was called in. A cut SVG
+draws nothing, so an oversized depiction is refused whole, the way every enumeration on this server
+refuses past its bound rather than returning a partial answer.
+
 ## The data
 
 `src/chemclaw_mcp_chem/data/records.csv`, described and checksummed by `dataset.json` beside it.

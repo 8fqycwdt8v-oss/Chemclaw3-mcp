@@ -676,7 +676,23 @@ def connector_app(
         """
         return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
-    # Mounted last: Starlette matches in definition order, so the two routes above win and
+    # The same two routes under their trailing-slash spelling, because a probe written that way
+    # otherwise reaches nothing at all. `auth._is_open` exempts `/healthz/` from the credential
+    # check so a kubelet probe configured as `path: /healthz/` is not refused — and that on its own
+    # left the probe getting **404** on every server in this fleet (measured under real uvicorn):
+    # FastAPI matches paths exactly, and Starlette's own trailing-slash redirect never fires
+    # because the mount below matches `/healthz/` first and answers 404 from the MCP transport.
+    #
+    # An alias rather than a redirect, and the difference is a failure mode rather than a style:
+    # kubelet counts any 2xx **or 3xx** as a passing probe, so a 307 would report a pod ready
+    # whatever `/healthz` itself would have said — which is exactly the constant-200 behaviour
+    # `readiness` exists to end. Serving the route under both spellings keeps a 503 a 503.
+    # `include_in_schema=False` so the alias does not double every probe route in the OpenAPI
+    # document; it is a spelling of one route, not a second one.
+    app.add_api_route("/healthz/", healthz, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/metrics/", metrics, methods=["GET"], include_in_schema=False)
+
+    # Mounted last: Starlette matches in definition order, so the routes above win and
     # everything else — notably `/mcp` — falls through to the MCP transport.
     app.mount("/", mcp_app)
     return app

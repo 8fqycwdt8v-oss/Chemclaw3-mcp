@@ -67,6 +67,12 @@ def _is_open(path: str) -> bool:
     reads as a credential problem and is not. Everything else stays an exact match: `//metrics`,
     `/HEALTHZ` and `/healthz/../mcp` are *not* these routes, and a prefix rule here would open the
     MCP surface to anything that could write a path starting with `/healthz`.
+
+    **Not refusing a path is not the same as serving it, and for a while this exemption was the
+    only half that existed.** FastAPI matches routes exactly and `connector_app` mounts the MCP
+    transport at `/`, so `/healthz/` fell through to the mount and came back **404** — measured on
+    every server in this fleet under real uvicorn. `connector_app` now declares both spellings as
+    routes; this function is what keeps the credential check off them.
     """
     return (path.rstrip("/") or "/") in OPEN_PATHS
 
