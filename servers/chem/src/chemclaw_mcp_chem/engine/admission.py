@@ -1,8 +1,13 @@
-"""How many depictions this server will lay out at once — shed at admission, never queued.
+"""How many depictions this server accepts at once — a caller past the ceiling is refused, not held.
 
 `render_structure` is the one CPU-heavy tool here: it hands `Compute2DCoords` and SVG rasterising
-to a worker thread and awaits it. Two independent bounds protect a pod.
-`depiction.MAX_DEPICTION_ATOMS` caps a *single* call's cost; this caps how many run *together*.
+to a worker thread and awaits it. Two bounds in this server protect a pod, and a third that it does
+not own — the thread pool the offload lands in — is argued about further down.
+`depiction.MAX_DEPICTION_ATOMS` caps a *single* call's cost; this caps how many are **in flight** —
+accepted and not yet answered. It is deliberately not called a cap on how many run *together*,
+which is what this file used to say and what no configuration of this pod can make true: the third
+bound below is measured, and on one core eight admitted renders never run together at any thread
+pool width.
 
 **RDKit does not release the GIL through a depiction, and this file used to say it did.** The claim
 was that "the threads are real parallelism", and that a burst on a pod sized for four therefore
@@ -35,6 +40,49 @@ N x 97 ms, and keeping that under a third of the probe budget leaves the probe t
 own; `DEFAULT_MAX_CONCURRENT_RENDERS` below is inside that, and
 `tests/test_depiction_bound.py` holds the arithmetic rather than a transcription of it.
 
+**There is a third bound, it disagrees with this one, and measuring it is what decided that
+neither number moves.** Every tool body here offloads with `asyncio.to_thread`, into the process's
+*default* executor — a pool `mcp_server_kit.executor` sizes from the container's cgroup rather than
+from the node, at `ceil(limits.cpu) + 4`. On this server's `limits.cpu: "1"` that is **5 threads**
+against a ceiling of **8**, and the kit's own docstring invites a server in exactly this position to
+say so with `MCP_THREAD_POOL_SIZE` in its deployment. Driven end to end against a running server —
+eight concurrent `render_structure` calls of the worst legal molecule, one MCP session each, with a
+kubelet-shaped `/healthz` poll running beside them — the disagreement turns out to have no
+consequence a caller can observe, so the knob is **left unset**:
+
+    pool= 5  p50 541 ms  p95 748 ms  refused 0/48  /healthz 127/127 ok, p50 4 ms, max 450 ms
+    pool= 8  p50 532 ms  p95 540 ms  refused 0/24  /healthz  59/59  ok, p50 3 ms, max 364 ms
+    pool=12  p50 601 ms  p95 785 ms  refused 0/48  /healthz 126/126 ok, p50 4 ms, max 408 ms
+
+Interleaved runs put the three inside each other's noise (p50 586/607/530 ms against 588/598/592 ms
+over four alternating passes), and the same holds for a *mixed* burst — eight renders plus ten
+`resolve_compound` calls arriving 100 ms in, the case the kit's four-thread headroom exists for —
+whose cheap-call median was 268 to 438 ms at every width with no ordering across repeats.
+
+**The reason is structural rather than lucky, and it is what makes "raise the pool" the wrong
+remedy.** This pod may spend one core, so a second runnable thread cannot make a render finish
+sooner whatever the GIL does; and the GIL means the pool never even *grows* to its ceiling — eight
+concurrent renders through a 12-wide pool spawn 4 to 6 worker threads, exactly as a 5-wide pool
+does, because a worker that finishes takes the next queued item before `ThreadPoolExecutor` decides
+it needs another thread. A wider pool would therefore be a bound that is never reached: a knob that
+renders nothing, which is the defect this fleet keeps finding rather than a fix for one. Lowering
+*this* ceiling to 5 to match is the other tempting move and is worse than nothing — it would refuse
+three of eight concurrent callers that the pod answers today in 0.6 s against a 30 s
+`request_timeout`, and buy no throughput, because throughput here is one core either way. Raising
+`limits.cpu` buys nothing for the same reason and would additionally break `deploy/hpa.yaml`, whose
+utilisation target is calibrated against a request set to a saturated pod's real draw.
+
+**What the narrow pool does change is a promise, and that is the part that needed fixing.** With
+five threads, renders 6, 7 and 8 are admitted and then wait for a *worker* rather than for the CPU —
+queued, which is the thing this gate says it never does. It is harmless because the wait is inside
+the same product the ceiling was already derived from (nothing else can run while a render holds the
+interpreter, so an admitted caller waits at most `DEFAULT_MAX_CONCURRENT_RENDERS x
+WORST_RENDER_SECONDS` whether it waits on a thread or on the GIL), and the readiness probe is
+insulated from it outright — `connector_app` gives `readiness` a private one-thread pool, so
+`/healthz` never queues behind a depiction at all. But it is queueing, so the ceiling below is a
+bound on renders **in flight** rather than on renders **running**, and `POD_THREAD_POOL_WIDTH`
+records the other number so the two cannot drift apart unwatched.
+
 **This is admission control, and it is deliberately not a clock.** Cancelling the awaiting coroutine
 does not stop the worker thread, so a per-call wall clock returns an error to a caller who has gone
 while the CPU burn continues. Refusing *before* any work starts is the other thing entirely: nothing
@@ -57,6 +105,7 @@ import threading
 __all__ = [
     "ADMISSION_MARKER",
     "DEFAULT_MAX_CONCURRENT_RENDERS",
+    "POD_THREAD_POOL_WIDTH",
     "PROBE_TIMEOUT_SECONDS",
     "WORST_RENDER_SECONDS",
     "Admission",
@@ -86,9 +135,20 @@ PROBE_TIMEOUT_SECONDS = 3
 #: check the arithmetic without importing a transport.
 DEFAULT_MAX_CONCURRENT_RENDERS = 8
 
+#: The width of the process's default `asyncio.to_thread` pool on the shipped pod: what
+#: `mcp_server_kit.executor.thread_pool_size()` returns for `deploy/deployment.yaml`'s
+#: `limits.cpu: "1"`, which is `ceil(1)` plus the kit's four-thread headroom. It is **narrower than
+#: the ceiling above**, deliberately and measurably harmlessly — the module docstring has the
+#: measurement and the three remedies it rejects. It is written down rather than left implicit
+#: because it is an input to that argument, and `tests/test_depiction_bound.py` re-derives it from
+#: the Deployment through the kit's own arithmetic: `limits.cpu`, an `MCP_THREAD_POOL_SIZE` added to
+#: the pod, or a change to the kit's headroom cannot move without this number and the paragraph
+#: beside it being revisited.
+POD_THREAD_POOL_WIDTH = 5
+
 
 class Admission:
-    """A count of depictions allowed to run at once, refused rather than queued past it.
+    """A count of depictions allowed in flight at once, refused rather than queued past it.
 
     Guarded by a lock rather than an `asyncio.Semaphore`: a slot is taken on the event loop and
     given back from whichever thread or callback finishes the work, and nothing ever waits — a full
@@ -96,7 +156,7 @@ class Admission:
     """
 
     def __init__(self, limit: int) -> None:
-        """Args: limit: the most depictions that may run at once. Must be at least one."""
+        """Args: limit: the most depictions that may be in flight at once. At least one."""
         if limit < 1:
             raise ValueError(f"an admission ceiling of {limit} would refuse every depiction")
         self._limit = limit

@@ -92,6 +92,20 @@ spec:
           # **`requests.cpu` is what `hpa.yaml` measures utilization against.** 500m is half of
           # what a saturated pod draws, so 70% utilization is ~7 large renders a second — busy,
           # and still two doublings short of the wall.
+          #
+          # **This limit is also what sizes the pod's `to_thread` pool, and no
+          # `MCP_THREAD_POOL_SIZE` is set here on purpose.** `mcp_server_kit/executor.py` gives the
+          # process `ceil(limits.cpu) + 4` = **5** threads and invites a server whose admission
+          # ceiling is wider — this one admits 8 — to state the knob in its deployment. Measured
+          # against a running server at pool widths 5, 8 and 12, the three are indistinguishable
+          # (p50 541/532/601 ms for eight concurrent renders, zero refusals, `/healthz` 200 on
+          # every sample with a max of 450/364/408 ms), and a 12-wide pool spawns the same 4-6
+          # worker threads a 5-wide one does, because one core is one core. So the knob would be a
+          # bound that is never reached. `engine/admission.py` carries the measurement and the three
+          # remedies it rejects (a wider pool, a lower ceiling, more CPU), and
+          # `tests/test_depiction_bound.py` re-derives the 5 from the `limits.cpu` below — and from
+          # an `env:` block here, should one ever set it — so the ceiling and the pool cannot drift
+          # apart unwatched.
           resources:
             requests:
               cpu: "500m"
