@@ -155,11 +155,16 @@ def _electronic_properties(arguments: dict[str, Any]) -> CalculationIdentity:
 
 
 def _site_reactivity(arguments: dict[str, Any]) -> CalculationIdentity:
-    """`predict_site_reactivity` — `mode` and `top_n` are accepted and do not enter the key.
+    """`predict_site_reactivity` — `mode` is accepted and does not enter the key.
 
-    Neither changes what is computed: the three single points are mode-independent and `top_n` only
-    truncates the ranking. Accepting them anyway matters, because a caller passes the compute tool's
+    It does not change what is computed: the three single points are mode-independent and it only
+    chooses the sort. Accepting it anyway matters, because a caller passes the compute tool's
     arguments through unchanged and must not have to know which of them are keyed.
+
+    **An unkeyed argument is only safe while it cannot shorten the payload**, which is why `top_n`
+    is no longer one of them: it used to be accepted here and applied in `tools.py`, so the row
+    stored under this key held whichever fifteen atoms the first caller's mode ranked highest. An
+    argument outside the key may permute the answer and may not remove from it.
     """
     return _from_spec("predict_site_reactivity", *xtb_props.fukui_inputs(str(arguments["smiles"])))
 
@@ -362,7 +367,7 @@ def _solvent(arguments: dict[str, Any]) -> str | None:
 COMPUTE_TOOLS: dict[str, tuple[frozenset[str], Callable[[dict[str, Any]], CalculationIdentity]]] = {
     "compute_xtb_energy": (frozenset({"smiles", "charge"}), _xtb_energy),
     "compute_electronic_properties": (frozenset({"smiles", "solvent"}), _electronic_properties),
-    "predict_site_reactivity": (frozenset({"smiles", "mode", "top_n"}), _site_reactivity),
+    "predict_site_reactivity": (frozenset({"smiles", "mode"}), _site_reactivity),
     "compute_atomic_descriptors": (frozenset({"smiles", "solvent"}), _atomic_descriptors),
     "compute_surface_potential": (frozenset({"smiles", "solvent"}), _surface_potential),
     "optimize_geometry": (frozenset({"smiles", "solvent"}), _optimize_geometry),
@@ -373,7 +378,7 @@ COMPUTE_TOOLS: dict[str, tuple[frozenset[str], Callable[[dict[str, Any]], Calcul
     # The structure-in primitives Chemclaw3's activities compose.
     "relax_structure": (frozenset({"structure", "solvent", "frozen_atoms"}), _relax_structure),
     "compute_properties_at": (frozenset({"structure", "solvent"}), _properties_at),
-    "compute_fukui_at": (frozenset({"structure", "solvent", "mode", "top_n"}), _fukui_at),
+    "compute_fukui_at": (frozenset({"structure", "solvent", "mode"}), _fukui_at),
     "compute_hessian": (frozenset({"structure", "solvent"}), _hessian),
     "scan_point": (frozenset({"structure", "atoms", "value", "solvent"}), _scan_point),
     "search_conformer_ensemble": (
@@ -388,9 +393,9 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
     """The identity of what `tool` would compute for `arguments`, without computing it.
 
     Args:
-        tool: One of the nine compute tools' names.
+        tool: One of the seventeen compute tools' names.
         arguments: The arguments that would be passed to it. Every tool requires its subject —
-            `smiles` for the eight SMILES-in tools, `structure` for the six primitives — and every
+            `smiles` for the ten SMILES-in tools, `structure` for the seven primitives — and every
             other argument is optional and takes the compute tool's own default.
 
     Returns:

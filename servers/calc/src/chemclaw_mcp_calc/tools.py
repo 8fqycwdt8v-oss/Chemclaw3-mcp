@@ -266,7 +266,8 @@ async def calculation_key(tool: str, arguments: dict[str, Any]) -> CalculationId
     result already carries `calc_version` and `calc_key`, so nothing here has to be called first.
 
     Args:
-        tool: The name of the compute tool whose identity you want — one of the nine on this server.
+        tool: The name of the compute tool whose identity you want —
+            one of the seventeen on this server.
         arguments: The arguments you would pass to it. `smiles` is required; everything else takes
             that tool's own default. An argument name the tool does not take is **refused rather
             than ignored**, because ignoring one would return the key of a different calculation and
@@ -275,10 +276,14 @@ async def calculation_key(tool: str, arguments: dict[str, Any]) -> CalculationId
     Returns:
         `calc_version` always; `key` (the four fields a store lookup takes) and `calc_key` (the same
         identity as one flat string) where the key is derivable from the arguments; `structure_id`
-        for the calculations that run on a geometry; and `caveat` explaining the absence for the two
-        that have no key — `predict_logd`, which was never cached, and `compute_thermochemistry`,
-        whose key names the relaxed geometry its refinement loop settles on and is therefore an
-        output of the calculation rather than a function of its arguments.
+        for the calculations that run on a geometry; and `caveat` explaining the absence for the one
+        that has no key — `predict_logd`, which was never cached, because its expensive half is an
+        already-keyed pKa and the rest is sub-millisecond arithmetic.
+
+        A calculation whose key would name its own *output* is not on this server at all: it is a
+        loop with state, which is a durable job on the Chemclaw3 side assembled from the primitives
+        here. So there is no such tool to ask about, and asking for one by name is an error naming
+        the surface rather than a caveat.
     """
     return await asyncio.to_thread(calculation_identity, tool, arguments)
 
@@ -397,7 +402,7 @@ async def compute_electronic_properties(
 @server.tool()
 @_admitted
 async def predict_site_reactivity(
-    smiles: str, mode: FukuiMode = "electrophilic", top_n: int = 0
+    smiles: str, mode: FukuiMode = "electrophilic"
 ) -> SiteReactivityResult:
     """Rank the atoms of a molecule by how susceptible they are to attack (GFN2-xTB).
 
@@ -418,24 +423,25 @@ async def predict_site_reactivity(
     carries all three indices per atom. Read the other rankings off `f_minus`/`f_plus`/`f_zero`
     rather than calling again for a second mode, which would recompute all three SCFs.
 
+    **Every atom comes back, and that is a cache contract rather than generosity.** `mode` is
+    outside this calculation's key, so it may reorder the answer and nothing else: a caller stores
+    one row per geometry and re-sorts it. Truncating to the interesting few would put an argument
+    the key excludes inside the payload the key addresses — the row cached for one mode would be
+    missing sites the next mode's ranking needs, with `total_atoms` still reporting the full count.
+    Presenting a shortlist to a chemist is the *caller's* step, after the row is stored.
+
     Args:
         smiles: The molecule as a SMILES string. Must be closed-shell (no radicals).
-        mode: Which attack to rank for.
-        top_n: How many atoms to return, most susceptible first. 0 uses the configured
-            default; pass a larger number to see the whole molecule.
+        mode: Which attack to rank for. It chooses the sort only — see above.
 
     Returns:
-        The ranked sites with all three Fukui indices per atom, and the total number
-        of atoms the ranking was drawn from. Atom indices match the heavy atoms of the
+        The ranked sites with all three Fukui indices per atom, one entry per atom, and the total
+        number of atoms as a check on that. Atom indices match the heavy atoms of the
         canonical SMILES, with hydrogens following them.
     """
-
-    def _run() -> SiteReactivityResult:
-        result = xtb_props.compute_fukui(*xtb_props.fukui_inputs(smiles), mode)
-        limit = top_n if top_n > 0 else settings.xtb_fukui_top_n
-        return result.model_copy(update={"sites": result.sites[:limit]})
-
-    return await asyncio.to_thread(_run)
+    return await asyncio.to_thread(
+        lambda: xtb_props.compute_fukui(*xtb_props.fukui_inputs(smiles), mode)
+    )
 
 
 @server.tool()
@@ -816,7 +822,6 @@ async def compute_fukui_at(
     structure: Structure,
     mode: FukuiMode = "electrophilic",
     solvent: str | None = None,
-    top_n: int = 0,
 ) -> SiteReactivityResult:
     """Condensed Fukui indices at a given geometry — regioselectivity on a shape you already hold.
 
@@ -831,25 +836,25 @@ async def compute_fukui_at(
     single points do not depend on `mode` — it only chooses the sort — so the result carries all
     three indices per atom and a second ranking is a re-sort rather than three more SCFs.
 
+    Every atom comes back, for the reason `predict_site_reactivity` states: `mode` is outside the
+    key these two share, so it may reorder the row and may not shorten it. The stake is higher here
+    — an ensemble average is taken over this tool's rows per conformer, and an atom missing from
+    some of them would be averaged over a different population than its neighbours.
+
     Args:
         structure: The geometry to evaluate at. Must be closed-shell; the ions of an open-shell
             parent could be either of two spin states, and picking one silently would be guessing.
-        mode: Which attack to rank for.
+        mode: Which attack to rank for. It chooses the sort only.
         solvent: ALPB implicit solvent name; omit for gas phase.
-        top_n: How many atoms to return, most susceptible first. 0 uses the configured default.
 
     Returns:
-        The ranked sites with all three Fukui indices per atom, and the key this calculation is
-        addressed by — the same `xtb.fukui` row `predict_site_reactivity` would produce at this
-        geometry.
+        The ranked sites with all three Fukui indices per atom, one entry per atom, and the key this
+        calculation is addressed by — the same `xtb.fukui` row `predict_site_reactivity` would
+        produce at this geometry.
     """
-
-    def _run() -> SiteReactivityResult:
-        result = xtb_props.compute_fukui(XtbSpec(task="fukui", solvent=solvent), structure, mode)
-        limit = top_n if top_n > 0 else settings.xtb_fukui_top_n
-        return result.model_copy(update={"sites": result.sites[:limit]})
-
-    return await asyncio.to_thread(_run)
+    return await asyncio.to_thread(
+        lambda: xtb_props.compute_fukui(XtbSpec(task="fukui", solvent=solvent), structure, mode)
+    )
 
 
 @server.tool()

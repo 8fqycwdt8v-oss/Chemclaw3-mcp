@@ -68,7 +68,12 @@ WITHOUT_A_DERIVABLE_KEY = frozenset({"predict_logd"})
 
 # One argument set per tool, and the compute coroutine that must agree with it. Deliberately the
 # *same* arguments on both sides — that is the property, and passing different ones would make the
-# test pass for the wrong reason. Small molecules, because this file runs all nine calculations.
+# test pass for the wrong reason. Small molecules, because this file runs every calculation in it.
+#
+# `predict_site_reactivity` carries `mode` for a reason: it is the one argument here that is
+# accepted and deliberately *not* keyed, so this row is what proves an unkeyed argument still
+# reaches the same row. It carried `top_n` for the same reason until `top_n` turned out to shorten
+# the payload that row stores — see `tests/test_fukui_completeness.py`.
 CASES: list[tuple[str, dict[str, Any], Any]] = [
     ("compute_xtb_energy", {"smiles": "CCO"}, tools.compute_xtb_energy),
     ("compute_xtb_energy", {"smiles": "CC(=O)[O-]", "charge": -1}, tools.compute_xtb_energy),
@@ -79,7 +84,7 @@ CASES: list[tuple[str, dict[str, Any], Any]] = [
     ),
     (
         "predict_site_reactivity",
-        {"smiles": "CCO", "mode": "nucleophilic", "top_n": 3},
+        {"smiles": "CCO", "mode": "nucleophilic"},
         tools.predict_site_reactivity,
     ),
     ("optimize_geometry", {"smiles": "O"}, tools.optimize_geometry),
