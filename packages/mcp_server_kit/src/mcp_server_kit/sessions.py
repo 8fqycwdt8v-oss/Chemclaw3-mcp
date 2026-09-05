@@ -176,9 +176,7 @@ def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
             return await wrapped(*args, **kwargs)
         session_id, transport = current
         in_flight[session_id] = in_flight.get(session_id, 0) + 1
-        _reassert_hold_after_upstreams_push(
-            transport, held=lambda: bool(in_flight.get(session_id))
-        )
+        _reassert_hold_after_upstreams_push(transport, held=lambda: bool(in_flight.get(session_id)))
         transport.idle_scope.deadline = math.inf
         try:
             return await wrapped(*args, **kwargs)
