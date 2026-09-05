@@ -217,3 +217,34 @@ async def test_without_the_hold_open_the_caller_never_gets_an_answer(
                     await asyncio.wait_for(
                         session.call_tool("slow", {}), timeout=SLOW_TOOL_SECONDS * 2
                     )
+
+
+@pytest.mark.parametrize("interfering", ["ping", "tools/list"])
+async def test_a_second_request_does_not_reap_the_call_in_flight(
+    serving: Callable[..., Any], mcp_session: Callable[..., Any], interfering: str
+) -> None:
+    """The arm the first hold-open test could not see: a session carrying *other* traffic.
+
+    Holding the deadline off from inside the tool call is only half of it, because upstream pushes
+    the same deadline forward on **every** request for an existing session — a ping and a
+    `tools/list` included — which overwrites `math.inf` with `now + timeout` and hands the
+    calculation the very cancellation the hold-open exists to prevent. Measured before the
+    re-assert, with a 1 s timeout and a 2.5 s tool: the call answered in 5.12 s alone, and was cut
+    at ~1.8 s with zero bytes written the moment anything else spoke on the session.
+
+    The trigger is not hypothetical. Chemclaw3's `core/mcp_session.py` sends a `PingRequest` as a
+    cancellation flush when one call of a fan-out times out, so a `calc` session doing exactly what
+    it is designed to do destroys the *other* CREST search running beside it.
+    """
+    app = connector_app(_probe_server("interfered"), name="interfered", token_env=TOKEN_ENV)
+    with serving(app) as base:
+        async with mcp_session(base, token=TOKEN) as session:
+            call = asyncio.ensure_future(session.call_tool("slow", {}))
+            await asyncio.sleep(IDLE_TIMEOUT_SECONDS / 2)
+            if interfering == "ping":
+                await session.send_ping()
+            else:
+                await session.list_tools()
+            result = await asyncio.wait_for(call, timeout=SLOW_TOOL_SECONDS * 3)
+            assert not result.isError, result.content
+            assert "finished" in result.content[0].text

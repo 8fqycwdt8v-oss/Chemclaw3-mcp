@@ -99,12 +99,19 @@ ADMISSION_MARKER = "__admission_gated__"
 # The token that tells a caller "full pod", not "bad input", across a wire that carries neither an
 # error code nor a structured payload for a refused tool call (the module docstring has the
 # mechanism). Bracketed and hyphenated so it cannot occur in a sentence anybody writes by accident,
-# and placed at the *head* of the message so it survives every wrapping the transport applies —
-# FastMCP prefixes `Error executing tool <name>: `, and `mcp_server_kit` may re-wrap after
-# redaction. Chemclaw3 transcribes this exact string as its own literal
-# (`core/mcp_session.SERVER_AT_CAPACITY`), because there is no shared package between the two
-# repositories to import it from; changing it here without changing it there silently restores the
-# defect, which is why each side pins it in a test.
+# and placed at the *head* of the message — which is not decoration: it survives every wrapping the
+# transport applies (FastMCP prefixes `Error executing tool <name>: `, and `mcp_server_kit` may
+# re-wrap after redaction), and it is the position Chemclaw3 matches *at*, because this server's
+# domain refusals quote the caller's own arguments back (`solvents.py` interpolates `{name!r}`) and
+# a token found anywhere in the message is therefore forgeable from a tool argument. Chemclaw3
+# transcribes this exact string as its own literal (`core/mcp_session.SERVER_AT_CAPACITY`), because
+# there is no shared package between the two repositories to import it from.
+#
+# **What that pinning does and does not do, said exactly, because it read as more.** Each side
+# pins only *its own* literal — `tests/test_admission.py` here, `tests/test_calc_remote.py` there —
+# so a reword fails the test in the repository that made the change and nothing at all in the other
+# one. Nothing here detects drift; what the two tests give is that the change cannot be silent
+# where it is made, and the reword has to be carried across by whoever makes it.
 AT_CAPACITY_MARKER = "[calc-at-capacity]"
 
 

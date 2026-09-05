@@ -25,12 +25,26 @@ still waiting. So the deadline is held open for the duration of every tool call,
 last concurrent call on that session returns. `idle` then means what the word says, and the same
 timeout is safe for the server that answers in microseconds and the one that answers in hours.
 
+**Holding it off from inside the call is not enough, and believing it was is what this module
+shipped.** Upstream pushes the deadline on *every* request for an existing session — a ping, a
+`tools/list`, a reconnecting GET stream — at
+`StreamableHTTPSessionManager._handle_stateful_request`, which overwrites `math.inf` with
+`now + timeout` and hands the calculation exactly the cancellation the hold-open exists to prevent.
+Measured with a 1 s timeout and a 2.5 s tool: the call answers in 2.5 s when nothing else speaks on
+the session, and is cut at ~1.5 s with **zero bytes and no JSON-RPC error** if anything does. The
+trigger is this family's own client: Chemclaw3's `core/mcp_session.py` sends a `PingRequest` as a
+cancellation flush when one call of a fan-out times out, so a `calc` session doing what it was
+designed to do would destroy the CREST search running beside it. So the hold is *re-asserted* after
+upstream's push, on the transport's own request handler — the one seam that runs after the push and
+before the request is served — for as long as that session has a call in flight.
+
 **And the failure it prevents is a hang, not an error**, which is why it is part of this fix rather
 than a refinement of it. Measured against a server with the timeout set and no hold-open: expiring
 the session cancels `Server.run` and terminates the transport, so the SSE stream the `tools/call`
 was being answered on just stops. No JSON-RPC error is ever written. The caller waits until *its*
 own timeout with no idea anything happened, and the only trace on the server is one line reading
-"idle timeout". `tests/test_sessions.py` drives both arms.
+"idle timeout". `tests/test_sessions.py` drives that counterfactual, so the hold-open tests
+beside it are evidence that the timeout is armed rather than that it is absent.
 """
 
 from __future__ import annotations
@@ -38,6 +52,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+from collections.abc import Callable
 from typing import Any
 
 import anyio
@@ -57,6 +72,10 @@ __all__ = [
 # Chemclaw3 turn. It bounds how long an orphaned session occupies a pod, not how long a call may
 # take — a call in flight holds the deadline off entirely (see `_hold_open_during_tool_calls`).
 DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800.0
+
+# Marks a transport whose request handler already re-asserts the hold, so a second concurrent
+# call on the same session does not stack a second wrapper on top of the first.
+_REASSERTED = "_chemclaw_hold_reasserted"
 
 
 def session_idle_timeout() -> float | None:
@@ -80,11 +99,11 @@ def session_idle_timeout() -> float | None:
     return seconds if seconds > 0 else None
 
 
-def _current_session(server: FastMCP) -> tuple[str, Any] | None:
-    """The session id and idle scope of the session this tool call is being served on.
+def _current_transport(server: FastMCP) -> tuple[str, Any] | None:
+    """The session id and transport of the session this tool call is being served on.
 
     `request_ctx` is set per JSON-RPC message and carries the ASGI request, which is where the
-    session id lives; the transport holding the scope is only reachable through the session
+    session id lives; the transport holding the idle scope is only reachable through the session
     manager's own instance map. Returns `None` whenever any of that is absent — a direct call in a
     test, a stateless server, or a deployment that has turned reaping off — so the caller runs the
     tool unchanged.
@@ -99,8 +118,37 @@ def _current_session(server: FastMCP) -> tuple[str, Any] | None:
         instances = server.session_manager._server_instances
     except RuntimeError:  # pragma: no cover - no manager yet, so nothing to hold open
         return None
-    scope = getattr(instances.get(session_id), "idle_scope", None)
-    return None if scope is None else (session_id, scope)
+    transport = instances.get(session_id)
+    if transport is None or getattr(transport, "idle_scope", None) is None:
+        return None
+    return session_id, transport
+
+
+def _reassert_hold_after_upstreams_push(transport: Any, *, held: Callable[[], bool]) -> None:
+    """Put the hold back after every request upstream pushes the deadline for.
+
+    Upstream's push runs at the top of `_handle_stateful_request` and then delegates to
+    `transport.handle_request`, so wrapping *that* is the only seam that runs after the deadline has
+    been overwritten and before the request is served. Wrapping the manager instead would run
+    before the push and be undone by it, which is the shape of the defect rather than its fix.
+
+    Installed once per transport, when that session first takes a hold, and it dies with the
+    transport — a set of session ids in a closure would outlive them, which is the leak this module
+    exists to close. `held` is read at request time, not at install time: the wrapper stays for the
+    life of the session and writes nothing once the last call has returned.
+    """
+    if getattr(transport, _REASSERTED, False):
+        return
+    wrapped = transport.handle_request
+
+    async def handle_request(*args: Any, **kwargs: Any) -> Any:
+        scope = getattr(transport, "idle_scope", None)
+        if scope is not None and held():
+            scope.deadline = math.inf
+        return await wrapped(*args, **kwargs)
+
+    transport.handle_request = handle_request
+    setattr(transport, _REASSERTED, True)
 
 
 def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
@@ -113,9 +161,8 @@ def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
     session alive while it runs.
 
     The count is per session because one session may carry concurrent calls: the deadline is
-    restored by the last one to return, not the first. Upstream pushes the same deadline forward on
-    every incoming request, so the two agree — this only covers the interval upstream cannot see,
-    between a call's request arriving and its result being written.
+    restored by the last one to return, not the first. It is also what the re-assert reads, so the
+    two writers agree on one number rather than each keeping its own.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `app._bind_caller_per_tool_call`
@@ -124,12 +171,15 @@ def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
     in_flight: dict[str, int] = {}
 
     async def call_tool(*args: Any, **kwargs: Any) -> Any:
-        current = _current_session(server)
+        current = _current_transport(server)
         if current is None:
             return await wrapped(*args, **kwargs)
-        session_id, scope = current
+        session_id, transport = current
         in_flight[session_id] = in_flight.get(session_id, 0) + 1
-        scope.deadline = math.inf
+        _reassert_hold_after_upstreams_push(
+            transport, held=lambda: bool(in_flight.get(session_id))
+        )
+        transport.idle_scope.deadline = math.inf
         try:
             return await wrapped(*args, **kwargs)
         finally:
@@ -138,7 +188,7 @@ def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
                 in_flight[session_id] = remaining
             else:
                 del in_flight[session_id]
-                scope.deadline = anyio.current_time() + timeout
+                transport.idle_scope.deadline = anyio.current_time() + timeout
 
     manager.call_tool = call_tool
 
