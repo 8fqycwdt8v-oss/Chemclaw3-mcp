@@ -18,7 +18,12 @@ metadata:
     app.kubernetes.io/name: chemclaw-mcp-pyexec
     app.kubernetes.io/part-of: chemclaw3
 spec:
-  replicas: 1
+  # **The HPA's `minReplicas` floor, and it is a floor rather than a count.** `replicas: 1` made
+  # every capability in this fleet a single point of failure for all of its users: a rolling
+  # update, a node drain, an eviction or one failed liveness probe took it to zero, and there was
+  # no second pod to serve while the first came back. `hpa.yaml` owns the number above this floor;
+  # this field is what a fresh install starts at and what a scale-to-zero would have to argue for.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: chemclaw-mcp-pyexec
@@ -31,6 +36,25 @@ spec:
       # No API access: this server never talks to the Kubernetes API, so it is handed no token to
       # steal. Set at the pod level so it covers the container regardless of the ServiceAccount.
       automountServiceAccountToken: false
+      # Two replicas on one node are one replica with extra steps: the node is the failure domain a
+      # drain, a kernel panic or a DiskPressure eviction acts on. `ScheduleAnyway` rather than
+      # `DoNotSchedule` so a single-node dev or CI cluster still schedules the second pod instead of
+      # leaving it Pending, which is the failure that gets a spread constraint deleted.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: chemclaw-mcp-pyexec
+      # **Derived from `connector.yaml`'s `request_timeout` (30 s) plus 30 s of drain**, not
+      # written as a number: the manifest states the longest a caller waits for this server, so it
+      # states the longest an in-flight call can still be worth finishing. Left at Kubernetes'
+      # 30 s default, every rollout and every node drain SIGKILLed whatever was running — and for
+      # a fleet that is stateless by design, that work is simply lost, because nothing here writes
+      # a result anywhere until the call returns. `tests/test_deploy_shape.py` holds the
+      # derivation, in both directions, for every server.
+      terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
@@ -59,14 +83,32 @@ spec:
                 - ALL
             seccompProfile:
               type: RuntimeDefault
-          # arbitrary LLM-authored Python in a disposable child that writes a scratch dir.
+          # Arbitrary LLM-authored Python in a disposable child that writes a scratch dir, and
+          # **the three numbers here are one arithmetic rather than three opinions.**
+          #
+          # `memory: 2Gi` is what `engine/limits.default_memory_bytes` divides: the pod's own cgroup
+          # limit, less the server's headroom, over `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS`. At the
+          # shipped ceiling of 2 that gives each run ~896 MiB of address space, against the 629 MiB
+          # a program importing numpy, pandas, scipy, sklearn, sympy, matplotlib, RDKit and
+          # OpenBabel and plotting actually reached (measured). It shipped at 512Mi with the child's
+          # own `RLIMIT_AS` set to 2 GiB — four times the pod — so the sandbox's memory guard
+          # could never fire, and the container OOMKiller took the whole pod instead of
+          # refusing the one call.
+          #
+          # `limits.cpu: "2"` is the same 2 as that ceiling: a run is a single-threaded child
+          # (`OMP_NUM_THREADS=1`), so a slot is a core, and admitting more runs than cores is what
+          # turns a 15-CPU-second program into a wall-clock kill.
+          #
+          # **`requests.cpu` is what `hpa.yaml` measures utilization against.** 1 rather than the
+          # 250m this shipped as, because a run is a whole core: at 250m a single analysis reads as
+          # 400% utilization and the autoscaler would run to its maximum on one call.
           resources:
             requests:
-              cpu: "250m"
-              memory: 256Mi
-            limits:
               cpu: "1"
               memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
           readinessProbe:
             # `/healthz` is real readiness here (503 until the corpus/model/backend loads), not a
             # constant 200 — see `mcp_server_kit.app.connector_app`.
@@ -92,4 +134,15 @@ spec:
               mountPath: /tmp
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            # **A bound on the node's ephemeral storage, not on this pod's convenience.** An
+            # unbounded `emptyDir` draws on the node's disk, so one pod filling it evicts its
+            # *neighbours* — the one failure mode a fleet of small single-purpose pods cannot
+            # absorb. Over this limit the kubelet evicts this pod alone, which is the blast radius
+            # worth having.
+            #
+            # **Here it is the only caller-controlled writer in the fleet.** A program gets
+            # `Limits.file_bytes` (16 MiB) and there are `max_concurrent_runs` of them, so
+            # 32 MiB of this is what callers can put here; the rest is the child
+            # interpreter's own scratch — the payload, the result, and matplotlib's cache.
+            sizeLimit: 256Mi

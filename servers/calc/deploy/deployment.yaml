@@ -18,7 +18,12 @@ metadata:
     app.kubernetes.io/name: chemclaw-mcp-calc
     app.kubernetes.io/part-of: chemclaw3
 spec:
-  replicas: 1
+  # **The HPA's `minReplicas` floor, and it is a floor rather than a count.** `replicas: 1` made
+  # every capability in this fleet a single point of failure for all of its users: a rolling
+  # update, a node drain, an eviction or one failed liveness probe took it to zero, and there was
+  # no second pod to serve while the first came back. `hpa.yaml` owns the number above this floor;
+  # this field is what a fresh install starts at and what a scale-to-zero would have to argue for.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: chemclaw-mcp-calc
@@ -31,6 +36,34 @@ spec:
       # No API access: this server never talks to the Kubernetes API, so it is handed no token to
       # steal. Set at the pod level so it covers the container regardless of the ServiceAccount.
       automountServiceAccountToken: false
+      # Two replicas on one node are one replica with extra steps: the node is the failure domain a
+      # drain, a kernel panic or a DiskPressure eviction acts on. `ScheduleAnyway` rather than
+      # `DoNotSchedule` so a single-node dev or CI cluster still schedules the second pod instead of
+      # leaving it Pending, which is the failure that gets a spread constraint deleted.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: chemclaw-mcp-calc
+      # **Derived from `connector.yaml`'s `request_timeout` (900 s) plus 30 s of drain**, not
+      # written as a number: the manifest states the longest a caller waits for this server, so it
+      # states the longest an in-flight call can still be worth finishing. Left at Kubernetes'
+      # 30 s default, every rollout and every node drain SIGKILLed whatever was running — and for
+      # a fleet that is stateless by design, that work is simply lost, because nothing here writes
+      # a result anywhere until the call returns. `tests/test_deploy_shape.py` holds the
+      # derivation, in both directions, for every server.
+      #
+      # **It covers the ordinary tier and deliberately not the two long ones, which is stated
+      # rather than implied.** This server's `xtb` binary budget is 3480 s and its CREST budget
+      # 14280 s, and a rollout that waited out a four-hour conformer search would not be a
+      # rollout. So a search in flight when a pod is drained is lost, and the answer to that is
+      # availability rather than patience: `replicas: 2` and `pdb.yaml` keep the *capability* up,
+      # and Chemclaw3 drives the sampling tools from a Temporal activity that retries. What the
+      # 930 s does buy is that every in-process calculation — which is every `opt` and `hess`
+      # the shipped image runs — finishes.
+      terminationGracePeriodSeconds: 930
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
@@ -60,6 +93,14 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           # GFN2-xTB and CREST, which write scratch tempdirs and can run for minutes to hours.
+          # `limits.cpu: "4"` is the same 4 as `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS`, because an
+          # admission slot here *is* a core (`engine/admission.py`).
+          #
+          # **`requests.cpu` is what `hpa.yaml` measures utilization against, and 1 makes that
+          # number leading rather than lagging.** Measured, a pod holding all four slots on
+          # in-process xTB draws 1.37 cores — the GIL, not the gate, is what bounds it — and one
+          # CREST search draws `CHEMCLAW_CREST_THREADS` (4). So against a 1-core request those are
+          # 137% and 400%, and the 70% target fires while there is still capacity to hand over.
           resources:
             requests:
               cpu: "1"
@@ -92,4 +133,14 @@ spec:
               mountPath: /tmp
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            # **A bound on the node's ephemeral storage, not on this pod's convenience.** An
+            # unbounded `emptyDir` draws on the node's disk, so one pod filling it evicts its
+            # *neighbours* — the one failure mode a fleet of small single-purpose pods cannot
+            # absorb. Over this limit the kubelet evicts this pod alone, which is the blast radius
+            # worth having.
+            #
+            # **4Gi because this is the fleet's largest writer.** xtb and CREST write their
+            # scratch tempdirs here, for runs of minutes to hours, and a CREST ensemble is
+            # the one output whose size is set by the search rather than by the input.
+            sizeLimit: 4Gi

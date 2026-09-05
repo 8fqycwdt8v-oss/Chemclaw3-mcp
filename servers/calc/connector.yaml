@@ -67,6 +67,16 @@ endpoint:
   # full 6N single points every time — minutes, not milliseconds. 900 s is the bound that stops a
   # mute connector hanging a turn; the tool's own docstring is what stops a model asking for one
   # casually, and `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` is what refuses the ones that would blow past it.
+  #
+  # **It is the *ordinary* tier, and a single key cannot say more than that.** Chemclaw3 dials this
+  # server with three budgets, not one: `calc_server_timeout_seconds` (900) for the calculations
+  # below, `calc_atomic_timeout_seconds` (3600) for the two pinned to the `xtb` binary, and
+  # `calc_sampling_timeout_seconds` (14400) for the two CREST searches. Each has a matching bound on
+  # this side, held 120 s *tighter* so that this server's refusal is the answer that arrives rather
+  # than the caller's timeout — see `engine/config._CALLER_MARGIN_SECONDS` and
+  # `tests/test_cost_bounds.py`. This number is also what `deploy/deployment.yaml` derives its
+  # `terminationGracePeriodSeconds` from, because a rollout can wait out an ordinary calculation and
+  # cannot wait out a four-hour search.
   request_timeout: 900
   # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here and
   # refuse it the moment a deployment points this at a real host — and a manifest whose auth mode

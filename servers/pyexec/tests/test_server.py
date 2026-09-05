@@ -22,6 +22,8 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from chemclaw_mcp_pyexec import tools
+from chemclaw_mcp_pyexec.engine.admission import ADMISSION_MARKER
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp_server_kit.testing import assert_manifest_matches
@@ -150,3 +152,21 @@ async def test_the_sandbox_holds_over_the_wire(running_server: str) -> None:
         assert result.structuredContent is not None
         assert result.structuredContent["ok"] is False
         assert "not available in the analysis sandbox" in result.structuredContent["error"]
+
+
+def test_the_one_tool_is_admission_gated() -> None:
+    """The gate has to be *on* the served callable, and a marker is what says so.
+
+    Applied under `@server.tool()`, so what FastMCP registered is the guarded function rather than
+    the bare one — a decorator in the other order would leave the tool ungated with nothing to see
+    in review. Checked through the marker rather than by name, so a second tool added later without
+    a gate fails here instead of inheriting the pod's whole capacity.
+    """
+    manager = tools.server._tool_manager
+    served = manager.list_tools()
+    assert served, "no tools registered"
+    for tool in served:
+        assert getattr(manager.get_tool(tool.name).fn, ADMISSION_MARKER, False), (
+            f"{tool.name} is served without an admission slot: it would run whenever a caller "
+            "asked, regardless of how many are already running"
+        )

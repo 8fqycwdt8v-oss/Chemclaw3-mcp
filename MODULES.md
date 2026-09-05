@@ -19,6 +19,50 @@ Nothing here duplicates a Chemclaw3 capability; the exclusion list is in `CLAUDE
 
 ---
 
+## What the built fleet costs to run
+
+Every `built` server shipped `replicas: 1` with no HorizontalPodAutoscaler, no PodDisruptionBudget,
+no topology spread and no `terminationGracePeriodSeconds`. That is one number per capability and it
+was wrong on both axes at once: a rollout, a node drain or one failed liveness probe took the
+capability to zero for every user, and a full pod had no second pod to overflow into. The shape is
+now `replicas: 2` as an HPA floor, a maxima per server, a PDB bounding voluntary disruption to one
+pod, a node spread constraint, a grace period derived from the manifest's own `request_timeout`, and
+a `sizeLimit` on the scratch `emptyDir`. `tests/test_deploy_shape.py` holds all of it.
+
+**Requests are what a cluster reserves, so this table is the bill.** Limits bound a burst and cost
+nothing until the node is contended; the CPU request is also what a `Resource cpu` HPA measures
+utilization against, which is why the five servers that shipped at `100m`-`500m` were re-set to what
+a pod doing real work actually draws — at `100m`, one caller reads as 1000% utilization and the
+autoscaler runs to its maximum on a single request.
+
+| server | replicas (min → max) | requests/pod | baseline (min × req) | ceiling (max × req) |
+| --- | --- | --- | --- | --- |
+| `props` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| `chem` | 2 → 6 | 500m / 256Mi | 1 CPU, 0.5 Gi | 3 CPU, 1.5 Gi |
+| `safety` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| `rxnlabel` | 2 → 4 | 500m / 1Gi | 1 CPU, 2 Gi | 2 CPU, 4 Gi |
+| `rxnpredict` | 2 → 4 | 500m / 2Gi | 1 CPU, 4 Gi | 2 CPU, 8 Gi |
+| `pyexec` | 2 → 6 | 1 / 512Mi | 2 CPU, 1 Gi | 6 CPU, 3 Gi |
+| `calc` | 2 → 8 | 1 / 1Gi | 2 CPU, 2 Gi | 8 CPU, 8 Gi |
+| **fleet** | | | **8 CPU, 10.5 Gi** | **23 CPU, 26.5 Gi** |
+
+**`calc` is the row that costs money, and it is the one that had to.** An admission slot there is a
+core, so one pod was four cores of semiempirical capacity for the whole platform: measured, 60
+concurrent `compute_xtb_energy` calls on aspirin were refused **68%** of the time, one
+`optimize_geometry` on a 50-atom fragment is 390 core-seconds, and a CREST search charges
+`CHEMCLAW_CREST_THREADS` slots — at the shipped 4, the entire pod for the length of the search.
+`replicas: 2` is what stops a single search being the *platform's* whole calculation capacity;
+scaling to 8 is what serves a chemistry population rather than a demo.
+
+**Two consequences a deployment should know.** A `calc` refusal is now usually transient — another
+replica has slots — which is worth telling the caller, since Chemclaw3 classifies that refusal
+non-retryable. And `pyexec`'s memory limit went from 512Mi to 2Gi, not for headroom but because its
+sandbox divides the pod's own cgroup limit to derive `RLIMIT_AS`: at 512Mi the guard was set above
+the pod and could never fire, so the container OOMKiller took the whole pod instead of refusing one
+call.
+
+---
+
 ## Tranche 1 — Route and process engineering
 
 The tranche the fleet starts with: the questions a process chemist asks between a route on paper and

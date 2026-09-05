@@ -74,6 +74,14 @@ def test_a_server_ships_the_whole_set(server: Path) -> None:
         # gap silently, which is why the requirement lives here rather than only in each
         # `test_deploy.py`.
         "deploy/deployment.yaml",
+        # The two objects that decide whether a capability survives a rollout and whether it has a
+        # capacity lever at all. Same argument as the Deployment above, one round later: every
+        # server here shipped `replicas: 1` with neither, so a drain took the capability to zero
+        # and a full pod had no second pod to overflow into — and because all seven were identical,
+        # no server's own tests could see it. `tests/test_deploy_shape.py` checks what is *in*
+        # them; this is what checks they exist for a server that copied a directory predating them.
+        "deploy/hpa.yaml",
+        "deploy/pdb.yaml",
         "tests/test_no_egress.py",
         "tests/test_server.py",
     ):

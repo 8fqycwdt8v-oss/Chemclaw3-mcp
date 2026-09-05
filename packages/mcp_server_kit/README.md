@@ -7,7 +7,10 @@ own `engine/`.
 | Module | What it is |
 | --- | --- |
 | `app.py` | `connector_app()` — the FastAPI app: `/healthz`, `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding and trace continuation, and tool-error sanitising. |
-| `auth.py` | Bearer check on `/mcp` (probes stay open, comparison in bytes, fails closed), the caller log, and the request-body cap. |
+| `auth.py` | Bearer check on `/mcp` (probes stay open, comparison in bytes, fails closed), the caller log, the request counter and the request-body cap. All four are pure ASGI: `BaseHTTPMiddleware` cost ~1 ms per request and made the caller log's `duration_ms` time-to-SSE-headers. |
+| `schema_cache.py` | One compiled `jsonschema` validator per tool schema, instead of upstream re-checking the schema against the meta-schema on every call. The dominant per-call cost in the fleet: 10.75 → 2.15 ms of server CPU on `props.solvent_properties`. |
+| `executor.py` | The default `to_thread` pool, sized from the container's **cgroup** quota rather than from `os.cpu_count()` — which is the node's, so a `cpu: "1"` pod on a 64-core worker got 32 threads. |
+| `sessions.py` | The MCP session idle timeout `FastMCP` never passes, plus the hold-open that stops a four-hour CREST search being reaped as "idle". |
 | `identity.py` | The `X-Chemclaw-*` headers and the contextvars that carry them. Provenance, never authorization. |
 | `tracing.py` | The receiving half of Chemclaw3's `traceparent`: one span per tool call, under the caller's trace. Off unless `MCP_TRACING_ENABLED` says otherwise, and it constructs no exporter — the `otel` extra installs the API only. |
 | `datasets.py` | Vendored-corpus loading: all six provenance fields required, checksum verified on load. |
@@ -45,9 +48,18 @@ quiet — no count, because the one written here said four over five bullets bef
   oversized request to it was served 200 with the cap installed and silent. The declared
   `content-length` is now refused up front, and the running total still guards the chunked case —
   by reporting a **disconnect** on the receive channel rather than raising. It raised for a while,
-  and the exception could not survive the two `BaseHTTPMiddleware` layers between the cap and the
-  app: a chunked oversize body got 500 with a per-request traceback, so the counter delivered a 413
-  in no configuration at all while its only test exercised the `content-length` path.
+  and the exception could not survive the two `BaseHTTPMiddleware` layers that sat between the cap
+  and the app at the time: a chunked oversize body got 500 with a per-request traceback, so the
+  counter delivered a 413 in no configuration at all while its only test exercised the
+  `content-length` path. Those layers are pure ASGI now; the disconnect stays, because FastAPI's
+  own body parsing is another `except` the signal would have to survive.
+- **Expiring an MCP session.** `FastMCP.streamable_http_app()` never passes upstream's
+  `session_idle_timeout`, so a session was removed only by an explicit `DELETE`: a client that
+  vanished left 149 kB and a live anyio task behind for the life of the pod, and the id still
+  answered 200 ten seconds after its TCP connection was gone. Setting the timeout alone would have
+  been worse than the leak, because upstream pushes the deadline only when a *request* arrives and
+  a tool call is one request that may run for hours — measured, a call the timeout expires under
+  simply never answers, with no error written anywhere.
 - **Passing upstream's own `Unknown tool: x` through the sanitiser.** `ToolManager` raises it with
   no `__cause__`, which made it indistinguishable from an internal fault: a model that guessed a
   stale tool name was told "an internal error occurred", and an ERROR-level traceback fired for a

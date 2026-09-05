@@ -1,9 +1,15 @@
 """Draw a molecule or a reaction as an SVG — the most expensive thing this server does.
 
 2D-coordinate generation and rasterising to SVG are CPU-bound C++ that holds the GIL for tens of
-milliseconds on a drug-sized molecule. Chemclaw3 measured the consequence of doing that on the
-event loop: throughput flat from 10 to 50 concurrent users. So `tools.py` awaits this in a worker
-thread — RDKit releases the GIL for the heavy passes, so the threads are real parallelism.
+milliseconds on a drug-sized molecule — up to 97 ms for the worst legal one, measured. Chemclaw3
+measured the consequence of doing that on the event loop: throughput flat from 10 to 50 concurrent
+users. So `tools.py` awaits this in a worker thread.
+
+**The thread buys latency isolation, not parallelism, and this docstring used to say otherwise.** It
+claimed RDKit releases the GIL "so the threads are real parallelism"; measured, 1 to 16 concurrent
+depictions on a four-core box all ran at cpu_util 0.80-1.15x with wall clock scaling linearly. What
+the offload actually protects is the event loop and `/healthz`, which is worth just as much and is a
+different claim. `engine/admission.py` has the numbers and what follows from them.
 """
 
 from __future__ import annotations

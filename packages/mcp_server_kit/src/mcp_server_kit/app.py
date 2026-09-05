@@ -38,6 +38,19 @@ since):
   trace rather than a span inside the turn. It is picked up from the same request the caller is,
   because the serving request is only reachable there — see `tracing.py` for why nothing here
   exports anything.
+- **Upstream re-compiles a tool's output schema on every call, and it is the dominant per-call
+  cost.** The lowlevel `CallToolRequest` handler validates through `jsonschema.validate`, and that
+  convenience function re-checks the schema against the meta-schema each time — measured on
+  `props`, 10.75 ms of pod CPU per call around a tool function that costs 0.005 ms, on the event
+  loop, outside every `to_thread`. `schema_cache.py` memoises the compiled validators (2.15 ms);
+  it is installed from the lifespan below and argued there.
+- **Nothing sizes the pool every tool body offloads into, so CPython does — from the node.**
+  `min(32, os.cpu_count() + 4)` is 32 threads in a one-CPU pod on a 64-core worker. `executor.py`
+  sizes it from the cgroup's own quota instead.
+- **Nothing expires an MCP session, so a client that vanishes leaks one.** `FastMCP` never passes
+  upstream's `session_idle_timeout`, and 149 kB plus a live task per orphan is an OOMKill on a
+  512Mi pod. `sessions.py` sets it, and holds it off for the duration of a tool call so a
+  four-hour CREST search is not reaped as "idle".
 - **`configure_logging()` must force, and must not run at import.** `FastMCP.__init__` calls
   `basicConfig` at import of the server's `tools.py`, so anything that does not pass `force=True`
   silently loses to it. But every server builds its app at *module scope*, so calling it from
@@ -76,6 +89,7 @@ from mcp_server_kit.auth import (
     RequestMetrics,
 )
 from mcp_server_kit.datasets import Dataset
+from mcp_server_kit.executor import install_default_executor
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
     HEADER_CORRELATION,
@@ -85,6 +99,8 @@ from mcp_server_kit.identity import (
 )
 from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
+from mcp_server_kit.schema_cache import install_validator_cache
+from mcp_server_kit.sessions import apply_session_idle_timeout
 from mcp_server_kit.tracing import tool_call_span
 
 logger = logging.getLogger(__name__)
@@ -356,7 +372,7 @@ def _instrument_tool_calls(server: FastMCP, *, name: str) -> None:
 def _claim_server(server: FastMCP, *, name: str) -> None:
     """Refuse to wrap one `FastMCP` twice, because wrapping is not idempotent.
 
-    Every one of the four behaviours `connector_app` installs is a wrapper around
+    Every per-call behaviour `connector_app` installs is a wrapper around
     `_tool_manager.call_tool` that captures the previous value. A second call therefore *stacks* a
     second set: measured, one `tools/call` against a twice-wrapped server booked
     `chemclaw_mcp_tool_calls_total 2.0`, timed itself twice, opened two nested spans and ran the
@@ -463,7 +479,7 @@ def connector_app(
     # rather than the exception the tool body raised — those differ by design, and the difference
     # is exactly what `ok`/`refused`/`failed` is splitting on. See the function.
     _instrument_tool_calls(server, name=name)
-    # Outermost of the four, so the span covers the whole call — the binding, the tool body, the
+    # Applied after the counter, so the span covers the whole call — the binding, the tool body, the
     # sanitiser's decision about what the caller is told, and the counter that records it. That is
     # a duration argument and nothing more: the span and the counter agree about the *outcome*
     # because both read `_is_caller_safe`, not because of the order they run in. Ordering was the
@@ -471,6 +487,11 @@ def connector_app(
     # against a `refused` counter no matter which wrapper was outside which.
     _continue_trace_per_tool_call(server, name=name)
     mcp_app = server.streamable_http_app()
+    # After `streamable_http_app()`, because that is what lazily builds the session manager this
+    # reaches into. It adds one more wrapper around `call_tool`, outside the ones above and
+    # describing nothing about the call — it only keeps the session alive while the call runs, so
+    # a CREST search is never cut short by the timeout that exists to reap abandoned sessions.
+    apply_session_idle_timeout(server)
     # A pool of exactly one, and its own rather than the default. `asyncio.to_thread` hands work to
     # the *default* executor — the same pool every `servers/calc` tool offloads a calculation into,
     # and the one `engine/admission.py`'s ceiling does not govern — so a readiness check that
@@ -482,17 +503,27 @@ def connector_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Configure logging, then run the MCP session manager — the mount does not run it.
+        """Configure the process, then run the MCP session manager — the mount does not run it.
 
-        **Logging is configured here rather than in `connector_app` itself**, because every server
-        calls `connector_app` at module scope: doing it there made tearing out the host process's
-        root handlers, forcing its level to INFO and permanently filtering `logging.lastResort` a
-        side effect of `import chemclaw_mcp_<name>.app`. Startup is the first moment this process
-        is unambiguously the one being configured, and it is still late enough for the ordering
-        `force=True` exists for — `FastMCP.__init__`'s `basicConfig` ran at import of `tools.py`,
-        and uvicorn's own `dictConfig` runs in `Config.__init__`, before it imports the app.
+        **Three things are configured here rather than in `connector_app` itself**, and for one
+        reason: every server calls `connector_app` at module scope, so doing any of them there
+        makes them a side effect of `import chemclaw_mcp_<name>.app`. Measured for the first of
+        them — logging — that meant tearing out the host process's root handlers, forcing its level
+        to INFO and permanently filtering `logging.lastResort`. Startup is the first moment this
+        process is unambiguously the one being configured.
+
+        - `configure_logging()` is still late enough for the ordering `force=True` exists for:
+          `FastMCP.__init__`'s `basicConfig` ran at import of `tools.py`, and uvicorn's own
+          `dictConfig` runs in `Config.__init__`, before it imports the app.
+        - `install_validator_cache()` changes how the MCP SDK validates a tool call's arguments and
+          result, which is a process-global patch of a third-party module and must not happen to a
+          process that merely imported this one. It is long before any tool call either way.
+        - `install_default_executor()` needs a *running loop* and so could not be done at import at
+          all; this is the process's "about to serve" moment, before anything can offload.
         """
         configure_logging()
+        install_validator_cache()
+        tool_pool = install_default_executor(server=name)
         try:
             async with server.session_manager.run():
                 report = asyncio.create_task(on_start()) if on_start is not None else None
@@ -503,6 +534,10 @@ def connector_app(
                         report.cancel()
         finally:
             readiness_pool.shutdown(wait=False, cancel_futures=True)
+            # After the session manager's task group has been cancelled, so no tool call can still
+            # be looking for a thread. `wait=False` because whatever is still running is finishing
+            # a call the client may yet read, and `cancel_futures` would drop queued work silently.
+            tool_pool.shutdown(wait=False)
 
     app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
     app.add_middleware(CallerLogMiddleware, server=name, revision=server_revision())
@@ -539,14 +574,18 @@ def connector_app(
         does not cache *exceptions* — so on the one path the route exists for, a failing corpus,
         every probe re-ran the whole check. Measured over ASGI, counting only threads the *server*
         creates: 40 concurrent probes from cold produced **40** full readiness invocations spread
-        over **8** `asyncio_*` threads — the interpreter's default executor, which on `calc` is the
+        over **8** `asyncio_*` threads — the process's default executor, which on `calc` is the
         same pool every tool offloads a calculation into and the one `engine/admission.py`'s
         ceiling does not govern. A pod that cannot answer would have been spending the CPU of the
         calls it could still answer on proving that it cannot.
 
         So the failure is memoised for `READINESS_FAILURE_TTL_SECONDS` and the check is
         single-flighted behind one lock, on a pool of one thread of its own: the same 40 probes
-        now run the check **once**, on one thread named for the server. A recovered pod is still
+        now run the check **once**, on one thread named for the server. (`executor.py` has since
+        sized that default pool from the container's cgroup rather than leaving it to CPython, so
+        the threads are named for the server too — this pool stays separate because a probe must
+        not queue behind the calculations it is reporting on, which is a different argument from
+        how wide the shared pool should be.) A recovered pod is still
         readied within a probe interval, because the memo is seconds rather than minutes.
 
         (An earlier draft of this paragraph said "peaked at 47 threads against a baseline of 2".

@@ -15,19 +15,72 @@ this process and here it is in a child, and either way it must not sit on the lo
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
-from typing import Any
+import os
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_pyexec.engine import sandbox
-from chemclaw_mcp_pyexec.engine.limits import Limits
+from chemclaw_mcp_pyexec.engine.admission import ADMISSION_MARKER, Admission
+from chemclaw_mcp_pyexec.engine.limits import Limits, default_memory_bytes
 from chemclaw_mcp_pyexec.engine.runner import ALLOWED_IMPORTS
 
 server = FastMCP("pyexec")
 
-_LIMITS = Limits()
+# **The pod's ceiling on concurrent runs, and the divisor of its memory limit — one number, used
+# twice.** A run is a single-threaded child, so a slot is a core; `deploy/deployment.yaml` sets
+# `limits.cpu` to this and `default_memory_bytes` divides the pod's own cgroup memory limit by it,
+# which is what makes the sandbox's `RLIMIT_AS` a bound that can actually fire. Built at import so
+# the number a gate enforces is the number the limits were derived from; `engine/admission.py` has
+# the measurement and the argument for refusing rather than queueing.
+_MAX_CONCURRENT_RUNS = int(os.environ.get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS", "2"))
+_admission = Admission(_MAX_CONCURRENT_RUNS)
+_LIMITS = Limits(memory_bytes=default_memory_bytes(_MAX_CONCURRENT_RUNS))
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _release_slot(task: asyncio.Task[Any]) -> None:
+    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
+
+    Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
+    left to receive its failure, and asyncio logs "exception was never retrieved" at exit for each
+    one — noise in the logs of exactly the incident this gate exists for.
+    """
+    _admission.release()
+    if not task.cancelled():
+        task.exception()
+
+
+def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how many programs run at once, refusing promptly when the pod is full.
+
+    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
+    `ADMISSION_MARKER` so a test can check the gated set rather than a second hand-kept list.
+    `asyncio.shield` releases the slot when the run finishes rather than when the caller stops
+    waiting: cancelling the awaiting coroutine does not stop `sandbox.run`'s worker thread or the
+    child process under it, so releasing on cancellation would hand a slot to a retry while the
+    original program kept burning a core.
+
+    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
+    from `inspect.signature`, which follows `__wrapped__` back to the real signature. Without it the
+    tool would advertise `(*args, **kwargs)`.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        _admission.acquire(work.__name__)
+        task = asyncio.ensure_future(work(*args, **kwargs))
+        task.add_done_callback(_release_slot)
+        return await asyncio.shield(task)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
 
 
 class RunResult(BaseModel):
@@ -73,6 +126,7 @@ def _decode(result_json: str | None) -> Any:
 
 
 @server.tool()
+@_admitted
 async def run_python(code: str, data: dict[str, Any] | None = None) -> RunResult:
     """Run a short Python analysis in a bounded, offline sandbox, and return what it produced.
 
@@ -117,6 +171,11 @@ async def run_python(code: str, data: dict[str, Any] | None = None) -> RunResult
     rows / 20,000 characters — a large plot should be kept small (low DPI, small figure size) or it
     will come back truncated rather than as a valid image. Exceeding any of them is reported, never
     silent.
+
+    **The pod also bounds how many analyses run at once**, because a run is a whole core: past that
+    ceiling this refuses immediately and says so, rather than queueing you behind somebody else's
+    program until your own wall clock runs out. That refusal is about the server being busy and not
+    about your program — retry it unchanged.
 
     Args:
         code: The program. Runs top to bottom in its own namespace, with `data` and `result` already

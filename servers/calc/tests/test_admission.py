@@ -36,7 +36,12 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_calc import tools
-from chemclaw_mcp_calc.engine.admission import ADMISSION_MARKER, Admission
+from chemclaw_mcp_calc.engine.admission import (
+    ADMISSION_MARKER,
+    AT_CAPACITY_MARKER,
+    Admission,
+    AtCapacityError,
+)
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure
 from mcp_server_kit.testing import load_manifest
@@ -90,6 +95,32 @@ def test_the_gate_refuses_once_the_ceiling_is_reached_and_reopens_when_one_finis
     gate.release()
     gate.acquire("a compute_hessian")
     assert gate.in_flight == 2
+
+
+def test_a_saturation_refusal_is_typed_and_marked_rather_than_worded() -> None:
+    """Saturation and a bad molecule must be separable by something other than reading English.
+
+    Chemclaw3 classifies every `isError=True` from this server, and the transport gives it exactly
+    one field to classify on: the text. So the type is for this repository (`AtCapacityError`) and
+    the marker is for the wire — at the *head* of the message, because FastMCP prefixes it with
+    `Error executing tool <name>: ` before anybody downstream sees it.
+
+    `ValueError` is asserted rather than assumed: `mcp_server_kit` decides a refusal is caller-safe
+    by that family alone, so a subclass outside it would reach the model as "an internal error
+    occurred" and lose both halves of the message at once.
+    """
+    gate = Admission(1)
+    gate.acquire("a search_conformer_ensemble")
+
+    with pytest.raises(AtCapacityError) as refusal:
+        gate.acquire("a compute_hessian")
+
+    assert isinstance(refusal.value, ValueError)
+    assert str(refusal.value).startswith(AT_CAPACITY_MARKER)
+    # The literal, transcribed. Chemclaw3 holds its own copy of this string with no shared package
+    # between the two repositories to import from, so the pair is only kept honest by each side
+    # pinning the spelling it expects rather than the constant it defines.
+    assert AT_CAPACITY_MARKER == "[calc-at-capacity]"
 
 
 def test_a_ceiling_below_one_is_refused_at_construction() -> None:

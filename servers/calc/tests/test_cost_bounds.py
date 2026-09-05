@@ -92,7 +92,9 @@ def test_the_optimizer_stops_when_the_inline_budget_is_spent(
     Per SCF rather than per leg, because a single L-BFGS leg is itself unbounded in seconds — the
     step count bounds iterations, not time. Water with a microsecond of budget is the cheapest
     possible proof that the clock is consulted at all; the real budget is
-    `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS`, which defaults to the manifest's `request_timeout`.
+    `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS`, which defaults to the manifest's `request_timeout`
+    less the caller margin — see
+    `test_every_budget_here_is_strictly_tighter_than_the_bound_its_caller_waits`.
 
     A `ValueError`, so the message reaches the model verbatim: it is the same refusal as the atom
     cap — this is too expensive to run inside a turn — only discovered late.
@@ -109,7 +111,8 @@ def test_the_finite_difference_hessian_stops_when_the_inline_budget_is_spent(
     """The same clock on the other loop, which is the more expensive one.
 
     6N + 1 single points at the 150-atom cap is 901 SCFs — scaling this repository's own measurement
-    of 76 atoms in 218 s, about 25 minutes. The caller gives up at 900 s and the thread keeps going.
+    of 76 atoms in 218 s, about 25 minutes. The caller gives up at 900 s and the thread keeps
+    going, which is why the budget that stops it has to expire first.
     """
     monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 1e-6)
     water = structure_from_smiles("O")
@@ -117,14 +120,69 @@ def test_the_finite_difference_hessian_stops_when_the_inline_budget_is_spent(
         compute_hessian(HessianSpec(engine="tblite"), water)
 
 
-def test_the_default_budget_is_the_one_the_manifest_promises() -> None:
-    """`request_timeout: 900` is a statement about the work, or it is a statement about nothing.
+#: What Chemclaw3 waits for each tier of this server, from `core/config/calculators.py`. Written as
+#: literals rather than imported: that repository is not installed here, and transcribing the number
+#: the *caller* actually sends is the whole point — a constant imported from this side would agree
+#: with itself and say nothing about the pair. `tests/test_identity_contract.py` makes the same
+#: argument for the header spellings, for the same reason.
+CHEMCLAW3_CALLER_BUDGETS = {
+    "calc_server_timeout_seconds": 900.0,
+    "calc_atomic_timeout_seconds": 3600.0,
+    "calc_sampling_timeout_seconds": 14400.0,
+}
 
-    The two subprocess timeouts are deliberately longer — a CREST search is hours and Chemclaw3
-    calls it knowing that — but the in-process paths are the ones the shipped image takes for every
-    `opt` and `hess`, and those are what the manifest's number is about.
+
+def test_every_budget_here_is_strictly_tighter_than_the_bound_its_caller_waits() -> None:
+    """The refusal must be the answer that arrives, and equality guarantees it is not.
+
+    All three of this server's budgets shipped **equal** to the Chemclaw3 setting matched to them —
+    900/900, 3600/3600, 14400/14400. Equal is not tighter: the caller's clock starts when it sends
+    the request and this server's starts after connect, handshake, JSON decode, structure embedding
+    and admission, so the caller always expired first. Every deliberately worded refusal on this
+    server — `budget.Deadline.check`'s "run a smaller system, relax it first, or raise
+    CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS", and the process-group kill behind the two subprocess
+    budgets — was therefore unreachable in production, and the chemist got a transport timeout
+    instead. The pod, meanwhile, kept computing for a request nobody was waiting for.
+
+    Checked as a strict inequality with a stated minimum margin rather than as three numbers,
+    because the numbers are a deployment's to change and the *ordering* is not.
     """
-    assert settings.xtb_inline_timeout_seconds == 900.0
+    margin = 120  # `config._CALLER_MARGIN_SECONDS`, and its derivation is in that comment.
+    for name, budget in (
+        ("calc_server_timeout_seconds", settings.xtb_inline_timeout_seconds),
+        ("calc_atomic_timeout_seconds", float(settings.xtb_cli_timeout_seconds)),
+        ("calc_sampling_timeout_seconds", float(settings.crest_timeout_seconds)),
+    ):
+        caller = CHEMCLAW3_CALLER_BUDGETS[name]
+        assert budget <= caller - margin, (
+            f"this server allows {budget:g} s where Chemclaw3's {name} waits {caller:g} s. The "
+            f"caller's clock starts first, so anything above {caller - margin:g} s means its "
+            "timeout wins and this server's refusal never reaches the chemist"
+        )
+
+
+def test_the_margin_covers_one_uninterruptible_single_point() -> None:
+    """The binding term in that margin is granularity, not transport.
+
+    `budget.Deadline` is checked *between* units of work and never inside one, because a single
+    point is not interruptible — so a spent budget is noticed at most one single point late. At the
+    500-atom ceiling `xtb_max_atoms` accepts, one single point measured **81 s** here (53 atoms
+    0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s, 493 atoms 81.1 s). A margin under
+    that is a margin the overrun eats, and the caller expires again.
+
+    Asserted against `xtb_max_atoms` rather than against a bare number so that raising the atom
+    ceiling — which raises the worst-case single point superlinearly — fails here instead of
+    quietly reintroducing the defect.
+    """
+    worst_single_point_seconds = 81.0
+    assert settings.xtb_max_atoms == 500, (
+        "the 81 s figure is one single point at 500 atoms; a different ceiling needs a "
+        "re-measurement, not a re-reading of this comment"
+    )
+    margin = CHEMCLAW3_CALLER_BUDGETS["calc_server_timeout_seconds"] - (
+        settings.xtb_inline_timeout_seconds
+    )
+    assert margin >= worst_single_point_seconds
 
 
 def test_the_budget_does_not_reach_the_key(monkeypatch: pytest.MonkeyPatch) -> None:

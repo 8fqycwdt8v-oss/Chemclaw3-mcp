@@ -1,0 +1,27 @@
+# What a *voluntary* disruption may take from the `safety` server.
+#
+# Without this object a node drain, a cluster upgrade or a descheduler evicts every pod of a
+# Deployment at once — and with `replicas: 1`, which is what this fleet shipped, that was a
+# guaranteed 100% outage of the capability for every user, on every maintenance action. A
+# PodDisruptionBudget is the only thing that makes the eviction API wait.
+#
+# `maxUnavailable: 1` rather than `minAvailable: 1`, and the difference matters once the HPA is
+# doing its job: at 6 replicas `minAvailable: 1` would let a drain take five of them at once, which
+# is the outage this file exists to prevent, expressed as a budget. One at a time is what a
+# rolling node drain actually needs.
+#
+# It bounds voluntary disruption only. A node that dies, an OOMKill and a failed liveness probe are
+# all outside it — those are what `minReplicas: 2` and the topology spread in
+# `deployment.yaml` are for, and the three are one control in three files.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chemclaw-mcp-safety
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-safety
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chemclaw-mcp-safety

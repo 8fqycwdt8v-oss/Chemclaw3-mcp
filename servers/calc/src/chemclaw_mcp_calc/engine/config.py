@@ -30,6 +30,28 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# **What every budget here is held below its caller's bound by, and why it is one number.**
+#
+# Each of the three timeouts below has a Chemclaw3 setting matched to it —
+# `calc_server_timeout_seconds` (900), `calc_atomic_timeout_seconds` (3600) and
+# `calc_sampling_timeout_seconds` (14400) — and all three shipped *equal* to their pair.
+# Chemclaw3's own docstrings say the intent is for "the server to be what bounds the wait, not a
+# client guess shorter than it", and equality defeats that exactly: the caller's clock starts at
+# the request and this server's starts after connect, handshake, JSON decode, structure
+# embedding and admission, so the caller always expired first and every actionable refusal on
+# this server was unreachable in production.
+#
+# 120 s, and the binding term is the *granularity* rather than the transport. `budget.Deadline` is
+# checked between units of work, never inside one, because a single point is not interruptible — so
+# a spent budget is noticed at most one single point late, and one single point at the 500-atom
+# ceiling `xtb_max_atoms` accepts is **81 s measured here** (53 atoms 0.20 s, 153 atoms 2.43 s, 303
+# atoms 19.8 s, 453 atoms 62.7 s, 493 atoms 81.1 s). 120 s is that plus the tens of milliseconds of
+# handshake and the embedding that precede this server's clock.
+#
+# It costs each tier 120 s of affordable calculation, which is 13% of the inline budget and under 1%
+# of the sampling one. That is the price of the refusal being the answer that arrives.
+_CALLER_MARGIN_SECONDS = 120
+
 
 class CalcSettings(BaseSettings):
     """The fast local calculators: xTB, the pKa predictor, the solubility model, logD.
@@ -54,7 +76,14 @@ class CalcSettings(BaseSettings):
     # that produce the numbers being stored. The timeout is not keyed and must not be — it decides
     # whether an answer comes back, not what it is.
     xtb_cli_accuracy: float = 1.0
-    xtb_cli_timeout_seconds: int = 3600
+    # **Every budget on this server is its caller's bound less `_CALLER_MARGIN_SECONDS`, and this
+    # is the first of the three.** Chemclaw3 dials this path with `calc_atomic_timeout_seconds`,
+    # which shipped at exactly 3600 — the same number as this — so the two clocks expired together
+    # and the caller's always won: its clock starts at the request, this one starts after connect,
+    # handshake, JSON decode, structure embedding and admission. The refusal this budget exists to
+    # deliver therefore reached nobody, and the chemist got a transport timeout instead of a
+    # sentence naming the knob. See `_CALLER_MARGIN_SECONDS` for where the margin comes from.
+    xtb_cli_timeout_seconds: int = 3600 - _CALLER_MARGIN_SECONDS
     # xtb's optimization convergence level. "vtight" (2e-4 Hartree/Bohr) is the first one that
     # satisfies `xtb_opt_gradient_tolerance`; the default "normal" stops around 1e-3 and the
     # geometry is then rejected by our own check, which wastes the run. The default of
@@ -125,11 +154,19 @@ class CalcSettings(BaseSettings):
     # (`CHEMCLAW_XTB_ENGINE=tblite`). The two timeouts above bound a *subprocess* and so bound
     # nothing on that path.
     #
-    # 900 s because that is `connector.yaml`'s `request_timeout`: without this the manifest bounded
-    # the caller's wait and not the work, and cancelling the awaiting coroutine does not stop the
-    # worker thread — so a caller that gave up left the CPU burning, and its retry started a second
-    # burn beside the first. Raise it deliberately, on a deployment whose caller waits longer.
-    xtb_inline_timeout_seconds: float = 900.0
+    # Its existence is what stops a caller that gave up leaving the CPU burning: cancelling the
+    # awaiting coroutine does not stop the worker thread, so without this the manifest bounded the
+    # caller's wait and not the work, and the caller's retry started a second burn beside the first.
+    #
+    # **The number is `connector.yaml`'s `request_timeout` less `_CALLER_MARGIN_SECONDS`, and it
+    # used to be that number exactly.** 900 against 900 — and against Chemclaw3's matching
+    # `calc_server_timeout_seconds` — meant the two clocks expired together with the caller's
+    # having started first, so `budget.Deadline.check`'s deliberately worded refusal ("run a
+    # smaller system, relax it first, or raise CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS") could never
+    # be the answer that arrived. It is the difference between an actionable refusal and a
+    # timeout. Raise it deliberately, on a deployment whose caller waits longer — and raise the
+    # caller's bound with it, or this margin is spent.
+    xtb_inline_timeout_seconds: float = 900.0 - _CALLER_MARGIN_SECONDS
     # How much this server will run **at once**, refused rather than queued past it — counted in
     # slots of one core, not in calls. The pair on Chemclaw3's side is
     # `calc_backend_max_concurrent_requests`, which is what it will not exceed when it dials this
@@ -170,7 +207,12 @@ class CalcSettings(BaseSettings):
     crest_binary: str = "crest"
     crest_effort: Literal["quick", "normal", "extensive"] = "quick"
     crest_threads: int = 0
-    crest_timeout_seconds: int = 14400
+    # The third budget under the same rule: Chemclaw3 dials the two sampling tools with
+    # `calc_sampling_timeout_seconds`, which shipped at exactly 14400. `crest_cli.run_isolated`
+    # kills the sampler's whole process group when this expires, so the margin is what lets that
+    # kill and its refusal reach the caller before the caller stops listening — otherwise the pod
+    # keeps a search running for a request nobody is waiting for, and a search is the entire pod.
+    crest_timeout_seconds: int = 14400 - _CALLER_MARGIN_SECONDS
     # Atom ceiling for perceiving an ensemble member's SMILES from its geometry. A protonation or
     # tautomer search changes the constitution, so the member's identity has to be read off the
     # coordinates — and bond-order assignment is combinatorial over the conjugated system, so an

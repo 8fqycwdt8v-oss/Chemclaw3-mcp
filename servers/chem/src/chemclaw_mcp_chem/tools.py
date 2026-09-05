@@ -19,9 +19,16 @@ especially 2D-coordinate generation plus SVG rendering are CPU-bound C++ that ho
 milliseconds to tens of milliseconds, and one process answers every connected chat turn on one
 loop — Chemclaw3 load-tested this connector and measured throughput flat from 10 to 50 concurrent
 users, the signature of exactly that. So each tool does its RDKit work in a worker thread
-(`asyncio.to_thread`) and the coroutine only awaits it. RDKit releases the GIL for the heavy
-passes, so the threads are real parallelism on a multi-CPU pod. This is the opposite conclusion
-from `props`, and for a measured reason rather than a stylistic one.
+(`asyncio.to_thread`) and the coroutine only awaits it.
+
+**What the offload buys is latency isolation, not throughput, and this docstring used to claim the
+opposite.** It said RDKit releases the GIL for the heavy passes "so the threads are real parallelism
+on a multi-CPU pod". Measured here, 1 to 16 concurrent depictions of a 241-atom molecule on a
+four-core box ran at cpu_util 0.80-1.15x with wall clock scaling linearly and throughput flat at
+16-23/s: they run one at a time. The offload is still right and still necessary — it is what keeps
+the event loop and `/healthz` answering while a render runs — but the way this server serves more
+depictions per second is more pods. `engine/admission.py` has the measurement and what follows from
+it; `deploy/hpa.yaml` is the remedy.
 """
 
 from __future__ import annotations
@@ -35,7 +42,11 @@ from typing import Any, ParamSpec, TypeVar
 from mcp.server.fastmcp import FastMCP
 
 from chemclaw_mcp_chem.engine import stoichiometry
-from chemclaw_mcp_chem.engine.admission import ADMISSION_MARKER, Admission
+from chemclaw_mcp_chem.engine.admission import (
+    ADMISSION_MARKER,
+    DEFAULT_MAX_CONCURRENT_RENDERS,
+    Admission,
+)
 from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
 from chemclaw_mcp_chem.engine.depiction import render_svg
 from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
@@ -55,8 +66,11 @@ from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candida
 server = FastMCP("chem")
 
 # The pod's ceiling on concurrent depictions. Built at import; a test that needs a different ceiling
-# replaces this attribute, so the number a gate enforces is the number it was built from.
-_admission = Admission(int(os.environ.get("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", "8")))
+# replaces this attribute, so the number a gate enforces is the number it was built from. The
+# default and its derivation live in `engine/admission.py`, beside the measurement they rest on.
+_admission = Admission(
+    int(os.environ.get("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", str(DEFAULT_MAX_CONCURRENT_RENDERS)))
+)
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
