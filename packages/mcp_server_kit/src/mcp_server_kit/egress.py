@@ -50,7 +50,7 @@ import threading
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from mcp_server_kit.metrics import EGRESS_GUARD_ARMED, EGRESS_REFUSED
+from mcp_server_kit.metrics import EGRESS_ALLOWED_HOSTS, EGRESS_GUARD_ARMED, EGRESS_REFUSED
 
 __all__ = ["EgressForbidden", "allowed_hosts", "arm", "armed", "disarm"]
 
@@ -83,7 +83,13 @@ _allowed: frozenset[str] = frozenset()
 
 
 def allowed_hosts() -> frozenset[str]:
-    """The hosts the guard currently permits, beyond loopback. Empty in every shipped deployment."""
+    """The hosts the guard currently permits, beyond loopback. Empty in every shipped deployment.
+
+    "Empty in every shipped deployment" is a claim, and `chemclaw_mcp_egress_allowed_hosts` is what
+    makes it checkable from outside the pod: this set's *size*, never its contents — a destination
+    host cannot be a metric label on an unauthenticated endpoint. `tests/test_fleet.py` holds the
+    other end, that no deployment manifest in this repository sets `MCP_EGRESS_ALLOW` at all.
+    """
     return _allowed
 
 
@@ -230,6 +236,10 @@ def arm(allow: Iterable[str] = ()) -> None:
     """
     global _armed, _allowed
     _allowed = _parse_allow(os.environ.get(_ALLOW_ENV)) | frozenset(h.lower() for h in allow)
+    # Published on every call, including the idempotent-return path below, because the allowlist is
+    # recomputed here: a second `arm()` with a wider environment must not leave the scrape
+    # describing the first one.
+    EGRESS_ALLOWED_HOSTS.set(len(_allowed))
     if _armed:
         return
 
@@ -308,6 +318,7 @@ def disarm() -> None:
     _armed = False
     _allowed = frozenset()
     EGRESS_GUARD_ARMED.set(0)
+    EGRESS_ALLOWED_HOSTS.set(0)
 
 
 def arm_from_env() -> None:
@@ -320,7 +331,10 @@ def arm_from_env() -> None:
     if os.environ.get(_GUARD_ENV, "on").strip().lower() in {"off", "0", "false", "no"}:
         # Recorded rather than merely returned: a deployment that shipped `MCP_EGRESS_GUARD=off`
         # used to be visible only in a docstring, and the gauge is what makes "the guard is armed"
-        # a fact a scrape can check instead of a claim a document makes.
+        # a fact a scrape can check instead of a claim a document makes. The allowlist it was
+        # *also* given is published here for the same reason — the guard being off does not make
+        # the configured widening uninteresting, it makes it the second half of the same finding.
         EGRESS_GUARD_ARMED.set(0)
+        EGRESS_ALLOWED_HOSTS.set(len(_parse_allow(os.environ.get(_ALLOW_ENV))))
         return
     arm()

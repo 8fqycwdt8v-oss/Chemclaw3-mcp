@@ -1,0 +1,258 @@
+{
+  "calculation_key": {
+    "arguments": {
+      "required": true,
+      "type": "object"
+    },
+    "tool": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "combine_structures": {
+    "first": {
+      "required": true,
+      "type": "object"
+    },
+    "second": {
+      "required": true,
+      "type": "object"
+    },
+    "separation_angstrom": {
+      "default": 3.5,
+      "required": false,
+      "type": "number"
+    }
+  },
+  "compute_atomic_descriptors": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    }
+  },
+  "compute_electronic_properties": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    }
+  },
+  "compute_fukui_at": {
+    "mode": {
+      "default": "electrophilic",
+      "required": false,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    }
+  },
+  "compute_hessian": {
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    }
+  },
+  "compute_properties_at": {
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    }
+  },
+  "compute_surface_potential": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    }
+  },
+  "compute_xtb_energy": {
+    "charge": {
+      "default": 0,
+      "required": false,
+      "type": "integer"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "embed_structure": {
+    "charge": {
+      "default": null,
+      "required": false,
+      "type": "integer|null"
+    },
+    "multiplicity": {
+      "default": null,
+      "required": false,
+      "type": "integer|null"
+    },
+    "relax_with_force_field": {
+      "default": true,
+      "required": false,
+      "type": "boolean"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "optimize_geometry": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    }
+  },
+  "predict_developability_profile": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "predict_logd": {
+    "ph": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "predict_pka": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "predict_site_reactivity": {
+    "mode": {
+      "default": "electrophilic",
+      "required": false,
+      "type": "string"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "predict_solubility": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "relax_structure": {
+    "frozen_atoms": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    }
+  },
+  "scan_point": {
+    "atoms": {
+      "required": true,
+      "type": "array"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    },
+    "value": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "search_binding_modes": {
+    "effort": {
+      "default": "quick",
+      "required": false,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    }
+  },
+  "search_conformer_ensemble": {
+    "effort": {
+      "default": "quick",
+      "required": false,
+      "type": "string"
+    },
+    "search": {
+      "default": "conformers",
+      "required": false,
+      "type": "string"
+    },
+    "solvent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "structure": {
+      "required": true,
+      "type": "object"
+    },
+    "temperature_k": {
+      "default": 0.0,
+      "required": false,
+      "type": "number"
+    }
+  }
+}

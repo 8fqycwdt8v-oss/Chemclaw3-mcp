@@ -1,0 +1,84 @@
+{
+  "classify_reaction": {
+    "product": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "reactants": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "list_available_models": {},
+  "predict_conditions_single_model": {
+    "model_name": {
+      "required": true,
+      "type": "string"
+    },
+    "product": {
+      "required": true,
+      "type": "string"
+    },
+    "reactants": {
+      "required": true,
+      "type": "string"
+    },
+    "top_k": {
+      "default": 5,
+      "required": false,
+      "type": "integer"
+    }
+  },
+  "predict_forward_reaction": {
+    "models": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    },
+    "reactants": {
+      "required": true,
+      "type": "string"
+    },
+    "top_k": {
+      "default": 5,
+      "required": false,
+      "type": "integer"
+    }
+  },
+  "predict_forward_single_model": {
+    "model_name": {
+      "required": true,
+      "type": "string"
+    },
+    "reactants": {
+      "required": true,
+      "type": "string"
+    },
+    "top_k": {
+      "default": 5,
+      "required": false,
+      "type": "integer"
+    }
+  },
+  "predict_reaction_conditions": {
+    "models": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    },
+    "product": {
+      "required": true,
+      "type": "string"
+    },
+    "reactants": {
+      "required": true,
+      "type": "string"
+    },
+    "top_k": {
+      "default": 5,
+      "required": false,
+      "type": "integer"
+    }
+  }
+}

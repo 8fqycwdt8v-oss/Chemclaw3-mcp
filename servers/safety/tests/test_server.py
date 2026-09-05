@@ -156,7 +156,7 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 
         # The manifest is a claim about this surface; here is where the claim is checked against the
         # server that is actually running.
-        assert_manifest_matches(MANIFEST, names)
+        assert_manifest_matches(MANIFEST, listed.tools)
 
 
 async def test_a_clean_screen_arrives_carrying_its_disclaimer(running_server: str) -> None:

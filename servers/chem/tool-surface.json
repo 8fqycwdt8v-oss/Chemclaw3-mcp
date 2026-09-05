@@ -1,0 +1,110 @@
+{
+  "describe_sites": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "describe_topology": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "enumerate_bond_cleavages": {
+    "mode": {
+      "default": "homolytic",
+      "required": false,
+      "type": "string"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "enumerate_degradants": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "enumerate_protonation_states": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "enumerate_stereoisomers": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "enumerate_tautomers": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "enumerate_torsions": {
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "green_metrics": {
+    "input_masses_g": {
+      "required": true,
+      "type": "array"
+    },
+    "product_mass_g": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "render_structure": {
+    "highlight_atoms": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "resolve_compound": {
+    "name": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "stoichiometry_table": {
+    "basis": {
+      "required": true,
+      "type": "string"
+    },
+    "basis_mass_g": {
+      "required": true,
+      "type": "number"
+    },
+    "equivalents": {
+      "required": true,
+      "type": "array"
+    },
+    "reagents": {
+      "required": true,
+      "type": "array"
+    },
+    "solvents": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    },
+    "volumes": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    }
+  }
+}

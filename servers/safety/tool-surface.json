@@ -1,0 +1,20 @@
+{
+  "ich_impurity_limit": {
+    "substance": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "screen_genotoxic_alerts": {
+    "smiles": {
+      "required": true,
+      "type": "array"
+    }
+  },
+  "screen_hazards": {
+    "smiles": {
+      "required": true,
+      "type": "array"
+    }
+  }
+}

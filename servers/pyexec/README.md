@@ -222,9 +222,26 @@ pod-level `ephemeral-storage` limit belongs beside the CPU/memory pair there whe
 picked up, not as a per-run field in `engine/limits.py` — `RLIMIT_FSIZE` already answers "how much
 can one program write", and a per-run counter cannot answer "how much can this pod hold at once".
 
+## `/healthz` forks
+
+Every other server in the fleet is unready when a *file* will not load; this one is unready when a
+*process* will not run. Nothing touches the sandbox at import, so the interpreter on the image,
+`runner.py` beside it, the `prctl` seal the parent applies before forking and the limits the child
+sets on itself were all first exercised by whichever caller arrived first — and until 2026-09 this
+server passed no `readiness=` at all, so a pod with a broken interpreter or an unwritable scratch
+directory answered a constant 200 and failed every call. `engine/readiness.py` runs one trivial
+program through the same `sandbox.run` a tool call uses and checks what came back; a failure is a
+503 naming the reason.
+
+It is cached for the life of the process, deliberately. A fresh probe forks, and at a ten-second
+probe interval that is both ~66 ms of CPU each time and one increment of
+`chemclaw_mcp_pyexec_runs_total{outcome="ok"}` — about 8,600 a day of the server watching itself,
+buried in the counter that exists to describe callers. What the probe checks is an image property.
+`lru_cache` does not cache exceptions, so a pod that starts broken is re-probed and stays 503.
+
 ## Running it
 
 ```sh
 make run-pyexec                 # 127.0.0.1:8899 with a dev token
-uv run pytest servers/pyexec    # 76 tests, ~25 s
+uv run pytest servers/pyexec    # ~29 s
 ```

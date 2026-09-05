@@ -13,7 +13,11 @@ import time
 import pytest
 from chemclaw_mcp_chem.engine.admission import Admission
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
-from chemclaw_mcp_chem.engine.depiction import MAX_DEPICTION_ATOMS, render_svg
+from chemclaw_mcp_chem.engine.depiction import (
+    MAX_DEPICTION_ATOMS,
+    MAX_DEPICTION_CHARS,
+    render_svg,
+)
 
 
 def test_a_molecule_over_the_depiction_bound_is_refused_fast() -> None:
@@ -67,3 +71,47 @@ def test_admission_rejects_a_ceiling_below_one() -> None:
     """A ceiling of zero would refuse every depiction — caught at construction."""
     with pytest.raises(ValueError):
         Admission(limit=0)
+
+
+# --- The output bound -------------------------------------------------------------------------
+#
+# The atom ceiling above bounds what a depiction costs *this pod*. It bounds nothing about what
+# comes back: measured on the installed RDKit at the shipped 320 px, `"C" * 250` renders to 126,348
+# characters and 244,522 with every atom highlighted, against a caller that cuts one tool result at
+# 60,000 characters divided by the width of the batch it was called in. A cut SVG is not a smaller
+# picture, it is a truncated XML fragment — no picture at all, and still paid for in tokens.
+
+ERYTHROMYCIN = (
+    "CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)"
+    "[C@@H](O[C@@H]2O[C@H](C)C[C@@H]([C@H]2O)N(C)C)[C@](C)(O)C[C@@H](C)C(=O)[C@H](C)"
+    "[C@@H](O)[C@]1(C)O"
+)
+
+
+def test_a_depiction_over_the_character_bound_is_refused_not_truncated() -> None:
+    """An oversized SVG is refused whole, in a message the caller can act on.
+
+    `MAX_DEPICTION_ATOMS` admits this molecule, so this pins the *output* bound specifically.
+    """
+    oversize = "C" * MAX_DEPICTION_ATOMS
+    with pytest.raises(InvalidSmilesError) as refusal:
+        render_svg(oversize)
+    message = str(refusal.value)
+    assert "characters" in message
+    assert str(MAX_DEPICTION_CHARS) in message
+    assert "CHEMCLAW_CHEM_MAX_DEPICTION_CHARS" in message
+
+
+def test_a_highlighted_depiction_is_measured_after_its_highlights() -> None:
+    """Highlights roughly double the SVG, so the bound has to be read off the finished drawing."""
+    smiles = "C" * 100
+    assert len(render_svg(smiles)) < MAX_DEPICTION_CHARS
+    with pytest.raises(InvalidSmilesError, match="highlight"):
+        render_svg(smiles, highlight_atoms=list(range(100)))
+
+
+def test_a_drug_sized_molecule_is_comfortably_inside_the_bound() -> None:
+    """Erythromycin, 51 heavy atoms, is the size the default was set to admit with headroom."""
+    svg = render_svg(ERYTHROMYCIN)
+    assert "<svg" in svg
+    assert len(svg) < MAX_DEPICTION_CHARS

@@ -8,11 +8,17 @@ so one of them was wrong, on every request, for as long as it had existed.
 
 `HEADER_CORRELATION` read `x-chemclaw-correlation` against a sender writing
 `X-Chemclaw-Correlation-Id`. HTTP header lookup is case-insensitive, not suffix-insensitive, so
-`request.headers.get(...)` returned `None` and `bind_caller` bound the empty string. Nothing in
-`servers/` consumes `current_caller().correlation` yet, which is the only reason it never surfaced;
-`current_caller` is public kit API, and the first server to stamp a record with it would have
-written an empty string into the one field that joins this fleet's records to Chemclaw3's audit
-trail. That is the shape Chemclaw3 named in
+`request.headers.get(...)` returned `None` and `bind_caller` bound the empty string.
+
+**It never surfaced as a *broken* thing, which is not the same as nothing reading it.** This
+paragraph said nothing consumed `current_caller().correlation`, and `mcp_server_kit.logging`'s
+`ContextFilter` reads all three fields onto **every log record** in every server — installed by
+`configure_logging` on each handler that reaches an output stream. So the wrong spelling did reach
+production behaviour: it wrote `correlation=-` on every line of every server, on the one field that
+joins this fleet's records to Chemclaw3's audit trail, and a missing id reads as "this request
+carried none" rather than as a defect. What no server does *yet* is stamp a stored record with it —
+`current_caller` is public kit API, and the first one to do so would have written an empty string
+into a durable row. That is the shape Chemclaw3 named in
 `D-2026-08-26-an-attribution-nothing-can-write-is-not-an-attribution`: a provenance field nothing
 can fill, described in the present tense by three docstrings.
 

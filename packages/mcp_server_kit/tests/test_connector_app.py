@@ -536,3 +536,47 @@ def test_connector_app_refuses_to_wrap_one_capability_twice() -> None:
     connector_app(server, name="twice-probe")
     with pytest.raises(RuntimeError, match="already wrapped"):
         connector_app(server, name="twice-probe")
+
+
+def test_a_probe_path_with_a_trailing_slash_answers(running_server: str) -> None:
+    """`/healthz/` and `/metrics/` must *answer*, not merely escape the credential check.
+
+    `auth._is_open` normalises the trailing slash so a kubelet probe configured as
+    `path: /healthz/` is not refused — and that was only half of it. FastAPI matches routes
+    exactly, `connector_app` mounts the MCP transport at `/`, and a mount swallows the redirect
+    Starlette would otherwise issue: measured against every server in this fleet under real
+    uvicorn, `GET /healthz/` answered **404**. The middleware-level test for the same behaviour
+    asserted `status_code != 401`, which a 404 satisfies, so nothing could tell the fix working
+    from the fix doing nothing.
+
+    Redirects are not followed here deliberately. A 3xx is what kubelet counts as a *successful*
+    probe, so a redirect would be indistinguishable from a served answer at the one moment the
+    difference matters — see the unreadiness test below.
+    """
+    healthz = httpx.get(f"{running_server}/healthz/", timeout=5.0, follow_redirects=False)
+    assert healthz.status_code == 200, "a trailing-slash probe path must answer the probe itself"
+    assert healthz.json()["status"] == "ok"
+    assert healthz.json()["server"] == "probe"
+
+    metrics = httpx.get(f"{running_server}/metrics/", timeout=5.0, follow_redirects=False)
+    assert metrics.status_code == 200
+    assert "chemclaw_mcp_build_info" in metrics.text
+
+
+def test_a_trailing_slash_probe_still_reports_unreadiness() -> None:
+    """The alias serves the route rather than pointing at it, which is why a 503 survives.
+
+    This is the whole argument for an alias over a redirect: kubelet treats any 2xx **or 3xx** as
+    a passing probe, so a pod whose corpus failed its checksum would have been reported ready by
+    a `/healthz/` probe that got a 307 — the exact failure `readiness` exists to end, restored by
+    the fix for it.
+    """
+
+    def _broken() -> list[Dataset]:
+        raise RuntimeError("could not verify the solvent table")
+
+    app = connector_app(_probe_server(), name="probe-unready-slash", readiness=_broken)
+    with _serving(app) as base:
+        response = httpx.get(f"{base}/healthz/", timeout=5.0, follow_redirects=False)
+        assert response.status_code == 503
+        assert response.json()["status"] == "unready"

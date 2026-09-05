@@ -164,8 +164,11 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
         assert result.structuredContent["total_energy_hartree"] < 0
 
         # The manifest is a claim about this surface; here is where the claim is checked against the
-        # server that is actually running.
-        assert_manifest_matches(MANIFEST, names)
+        # server that is actually running. The `Tool` objects go in rather than the names, because
+        # the manifest declares *which* tools exist and says nothing about their arguments — so a
+        # renamed or retyped argument is exactly the change that passes a name check and breaks
+        # Chemclaw3 at call time. `tool-surface.json` beside the manifest is what records them.
+        assert_manifest_matches(MANIFEST, listed.tools)
 
 
 async def test_the_version_and_the_key_survive_the_wire(running_server: str) -> None:

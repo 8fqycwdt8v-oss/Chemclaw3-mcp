@@ -31,6 +31,7 @@ from prometheus_client import Counter, Gauge, Histogram
 
 __all__ = [
     "BUILD_INFO",
+    "EGRESS_ALLOWED_HOSTS",
     "EGRESS_GUARD_ARMED",
     "EGRESS_REFUSED",
     "READY",
@@ -96,4 +97,14 @@ EGRESS_REFUSED = Counter(
 EGRESS_GUARD_ARMED = Gauge(
     "chemclaw_mcp_egress_guard_armed",
     "1 when the in-process egress guard is installed, 0 when it is not.",
+)
+
+# The count, and never the hosts. `chemclaw_mcp_egress_guard_armed` made "the guard is installed"
+# checkable from a scrape and left "the guard was told to permit somewhere" — the more dangerous
+# configuration of the two — visible only in an environment variable. A destination host is not
+# clampable and so cannot be a label here for the same reason `EGRESS_REFUSED` carries none; the
+# number is enough, because the shipped value is 0 and `> 0` is the whole alert.
+EGRESS_ALLOWED_HOSTS = Gauge(
+    "chemclaw_mcp_egress_allowed_hosts",
+    "How many hosts beyond loopback the egress guard is configured to permit. 0 when shipped.",
 )

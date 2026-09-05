@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from rdkit import Chem
 from rdkit.Chem import Crippen, Descriptors, rdMolDescriptors
 
-from chemclaw_mcp_calc.engine.chem import require_canonical_smiles
+from chemclaw_mcp_calc.engine.chem import require_canonical_smiles, require_molecule
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import CalculationKey, Keyed
 from chemclaw_mcp_calc.engine.uncertainty import Estimate, structural_domain
@@ -140,10 +140,14 @@ def predict_solubility(job: SolubilityInput) -> SolubilityResult:
     is exactly what the cached path in Chemclaw3 did: ESOL's four descriptors are invariant to
     spelling, so there is nothing to canonicalize *for*, while the key must collapse spellings or
     two of them would address two rows.
+
+    "As given" is still parsed by `require_molecule` rather than by a bare `MolFromSmiles`, and the
+    difference is the order of two failures rather than the set of them: every string this refuses
+    was already refused a few lines later by `cache_key`'s canonicalisation. Doing it first is what
+    puts the structural size bound *before* the descriptors run, so a megastring is turned away
+    instead of being handed to four graph walks on its way to the refusal.
     """
-    mol = Chem.MolFromSmiles(job.smiles)
-    if mol is None:
-        raise ValueError(f"invalid SMILES: {job.smiles!r}")
+    mol = require_molecule(job.smiles)
     log_s, uncertainty = _MODEL.predict(mol)
     key = cache_key(job)
     # The domain check runs on the molecule ESOL was actually handed. It cannot be inferred from the

@@ -269,3 +269,108 @@ async def test_a_concurrent_first_request_loads_the_checkpoint_once(
     await asyncio.gather(*(predictor.predict("C" * (n + 2) + "O", 1) for n in range(3)))
     print(f"load() was called {predictor.loads} time(s) for 3 concurrent first requests")
     assert predictor.loads == 1
+
+
+# --- A zero-success ensemble ------------------------------------------------------------------
+#
+# `gather(..., return_exceptions=True)` and `continue` degrade an ensemble one predictor at a time,
+# which is right — and it kept degrading all the way to nothing. With every installed predictor
+# raising `OSError("egress refused")` — exactly the shape of `EgressForbidden`, which subclasses
+# `OSError` — both ensemble tools returned `consensus: []`, `per_model: {}`, `n_models_succeeded: 0`
+# and `isError: false`. A vanished checkpoint mount and an egress guard refusing every weight fetch
+# both read, from outside the pod, as a healthy server answering a hard question: the tool-call
+# counter booked `outcome="ok"`, and the `refused`/`failed` split that exists for precisely this
+# showed nothing. A consensus over nothing is not an answer, so it is a refusal.
+
+
+async def _explode(*_args: object, **_kwargs: object) -> list[object]:
+    """The failure shape that motivated this: `EgressForbidden` is an `OSError`."""
+    raise OSError("egress refused")
+
+
+async def test_a_forward_ensemble_with_no_survivors_refuses(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every forward predictor failing is a refusal naming what failed, not an empty consensus."""
+    for name in ("fake_a", "fake_b"):
+        monkeypatch.setattr(registry.get_forward(name), "predict", _explode)
+    with pytest.raises(ValueError) as refusal:
+        await tools.predict_forward_reaction("CC(=O)Cl.Nc1ccccc1")
+    message = str(refusal.value)
+    assert "fake_a" in message and "fake_b" in message
+    assert "OSError" in message
+    assert "list_available_models" in message
+
+
+async def test_a_conditions_ensemble_with_no_survivors_refuses(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The condition side has the identical loop and had the identical hole."""
+    for name in ("fake_c", "fake_d"):
+        monkeypatch.setattr(registry.get_conditions(name), "predict", _explode)
+    with pytest.raises(ValueError) as refusal:
+        await tools.predict_reaction_conditions("CC(=O)Cl.Nc1ccccc1", "CC(=O)Nc1ccccc1")
+    assert "fake_c" in str(refusal.value)
+
+
+async def test_a_narrowed_ensemble_whose_only_predictor_fails_refuses(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`models=[...]` narrowing to one predictor that then fails is the same zero-success case."""
+    monkeypatch.setattr(registry.get_forward("fake_a"), "predict", _explode)
+    with pytest.raises(ValueError, match="fake_a"):
+        await tools.predict_forward_reaction("CC(=O)Cl.Nc1ccccc1", models=["fake_a"])
+
+
+async def test_the_refusal_quotes_the_exception_type_and_not_its_message(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal reaches the model verbatim, so it carries the fault's *type*, never its text.
+
+    `connector_app` passes a `ValueError` through unchanged and replaces every other exception, so
+    anything folded into this message is published to the caller. A predictor's own exception text
+    is where a checkpoint path, a DSN or a token would be; the log line beside it carries the full
+    `repr` for an operator, keyed by the same predictor name.
+    """
+
+    async def leak(*_args: object, **_kwargs: object) -> list[object]:
+        raise RuntimeError("/mnt/secrets/token=hunter2 not found")
+
+    for name in ("fake_a", "fake_b"):
+        monkeypatch.setattr(registry.get_forward(name), "predict", leak)
+    with pytest.raises(ValueError) as refusal:
+        await tools.predict_forward_reaction("CC(=O)Cl.Nc1ccccc1")
+    assert "RuntimeError" in str(refusal.value)
+    assert "hunter2" not in str(refusal.value)
+
+
+async def test_a_partial_success_still_answers_and_still_carries_the_spread(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal must not swallow the degraded-but-usable case — an ensemble's whole point."""
+    monkeypatch.setattr(registry.get_forward("fake_b"), "predict", _explode)
+    result = await tools.predict_forward_reaction("CC(=O)Cl.Nc1ccccc1")
+    assert result.n_models_queried == 2
+    assert result.n_models_succeeded == 1
+    assert set(result.per_model) == {"fake_a"}
+    assert result.consensus
+
+
+async def test_a_single_model_tool_lets_its_predictor_s_failure_through(
+    fake_predictors: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The single-model tools never had the swallow, and this is what keeps it that way.
+
+    They query one predictor and await it directly, so a fault propagates and `connector_app`
+    books `outcome="failed"` and replaces the text. Asserting the absence is what makes the
+    ensemble fix above a *narrowing* rather than a claim about the whole server.
+    """
+    monkeypatch.setattr(registry.get_forward("fake_a"), "predict", _explode)
+    with pytest.raises(OSError, match="egress refused"):
+        await tools.predict_forward_single_model("fake_a", "CC(=O)Cl.Nc1ccccc1")
+
+    monkeypatch.setattr(registry.get_conditions("fake_c"), "predict", _explode)
+    with pytest.raises(OSError, match="egress refused"):
+        await tools.predict_conditions_single_model(
+            "fake_c", "CC(=O)Cl.Nc1ccccc1", "CC(=O)Nc1ccccc1"
+        )

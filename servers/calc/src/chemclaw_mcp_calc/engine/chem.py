@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from mcp_server_kit.limits import atom_count_error, smiles_length_error
 from rdkit import Chem
 from rdkit.Chem import rdDetermineBonds
 
@@ -55,6 +56,22 @@ class InvalidSmilesError(ValueError):
     """
 
 
+_MAX_ECHO_CHARS = 120
+
+
+def _echo(smiles: str, limit: int = _MAX_ECHO_CHARS) -> str:
+    """The caller's string for a refusal message, truncated so a megastring cannot flood the log.
+
+    A refusal quotes what was rejected so a chemist can fix it, but a 3 kB invalid SMILES echoed
+    into a `ValueError` is not merely noisy: `connector_app` passes that family to the model
+    verbatim, so an unbounded echo is unbounded attacker-influenced text landing in the context
+    window of the turn that asked. Measured before this bound: a 3,000-character parse failure
+    produced a 3,018-character refusal here against 152 in `servers/chem`. The head is enough to
+    recognise; the length is appended so nothing about the size is hidden.
+    """
+    return smiles if len(smiles) <= limit else f"{smiles[:limit]}… ({len(smiles)} chars)"
+
+
 def require_molecule(smiles: str) -> Chem.Mol:
     """The parsed molecule, raising `InvalidSmilesError` unless RDKit reads `smiles` **whole**.
 
@@ -76,19 +93,35 @@ def require_molecule(smiles: str) -> Chem.Mol:
 
     Surrounding whitespace is stripped rather than refused: a leading newline is a copy-paste
     artifact, not a second molecule. The message quotes the caller's own string, not the stripped
-    one, so what is echoed back is what was typed.
+    one, so what is echoed back is what was typed — bounded by `_echo`.
+
+    **The two structural bounds come first, and on this server they are not optional.**
+    `MolToSmiles` recurses over the molecular graph and overflows the C stack on a long enough
+    linear molecule: the process dies with `SIGSEGV`, which no `except` can catch, so one ~20 kB
+    authenticated `tools/call` — far inside the 1 MB body cap — takes the pod down and every CREST
+    search running on it. `mcp_server_kit.limits` is where that pair lives because four other
+    servers apply it; this was the last SMILES-taking one that did not, and the heaviest, because
+    only here does a pod hold minutes-old work to lose. The length check is before the parse so a
+    megastring never reaches it; the atom check is after the parse and before any canonicalisation,
+    which is the call that actually recurses.
 
     Raises:
-        InvalidSmilesError: `smiles` is empty, holds whitespace or non-ASCII, or does not parse.
+        InvalidSmilesError: `smiles` is too long or too large, empty, holds whitespace or
+            non-ASCII, or does not parse.
     """
+    if reason := smiles_length_error(smiles, subject="this SMILES"):
+        raise InvalidSmilesError(reason)
     stripped = smiles.strip()
+    echoed = _echo(smiles)
     if not stripped or any(ch.isspace() for ch in stripped):
-        raise InvalidSmilesError(f"invalid SMILES (empty or contains whitespace): {smiles!r}")
+        raise InvalidSmilesError(f"invalid SMILES (empty or contains whitespace): {echoed!r}")
     if not stripped.isascii():
-        raise InvalidSmilesError(f"invalid SMILES (non-ASCII characters): {smiles!r}")
+        raise InvalidSmilesError(f"invalid SMILES (non-ASCII characters): {echoed!r}")
     mol = Chem.MolFromSmiles(stripped)
     if mol is None or mol.GetNumAtoms() == 0:
-        raise InvalidSmilesError(f"invalid SMILES: {smiles!r}")
+        raise InvalidSmilesError(f"invalid SMILES: {echoed!r}")
+    if reason := atom_count_error(mol.GetNumAtoms(), subject="this SMILES"):
+        raise InvalidSmilesError(reason)
     return mol
 
 

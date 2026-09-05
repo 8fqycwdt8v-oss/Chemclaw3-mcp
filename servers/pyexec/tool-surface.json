@@ -1,0 +1,13 @@
+{
+  "run_python": {
+    "code": {
+      "required": true,
+      "type": "string"
+    },
+    "data": {
+      "default": null,
+      "required": false,
+      "type": "object|null"
+    }
+  }
+}
