@@ -206,21 +206,41 @@ Defaults are in `engine/limits.py`; every one is a field with its reasoning besi
 | --- | --- | --- |
 | Wall clock | 20 s | the bound that always holds |
 | CPU | 15 s | includes the program's own imports |
-| Memory | 2 GiB | `RLIMIT_AS`; the container limit is the real ceiling |
+| Memory | the pod's limit, less 256 MiB, over the run ceiling | `RLIMIT_AS`; **derived**, see below |
 | Output | 10,000 chars | a cap on the caller's *context*, never silent |
 | Result | 20,000 chars / 200 rows | frames are cut by row, so what returns still parses |
 | One file | `RLIMIT_FSIZE`, 16 MiB | `engine/limits.py`'s `file_bytes`; unchanged by the jail |
+| Runs at once | 2 | `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS`; refused, never queued |
 
-**There is deliberately no separate cap on the scratch directory's *total* size.** `RLIMIT_FSIZE`
-already bounds any single file a program writes — a plot, a scratch CSV, an intermediate mol2 — the
-same pattern this server already uses for `RLIMIT_AS` against the container's own memory limit: a
-coarse process-level bound, backstopped by a deployment-level one rather than a second in-process
-counter. Total ephemeral usage across a pod's *concurrent* calls is that deployment's to bound —
-today's `deploy/deployment.yaml` sets CPU and memory requests/limits but no `ephemeral-storage`
-entry, which is a gap in the same family as those two rather than something this change closes; a
-pod-level `ephemeral-storage` limit belongs beside the CPU/memory pair there whenever that gap is
-picked up, not as a per-run field in `engine/limits.py` — `RLIMIT_FSIZE` already answers "how much
-can one program write", and a per-run counter cannot answer "how much can this pod hold at once".
+**The memory bound is derived from the pod, and it used to be a flat number four times larger than
+the pod it ran in.** `RLIMIT_AS` shipped at 2 GiB inside a container limited to 512Mi, so the
+sandbox's own memory guard could never fire: what enforced memory instead was the container
+OOMKiller, which kills the *pod* — and every other in-flight MCP session on it — rather than
+refusing the one call that asked for too much. Two independently written numbers cannot be kept
+consistent by review, so `limits.default_memory_bytes` reads this container's own cgroup limit
+(v2 `memory.max`, v1 `memory.limit_in_bytes`), subtracts the server's headroom and divides by the
+run ceiling. At the shipped 2Gi over a ceiling of 2 that is ~896 MiB each, against the **629 MiB**
+of address space a program importing numpy, pandas, scipy, sklearn, sympy, matplotlib, RDKit and
+OpenBabel and drawing a plot actually reaches (measured; its RSS was 292 MiB). With no cgroup limit
+to read — a dev box, a test, `docker run` without `--memory` — it falls back to the flat 2 GiB this
+file always used.
+
+**How many run at once is now bounded too, and the accidental ceiling it replaces was worse than a
+wrong number.** Nothing counted concurrent runs, so the effective limit was CPython's default
+executor: `min(32, os.cpu_count() + 4)` threads, and `os.cpu_count()` is not cgroup-aware, so a
+one-core pod on a large node still admitted eight. That does not merely slow runs down, it breaks
+the wall clock — measured on one core, eight concurrent runs of a program that finishes in 3.15 s
+alone **all eight** hit the wall-clock limit and were SIGKILLed, and each caller was told its
+*program* timed out. With the ceiling at 2, the same eight give two answers in 3.69 s and six
+prompt refusals naming the pod. `engine/admission.py` has the argument.
+
+**There is deliberately no separate cap on the scratch directory's *total* size in this process.**
+`RLIMIT_FSIZE` already bounds any single file a program writes — a plot, a scratch CSV, an
+intermediate mol2 — and the pod-level bound that belongs beside it is now there: the `/tmp`
+`emptyDir` in `deploy/deployment.yaml` carries a `sizeLimit`, so a pod that fills it is evicted
+alone instead of drawing on the node's disk and evicting its neighbours. A per-run counter could
+never have answered "how much can this pod hold at once", which is why the answer is a deployment
+field rather than a field in `engine/limits.py`.
 
 ## `/healthz` forks
 
@@ -243,5 +263,5 @@ buried in the counter that exists to describe callers. What the probe checks is 
 
 ```sh
 make run-pyexec                 # 127.0.0.1:8899 with a dev token
-uv run pytest servers/pyexec    # ~29 s
+uv run pytest servers/pyexec    # the sandbox suite; a count is not written here, it drifts
 ```

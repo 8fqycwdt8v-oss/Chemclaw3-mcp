@@ -28,7 +28,9 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from chemclaw_mcp_calc import tools
 from chemclaw_mcp_calc.engine import crest_cli
+from chemclaw_mcp_calc.engine.admission import Admission
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp_server_kit.testing import assert_manifest_matches
@@ -349,3 +351,46 @@ async def test_an_unparameterised_solvent_is_refused_by_name(running_server: str
         )
         assert result.isError is True
         assert "tetrahydrofuran" in str(result.content)
+
+
+async def test_a_full_pod_refuses_with_a_marker_the_caller_can_classify(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saturation refusal must be distinguishable from a domain refusal *on the wire*.
+
+    The two tests above prove a domain refusal arrives readable. This proves the third state exists
+    at all: Chemclaw3 read every `isError=True` from this server as bad data and marked the durable
+    job non-retryable on its first attempt, so under load — where "full" is the normal state — every
+    cache miss failed permanently while carrying this server's own advice to retry.
+
+    Driven over the real transport rather than against `Admission` directly, because everything that
+    could erase the marker is in the transport: FastMCP folds the exception into a `ToolError` and
+    prefixes it, `mcp_server_kit` re-wraps it if redaction changes anything, and
+    `mcp.server.lowlevel` flattens the result to one text block with no code and no structured
+    content. The assertion is the literal string, not the constant, for the same reason
+    `Chemclaw3-mcp`'s `tests/test_identity_contract.py` transcribes header spellings: a test that
+    imports the constant agrees with itself and says nothing about what crossed the wire.
+    """
+    monkeypatch.setattr(tools, "_admission", Admission(1))
+    tools._admission.acquire("a calculation the test is pretending to run")
+    async with _session(running_server) as session:
+        result = await session.call_tool("predict_solubility", {"smiles": "CCO"})
+    assert result.isError is True
+    content = str(result.content)
+    assert "[calc-at-capacity]" in content
+    # And the human half is still there: a marker that replaced the message would leave the model
+    # with nothing to say to the chemist.
+    assert "0 of its 1 calculation slots free" in content
+
+
+async def test_a_domain_refusal_does_not_carry_the_capacity_marker(running_server: str) -> None:
+    """The other direction, which is what makes the assertion above mean anything.
+
+    A marker that appeared on every refusal would classify an unparameterised solvent as
+    backpressure and retry it five times — the mirror image of the defect, and the more expensive
+    one, since a bad molecule is bad on every attempt.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool("predict_pka", {"smiles": "C1CCNCC1"})
+    assert result.isError is True
+    assert "[calc-at-capacity]" not in str(result.content)

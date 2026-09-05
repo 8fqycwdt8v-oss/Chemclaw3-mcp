@@ -329,9 +329,11 @@ naming a number.
 What that buys and what it costs:
 
 - `request_timeout: 900` in the manifest, against the fleet's habitual 30, because a cold geometry
-  optimisation on a drug-sized molecule is measured at 38 s (ibuprofen, 33 atoms, 24 steps) and a
-  CREST search is far longer. A budget that states the real cost beats one that kills a calculation
-  three quarters of the way through.
+  optimisation on a drug-sized molecule is measured at 38 s (ibuprofen, 33 atoms, 24 steps). It is
+  the *ordinary* tier: the two long ones are dialled with their own client budgets and are stated
+  below, and it is this number the pod's `terminationGracePeriodSeconds` is derived from, because a
+  rollout that waited out a four-hour CREST search would not be a rollout. A budget that states the
+  real cost beats one that kills a calculation three quarters of the way through.
 - **Two bounds on the input and one on the clock**, because the Hessian's cap was not the only
   quadratic cost and `request_timeout` bounds the caller's wait rather than the work:
   - `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) bounds the primitive whose cost is 6N single points.
@@ -340,11 +342,25 @@ What that buys and what it costs:
     dense (3N, 3N) model Hessian and eigendecomposes it *once per leg* — measured here at 3.6 s for
     120 atoms, 11.6 s for 240 and 32.9 s for 510, and at the ~42,000 atoms a body under the 1 MB cap
     can carry, a 127 GB allocation that takes the process down with every other connected turn.
-  - `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` (900, the manifest's own budget) bounds the in-process
-    optimisation and Hessian loops, checked per gradient and per displacement. The two subprocess
-    timeouts do not cover those paths, and they are the paths this image runs; cancelling the
-    awaiting coroutine does not stop the worker thread, so without this a caller that gave up left
-    the CPU burning and its retry started a second burn beside the first.
+  - `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` (780) bounds the in-process optimisation and Hessian
+    loops, checked per gradient and per displacement. The two subprocess timeouts do not cover
+    those paths, and they are the paths this image runs; cancelling the awaiting coroutine does not
+    stop the worker thread, so without this a caller that gave up left the CPU burning and its
+    retry started a second burn beside the first.
+- **Every budget here is its caller's bound less 120 s, and all three used to be *equal* to it.**
+  Chemclaw3 waits `calc_server_timeout_seconds` (900), `calc_atomic_timeout_seconds` (3600) and
+  `calc_sampling_timeout_seconds` (14400) for the three tiers of this server, and this server
+  allowed exactly 900, 3600 and 14400 back. Equal is not tighter: the caller's clock starts when it
+  sends the request and this server's starts after connect, handshake, JSON decode, structure
+  embedding and admission, so the caller always expired first — and every deliberately worded
+  refusal here ("run a smaller system, relax it first, or raise
+  CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS") was unreachable in production, with the pod left computing
+  for a request nobody was waiting for. The margin is 120 s because `budget.Deadline` is checked
+  *between* single points and never inside one, and one single point at the 500-atom ceiling is
+  **81 s** measured here (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s,
+  493 atoms 81.1 s). It costs each tier 120 s of affordable calculation — 13% of the inline budget,
+  under 1% of the sampling one. `tests/test_cost_bounds.py` holds the ordering rather than the
+  numbers, because the numbers are a deployment's to change and the ordering is not.
 - **Nothing is cached in this process**, deliberately. That is what `calculation_key` is for: the
   caller checks its own store and only reaches a compute tool on a miss.
 - Every tool body runs its work in a worker thread, and `tests/test_event_loop_offload.py` asserts

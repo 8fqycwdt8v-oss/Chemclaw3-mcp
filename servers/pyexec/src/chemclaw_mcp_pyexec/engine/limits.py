@@ -15,10 +15,104 @@ raised without thought the first time somebody hits it, which is worse than a sl
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
-__all__ = ["Limits"]
+__all__ = ["Limits", "container_memory_limit", "default_memory_bytes"]
+
+logger = logging.getLogger(__name__)
+
+# Where a container's own memory limit is written, newest first. cgroup v2 is what OpenShift 4.13+
+# and any RHEL 9 node uses; v1 is still what a Docker-on-older-kernel dev box gives, and this
+# repository's own sandbox is one — so both are read rather than the one that happens to be here.
+_CGROUP_V2_MAX = Path("/sys/fs/cgroup/memory.max")
+_CGROUP_V1_MAX = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+
+# What the server process itself needs beside the runs: the interpreter, FastMCP, the live MCP
+# sessions and the request bodies. Measured at 58 MiB of RSS for this server's own imports; 256 MiB
+# is that with room for the sessions and the payloads, which are what grow with load.
+SERVER_HEADROOM_BYTES = 256 * 1024**2
+
+# The bound when no cgroup limit can be read — a bare `python -m pytest`, a dev box, a container
+# run without `--memory`. Deliberately the value this file shipped with, so an unconstrained
+# environment behaves exactly as it did before the derivation existed.
+UNCONSTRAINED_MEMORY_BYTES = 2 * 1024**3
+
+# Below this a legitimate program cannot run: 629 MiB of address space is what one importing numpy,
+# pandas, scipy, sklearn, sympy, matplotlib, RDKit and OpenBabel and drawing a plot actually
+# reached, measured. A derivation that lands under it means the pod is too small for the ceiling it
+# was given, and that is a deployment defect worth a WARNING rather than a silently unusable tool.
+MINIMUM_VIABLE_MEMORY_BYTES = 768 * 1024**2
+
+
+def container_memory_limit() -> int | None:
+    """This process's own cgroup memory limit in bytes, or `None` when it is unbounded.
+
+    The number Linux will OOM-kill this container over — which is the only honest basis for a bound
+    that exists to fire *before* it. Both cgroup generations write "no limit" differently: v2 writes
+    the literal `max`, v1 writes a number so large it is the kernel's page-counter maximum rather
+    than a real limit, so a plain "is it big" test is what distinguishes them.
+    """
+    for path in (_CGROUP_V2_MAX, _CGROUP_V1_MAX):
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if raw == "max":
+            return None
+        try:
+            value = int(raw)
+        except ValueError:  # pragma: no cover — a cgroup file that is not a number.
+            continue
+        # v1's "unlimited" is `PAGE_COUNTER_MAX` scaled by the page size, which lands in the
+        # exabytes. Anything at or above a terabyte is that sentinel rather than a pod's limit.
+        return None if value >= 1 << 40 else value
+    return None
+
+
+def default_memory_bytes(max_concurrent_runs: int) -> int:
+    """The per-run address-space bound, derived from the pod's own limit and the run ceiling.
+
+    **This is the fix for a guard that could never fire.** `RLIMIT_AS` shipped at a flat 2 GiB
+    inside a pod limited to 512Mi — four times the container's own ceiling — so the sandbox's memory
+    bound was unreachable: what actually fired was the container OOMKiller, which kills the *pod*
+    and every other in-flight MCP session with it, rather than refusing the one offending call. Two
+    independently written numbers cannot be kept consistent by review, so only one of them is
+    written down now: the pod's limit is the input, and this is the arithmetic over it.
+
+    `RLIMIT_AS` bounds address space, which is always at least resident set, so bounding N runs at
+    `(limit - headroom) / N` guarantees they cannot collectively reach the limit the kernel kills
+    over. It is conservative in the safe direction — a program is refused at a mapping it might
+    never have touched — which is the coarseness `Limits.memory_bytes` has always documented.
+
+    Args:
+        max_concurrent_runs: The admission ceiling, i.e. how many of these bounds may be held at
+            once. Deriving from it is what makes the guarantee about the *pod* rather than about
+            one call.
+
+    Returns:
+        The per-run `RLIMIT_AS` value in bytes.
+    """
+    limit = container_memory_limit()
+    if limit is None:
+        return UNCONSTRAINED_MEMORY_BYTES
+    derived = max(0, limit - SERVER_HEADROOM_BYTES) // max(1, max_concurrent_runs)
+    if derived < MINIMUM_VIABLE_MEMORY_BYTES:
+        # Reported rather than silently clamped: clamping back up would restore exactly the defect
+        # this function exists to end — a bound larger than the pod that therefore never fires.
+        logger.warning(
+            "pyexec: this pod's memory limit (%d MiB) over %d concurrent runs leaves %d MiB of "
+            "address space each, below the %d MiB a program importing the scientific stack needs. "
+            "Raise the container's memory limit or lower CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS; "
+            "legitimate analyses will be refused until then.",
+            limit // 1024**2,
+            max_concurrent_runs,
+            derived // 1024**2,
+            MINIMUM_VIABLE_MEMORY_BYTES // 1024**2,
+        )
+    return derived
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,13 +145,21 @@ class Limits:
     dependency got slower to import.
     """
 
-    memory_bytes: int = 2 * 1024**3
+    memory_bytes: int = UNCONSTRAINED_MEMORY_BYTES
     """`RLIMIT_AS` — address space, not resident set.
 
-    2 GiB is roughly four times what the four scientific libraries need at rest. Address space is
-    the bound Linux can enforce without cgroups, and it is coarse: a library that reserves a large
-    lazy mapping counts against it while never touching the pages. That coarseness is why this is
-    set generously and why the container's own memory limit remains the real ceiling.
+    Address space is the bound Linux can enforce without cgroups, and it is coarse: a library that
+    reserves a large lazy mapping counts against it while never touching the pages. That coarseness
+    is why it is set generously — and why it must still be set *below* the container's own limit,
+    which is the ceiling the kernel actually kills over.
+
+    **The default here is the unconstrained one, and the server does not use it.** `tools.py` passes
+    `default_memory_bytes(max_concurrent_runs)`, derived from the pod's own cgroup limit, precisely
+    because a flat number written here cannot know the pod it will run in: this shipped at 2 GiB
+    inside a 512Mi pod, so the guard could never fire and the container OOMKiller — which kills the
+    whole pod, taking every other in-flight session with it — was what enforced memory instead. The
+    class default stays the flat value for the case with no cgroup limit to read at all: a test, a
+    dev box, a container started without `--memory`.
     """
 
     file_bytes: int = 16 * 1024**2

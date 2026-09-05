@@ -60,6 +60,24 @@ warm, against 10.5 ms for the ungated `calculation_key` and 9.6 ms for `embed_st
 that agreement and repurpose a gate list as a cost list. The gate is right; only the justification
 was.
 
+**A full pod and a bad molecule are two different answers, and the wire could not tell them apart.**
+Everything a tool body raises reaches the caller the same way — FastMCP folds it into a `ToolError`,
+`mcp_server_kit` decides it is caller-safe because it is a `ValueError`, and the transport returns
+`isError=True` with one text block. There is no error code and no structured payload on that path:
+`mcp.server.lowlevel`'s `_make_error_result` builds `CallToolResult(content=[TextContent(...)],
+isError=True)` and nothing else, and `Tool.run` has already flattened every exception type into one.
+So the *only* channel a refusal has is its own text, and Chemclaw3 was therefore classifying "this
+pod is full" as bad data — an unparameterised solvent, an atom index past the molecule — and marking
+the durable job non-retryable on its first attempt, carrying this file's own advice to retry.
+
+`AT_CAPACITY_MARKER` is that channel used deliberately rather than accidentally. It is a fixed token
+at the head of the message, not a phrase of the sentence around it, so the human wording stays free
+to change; `AtCapacityError` is the type this side catches on. It is the same mechanism
+`mcp_server_kit` already uses for "an internal error occurred", which Chemclaw3 matches to tell a
+fault apart from a refusal — a weak contract, and the only one the protocol offers, which is why
+both repositories pin the literal in a test rather than importing a constant across a boundary that
+does not exist.
+
 **One honest limit.** The slot is held for as long as the awaiting coroutine lives, so a client that
 disconnects mid-calculation releases it while its worker thread is still running. The alternative —
 holding the slot until the thread finishes — is what this does, by keeping the inner task alive
@@ -71,12 +89,33 @@ from __future__ import annotations
 
 import threading
 
-__all__ = ["ADMISSION_MARKER", "Admission"]
+__all__ = ["ADMISSION_MARKER", "AT_CAPACITY_MARKER", "Admission", "AtCapacityError"]
 
 # The attribute `tools._admitted` stamps on a gated tool, and the only thing that tells the coverage
 # test which tools are gated. A name rather than a hand-kept list, because the thing that must not
 # be forgotten is exactly the thing a forgetful change adds.
 ADMISSION_MARKER = "__admission_gated__"
+
+# The token that tells a caller "full pod", not "bad input", across a wire that carries neither an
+# error code nor a structured payload for a refused tool call (the module docstring has the
+# mechanism). Bracketed and hyphenated so it cannot occur in a sentence anybody writes by accident,
+# and placed at the *head* of the message so it survives every wrapping the transport applies —
+# FastMCP prefixes `Error executing tool <name>: `, and `mcp_server_kit` may re-wrap after
+# redaction. Chemclaw3 transcribes this exact string as its own literal
+# (`core/mcp_session.SERVER_AT_CAPACITY`), because there is no shared package between the two
+# repositories to import it from; changing it here without changing it there silently restores the
+# defect, which is why each side pins it in a test.
+AT_CAPACITY_MARKER = "[calc-at-capacity]"
+
+
+class AtCapacityError(ValueError):
+    """This pod is full; the identical call may well succeed once a calculation finishes.
+
+    A `ValueError` so `mcp_server_kit` still treats it as a deliberately worded, caller-safe
+    refusal rather than replacing it with an internal-error notice — the family is the contract,
+    and narrowing it here would hide the message from the caller entirely. The subclass exists so
+    this server's own code and tests can catch saturation precisely instead of matching prose.
+    """
 
 
 class Admission:
@@ -125,14 +164,17 @@ class Admission:
             that is not always `cost`.
 
         Raises:
-            ValueError: the budget does not have room. Worded for whoever receives it, which is
-                Chemclaw3's `cached_compute` or an agent reading a tool error.
+            AtCapacityError: the budget does not have room. A `ValueError`, so it stays a
+                caller-safe refusal, and its message opens with `AT_CAPACITY_MARKER` so the
+                receiver — Chemclaw3's `cached_compute`, or an agent reading a tool error — can
+                tell backpressure from bad data. Worded for that receiver either way.
         """
         charge = max(1, min(cost, self._limit))
         with self._lock:
             if self._in_flight + charge > self._limit:
                 free = self._limit - self._in_flight
-                raise ValueError(
+                raise AtCapacityError(
+                    f"{AT_CAPACITY_MARKER} "
                     f"this server has {free} of its {self._limit} calculation slots free and "
                     f"{what} needs {charge}, so it was refused rather than queued: a slot is one "
                     "core, the calculations here are seconds to hours of CPU, and a queued one "

@@ -23,19 +23,16 @@ about any server's chemistry.
 
 from __future__ import annotations
 
-import socket
-import threading
-import time
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+import asyncio
+import logging
+import os
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
-import uvicorn
-from fastapi import FastAPI
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
 from mcp_server_kit import Dataset
 from mcp_server_kit.app import connector_app
@@ -45,6 +42,10 @@ TOKEN_ENV = "MCP_KIT_PROBE_TOKEN"
 # Small enough that an oversize body is cheap to send, large enough that a real MCP handshake and
 # tool call fit under it comfortably.
 MAX_BYTES = 8_192
+# Long enough that "time to SSE headers" and "time to the answer" cannot be confused for each
+# other, short enough not to lengthen the suite noticeably. The defect this pins reported 1.1 ms
+# for a 23.49 s call, so any threshold in between would do; this is a hundredfold margin.
+SLOW_TOOL_SECONDS = 0.5
 
 # What one real call supplies, written out so the exposition can be asked about these exact strings
 # rather than about the words that happen to name them today. Every one is something a caller
@@ -84,95 +85,32 @@ def _probe_server() -> FastMCP:
         """
         raise ValueError("could not parse config PGPASSWORD=hunter2 at postgres.internal:5432")
 
+    @server.tool()
+    async def slow() -> str:
+        """Take measurably longer than a round trip, so a duration can be read off a log line."""
+        await asyncio.sleep(SLOW_TOOL_SECONDS)
+        return "done"
+
     return server
 
 
-def _free_port() -> int:
-    """An ephemeral loopback port, released immediately for uvicorn to claim."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
 @pytest.fixture(scope="module")
-def running_server() -> Iterator[str]:
-    """The probe capability under uvicorn on loopback, wrapped by the real `connector_app`."""
-    import os
+def running_server(serving: Callable[..., Any]) -> Iterator[str]:
+    """The probe capability under uvicorn on loopback, wrapped by the real `connector_app`.
 
+    `require_ready` because every test using this fixture is about a *served* request: waiting for
+    the 200 means a failure here is a startup problem rather than the first assertion in whichever
+    test ran first.
+    """
     os.environ[TOKEN_ENV] = TOKEN
     app = connector_app(
         _probe_server(), name="probe", token_env=TOKEN_ENV, max_request_bytes=MAX_BYTES
     )
-    port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    base = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        try:
-            if httpx.get(f"{base}/healthz", timeout=1.0).status_code == 200:
-                break
-        except httpx.HTTPError:
-            time.sleep(0.05)
-    else:  # pragma: no cover - only reached if the app never becomes ready
-        pytest.fail("the probe server did not become ready within 30 s")
-    yield base
-    server.should_exit = True
-    thread.join(timeout=10)
-
-
-@asynccontextmanager
-async def _session(
-    base: str, *, identity: dict[str, str] | None = None
-) -> AsyncIterator[ClientSession]:
-    """An initialised MCP session against the running server, carrying the bearer token.
-
-    `identity` adds the `X-Chemclaw-*` headers a real call from Chemclaw3 carries, so a test can
-    ask what happened to those *values* rather than to the words that name them.
-    """
-    headers = {"Authorization": f"Bearer {TOKEN}", **(identity or {})}
-    async with (
-        httpx.AsyncClient(headers=headers) as http_client,
-        streamable_http_client(f"{base}/mcp", http_client=http_client) as (rx, tx, _),
-        ClientSession(rx, tx) as session,
-    ):
-        await session.initialize()
-        yield session
-
-
-@contextmanager
-def _serving(app: FastAPI) -> Iterator[str]:
-    """Run one `connector_app` under uvicorn on a free loopback port for one test's duration.
-
-    Distinct from the `running_server` fixture above: that one is module-scoped and waits for
-    `/healthz` to answer **200** specifically, which a failing `readiness` callable never does.
-    This waits for the port to accept a connection at all — uvicorn's lifespan has then completed,
-    whatever `/healthz` itself reports — because a readiness probe answering 503 is a successful
-    HTTP response, not a startup failure.
-    """
-    port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    base = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        try:
-            httpx.get(f"{base}/healthz", timeout=1.0)
-            break
-        except httpx.HTTPError:
-            time.sleep(0.05)
-    else:  # pragma: no cover - only reached if the app never accepts a connection
-        pytest.fail("the server did not accept a connection within 30 s")
-    try:
+    with serving(app, require_ready=True) as base:
         yield base
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)
 
 
-def test_readiness_failure_is_a_503_naming_the_reason() -> None:
+def test_readiness_failure_is_a_503_naming_the_reason(serving: Callable[..., Any]) -> None:
     """The failure mode `readiness` exists to catch, exercised over the real transport.
 
     Before `readiness` existed, `/healthz` was a constant 200 in every server — evidence the
@@ -188,7 +126,7 @@ def test_readiness_failure_is_a_503_naming_the_reason() -> None:
         raise RuntimeError("PGPASSWORD=hunter2 could not verify the solvent table")
 
     app = connector_app(_probe_server(), name="probe-unready", readiness=_broken)
-    with _serving(app) as base:
+    with serving(app) as base:
         response = httpx.get(f"{base}/healthz", timeout=5.0)
         assert response.status_code == 503
         body = response.json()
@@ -206,7 +144,7 @@ def test_readiness_failure_is_a_503_naming_the_reason() -> None:
         assert 'chemclaw_mcp_ready{server="probe-unready"} 0.0' in exposition
 
 
-def test_readiness_success_names_the_verified_datasets() -> None:
+def test_readiness_success_names_the_verified_datasets(serving: Callable[..., Any]) -> None:
     """The companion path: a `readiness` that succeeds is what `/healthz` reports back."""
     verified = Dataset(
         name="solvent-table",
@@ -219,7 +157,7 @@ def test_readiness_success_names_the_verified_datasets() -> None:
     )
 
     app = connector_app(_probe_server(), name="probe-ready", readiness=lambda: [verified])
-    with _serving(app) as base:
+    with serving(app) as base:
         response = httpx.get(f"{base}/healthz", timeout=5.0)
         assert response.status_code == 200
         body = response.json()
@@ -288,7 +226,9 @@ def test_a_body_under_the_cap_is_served_chunked_too(running_server: str) -> None
     assert response.status_code != 413
 
 
-async def test_an_unknown_tool_name_is_named_back_to_the_caller(running_server: str) -> None:
+async def test_an_unknown_tool_name_is_named_back_to_the_caller(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
     """Upstream's `Unknown tool: x` is a caller-safe message and must survive the sanitiser.
 
     `ToolManager.call_tool` raises it with no `from`, so it reached the sanitiser looking exactly
@@ -300,24 +240,28 @@ async def test_an_unknown_tool_name_is_named_back_to_the_caller(running_server: 
     an unknown solvent is an error naming the corpus, so an unknown tool is an error naming the
     tool.
     """
-    async with _session(running_server) as session:
+    async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("no_such_tool", {})
         assert result.isError is True
         assert "no_such_tool" in str(result.content)
 
 
-async def test_an_internal_fault_is_still_replaced(running_server: str) -> None:
+async def test_an_internal_fault_is_still_replaced(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
     """The exemption must not widen: a `RuntimeError`'s text still never reaches the model."""
-    async with _session(running_server) as session:
+    async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("boom_internal", {})
         assert result.isError is True
         assert "an internal error occurred" in str(result.content)
         assert "PGPASSWORD" not in str(result.content)
 
 
-async def test_a_domain_refusal_still_passes_through(running_server: str) -> None:
+async def test_a_domain_refusal_still_passes_through(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
     """And a deliberately worded `ValueError` is still the whole content of the answer."""
-    async with _session(running_server) as session:
+    async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("boom_domain", {})
         assert result.isError is True
         assert "unobtainium" in str(result.content)
@@ -325,6 +269,7 @@ async def test_a_domain_refusal_still_passes_through(running_server: str) -> Non
 
 async def test_a_caller_safe_message_is_redacted_before_the_model_sees_it(
     running_server: str,
+    mcp_session: Callable[..., Any],
 ) -> None:
     """A `ValueError` passes through, but not with a secret in it.
 
@@ -334,7 +279,7 @@ async def test_a_caller_safe_message_is_redacted_before_the_model_sees_it(
     subclasses that echo their input (pydantic `ValidationError`, `UnicodeDecodeError`,
     `JSONDecodeError`) cannot leak a mounted secret. The surrounding worded text still passes.
     """
-    async with _session(running_server) as session:
+    async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("boom_domain_with_secret", {})
         assert result.isError is True
         content = str(result.content)
@@ -366,7 +311,9 @@ def test_upstream_still_chains_a_tool_fault_and_still_does_not_chain_unknown_too
     assert "from" not in source.split("Unknown tool")[1].split("\n")[0]
 
 
-async def test_metrics_is_open_and_carries_no_identity(running_server: str) -> None:
+async def test_metrics_is_open_and_carries_no_identity(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
     """`/metrics` is unauthenticated on purpose, so what it may carry is the whole control.
 
     It is *not* "counts only" and never was: `generate_latest(REGISTRY)` on the default registry
@@ -390,7 +337,7 @@ async def test_metrics_is_open_and_carries_no_identity(running_server: str) -> N
         "X-Chemclaw-Correlation-Id": CORRELATION,
         "X-Chemclaw-Dry-Run": "true",
     }
-    async with _session(running_server, identity=identity) as session:
+    async with mcp_session(running_server, token=TOKEN, headers=identity) as session:
         await session.call_tool("echo", {"text": CALLER_ARGUMENT})
 
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
@@ -433,7 +380,9 @@ def test_the_egress_counter_is_unlabelled(running_server: str) -> None:
         )
 
 
-async def test_metrics_publishes_what_a_tool_call_did(running_server: str) -> None:
+async def test_metrics_publishes_what_a_tool_call_did(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
     """The other direction, and the one the absence test above cannot give: it is not empty.
 
     Measured before this instrumentation existed: **ten** series on a running server, all ten
@@ -447,7 +396,7 @@ async def test_metrics_publishes_what_a_tool_call_did(running_server: str) -> No
     because `outcome` is decided by `ToolError.__cause__` — a property of the *upstream* tool
     manager, and the same one `_sanitize_tool_errors`'s exemption reads.
     """
-    async with _session(running_server) as session:
+    async with mcp_session(running_server, token=TOKEN) as session:
         await session.call_tool("echo", {"text": "hello"})
         await session.call_tool("boom_domain", {})
         await session.call_tool("boom_internal", {})
@@ -465,7 +414,9 @@ async def test_metrics_publishes_what_a_tool_call_did(running_server: str) -> No
         assert expected in exposition, f"/metrics does not publish {expected!r}"
 
 
-async def test_an_unknown_tool_name_cannot_mint_a_metric_series(running_server: str) -> None:
+async def test_an_unknown_tool_name_cannot_mint_a_metric_series(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
     """The trap that makes this metric safe, and it is not safe by construction.
 
     A tool name is not an actor, a session or an argument, so it is allowed as a label — but it is
@@ -477,7 +428,7 @@ async def test_an_unknown_tool_name_cannot_mint_a_metric_series(running_server: 
     So the call is still counted — a caller guessing tool names is a real signal — and it is
     counted under the fixed `<unknown>` sentinel.
     """
-    async with _session(running_server) as session:
+    async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("definitely_not_a_tool_here", {})
         assert result.isError is True
 
@@ -528,7 +479,7 @@ def test_metrics_counts_the_requests_it_refused(running_server: str) -> None:
 def test_connector_app_refuses_to_wrap_one_capability_twice() -> None:
     """Wrapping is not idempotent, so a second call must be an error rather than a double count.
 
-    Each of the four behaviours is a wrapper that captures the previous `call_tool`; a second call
+    Each of those behaviours is a wrapper that captures the previous `call_tool`; a second call
     stacks a second set. Measured on a twice-wrapped server: one `tools/call` booked
     `chemclaw_mcp_tool_calls_total 2.0`, and nothing at the call site said so.
     """
@@ -536,6 +487,66 @@ def test_connector_app_refuses_to_wrap_one_capability_twice() -> None:
     connector_app(server, name="twice-probe")
     with pytest.raises(RuntimeError, match="already wrapped"):
         connector_app(server, name="twice-probe")
+
+
+class _Keeper(logging.Handler):
+    """A root handler that keeps every record, added *after* the app has configured logging.
+
+    `configure_logging()` runs from the lifespan with `force=True` and would remove a handler
+    installed before startup — which is the same trap `test_logging.py` records, one layer out.
+    """
+
+    def __init__(self) -> None:
+        """Start empty, at DEBUG, so nothing is filtered before the test can see it."""
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep the record rather than writing it anywhere."""
+        self.records.append(record)
+
+
+async def test_the_request_log_measures_the_whole_call_and_not_the_sse_headers(
+    running_server: str, mcp_session: Callable[..., Any]
+) -> None:
+    """The request line's `duration_ms` is the request, and for a long time it was not.
+
+    `CallerLogMiddleware` was a `BaseHTTPMiddleware`, whose `call_next` returns as soon as the
+    response *starts* — and every MCP tool call is an SSE stream whose body is written afterwards.
+    So the `finally` that logs ran before the tool had run. Measured against a running server, an
+    `optimize_geometry` the client waited **23.49 s** for logged
+    `path=/mcp status=200 duration_ms=1.1`, with the next line in the file 23 seconds later: every
+    duration in this fleet's logs was time-to-headers, on the one field an operator uses to answer
+    "which pod is slow".
+
+    That is invisible to an in-process assertion about the middleware and invisible to a test that
+    only calls fast tools, which is why this one is over a real socket with a tool that sleeps.
+    """
+    keeper = _Keeper()
+    root = logging.getLogger()
+    root.addHandler(keeper)
+    try:
+        async with mcp_session(running_server, token=TOKEN) as session:
+            result = await session.call_tool("slow", {})
+        assert not result.isError
+    finally:
+        root.removeHandler(keeper)
+
+    lines = [
+        record.getMessage()
+        for record in keeper.records
+        if "request: path=/mcp" in record.getMessage()
+    ]
+    assert lines, "no request line was logged for the tool call"
+    durations = [
+        float(found.group(1))
+        for line in lines
+        if (found := re.search(r"duration_ms=([\d.]+)", line))
+    ]
+    assert max(durations) >= SLOW_TOOL_SECONDS * 1000 * 0.8, (
+        f"the longest request logged {max(durations):.1f} ms for a call that took at least "
+        f"{SLOW_TOOL_SECONDS * 1000:.0f} ms; duration_ms is measuring time-to-headers again"
+    )
 
 
 def test_a_probe_path_with_a_trailing_slash_answers(running_server: str) -> None:
@@ -563,7 +574,9 @@ def test_a_probe_path_with_a_trailing_slash_answers(running_server: str) -> None
     assert "chemclaw_mcp_build_info" in metrics.text
 
 
-def test_a_trailing_slash_probe_still_reports_unreadiness() -> None:
+def test_a_trailing_slash_probe_still_reports_unreadiness(
+    serving: Callable[..., Any],
+) -> None:
     """The alias serves the route rather than pointing at it, which is why a 503 survives.
 
     This is the whole argument for an alias over a redirect: kubelet treats any 2xx **or 3xx** as
@@ -576,7 +589,11 @@ def test_a_trailing_slash_probe_still_reports_unreadiness() -> None:
         raise RuntimeError("could not verify the solvent table")
 
     app = connector_app(_probe_server(), name="probe-unready-slash", readiness=_broken)
-    with _serving(app) as base:
+    # `require_ready=False`, which is what `_serving` meant before this helper moved to conftest:
+    # a readiness callable that raises never answers 200, so waiting for one would hang on the very
+    # condition this test exists to observe. Waiting for the port to accept is enough — uvicorn's
+    # lifespan has completed by then, whatever `/healthz` itself reports.
+    with serving(app, require_ready=False) as base:
         response = httpx.get(f"{base}/healthz/", timeout=5.0, follow_redirects=False)
         assert response.status_code == 503
         assert response.json()["status"] == "unready"

@@ -65,6 +65,8 @@ servers/<name>/
 ├── deploy/service.yaml          # one port named `http`; what the ServiceMonitor resolves through
 ├── deploy/servicemonitor.yaml   # path /metrics, port: http — a *name*, not a number
 ├── deploy/deployment.yaml       # the workload: runAsNonRoot, drop ALL caps, seccomp, limits, no SA token
+├── deploy/hpa.yaml              # replicas are the only scaling axis here; state the metric and why
+├── deploy/pdb.yaml              # maxUnavailable: 1 — a drain must not take every replica at once
 │                                # — pod label must equal the NetworkPolicy podSelector
 ├── src/chemclaw_mcp_<name>/
 │   ├── engine/                  # pure computation — no FastAPI, no MCP, no network
@@ -171,7 +173,13 @@ What a *new server* still owes:
    The NetworkPolicy already admits the monitoring namespace; these are what tell Prometheus to use
    it. `tests/test_fleet.py` requires both files and `tests/test_deploy.py` holds their port against
    the Containerfile and the manifest.
-5. **`deploy/deployment.yaml`**, copied from any server and renamed. It carries the pod hardening —
+5. **`deploy/hpa.yaml` and `deploy/pdb.yaml`**, copied from a server whose cost shape resembles
+   yours. Both are required and `tests/test_deploy_shape.py` checks them: without a PDB a rollout
+   or a node drain is a 100% outage of that capability, and without an HPA there is no capacity
+   lever at all. `terminationGracePeriodSeconds` is **derived** rather than chosen — the manifest's
+   own `request_timeout` plus a drain margin — because that is already the longest a caller waits.
+
+6. **`deploy/deployment.yaml`**, copied from any server and renamed. It carries the pod hardening —
    `runAsNonRoot`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`,
    `automountServiceAccountToken: false`, resource requests/limits, and a `/healthz` readiness and
    liveness probe. Its pod-template label **must equal** the NetworkPolicy's `podSelector`, or the

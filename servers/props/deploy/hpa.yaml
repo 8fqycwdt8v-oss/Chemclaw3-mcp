@@ -1,0 +1,56 @@
+# The autoscaler for the `props` server — and the file that decides whether this capability has
+# any capacity lever at all.
+#
+# Every server in this fleet shipped `replicas: 1` with no HorizontalPodAutoscaler anywhere, so a
+# capability's throughput was one pod's worth of Python and its availability was one pod. Both
+# halves of that are fixed by the same object: `deployment.yaml` carries the floor, this carries
+# everything above it, and `pdb.yaml` bounds what a voluntary disruption may take.
+#
+# **The metric is CPU utilization, and it is a proxy for admission saturation rather than the thing
+# itself — which is fine here, and was checked rather than assumed.** Every unit of work in this
+# fleet is CPU-bound: an admitted calculation is a core, a depiction holds the GIL, a sandboxed run
+# is a whole child process. So utilization against `requests.cpu` rises with occupancy, and the
+# requests in `deployment.yaml` are set to the draw of a pod doing real work precisely so that this
+# percentage means something. The proxy is not exact — a `calc` pod holding all four of its
+# slots on in-process xTB draws 1.37 cores rather than 4, because the GIL bounds it before
+# the gate does — and it errs in the safe direction, reading *higher* than occupancy against
+# a right-sized request.
+#
+# **What would be better, and why it is not here.** The exact signal is in-flight admission slots
+# over the ceiling, and `mcp_server_kit` publishes no such gauge; `chemclaw_mcp_tool_calls_total`
+# with `outcome="refused"` is the closest published series and it is lagging by construction — it
+# rises only once callers are already being turned away. Either would need a Prometheus adapter in
+# the cluster, which `Resource cpu` does not. So this scales on what every cluster can already
+# measure, and the gauge is the upgrade.
+#
+# 4 is generous for what this costs: one pod answers 80-178 calls a second (11.7 ms of CPU for
+# `solvent_properties`, 5.6 ms for `vapour_pressure`, measured), far above the whole platform's
+# offered tool-call rate. The ceiling exists for the burst, not for the mean.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chemclaw-mcp-props
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-props
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: chemclaw-mcp-props
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # The default 15 s window is right for scaling up: a burst that is real is served, and a
+      # burst that is not costs one pod for one `scaleDown` window.
+      stabilizationWindowSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300

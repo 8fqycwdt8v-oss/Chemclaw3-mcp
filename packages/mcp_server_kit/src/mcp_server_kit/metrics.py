@@ -47,7 +47,11 @@ __all__ = [
 UNKNOWN_TOOL = "<unknown>"
 
 # Spanning the fleet's real range in one bucket set: `props` answers a vapour pressure in
-# microseconds, and `crest_timeout_seconds` is 14400. A shared histogram is right because the
+# microseconds, and `crest_timeout_seconds` is 14,280 — the longest legal call on this fleet,
+# held 120 s under its caller's own budget so the actionable refusal is the one that wins.
+# The top bucket stays a round 14400 deliberately: a bucket edge is a reporting boundary
+# rather than a claim about a timeout, and moving it with every budget change would
+# discard the histogram's history for nothing. A shared histogram is right because the
 # question — "which tool is slow" — is asked across servers, and a per-server bucket set would make
 # two servers' p95 incomparable.
 DURATION_BUCKETS = (0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0)

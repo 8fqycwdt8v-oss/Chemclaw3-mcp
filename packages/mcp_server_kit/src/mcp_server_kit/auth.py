@@ -29,11 +29,11 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from hmac import compare_digest
 
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
+from starlette.datastructures import Headers
+from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mcp_server_kit.identity import (
@@ -85,8 +85,45 @@ def _labelled_path(path: str) -> str:
     return _OTHER_PATH
 
 
-class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Refuse anything outside `OPEN_PATHS` without the bearer token `token_env` names."""
+def _status_capturing_send(send: Send, record: Callable[[int], None]) -> Send:
+    """`send`, with the status of the response start handed to `record` on the way past.
+
+    The status a client actually received is only visible on the ASGI message, and only a
+    middleware that wraps `send` sees it. Both middlewares here that report on a request need it,
+    so it is written once.
+    """
+
+    async def wrapped(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            record(int(message["status"]))
+        await send(message)
+
+    return wrapped
+
+
+class BearerAuthMiddleware:
+    """Refuse anything outside `OPEN_PATHS` without the bearer token `token_env` names.
+
+    Pure ASGI rather than `BaseHTTPMiddleware`, for cost rather than for correctness — the
+    credential check itself is two byte comparisons. `BaseHTTPMiddleware` runs the downstream app
+    in an `anyio` task group behind a memory object stream, per request, and this fleet had two
+    such layers in every server. Measured with three arms in one process over real sockets — a bare
+    MCP app, this stack, and the same stack with both layers reinstated as `BaseHTTPMiddleware`,
+    median of 400 requests each:
+
+        ping             bare 2.94 ms | this 2.93 ms (-0.01) | BaseHTTPMiddleware 3.76 ms (+0.82)
+        tools/call echo  bare 3.32 ms | this 3.43 ms (+0.11) | BaseHTTPMiddleware 4.39 ms (+1.07)
+
+    So the whole `connector_app` stack — this check, the caller log, the body cap, the request
+    counter and the tool-call wrappers — now costs about a tenth of a millisecond on a tool call
+    and is indistinguishable from a bare MCP app on a ping. On a pod whose ceiling is one core's
+    worth of Python, the millisecond it used to cost was a tax on every tool call, every kubelet
+    probe and every scrape.
+
+    The conversion was not done for the millisecond, though: `CallerLogMiddleware` below had to
+    move for a correctness reason, and this one moved with it because leaving one behind would have
+    kept most of the cost while making the pair harder to read.
+    """
 
     def __init__(self, app: ASGIApp, *, server: str, token_env: str | None) -> None:
         """Bind the server's name (for the log line) and the env var holding its expected token.
@@ -95,16 +132,21 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         manifest), and every request passes through. It is read from the environment *per request*
         rather than at construction, so a rotated secret is picked up without a restart.
         """
-        super().__init__(app)
+        self._app = app
         self._server = server
         self._token_env = token_env
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check the credential, or pass straight through for the probe routes and `mode: none`."""
-        if _is_open(request.url.path) or self._token_env is None:
-            return await call_next(request)
+        if scope["type"] != "http" or self._token_env is None:
+            await self._app(scope, receive, send)
+            return
+        path = str(scope.get("path", ""))
+        if _is_open(path):
+            await self._app(scope, receive, send)
+            return
         expected = os.environ.get(self._token_env, "")
-        scheme, _, offered = request.headers.get("authorization", "").partition(" ")
+        scheme, _, offered = Headers(scope=scope).get("authorization", "").partition(" ")
         if (
             not expected
             or scheme.lower() != "bearer"
@@ -117,13 +159,14 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             logger.warning(
                 "server %s refused an unauthenticated request to %s",
                 self._server,
-                request.url.path,
+                path,
             )
-            return PlainTextResponse("unauthorized", status_code=401)
-        return await call_next(request)
+            await PlainTextResponse("unauthorized", status_code=401)(scope, receive, send)
+            return
+        await self._app(scope, receive, send)
 
 
-class CallerLogMiddleware(BaseHTTPMiddleware):
+class CallerLogMiddleware:
     """Bind the `X-Chemclaw-*` caller for the request's duration, then log what happened to it.
 
     Binding here covers the HTTP path; `app._bind_caller_per_tool_call` covers the tool bodies,
@@ -148,6 +191,20 @@ class CallerLogMiddleware(BaseHTTPMiddleware):
     question is answered by `chemclaw_mcp_tool_calls_total` instead, which is the right place for
     it: a per-tool rate is an aggregate, not a line.
 
+    **`duration_ms` and `status` then said something else entirely for as long as this was a
+    `BaseHTTPMiddleware`, and the paragraph above was the claim they falsified.** `call_next`
+    returns as soon as the response *starts*, and every MCP tool call is an SSE stream whose body
+    is written afterwards — so the `finally` ran before the tool had run. Measured against a
+    running server: an `optimize_geometry` the client waited 23.49 s for logged
+    `status=200 duration_ms=1.1`, and the next line in the file was 23 seconds later. Every
+    duration in this fleet's logs was time-to-headers and every status was the 200 an SSE stream
+    opens with, which is exactly the "a hang looks identical to a success" failure the move into
+    the `finally` was made to end. Pure ASGI is what fixes it: the downstream app is awaited to
+    completion, so the `finally` here is after the last byte of the body, and the status is read
+    off the response-start message rather than from a `Response` object a layer above may replace.
+    `chemclaw_mcp_tool_duration_seconds` was always right about the tool body and stays the place
+    to ask how long a *tool* took; this line is how long the *request* took, and now it is.
+
     `/healthz` and `/metrics` drop to DEBUG. At an ordinary 30 s probe interval and a 30 s scrape
     that is on the order of 40,000 content-free lines a day across seven servers — plausibly the
     bulk of this fleet's log volume, describing the two requests nobody has ever needed to see one
@@ -156,23 +213,33 @@ class CallerLogMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: ASGIApp, *, server: str, revision: str) -> None:
         """Bind the server's name and build so one log line says which pod, and which image."""
-        super().__init__(app)
+        self._app = app
         self._server = server
         self._revision = revision
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Bind the caller, serve the request, and log its outcome exactly once."""
-        actor = request.headers.get(HEADER_ACTOR, "")
-        session = request.headers.get(HEADER_SESSION, "")
-        correlation = request.headers.get(HEADER_CORRELATION, "")
-        path = request.url.path
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        actor = headers.get(HEADER_ACTOR, "")
+        session = headers.get(HEADER_SESSION, "")
+        correlation = headers.get(HEADER_CORRELATION, "")
+        path = str(scope.get("path", ""))
         tokens = bind_caller(actor, session, correlation)
         started = time.perf_counter()
+        # The default is what an unhandled exception produces: nothing below starts a response and
+        # uvicorn answers 500 itself. Logging that is the point — it is the request an operator
+        # most needs to find.
         status = 500
+
+        def record(code: int) -> None:
+            nonlocal status
+            status = code
+
         try:
-            response = await call_next(request)
-            status = response.status_code
-            return response
+            await self._app(scope, receive, _status_capturing_send(send, record))
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             # Logged *before* the reset, deliberately. `ContextFilter` stamps every record from the
@@ -191,7 +258,7 @@ class CallerLogMiddleware(BaseHTTPMiddleware):
                 actor or "-",
                 session or "-",
                 correlation or "-",
-                request.headers.get(HEADER_DRY_RUN, "-"),
+                headers.get(HEADER_DRY_RUN, "-"),
                 self._revision,
             )
             reset_caller(tokens)
@@ -212,7 +279,9 @@ class RequestMetrics:
 
     Pure ASGI rather than `BaseHTTPMiddleware`, for the reason `BodySizeLimit` is: this has to sit
     outside a middleware that answers by writing directly to `send`, and it must observe the status
-    that actually went out rather than a `Response` object some layer above may replace.
+    that actually went out rather than a `Response` object some layer above may replace. Every
+    middleware in this file is pure ASGI now, and this one was the first for a correctness reason
+    the other two later needed too.
 
     The label set is unchanged and still bounded — the server's name, the path folded onto the
     fixed route set by `_labelled_path`, and the status. `/metrics` is unauthenticated, so nothing
@@ -234,14 +303,12 @@ class RequestMetrics:
         # in a fault is the one an operator most needs counted.
         status = 500
 
-        async def counting_send(message: Message) -> None:
+        def record(code: int) -> None:
             nonlocal status
-            if message["type"] == "http.response.start":
-                status = int(message["status"])
-            await send(message)
+            status = code
 
         try:
-            await self._app(scope, receive, counting_send)
+            await self._app(scope, receive, _status_capturing_send(send, record))
         finally:
             REQUESTS.labels(
                 self._server, _labelled_path(str(scope.get("path", ""))), str(status)
@@ -266,12 +333,15 @@ class BodySizeLimit:
 
     **The counter signals with a disconnect, not an exception, and that is the second correction
     this class has needed.** It used to raise a private exception through the receive channel. Two
-    `BaseHTTPMiddleware` layers sit between this middleware and the app in every `connector_app`,
-    each running the downstream app inside an `anyio` task group, so the signal arrived here
-    wrapped in a nested `ExceptionGroup` that `except _BodyTooLarge` did not match: a chunked
+    `BaseHTTPMiddleware` layers sat between this middleware and the app in every `connector_app` at
+    the time, each running the downstream app inside an `anyio` task group, so the signal arrived
+    here wrapped in a nested `ExceptionGroup` that `except _BodyTooLarge` did not match: a chunked
     oversize body got **500 plus a per-request traceback**, and with no `BaseHTTPMiddleware` in
     between FastAPI's body parsing swallowed it into a 400 instead — the counter produced a 413 in
-    no configuration at all, while its only test exercised the declared pre-check.
+    no configuration at all, while its only test exercised the declared pre-check. Both of those
+    layers are pure ASGI now, so neither ExceptionGroup wrapping happens any more; the disconnect
+    stays, because it was never the right fix only for that stack. An exception has to survive
+    every `except` between here and the receive call, and FastAPI's body parsing is one of them.
 
     An exception has to survive every `except` between here and the receive call, and there is no
     version of that this middleware controls. A disconnect is the ASGI protocol's own way to say
