@@ -96,20 +96,32 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #   PYSEC-2026-2288   transformers, fixed in 5.0.0. `Trainer._load_rng_state` calls `torch.load`
 #   PYSEC-2026-2289   transformers, fixed in 5.3.0. A crafted `config.json` reaching a Hub repo
 #   PYSEC-2026-2290   transformers, no fix / 5.5.0. LightGlue loading honours a remote code path
-#                     — all three require the library to *fetch* an attacker-controlled repository.
-#                     These images bake their weights at build time, checksum them into
-#                     `/opt/models/SHA256SUMS`, run with `HF_HUB_OFFLINE=1`, and sit behind a
+#   GHSA-xrqw-3rrv-vx5w  transformers, fixed in 5.10.0 (CVE-2026-9856). `save_pretrained` uses
+#                     `chat_template` keys as filenames unvalidated, so a crafted
+#                     `tokenizer_config.json` escapes the save directory
+#                     — all four require the library to *fetch* an attacker-controlled repository.
+#                     These images bake their weights at build time, run with `HF_HUB_OFFLINE=1`
+#                     and `TRANSFORMERS_OFFLINE=1` (both, in both Containerfiles), and sit behind a
 #                     default-deny NetworkPolicy with the egress guard armed: there is no path from
-#                     a request to a Hub fetch. `transformers>=5` is a major bump across a forked
-#                     predictor stack, so it is a measured migration rather than a lockfile edit —
-#                     the `uv` updater in `.github/dependabot.yml` is what proposes it.
+#                     a request to a Hub fetch. **`/opt/models/SHA256SUMS` was cited here as a
+#                     fourth control and is not one**: `rxnpredict` writes it, `rxnlabel` writes no
+#                     manifest at all, and the whole repository mentions the path exactly once — the
+#                     line that creates it. Nothing reads it, at build time or at run time, which is
+#                     this repository's own "a README is not a gate" with a checksum for a subject. The fourth needs one hop more than the other three
+#                     and this fleet takes neither: no server calls `save_pretrained` at all, in
+#                     `servers/` or in `packages/` — a serving process reads weights, it does not
+#                     write them. `transformers>=5` is a major bump across a forked predictor stack,
+#                     so it is a measured migration rather than a lockfile edit — the `uv` updater in
+#                     `.github/dependabot.yml` is what proposes it, and 5.10.0 is further out than
+#                     the 5.0 the three above already wait on rather than a new reason to move.
 AUDIT_IGNORE := \
 	--ignore-vuln PYSEC-2026-2447 \
 	--ignore-vuln PYSEC-2026-3447 \
 	--ignore-vuln PYSEC-2025-217 \
 	--ignore-vuln PYSEC-2026-2288 \
 	--ignore-vuln PYSEC-2026-2289 \
-	--ignore-vuln PYSEC-2026-2290
+	--ignore-vuln PYSEC-2026-2290 \
+	--ignore-vuln GHSA-xrqw-3rrv-vx5w
 
 .PHONY: deps-audit
 deps-audit: ## Check the locked dependency closure for known vulnerabilities (supply chain).
