@@ -64,10 +64,21 @@ def running_server() -> Iterator[str]:
 
 
 def test_healthz_answers_and_names_the_server(running_server: str) -> None:
-    """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did."""
+    """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did.
+
+    `datasets` is present and empty because this server vendors no corpus. Its presence is the
+    assertion: it is what `connector_app` adds only when a `readiness` callable actually ran, and
+    without one this route was a constant 200 that proved nothing about the child process every
+    call here depends on. See `engine/readiness.py`.
+    """
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "server": "pyexec", "revision": "unknown"}
+    assert response.json() == {
+        "status": "ok",
+        "server": "pyexec",
+        "revision": "unknown",
+        "datasets": [],
+    }
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
@@ -124,7 +135,7 @@ async def test_a_real_mcp_session_lists_and_runs_an_analysis(running_server: str
 
         # The manifest is a claim about this surface; here is where it is checked against the
         # server that is actually running.
-        assert_manifest_matches(MANIFEST, names)
+        assert_manifest_matches(MANIFEST, listed.tools)
 
 
 async def test_a_failing_program_returns_a_result_rather_than_an_error(running_server: str) -> None:

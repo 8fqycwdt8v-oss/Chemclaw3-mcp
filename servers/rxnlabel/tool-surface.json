@@ -1,0 +1,32 @@
+{
+  "labeller_version": {},
+  "name_reaction": {
+    "reaction_smiles": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "name_reactions": {
+    "reactions": {
+      "required": true,
+      "type": "array"
+    }
+  },
+  "represent_reaction": {
+    "reaction_smiles": {
+      "required": true,
+      "type": "string"
+    },
+    "species": {
+      "default": null,
+      "required": false,
+      "type": "array|null"
+    }
+  },
+  "represent_reactions": {
+    "reactions": {
+      "required": true,
+      "type": "array"
+    }
+  }
+}

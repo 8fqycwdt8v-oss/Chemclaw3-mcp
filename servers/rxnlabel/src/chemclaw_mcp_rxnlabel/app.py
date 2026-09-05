@@ -17,9 +17,10 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
-from mcp_server_kit import connector_app
+from mcp_server_kit import Dataset, connector_app
 
 from chemclaw_mcp_rxnlabel.engine import version
+from chemclaw_mcp_rxnlabel.engine.readiness import verify_labeller
 from chemclaw_mcp_rxnlabel.tools import server
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,22 @@ async def _report_components() -> None:
         )
 
 
+def _readiness() -> list[Dataset]:
+    """Prove this pod can label, and that no component it installed is silently broken.
+
+    No dataset: this server vendors no corpus, so the list is empty and `/healthz` publishes
+    `datasets: []` rather than omitting the field. `on_start` above *logs* what loaded, which an
+    operator has to go and read; this decides whether the pod takes traffic at all. The two are
+    deliberately not the same decision — see `engine/readiness.py` for why an *installed* component
+    that will not construct is a failure while an absent one is not.
+    """
+    return list(verify_labeller())
+
+
 app: FastAPI = connector_app(
-    server, name="rxnlabel", token_env="CHEMCLAW_RXNLABEL_TOKEN", on_start=_report_components
+    server,
+    name="rxnlabel",
+    token_env="CHEMCLAW_RXNLABEL_TOKEN",
+    on_start=_report_components,
+    readiness=_readiness,
 )

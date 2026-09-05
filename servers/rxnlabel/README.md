@@ -51,6 +51,16 @@ reactions are labelled without a name. What makes that safe rather than a silent
 is `labeller_version`: it names which components were present, so a caller's rows carry a different
 version and go stale the moment a deployment installs one. **The corpus repairs itself.**
 
+**"Optional" is about absence, not about breakage, and `/healthz` is where the two are separated.**
+A distribution that is not installed is this deployment's decision and the pod is ready. A
+distribution that *is* installed and will not construct — a checkpoint that did not mount — is a
+broken image, and the pod is not ready: it would otherwise take traffic and write coarse labels
+stamped `mapper@absent`, permanently indistinguishable from the rows a deployment that never wanted
+a mapper produced on purpose. `engine/readiness.py` makes exactly that comparison, and also labels a
+fixture reaction end to end so that a broken RDKit fails the probe rather than every call. Which
+components a pod actually has is `labeller_version`'s answer, on the authenticated surface where a
+caller needs it to decide whether a stored label is stale.
+
 ## What this server deliberately does not answer
 
 - **`rxno_id` is always null.** Rxn-INSIGHT names reactions in its own vocabulary and carries no

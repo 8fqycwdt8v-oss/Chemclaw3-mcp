@@ -236,6 +236,12 @@ async def render_structure(smiles: str, highlight_atoms: list[int] | None = None
     different spelling is still in range, so the highlight lands on some other atom and looks like
     confirmation.
 
+    **A drawing that would not fit is refused, not cut down.** The SVG grows with the molecule —
+    ethanol is about 2,000 characters, a drug substance around 35,000, a 250-atom chain 126,000 —
+    and highlighting roughly doubles it, so the two levers when a structure is refused are dropping
+    the highlights and drawing a fragment instead of the whole thing. Nothing is truncated, because
+    half an SVG document draws nothing at all while still costing what it costs to read.
+
     Args:
         smiles: A molecule SMILES, or a reaction SMILES (`reactants>>products`).
         highlight_atoms: Atom indices to mark, and the bonds between them. Molecules only, and
@@ -243,6 +249,11 @@ async def render_structure(smiles: str, highlight_atoms: list[int] | None = None
 
     Returns:
         An inline SVG document.
+
+    Raises:
+        ValueError: the structure is not drawable, an index does not address one of its atoms, the
+            molecule is above the atom ceiling, or the finished drawing is above the character
+            ceiling — the message names which, and what to do instead.
     """
     return await asyncio.to_thread(render_svg, smiles, highlight_atoms)
 

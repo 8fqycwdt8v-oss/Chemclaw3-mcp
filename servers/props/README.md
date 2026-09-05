@@ -117,6 +117,18 @@ the boiling point. Every answer carries `method` and a `caveat` naming what that
 and the docstrings tell the model to quote them. A chemist sizing a condenser needs to know which of
 the three they were given.
 
+**Both ends of the temperature axis are refused.** Below the melting point there is no liquid, so a
+liquid vapour pressure is not the quantity asked for. Above the critical temperature there is no
+liquid either — and until 2026-09 nothing said so, which is how toluene at 5000 °C came back as
+15,606 bar labelled `clausius_clapeyron`. `records.csv` carries no critical temperature and none is
+invented for it, so the upper bound is Guldberg's rule of thumb (`Tc ≈ 1.5 x Tb` in kelvin) set
+deliberately loose at `CHEMCLAW_PROPS_MAX_TB_RATIO`, default **1.8**. Loose because the ratio is not
+one number across liquid families: at the textbook 1.5 the ceiling for water lands at 286.6 °C and
+refuses 300 °C water, which this server answers at 98.0 bar against a steam-table 85.879. So it is a
+**sanity ceiling rather than a phase boundary** — a number returned just below it can already be
+supercritical, which is the price of having no critical temperature in the table, and a sourced
+critical-temperature column is the better fix.
+
 ## What it is not
 
 It knows nothing about reactivity. A Hansen shortlist is a *solubility* argument: it has no opinion
