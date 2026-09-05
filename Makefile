@@ -100,10 +100,14 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     `chat_template` keys as filenames unvalidated, so a crafted
 #                     `tokenizer_config.json` escapes the save directory
 #                     — all four require the library to *fetch* an attacker-controlled repository.
-#                     These images bake their weights at build time, checksum them into
-#                     `/opt/models/SHA256SUMS`, run with `HF_HUB_OFFLINE=1`, and sit behind a
+#                     These images bake their weights at build time, run with `HF_HUB_OFFLINE=1`
+#                     and `TRANSFORMERS_OFFLINE=1` (both, in both Containerfiles), and sit behind a
 #                     default-deny NetworkPolicy with the egress guard armed: there is no path from
-#                     a request to a Hub fetch. The fourth needs one hop more than the other three
+#                     a request to a Hub fetch. **`/opt/models/SHA256SUMS` was cited here as a
+#                     fourth control and is not one**: `rxnpredict` writes it, `rxnlabel` writes no
+#                     manifest at all, and the whole repository mentions the path exactly once — the
+#                     line that creates it. Nothing reads it, at build time or at run time, which is
+#                     this repository's own "a README is not a gate" with a checksum for a subject. The fourth needs one hop more than the other three
 #                     and this fleet takes neither: no server calls `save_pretrained` at all, in
 #                     `servers/` or in `packages/` — a serving process reads weights, it does not
 #                     write them. `transformers>=5` is a major bump across a forked predictor stack,

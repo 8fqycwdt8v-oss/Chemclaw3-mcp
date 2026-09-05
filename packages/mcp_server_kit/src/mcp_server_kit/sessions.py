@@ -5,8 +5,12 @@
 and two memory object streams. Upstream will expire an idle one — `StreamableHTTPSessionManager`
 takes `session_idle_timeout`, its own docstring recommends 1800 s "for most deployments" — but
 `FastMCP.streamable_http_app()` constructs the manager without passing it, and the parameter
-defaults to `None`. So in this fleet, as shipped, **a session was removed only by an explicit
-`DELETE`**.
+defaults to `None`. So in this fleet, as shipped, **nothing removed a session at all** — and the
+sentence here used to say "removed only by an explicit `DELETE`", which measured false in the
+direction that made nobody look. A `DELETE` does not remove one either: upstream's only
+unconditional removal is guarded by `not http_transport.is_terminated`, and `terminate()` sets
+that flag first, so the polite close takes the branch that skips it. `_drop_terminated_sessions`
+is the half that was missing; the timeout below is the half for a client that never says goodbye.
 
 That is a leak with a real arrival rate rather than a theoretical one. Chemclaw3 opens a session
 per turn per connector, so a pod sees roughly one session open per second at 200 users, and the
@@ -191,6 +195,58 @@ def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
     manager.call_tool = call_tool
 
 
+def _drop_terminated_sessions(server: FastMCP) -> None:
+    """Reclaim sessions a polite `DELETE` terminated, which upstream's own cleanup will not.
+
+    **The reaper closes the abandoned half and nothing closed the polite one**, which is the
+    happy path: Chemclaw3 sends its `DELETE` from a `finally`. Upstream's only unconditional
+    removal is in `run_server`'s `finally`, guarded by `and not http_transport.is_terminated` —
+    and `terminate()` sets that flag as its first statement, so the DELETE path takes exactly the
+    branch that skips the `del`. The entry, its transport and everything they hold stay in
+    `_server_instances` for the life of the process, and no idle deadline can reach them because
+    the scope's task is already gone.
+
+    Measured before this: 300 sessions, each `initialize` + `tools/call` + `DELETE`, left
+    **300 of 300** in the map, every one `is_terminated`. An abandoned session in the same run was
+    reaped correctly, which is why the half that works hid the half that does not.
+
+    A sweep rather than a hook on `terminate`, for two reasons. It covers a session that never
+    called a tool, which the per-transport wrappers above never see; and it needs no second
+    guess about which of upstream's paths set the flag. It is O(live sessions) on a map this
+    function is what keeps small, so the cost is bounded by its own effect.
+    """
+    try:
+        instances = server.session_manager._server_instances
+    except RuntimeError:  # pragma: no cover - no manager yet, so nothing to reclaim
+        return
+    for session_id in [
+        session_id
+        for session_id, transport in instances.items()
+        if getattr(transport, "is_terminated", False)
+    ]:
+        instances.pop(session_id, None)
+
+
+def _reclaim_after_every_request(server: FastMCP) -> None:
+    """Sweep terminated sessions once per request, on the manager's own ASGI entry.
+
+    The manager's `handle_request` is the one seam every request passes through — including a
+    `DELETE` on a session that never called a tool, which is why this is here rather than on the
+    per-transport wrapper `_reassert_hold_after_upstreams_push` installs. After the sweep runs,
+    the request that terminated a session is the request that reclaims it.
+    """
+    manager = server.session_manager
+    wrapped = manager.handle_request
+
+    async def handle_request(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await wrapped(*args, **kwargs)
+        finally:
+            _drop_terminated_sessions(server)
+
+    manager.handle_request = handle_request  # type: ignore[method-assign]
+
+
 def apply_session_idle_timeout(server: FastMCP) -> float | None:
     """Give `server`'s session manager an idle timeout, and hold it off during tool calls.
 
@@ -213,4 +269,5 @@ def apply_session_idle_timeout(server: FastMCP) -> float | None:
         return None
     server.session_manager.session_idle_timeout = timeout
     _hold_open_during_tool_calls(server, timeout=timeout)
+    _reclaim_after_every_request(server)
     return timeout
