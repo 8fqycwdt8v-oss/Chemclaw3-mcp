@@ -16,16 +16,23 @@ present and could not fire.
   it breaks the wall clock, because 15 CPU seconds on a thirty-second share of a core cannot finish
   inside 20 s of wall clock, and every caller is then told their *program* timed out.
 
-These test the mechanism against a real cgroup file and a real gate, not a mock of either.
+These test the mechanism against a real cgroup file and a real gate, not a mock of either — and
+against the *shipped* Deployment rather than a transcription of it. Both numbers below used to be
+literals in this file, under a docstring claiming they were "the numbers `deploy/deployment.yaml`
+actually ships": lowering `limits.cpu` to `"1"` put two runs on one core — the breakage the gate
+exists to end — and this suite stayed green. They are now read from the file, following
+`servers/chem/tests/test_depiction_bound.py`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from chemclaw_mcp_pyexec.engine import limits as limits_module
-from chemclaw_mcp_pyexec.engine.admission import Admission
+from chemclaw_mcp_pyexec.engine.admission import DEFAULT_MAX_CONCURRENT_RUNS, Admission
 from chemclaw_mcp_pyexec.engine.limits import (
     MINIMUM_VIABLE_MEMORY_BYTES,
     SERVER_HEADROOM_BYTES,
@@ -35,9 +42,51 @@ from chemclaw_mcp_pyexec.engine.limits import (
     default_memory_bytes,
 )
 
-#: What the shipped `deploy/deployment.yaml` gives the container, and the ceiling it is divided by.
-POD_MEMORY_LIMIT_BYTES = 2 * 1024**3
-SHIPPED_MAX_CONCURRENT_RUNS = 2
+#: The file the pod's two limits and the ceiling's own override live in, read rather than copied.
+DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
+
+#: Kubernetes' quantity suffixes, for the two fields this file reads.
+_MEMORY_SUFFIXES = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+
+
+def _container() -> dict[str, Any]:
+    """The shipped Deployment's one container, where the limits and any `env:` live."""
+    loaded = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
+    container = loaded["spec"]["template"]["spec"]["containers"][0]
+    assert isinstance(container, dict)
+    return container
+
+
+def _declared_env() -> dict[str, str]:
+    """The container's `env:` as a mapping — empty today, and that is exactly the drift to catch."""
+    return {entry["name"]: str(entry["value"]) for entry in _container().get("env", [])}
+
+
+def pod_memory_limit_bytes() -> int:
+    """`limits.memory` in bytes. This is what `default_memory_bytes` divides by the ceiling."""
+    declared = str(_container()["resources"]["limits"]["memory"])
+    for suffix, multiplier in _MEMORY_SUFFIXES.items():
+        if declared.endswith(suffix):
+            return int(float(declared[: -len(suffix)]) * multiplier)
+    return int(declared)
+
+
+def pod_cpu_limit_cores() -> float:
+    """`limits.cpu` in cores. Kubernetes accepts `"500m"`, `"1"` and `1` for the same field."""
+    declared = str(_container()["resources"]["limits"]["cpu"])
+    return float(declared[:-1]) / 1000 if declared.endswith("m") else float(declared)
+
+
+def shipped_max_concurrent_runs() -> int:
+    """The ceiling this pod actually runs with: the default, unless its `env:` overrides it.
+
+    `tools.py` reads the same environment variable with the same default, so a Deployment that
+    grows a `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` is picked up here instead of silently parting
+    company with the number these assertions are about.
+    """
+    declared = _declared_env().get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS")
+    return int(declared) if declared else DEFAULT_MAX_CONCURRENT_RUNS
+
 
 #: The address space a program importing numpy, pandas, scipy, sklearn, sympy, matplotlib, RDKit
 #: and OpenBabel and drawing a plot actually reached, measured in the child: 629 MiB of VSZ against
@@ -61,18 +110,45 @@ def test_the_shipped_pod_gives_each_run_more_than_a_heavy_program_needs(
     This is the test that would have caught the original defect, and it is written against the pod
     limit rather than against `Limits.memory_bytes` for that reason: the old value was correct in
     isolation and wrong about the container it ran in, which no test of the constant alone can see.
+    The pod limit is *read* rather than transcribed, because a copy of a number is not a check on
+    it: this assertion passed unchanged while the Deployment's `limits.memory` said anything at all.
     """
-    _with_cgroup(monkeypatch, tmp_path, str(POD_MEMORY_LIMIT_BYTES))
-    per_run = default_memory_bytes(SHIPPED_MAX_CONCURRENT_RUNS)
+    pod_memory = pod_memory_limit_bytes()
+    ceiling = shipped_max_concurrent_runs()
+    _with_cgroup(monkeypatch, tmp_path, str(pod_memory))
+    per_run = default_memory_bytes(ceiling)
     assert per_run > HEAVY_PROGRAM_ADDRESS_SPACE_BYTES, (
         f"each run gets {per_run // 1024**2} MiB of address space, and a legitimate analysis "
         f"importing the scientific stack reached {HEAVY_PROGRAM_ADDRESS_SPACE_BYTES // 1024**2} "
-        "MiB — the bound would refuse real work"
+        f"MiB — the bound would refuse real work. {DEPLOYMENT.name} limits this pod to "
+        f"{pod_memory // 1024**2} MiB over a ceiling of {ceiling}"
     )
-    admitted_together = SHIPPED_MAX_CONCURRENT_RUNS * per_run + SERVER_HEADROOM_BYTES
-    assert admitted_together <= POD_MEMORY_LIMIT_BYTES, (
+    admitted_together = ceiling * per_run + SERVER_HEADROOM_BYTES
+    assert admitted_together <= pod_memory, (
         "all the runs the gate admits can together exceed the pod's own memory limit, so the "
         "OOMKiller is still what fires — which is the defect this derivation exists to end"
+    )
+
+
+def test_a_slot_is_a_core_the_shipped_pod_actually_has() -> None:
+    """The other half of the coupling `engine/admission.py` asserts, and nothing used to check.
+
+    "A slot is a core, and `deploy/deployment.yaml` sets `limits.cpu` to the same number" is a claim
+    about a file this package cannot import, and it was made in a docstring beside a test that
+    transcribed the number instead of reading it. Measured on the transcribed version: setting
+    `limits.cpu: "1"` gave two runs one core — a 15-CPU-second program then cannot finish inside its
+    20 s wall clock, so every caller is told their *program* timed out — and the suite stayed green.
+
+    Equality rather than "at least", in both directions: a ceiling above the cores breaks the wall
+    clock, and a ceiling below them leaves a core idle while a caller is refused. Whichever moves
+    first, the other one and the paragraph arguing for it have to move with it.
+    """
+    cores = pod_cpu_limit_cores()
+    ceiling = shipped_max_concurrent_runs()
+    assert cores == ceiling, (
+        f"{DEPLOYMENT.name} limits this pod to {cores} cores while the gate admits {ceiling} runs, "
+        "and a run is a single-threaded child pinned to one core. Move both, and re-derive "
+        "engine/admission.py's argument — the per-run memory bound is the same number's divisor"
     )
 
 
