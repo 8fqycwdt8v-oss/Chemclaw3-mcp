@@ -147,7 +147,7 @@ def test_two_spellings_of_one_molecule_give_one_energy() -> None:
 def test_the_properties_come_out_of_one_scf_with_a_sane_frontier_gap() -> None:
     """HOMO below LUMO, a positive gap, one charge per atom, and water's dipole in range."""
     structure = xtb_props.property_structure("O")
-    result = xtb_props.compute_properties(XtbSpec(task="properties"), structure)
+    result = xtb_props.compute_properties(xtb_props.PropertiesSpec(), structure)
     assert result.lumo_ev is not None and result.gap_ev is not None
     assert result.homo_ev < result.lumo_ev and result.gap_ev > 0
     assert len(result.atom_charges) == len(structure.elements)

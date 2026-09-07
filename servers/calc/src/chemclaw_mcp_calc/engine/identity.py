@@ -276,7 +276,7 @@ def _properties_at(arguments: dict[str, Any]) -> CalculationIdentity:
     """
     return _from_spec(
         "compute_properties_at",
-        XtbSpec(task="properties", solvent=_solvent(arguments)),
+        xtb_props.PropertiesSpec(solvent=_solvent(arguments)),
         _structure(arguments),
     )
 

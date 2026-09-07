@@ -46,6 +46,7 @@ __all__ = [
     "FukuiMode",
     "FukuiSite",
     "GlobalDescriptors",
+    "PropertiesSpec",
     "SiteReactivityResult",
     "compute_fukui",
     "compute_properties",
@@ -73,6 +74,37 @@ _MODE_FIELD: dict[FukuiMode, str] = {
     "nucleophilic": "f_plus",
     "radical": "f_zero",
 }
+
+
+class PropertiesSpec(XtbSpec):
+    """Settings of one electronic-properties calculation.
+
+    One field, and it is here rather than in `settings` because it **filters the payload**.
+    `_bond_orders` read `settings.xtb_bond_order_threshold` inside this calculator, outside every
+    spec, so `params_hash` could not see it — measured on acetic acid with a real tblite SCF, 0.5
+    reported 7 bonds and 0.05 reported 9, under a byte-identical
+    `xtb.properties@…:e67f316106051ef5:74c818075e77fec2`. Two pods configured differently, or one
+    rolling change, therefore forked a single cache row, and `identity._site_reactivity` already
+    states the rule that forbids it: *an argument outside the key may permute the answer and may not
+    remove from it.* A threshold removes.
+
+    It is worth being exact about what that costs downstream, because it is not CPU: Chemclaw3
+    projects `bond_orders` into the `SiteFact(property="bond_order")` rows of its published
+    scientific record, and it never prunes `calculation_results` — so a bond dropped by the pod that
+    happened to compute first is missing from the record permanently, with nothing anywhere marking
+    the row as partial.
+
+    Declared as a subclass rather than as a field on `XtbSpec` for the reason that model states: a
+    single point's key has no business carrying a reporting threshold. Keyed by construction, since
+    `cache_key` derives from `model_dump()`.
+    """
+
+    task: Literal["properties"] = "properties"
+    # Wiberg bond order at or above which a pair of atoms is reported as bonded. `ge=0` rather than
+    # `gt=0`: zero is the meaningful "report every pair" end of the range, not a degenerate value.
+    bond_order_threshold: float = Field(
+        default_factory=lambda: settings.xtb_bond_order_threshold, ge=0
+    )
 
 
 class AtomCharge(BaseModel):
@@ -294,7 +326,7 @@ def _formal_charges(structure: Structure) -> list[int]:
 
 
 def _bond_orders(matrix: np.ndarray, threshold: float) -> list[BondOrder]:
-    """Upper-triangle bond orders above `threshold`, strongest first."""
+    """Upper-triangle bond orders at or above `threshold`, strongest first."""
     wiberg = _wiberg(matrix)
     pairs = [
         BondOrder(atom_i=int(i), atom_j=int(j), order=round(float(wiberg[i, j]), 3))
@@ -304,7 +336,7 @@ def _bond_orders(matrix: np.ndarray, threshold: float) -> list[BondOrder]:
     return sorted(pairs, key=lambda bond: bond.order, reverse=True)
 
 
-def compute_properties(spec: XtbSpec, structure: Structure) -> ElectronicProperties:
+def compute_properties(spec: PropertiesSpec, structure: Structure) -> ElectronicProperties:
     """Read the electronic properties of `structure` from one GFN2-xTB single point."""
     resolved = spec.for_structure(structure)
     numbers, positions = structure.arrays()
@@ -343,7 +375,7 @@ def compute_properties(spec: XtbSpec, structure: Structure) -> ElectronicPropert
                 zip(symbols, result["charges"], valences, strict=True)
             )
         ],
-        bond_orders=_bond_orders(result["bond-orders"], settings.xtb_bond_order_threshold),
+        bond_orders=_bond_orders(result["bond-orders"], resolved.bond_order_threshold),
     )
 
 
@@ -491,14 +523,14 @@ def property_structure(smiles: str) -> Structure:
     return structure_from_smiles(smiles, optimize=True)
 
 
-def properties_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:
+def properties_inputs(smiles: str, solvent: str | None = None) -> tuple[PropertiesSpec, Structure]:
     """The settings and the geometry `compute_properties` runs on — see `xtb.sp_inputs` for why.
 
     The solvent is validated here, at spec construction, so an unparameterised name is refused
     before any geometry is embedded — which also means `calculation_identity` refuses it for the
     same reason and with the same message as the compute path.
     """
-    return XtbSpec(task="properties", solvent=solvent), property_structure(smiles)
+    return PropertiesSpec(solvent=solvent), property_structure(smiles)
 
 
 def fukui_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:

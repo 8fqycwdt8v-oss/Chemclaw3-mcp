@@ -238,6 +238,15 @@ is the one people expect to be an exception:
   actually break: the pure `stable_hash`, the `{"epoch": ..., "params": ...}` envelope, the flat
   string format, and the four field *names* `remote_key` reads.
 
+  **A hand-bumped constant needs something to make the hand move, and that is
+  `tests/test_payload_shapes.py`.** It fingerprints the JSON schema of every `Keyed` result model
+  with prose stripped, so a field added to `ElectronicProperties` or removed from
+  `SiteReactivityResult` fails on the commit that makes the change — with the two available answers
+  named in the failure. That is the *writer's* half; Chemclaw3 has the reader's
+  (`tests/test_calc_payload_schemas.py`), and neither can see the other's models, which is exactly
+  why one is not enough. The epoch reaching `"2"` — `SiteReactivityResult` gaining the
+  conceptual-DFT panel — is the change that guard would have caught, and it was caught by a person.
+
 Three things that would otherwise be on that list are **not**:
 
 - *The calculator settings.* `engine/config.py` uses Chemclaw3's env prefix and field names —

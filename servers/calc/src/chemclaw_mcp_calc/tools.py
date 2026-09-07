@@ -812,7 +812,7 @@ async def compute_properties_at(
         bond orders, plus the key this calculation is addressed by.
     """
     return await asyncio.to_thread(
-        xtb_props.compute_properties, XtbSpec(task="properties", solvent=solvent), structure
+        xtb_props.compute_properties, xtb_props.PropertiesSpec(solvent=solvent), structure
     )
 
 
