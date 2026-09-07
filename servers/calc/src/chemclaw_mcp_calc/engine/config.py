@@ -104,6 +104,15 @@ class CalcSettings(BaseSettings):
     xtb_geometry_decimals: int = 4
     # Wiberg bond order above which a pair of atoms is reported as bonded. 0.5 keeps real bonds (a
     # single bond is ~1.0) and drops the long-range tail.
+    #
+    # **The default of `PropertiesSpec.bond_order_threshold`, and keyed there**, for the reason
+    # `xtb_anc_curvature_floor` gives below and one degree worse: it does not merely move the
+    # answer, it *filters* it. `_bond_orders` read this out of `settings` inside
+    # `compute_properties`, outside every spec, so `params_hash` could not see it — measured on
+    # acetic acid with a real tblite SCF, 0.5 reported 7 bonds and 0.05 reported 9 under one
+    # byte-identical `xtb.properties@…` key. Two pods configured differently therefore forked a
+    # single cache row, and Chemclaw3 never prunes `calculation_results`, so the missing bonds are
+    # missing from its published record permanently.
     xtb_bond_order_threshold: float = 0.5
     # Geometry optimization. Convergence is on the largest absolute gradient component in
     # Hartree/Angstrom; 5e-4 is ~2.6e-4 Hartree/Bohr, tighter than xtb's own "normal" setting

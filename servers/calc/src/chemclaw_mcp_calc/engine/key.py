@@ -97,6 +97,11 @@ class CalculationKey(BaseModel):
     **`calc_version` names every program whose output survives into the payload, and no program
     that does not run** — a calculation that composes two programs names both, because either one
     moving changes the number.
+
+    **The converse — same key, same answer — is what a reader assumes and is not what this states.**
+    It holds for every calculation on this server bar one: a CREST search is a stochastic
+    metadynamics with no seed set, so its key identifies the *settings* and the cache is what makes
+    the ensemble reproducible. `CrestSpec` in `engine/xtb_spec.py` carries the argument.
     """
 
     calc_type: str

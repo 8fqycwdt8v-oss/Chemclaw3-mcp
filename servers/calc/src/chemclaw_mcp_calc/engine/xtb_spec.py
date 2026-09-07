@@ -113,10 +113,13 @@ class XtbSpec(BaseModel):
     Defaults come from config via `default_factory` (not a class-definition-time snapshot), so an
     ENV override applies to specs built afterwards.
 
-    **Task-specific settings live in subclasses** (`OptSpec`, `HessianSpec`, `ThermoSpec`), not in
-    this model. A subclass inherits `cache_key` unchanged and its fields are keyed automatically,
-    because the key is derived from `model_dump()` — so the invariant survives while a single
-    point's key stays free of a temperature it does not have.
+    **Task-specific settings live in subclasses** (`PropertiesSpec`, `OptSpec`, `HessianSpec`,
+    `EnsembleSpec`, `ComplexSpec`), not in this model. A subclass inherits `cache_key` unchanged and
+    its fields are keyed automatically, because the key is derived from `model_dump()` — so the
+    invariant survives while a single point's key stays free of a temperature it does not have.
+    `ThermoSpec` stood in that list and is **Chemclaw3's**, not this repository's: the RRHO
+    arithmetic stayed there with `compute_thermochemistry`, so naming it here pointed a reader at a
+    class this package does not define.
     """
 
     task: XtbTask
@@ -220,10 +223,16 @@ class XtbSpec(BaseModel):
 
         `accuracy` is the second kind: it is `xtb --acc`, and a task the binary does not run cannot
         be moved by it. `sp`, `properties` and `fukui` are pinned to tblite by `_FIXED_BACKEND`, so
-        for them it is inert in every configuration — and `xtb.sp`'s key is pinned byte-for-byte
-        against Chemclaw3's own derivation in `tests/test_key_contract.py`, which over-keying would
-        break. **An instance method rather than a classmethod for exactly this**: which fields are
-        inert depends on the resolved backend, and `cache_key` resolves before it asks.
+        for them it is inert in every configuration, and over-keying them would recompute for a flag
+        that could not have touched them. **An instance method rather than a classmethod for exactly
+        this**: which fields are inert depends on the resolved backend, and `cache_key` resolves
+        before it asks.
+
+        The reason given here used to be that `xtb.sp`'s key is "pinned byte-for-byte against
+        Chemclaw3's own derivation" in `tests/test_key_contract.py`. That test now says the opposite
+        in as many words — the pinned strings are *this* repository's, measured against its own
+        installed tblite and RDKit, and no cross-repo agreement is asserted anywhere, because
+        `remote_key` deliberately re-derives nothing on that side.
 
         The asymmetry between the two kinds is deliberate and is the rule the whole file states:
         a false *hit* serves one configuration's number as another's, a false *miss* costs CPU. So a
@@ -287,6 +296,24 @@ class CrestSpec(XtbSpec):
     `XtbSpec.calc_version` states, applied to a spec whose numbers all come from crest — name what
     ran. A subclass that *does* run `engine` therefore has to put it back, and `ComplexSpec` in
     `crest_search` is one.
+
+    ## A key here is a promise about the settings, not about the ensemble
+
+    Every other spec on this server keys a deterministic calculation: `CalculationKey` says two
+    calculations share a key iff they are the same calculator version on the same input with the
+    same parameters, and a reader takes the converse for granted — same key, same answer. **The
+    converse is false for a CREST search, and this is the only place on this server where it is.**
+    Metadynamics is a stochastic search; `crest_cli.run` sets no seed, and nothing else in this
+    package sets one either, so two runs of one identical spec are not guaranteed to return the
+    same ensemble — the same members, the same populations, or the same lowest conformer.
+
+    What makes `search_conformer_ensemble` reproducible is therefore the **caller's cache** rather
+    than the calculation: first writer wins, and every later request for that key is served the
+    first search's answer. That is a reasonable trade rather than a defect to fix — the alternative
+    is running a many-hour metadynamics again for a result no truer than the one already on disk —
+    and it is stated here rather than only lived with, because a reader who assumes determinism will
+    over-read a small energy difference between two deployments as a physical one. Nothing in this
+    class changes it.
     """
 
     def for_structure(self, structure: Structure) -> Self:

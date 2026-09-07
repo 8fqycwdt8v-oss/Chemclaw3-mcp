@@ -30,8 +30,7 @@ from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, compute_hessian
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
-from chemclaw_mcp_calc.engine.xtb_props import compute_properties
-from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
+from chemclaw_mcp_calc.engine.xtb_props import PropertiesSpec, compute_properties
 
 
 def a_structure_of(atom_count: int) -> Structure:
@@ -195,9 +194,9 @@ def test_the_budget_does_not_reach_the_key(monkeypatch: pytest.MonkeyPatch) -> N
     """
     water = structure_from_smiles("O")
     monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 900.0)
-    before = XtbSpec(task="properties").cache_key(water)
+    before = PropertiesSpec().cache_key(water)
     monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 60.0)
-    assert XtbSpec(task="properties").cache_key(water).as_str() == before.as_str()
+    assert PropertiesSpec().cache_key(water).as_str() == before.as_str()
 
 
 def test_a_single_point_under_the_ceiling_still_runs() -> None:
@@ -207,7 +206,7 @@ def test_a_single_point_under_the_ceiling_still_runs() -> None:
     calculation on this server into a refusal, and every test that only asserts a refusal would
     still be green.
     """
-    result = compute_properties(XtbSpec(task="properties"), structure_from_smiles("O"))
+    result = compute_properties(PropertiesSpec(), structure_from_smiles("O"))
     assert result.total_energy_hartree < 0
 
 
