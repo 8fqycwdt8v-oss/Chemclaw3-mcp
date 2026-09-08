@@ -519,6 +519,19 @@ and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 5. **Model weights are fetched by a script.** `download_weights.sh` runs at build time, outside the
    serving image — exactly the sanctioned pattern, and the same one `servers/rxnpredict/` now uses.
    It must not become a first-request lazy download.
+6. **Do not rank its routes by summing a per-step score.** `score_synthesizability` is per-molecule
+   and `retrosynthesis_multi_step` returns whole routes, so the obvious composition — score each
+   intermediate, difference the deltas, rank — is the one AbSynth measured and rejected. Across
+   3,000 digitized total syntheses (~60,000 steps), complexity metrics and scoring functions **do
+   not vary monotonically** along real trajectories, conventional bond-disconnection heuristics
+   fire only sporadically, and nearly half of all steps sit on plateaus of skeletal complexity that
+   build nothing and are strategically necessary anyway — which a greedy per-step ranking scores as
+   waste. That is the measurement behind what the `retro` row above already asserts this
+   integration should mean: a strategy rationale a chemist can argue with, not a ranked list. The
+   corpus is academic total synthesis rather than process routes, so the ~50% is their number and
+   not one to quote as ours; the non-monotonicity is a property of the scoring functions and
+   carries. `10.1021/jacs.6c08434` (JACS 2026, CC-BY-NC-ND). **The AbSynth collection is
+   academic-use-only and forbids derivative works — do not vendor it**, here or in Chemclaw3.
 
 ## Tranche 2 — Compound identity and reference data
 
