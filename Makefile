@@ -153,7 +153,11 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     `test_an_image_that_installs_from_the_index_pins_what_the_audit_read` never
 #                     sees it). What retires this entry is a reader of the weekly `uv` bump
 #                     re-deriving the list — and what settles it is the byte-diff above, not the
-#                     audit's silence.
+#                     audit's silence. The one trigger that does not depend on that reader is
+#                     outside this file: Dependabot alerts are enabled on this repository (a `git
+#                     push` says so) and are unaffected by `--ignore-vuln`, so a patched
+#                     `accelerate` becomes a security-update pull request here — but only once one
+#                     exists, which is the thing this entry is waiting on.
 AUDIT_IGNORE := \
 	--ignore-vuln PYSEC-2026-2447 \
 	--ignore-vuln PYSEC-2026-3447 \
