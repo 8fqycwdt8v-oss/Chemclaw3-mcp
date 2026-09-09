@@ -1,0 +1,13 @@
+$vibrational spectrum
+#  mode     symmetry     wave number   IR intensity   Raman activity   Raman scatt. cross-section   selection rules
+#                           (cm⁻¹)      (km*mol⁻¹)      (Å⁴*amu⁻¹)             (Å²*sr⁻¹)              IR     RAMAN
+     1                      -0.00         0.00000         0.00000             0.00000E+00              -       - 
+     2                      -0.00         0.00000         0.00000             0.00000E+00              -       - 
+     3                      -0.00         0.00000         0.00000             0.00000E+00              -       - 
+     4                       0.00         0.00000         0.00000             0.00000E+00              -       - 
+     5                       0.00         0.00000         0.00000             0.00000E+00              -       - 
+     6                       0.00         0.00000         0.00000             0.00000E+00              -       - 
+     7        a           1539.10        78.72168         3.16154             0.12309E-14             YES     YES
+     8        a           3642.25        47.06267        36.82240             0.36718E-14             YES     YES
+     9        a           3650.69       145.77031        13.80435             0.13704E-14             YES     YES
+$end

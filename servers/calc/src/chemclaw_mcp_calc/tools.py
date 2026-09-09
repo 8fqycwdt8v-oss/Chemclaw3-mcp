@@ -634,6 +634,15 @@ class HessianPayload(Keyed):
     normal-mode projection and the RRHO arithmetic over them stayed in Chemclaw3, because they are
     pure partition functions over what this returns.
 
+    **`ir_wavenumbers_cm` is what makes `ir_intensities` unambiguous, and it is there because the
+    pairing was positional and pinned by nothing.** The binary reports one intensity per *Cartesian*
+    mode, external modes included, so a caller lining them up against its own projected vibrations
+    has to know how many entries to drop — 6 for a bent molecule, 5 for a linear one, and xtb's
+    judgement of which is not the caller's. Getting that wrong shifts every band by one and passes
+    every check a bare list admits, because a right pairing and a shifted one both have 3N entries.
+    With the wavenumbers beside them a caller matches instead of counting. `None` exactly when
+    `ir_intensities` is.
+
     `max_gradient_hartree_per_angstrom` is the evidence that the geometry was a stationary point —
     see the field comment. Optional rather than required, so a row written before it existed is
     still a complete row and `CALCULATION_EPOCH` does not have to move for it.
@@ -652,6 +661,12 @@ class HessianPayload(Keyed):
     hessian_npy: str
     dipole_derivatives_npy: str | None = None
     ir_intensities: list[float] | None = None
+    # xtb's own wavenumber (cm^-1) for each entry of `ir_intensities`, same order: negative for an
+    # imaginary mode, zero for a projected-out translation or rotation. Optional for the same reason
+    # as the gradient above, and `CALCULATION_EPOCH` does not move for it: a row written before this
+    # field existed carries the same intensities in the same order, and a caller pairs them the way
+    # it always has — this only lets it stop counting external modes to do so.
+    ir_wavenumbers_cm: list[float] | None = None
 
 
 class EnsemblePayload(Keyed):
@@ -890,7 +905,7 @@ async def compute_hessian(structure: Structure, solvent: str | None = None) -> H
     Returns:
         The Hessian in Hartree/Angstrom^2, the electronic energy and the largest gradient component
         at that geometry, and either the dipole derivatives (in-process backend) or the binary's own
-        per-mode IR intensities.
+        per-mode IR intensities with the wavenumber of each band beside them.
     """
     spec = HessianSpec(solvent=solvent)
 
@@ -917,6 +932,11 @@ async def compute_hessian(structure: Structure, solvent: str | None = None) -> H
                 None
                 if hessian.ir_intensities is None
                 else [float(value) for value in hessian.ir_intensities]
+            ),
+            ir_wavenumbers_cm=(
+                None
+                if hessian.ir_wavenumbers_cm is None
+                else [float(value) for value in hessian.ir_wavenumbers_cm]
             ),
         )
 

@@ -73,6 +73,11 @@ class Hessian:
     (translations and rotations included, which the caller reconciles); the in-process path returns
     the dipole derivatives it collected while displacing, from which intensities are derived once
     the normal modes are known.
+
+    `ir_wavenumbers_cm` accompanies `ir_intensities` and only it: it is the binary's own wavenumber
+    for each of those entries, so a caller can match a band to its intensity instead of counting how
+    many external modes it believes xtb projected out. The in-process path has no wavenumbers to
+    report — it hands over dipole derivatives, and the caller diagonalizes.
     """
 
     matrix: np.ndarray
@@ -89,6 +94,10 @@ class Hessian:
     # direction shows no imaginary mode at all, so `is_minimum` cannot see it either.
     max_gradient: float | None = None
     ir_intensities: np.ndarray | None = None
+    # The wavenumber (cm^-1) of each entry of `ir_intensities`, in the same order — negative for an
+    # imaginary mode, zero for a projected-out translation or rotation. `None` whenever
+    # `ir_intensities` is, because the pair is one datum.
+    ir_wavenumbers_cm: np.ndarray | None = None
     dipole_derivatives: np.ndarray | None = None
 
 
@@ -190,6 +199,7 @@ def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
             matrix=np.asarray(outcome.hessian),
             electronic_energy_hartree=outcome.energy_hartree,
             ir_intensities=np.asarray(outcome.ir_intensities),
+            ir_wavenumbers_cm=np.asarray(outcome.ir_wavenumbers_cm),
         )
 
     matrix, dipole_derivatives, energy, max_gradient = _finite_difference(spec, structure)
