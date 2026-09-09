@@ -72,12 +72,13 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 
 # **The advisories this gate does not fail on, and the argument for each.** A suppression list is
 # itself a claim, so it is here, in the file that reads it, rather than in a prose document — and it
-# is deliberately short: everything on it is a *deserialization of an untrusted artefact*, which is
-# the one class this fleet's posture already answers, and nothing on it is reachable from a request.
+# is deliberately short: everything on it turns on a **malicious artefact on disk** — an unpickled
+# cache, a crafted `config.json`, a checkpoint index — which is the one class this fleet's posture
+# already answers, and nothing on it is reachable from a request.
 # Re-derive it whenever a bump lands; an entry whose package no longer resolves to the version below
 # is an entry to delete rather than to keep for safety.
 #
-# All six live in the optional ML extras of two servers (`rxnlabel[models]`,
+# Every entry below lives in the optional ML extras of two servers (`rxnlabel[models]`,
 # `rxnpredict[reaction_t5,rxn_insight]`) and none appears in the closure without them — measured:
 # `--all-packages --no-dev` alone reports zero. They are audited anyway because those extras are
 # what the *images* install.
@@ -114,6 +115,45 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     so it is a measured migration rather than a lockfile edit — the `uv` updater in
 #                     `.github/dependabot.yml` is what proposes it, and 5.10.0 is further out than
 #                     the 5.0 the three above already wait on rather than a new reason to move.
+#   CVE-2026-69112    accelerate 1.14.0, **no fix released — and 1.15.0 is not one**. Path traversal
+#                     in `load_checkpoint_in_model` / `load_checkpoint_and_dispatch`: a sharded
+#                     checkpoint's `weight_map` values are joined onto the checkpoint folder and
+#                     never sanitised, so a `../` or absolute entry reads an arbitrary file and a
+#                     named-pipe entry blocks the loader indefinitely. **Check the range before
+#                     bumping.** `pip-audit` goes quiet on `accelerate==1.15.0` — measured — but
+#                     1.15.0 was uploaded 2026-09-09, a day after the advisory was last modified, so
+#                     the range stops at 1.14.0 because 1.15.0 did not exist, not because it is
+#                     fixed: `load_checkpoint_in_model` is **byte-identical** between the two wheels
+#                     (same bare `os.path.join(checkpoint_folder, f)`, no `realpath`, no
+#                     `commonpath`, no FIFO check), and upstream's fix commit is in no release yet.
+#                     A bump to 1.15.0 would buy a green gate and ship the same function.
+#                     Unreachable here for a reason that needs none of that: **nothing calls the
+#                     vulnerable API.** `accelerate` is imported nowhere in `servers/` or
+#                     `packages/` — it enters one shipped image because `rxnpredict[reaction_t5]`
+#                     declares it (and the `t5chem` extra reaches it again, which no image
+#                     installs). The indirect route is shut too: the locked
+#                     transformers 4.57.6 names both functions only in a docstring
+#                     (`integrations/accelerate.py`), and no server passes `device_map` anywhere.
+#                     The three `from_pretrained` call sites under
+#                     `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/forward/`
+#                     take a SHA-pinned repo id or a configured directory, and no tool argument is a
+#                     path — `tools.py` takes SMILES plus a model name clamped to the served set.
+#                     Were it called, the index it would read is the one baked at build time from a
+#                     commit-SHA-pinned repo (`scripts/fetch_models.py`, held equal to the predictor
+#                     by `tests/test_model_pin.py`), in a pod with `readOnlyRootFilesystem: true`
+#                     whose one writable mount is an `emptyDir` at /tmp
+#                     (`servers/rxnpredict/deploy/deployment.yaml`): nothing at runtime can plant a
+#                     crafted `*.index.json` or a FIFO under `/opt/models`. The advisory's own
+#                     `AV:L/UI:P` is that conclusion from the other side. **Nothing here goes red
+#                     when a fix ships**, and the header's "an entry whose package no longer
+#                     resolves to the version below is an entry to delete" does not fire for this
+#                     one: `--ignore-vuln` matches by id, so a fixed `accelerate` merely stops being
+#                     reported, and no test compares this version to the lock (`rxnpredict`'s image
+#                     installs the extra, not `accelerate==` from the index, so
+#                     `test_an_image_that_installs_from_the_index_pins_what_the_audit_read` never
+#                     sees it). What retires this entry is a reader of the weekly `uv` bump
+#                     re-deriving the list — and what settles it is the byte-diff above, not the
+#                     audit's silence.
 AUDIT_IGNORE := \
 	--ignore-vuln PYSEC-2026-2447 \
 	--ignore-vuln PYSEC-2026-3447 \
@@ -121,7 +161,8 @@ AUDIT_IGNORE := \
 	--ignore-vuln PYSEC-2026-2288 \
 	--ignore-vuln PYSEC-2026-2289 \
 	--ignore-vuln PYSEC-2026-2290 \
-	--ignore-vuln GHSA-xrqw-3rrv-vx5w
+	--ignore-vuln GHSA-xrqw-3rrv-vx5w \
+	--ignore-vuln CVE-2026-69112
 
 .PHONY: deps-audit
 deps-audit: ## Check the locked dependency closure for known vulnerabilities (supply chain).
