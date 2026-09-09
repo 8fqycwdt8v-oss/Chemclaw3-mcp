@@ -330,9 +330,16 @@ class SurfacePotential(BaseModel):
 class CliResult(BaseModel):
     """What one `xtb` run produced, in this layer's units.
 
-    `structure` is present only for an optimizing task; `hessian` (Hartree/Angstrom^2) and
-    `ir_intensities` (km/mol) only for a Hessian task. `properties` is the parsed `xtbout.json`,
-    which carries the energy, orbital energies, dipole and partial charges the same run computed.
+    `structure` is present only for an optimizing task; `hessian` (Hartree/Angstrom^2),
+    `ir_intensities` (km/mol) and `ir_wavenumbers_cm` only for a Hessian task. `properties` is the
+    parsed `xtbout.json`, which carries the energy, orbital energies, dipole and partial charges the
+    same run computed.
+
+    **The two IR lists are one datum split in two, and they are only meaningful together.** An
+    intensity says nothing without the band it belongs to, and which band that is has to be settled
+    by *something* — either both sides agreeing, forever, on how many external modes xtb writes for
+    this molecule, or the wavenumber travelling beside the intensity. `ir_wavenumbers_cm` is the
+    second, and it costs 3N floats.
     """
 
     model_config = {"arbitrary_types_allowed": True}
@@ -341,6 +348,9 @@ class CliResult(BaseModel):
     structure: Structure | None = None
     hessian: Any = None
     ir_intensities: list[float] | None = None
+    # xtb's own wavenumbers (cm^-1), one per entry of `ir_intensities` and in the same order:
+    # negative for an imaginary mode, exactly zero for a projected-out translation or rotation.
+    ir_wavenumbers_cm: list[float] | None = None
     cycles: int | None = None
     properties: dict[str, Any] = {}
     atomic_rows: list[AtomicRow] = []
@@ -454,22 +464,36 @@ def _read_hessian(path: Path, size: int) -> np.ndarray:
 def _read_vibspectrum(path: Path) -> list[tuple[float, float]]:
     """Parse `vibspectrum` into (wavenumber cm^-1, IR intensity km/mol) pairs, in file order.
 
+    **File order is the external modes first, then every vibration ascending**, and that is a
+    measurement rather than a reading: `tests/data/vibspectrum/` holds files written by the
+    `xtb` 6.7.1 this `Containerfile` pins, and `tests/test_vibspectrum.py` pins them. It matters
+    because the pairing is positional all the way to a published spectrum — the caller drops the
+    leading entries and lines the rest up with its own projected modes by index — so an ordering
+    that put an imaginary mode first would shift every band by one while the count, the only check
+    either side makes, still passed. Measured on planar ammonia: the -871.17 cm^-1 saddle mode is
+    entry 7, after the six zeros, not entry 1.
+
     The leading entries are the projected-out translations and rotations; they are kept here and
     dropped by the caller, which knows how many modes its own projection found. Reconciling the two
     counts is the point — a mismatch means the two projections disagree about the molecule, which
-    must fail loudly rather than shift every intensity by one mode.
+    must fail loudly rather than shift every intensity by one mode. **How many there are is 5 for a
+    linear molecule and 6 otherwise**, and xtb decides that by its own criterion (unmassed inertia
+    moments against an absolute threshold) rather than the caller's, so the two agreeing is a fact
+    to assert and not a shared rule.
     """
     entries: list[tuple[float, float]] = []
     for line in path.read_text().splitlines():
         if line.startswith(("$", "#")):
             continue
         fields = line.split()
-        # "index [symmetry] wavenumber intensity [selection rules...]" — the two numbers before the
-        # selection-rule columns are what matter, and the symmetry label is absent on the external
-        # modes, so index from the left by float-parseability.
+        # "index [symmetry] wavenumber intensity [more columns...] [selection rules...]" — index
+        # from the *left* by float-parseability, because the symmetry label is absent on the
+        # external modes but the mode number never is, and because what follows is not fixed:
+        # `--raman` writes the Raman activity and cross-section there, so counting from the right
+        # returns those two instead. Both row shapes are in `tests/data/vibspectrum/`.
         numeric = [value for value in fields if _is_float(value)]
         if len(numeric) >= 3:
-            entries.append((float(numeric[-2]), float(numeric[-1])))
+            entries.append((float(numeric[1]), float(numeric[2])))
     return entries
 
 
@@ -731,10 +755,13 @@ def _collect(directory: Path, structure: Structure, task: CliTask, log: str) -> 
 
     hessian = None
     intensities: list[float] | None = None
+    wavenumbers: list[float] | None = None
     if task in ("hess", "ohess"):
         size = 3 * len(structure.elements)
         hessian = _read_hessian(directory / "hessian", size)
-        intensities = [intensity for _, intensity in _read_vibspectrum(directory / "vibspectrum")]
+        spectrum = _read_vibspectrum(directory / "vibspectrum")
+        wavenumbers = [wavenumber for wavenumber, _ in spectrum]
+        intensities = [intensity for _, intensity in spectrum]
 
     energy = properties.get("total energy", _energy_from_log(log))
     if energy is None:
@@ -745,6 +772,7 @@ def _collect(directory: Path, structure: Structure, task: CliTask, log: str) -> 
         structure=relaxed,
         hessian=hessian,
         ir_intensities=intensities,
+        ir_wavenumbers_cm=wavenumbers,
         cycles=_cycles(log),
         properties=properties,
     )

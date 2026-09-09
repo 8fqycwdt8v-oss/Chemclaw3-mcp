@@ -435,6 +435,20 @@ backend ran: the in-process path collects dipole derivatives as it displaces, th
 computes intensities itself. Both are what a caller needs to derive an IR spectrum; neither is a
 spectrum, because the normal-mode projection and the RRHO arithmetic stayed in Chemclaw3.
 
+**`ir_wavenumbers_cm` travels beside `ir_intensities`**, one per entry and in the same order, and it
+is there because the pairing was otherwise positional and pinned by nothing on either side. The
+binary reports one intensity per *Cartesian* mode, projected-out translations and rotations included,
+so a caller matching them to its own vibrations has to know how many entries to drop — six for a bent
+molecule, five for a linear one, on xtb's judgement of linearity rather than its own. Both a correct
+list and one shifted by a band have 3N entries, so the count, the only check either side makes,
+cannot tell them apart; with the wavenumbers present a caller matches instead of counting. What the
+order actually is, is now measured rather than argued: `tests/data/vibspectrum/` holds files this
+image's own `xtb` 6.7.1 wrote — an inversion saddle with an imaginary mode, a linear molecule, and
+the same molecule bent by one degree, at which xtb writes six external modes where it wrote five —
+and `tests/test_vibspectrum.py` pins them. The external modes come first and an imaginary mode is
+not one of them, so the *order* is safe; the *count* is a judgement about the molecule that the two
+sides make by different criteria, and that last fixture is the geometry where they part company.
+
 **`max_gradient_hartree_per_angstrom` travels beside them**, and it is the only thing in the payload
 that says whether the eigenvalues mean frequencies. This primitive differentiates whatever geometry
 it is handed — a transition state and a scan point are legitimate subjects, so it does not refuse a

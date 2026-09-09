@@ -43,8 +43,9 @@ __all__ = [
     "run_singlepoint",
 ]
 
-# tblite works in atomic units; everything above this module is in Angstrom.
-ANGSTROM_TO_BOHR = 1.8897259886
+# tblite works in atomic units; everything above this module is in Angstrom. CODATA 2018, to
+# full double precision, by the same rule as the two conversions below: one value, no copies.
+ANGSTROM_TO_BOHR = 1.8897261246
 
 # CODATA Hartree-to-kcal/mol, to full double precision. Every calculator here that reports a
 # relative or interaction energy in kcal/mol converts through this single value, so a truncated copy
@@ -55,7 +56,7 @@ HARTREE_TO_KCAL = 627.5094740631
 # module that reports a dipole or a dipole derivative in Debye converts through this one value. It
 # was three literals in three modules in Chemclaw3, one of which sat inside the module that does the
 # unit arithmetic and waited to be applied a second time to numbers already converted.
-AU_TO_DEBYE = 2.5417464519
+AU_TO_DEBYE = 2.5417464730
 
 # The tblite result properties any calculator here reads. Named explicitly rather than taking the
 # whole result: it also carries the density matrix and orbital coefficients, which nothing consumes

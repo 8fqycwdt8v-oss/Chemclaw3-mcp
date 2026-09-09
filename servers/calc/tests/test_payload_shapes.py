@@ -108,7 +108,13 @@ RECORDED_SHAPES: dict[str, str] = {
     "DescriptorProfile": "8c6509010beceba0",
     "ElectronicProperties": "f49622cadc8cb1be",
     "EnsemblePayload": "296e072f46a1b8ac",
-    "HessianPayload": "bcfacc8dbc1af311",
+    # 2026-09-09: gained `ir_wavenumbers_cm`. `CALCULATION_EPOCH` deliberately does *not* move
+    # for it — a stored row is still complete, by the same argument the field comment on
+    # `max_gradient_hartree_per_angstrom` records. The intensities in an old row are the
+    # same numbers in the same order, and the caller pairs them as it always has; the new
+    # field only lets it stop counting. Bumping would recompute every Hessian on this
+    # server — the most expensive rows it writes — to add nothing to any of them.
+    "HessianPayload": "b524b88cf6dfdde4",
     "LogdResult": "80cc4e8b9cd7c31d",
     "OptimizationResult": "68b7012d0fb3b3ad",
     "OptimizationSummary": "8d9d706dc1c890e9",
