@@ -28,6 +28,12 @@ from typing import NamedTuple
 import pytest
 import yaml
 from mcp_server_kit.egress import GUARD_DISABLED_VALUES
+from mcp_server_kit.sessions import (
+    DEFAULT_MAX_SESSIONS,
+    SESSION_BACKLOG_BUDGET_BYTES,
+    SESSION_COST_BYTES,
+    SMALLEST_POD_MEMORY_LIMIT_BYTES,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVERS = ROOT / "servers"
@@ -1544,6 +1550,55 @@ def test_no_spelling_that_moved_a_bound_past_this_ratchet_reads_as_clean() -> No
     ]
 
 
+_MEMORY_SUFFIXES = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "K": 10**3, "M": 10**6, "G": 10**9}
+
+
+def _memory_bytes(quantity: str) -> int:
+    """A Kubernetes memory quantity as bytes — `512Mi`, `3Gi`, or a bare byte count."""
+    for suffix, factor in _MEMORY_SUFFIXES.items():
+        if quantity.endswith(suffix):
+            return int(float(quantity[: -len(suffix)]) * factor)
+    return int(quantity)
+
+
+def test_the_session_ceiling_is_derived_from_the_smallest_pod_this_fleet_actually_ships() -> None:
+    """`mcp_server_kit` bounds sessions against a memory limit it cannot see; this is what sees it.
+
+    The kit's default ceiling is a budget — an eighth of the smallest pod's memory limit — divided
+    by the measured cost of one session. Both halves live in `sessions.py`, beside the measurement,
+    and `packages/mcp_server_kit/tests/test_session_ceiling.py` re-derives the division. What
+    neither of them can check is the *input*: the kit is a package and a server's Deployment is a
+    file in another directory, so a pod resized to 256Mi would halve the budget the fleet-wide
+    default was derived from with every assertion in that package still green.
+
+    That is exactly the coupling `servers/pyexec` shipped as two transcribed copies of a
+    Deployment's CPU limit, and `servers/chem/tests/test_depiction_bound.py` is where reading the
+    file instead comes from. Here it crosses a package boundary as well as a file one, which is why
+    it is in the fleet suite rather than in either half.
+    """
+    limits = {}
+    for deployment in sorted(SERVERS.glob("*/deploy/deployment.yaml")):
+        manifest = yaml.safe_load(deployment.read_text(encoding="utf-8"))
+        for container in manifest["spec"]["template"]["spec"]["containers"]:
+            memory = container.get("resources", {}).get("limits", {}).get("memory")
+            if memory is not None:
+                limits[f"{deployment.parent.parent.name}/{container['name']}"] = _memory_bytes(
+                    str(memory)
+                )
+    assert limits, "no shipped Deployment declares a memory limit; has the layout changed?"
+
+    smallest = min(limits.values())
+    assert smallest == SMALLEST_POD_MEMORY_LIMIT_BYTES, (
+        f"the smallest shipped memory limit is now {smallest} B "
+        f"({min(limits, key=lambda name: limits[name])}), and "
+        "`mcp_server_kit.sessions.SMALLEST_POD_MEMORY_LIMIT_BYTES` still says "
+        f"{SMALLEST_POD_MEMORY_LIMIT_BYTES} B. The fleet-wide session ceiling is derived from that "
+        "number, so it has to be re-derived — the paragraph beside it in `sessions.py` is the "
+        "argument, not just the value."
+    )
+    assert DEFAULT_MAX_SESSIONS * SESSION_COST_BYTES <= SESSION_BACKLOG_BUDGET_BYTES <= smallest
+
+
 def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
     """`os.getenv` and `Annotated[int, …]`, neither of which exists in `src/` today.
 
@@ -1721,9 +1776,9 @@ def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
 
 # The modules whose *product* is an assertion failure. Both are imported by tests and by nothing
 # else — `testing.assert_manifest_matches`, `testing.assert_bearer_is_enforced` and
-# `no_egress.assert_no_egress` exist to fail a test — so an `assert` there is the verdict rather
-# than a control. Everything else under `src/` is serving code, where an `assert` is a control
-# `python -O` deletes.
+# `no_egress.assert_no_egress_sources` exist to fail a test — so an `assert` there is the verdict
+# rather than a control. Everything else under `src/` is serving code, where an `assert` is a
+# control `python -O` deletes.
 ASSERT_IS_THE_PRODUCT = {
     "packages/mcp_server_kit/src/mcp_server_kit/testing.py",
     "packages/mcp_server_kit/src/mcp_server_kit/no_egress.py",
@@ -1822,13 +1877,27 @@ def test_every_server_proves_its_bearer_check_against_a_running_server(server: P
     *does* can only be seen by a request, which is what the call this looks for makes. Without it a
     server added next year ships with the fleet's tidiest-looking auth story and nothing driving
     it, which is how `servers/safety/src` once sat outside `make type` for a release.
+
+    **The call has to be inside a test pytest collects**, which is narrower than "somewhere in the
+    file" and is the difference between a shape assertion and a decorative one. Walking every
+    `ast.Call` in the module was satisfied by a call in an uncollected helper, in a test
+    unconditionally skipped, or in dead code left behind by a refactor — three shapes that all read
+    as a proof in review and run never. So the search is scoped to the bodies of `test_*`
+    functions, which is the set pytest's own default `python_functions` collects.
     """
     tests = server / "tests" / "test_server.py"
     assert tests.is_file(), f"{server.name} has no tests/test_server.py"
     tree = ast.parse(tests.read_text(encoding="utf-8"), filename=str(tests))
-    called = {_called_name(node) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    called = {
+        _called_name(call)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.startswith("test_")
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+    }
     assert "assert_bearer_is_enforced" in called, (
-        f"{tests.relative_to(ROOT)} never calls assert_bearer_is_enforced, so nothing drives this "
-        "server's bearer check against a running listener. The helper is in "
-        "`mcp_server_kit.testing`; see any other server's test_server.py."
+        f"{tests.relative_to(ROOT)} never calls assert_bearer_is_enforced from a collected test, "
+        "so nothing drives this server's bearer check against a running listener. The helper is "
+        "in `mcp_server_kit.testing`; see any other server's test_server.py."
     )

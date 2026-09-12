@@ -133,6 +133,27 @@ class Settings(BaseSettings):
         return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def inference_threads() -> int:
+    """Cores one predictor's forward pass may spend, which is what the admission gate charges it.
+
+    **Read from torch rather than assumed.** `torch.get_num_threads()` is the intra-op width, and
+    torch sizes it from the machine's physical cores — *not* from the container's cgroup, and no
+    image in this fleet pins `OMP_NUM_THREADS` for it. So on a large node a pod limited to two
+    cores hands one forward pass a thread count nobody chose, and charging the ceiling anything
+    else would be charging it for CPU that either does not exist or is not being counted.
+
+    `1` when torch is not importable, which is every checkout without the model extras and is also
+    the floor a cost must never fall below: a cost of zero would make the tool uncounted. On CUDA
+    the number is still the right charge for this ceiling, because the ceiling bounds this pod's
+    *CPU* and the host threads feeding a GPU are what it can see.
+    """
+    try:
+        import torch
+    except ImportError:
+        return 1
+    return max(1, int(torch.get_num_threads()))
+
+
 _settings: Settings | None = None
 
 

@@ -156,6 +156,35 @@ decision leaves a record behind and the row goes.
   `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/preprocessing.py`.
 
+- [ ] **`Admission` is copied into five servers, and "one server never imports another" is not the
+  only reason it could be.** `calc`, `chem`, `pyexec`, `rxnlabel` and `rxnpredict` each carry a
+  ~40-line lock-and-counter class whose bodies are near-identical; what genuinely differs is the
+  *refusal wording* (`chem`'s names a replica because raising its ceiling cannot help, `calc`'s
+  names a knob and carries `AT_CAPACITY_MARKER`) and, in three of them, the cost model. The stated
+  reason for copying is that one server never imports another — which is true and does not apply to
+  `mcp_server_kit`, the package every one of them already imports. Decide whether the counter and
+  the clamp belong there with each server keeping its own message, or whether five copies is the
+  right price for five independent dependency closures. Re-derive the list with
+  `grep -rln "class Admission" servers` before working it, because a sixth may have arrived.
+  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/admission.py`,
+  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`.
+
+- [ ] **Neither heavy server pins its inference thread width, so a slot is a core only by
+  accident.** `torch.get_num_threads()` is sized from the machine's physical cores rather than from
+  the container's cgroup, and neither `servers/rxnpredict/Containerfile` nor
+  `servers/rxnlabel/Containerfile` sets `OMP_NUM_THREADS` — so on a large node one forward pass in a
+  two-core pod gets a thread count nobody chose. `D-2026-09-12-one-tool-call-is-not-one-thread`
+  charges each call what the process is *configured* to spend, which makes an unpinned pod go serial
+  rather than thrash: safe, and a smaller ceiling than the pod could support. Pinning
+  `OMP_NUM_THREADS=1` the way `servers/calc/Containerfile` does would let both ceilings mean more
+  than "one call at a time" — but it is a latency change to inference that **this repository has not
+  measured**, because torch is an optional extra no test environment here carries. The row is
+  therefore the measurement first: an image with the `models` extra, one forward pass pinned and
+  unpinned, on a two-core cgroup.
+  **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
+  `servers/calc/Containerfile`.
+
 ## 3 — The gate itself
 
 - [ ] **`make type` does not check the test tree, and there is an error waiting in it.** `$(SRC)`

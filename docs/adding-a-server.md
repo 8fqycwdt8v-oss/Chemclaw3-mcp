@@ -53,6 +53,30 @@ variance between servers should be in what they compute, not in how they are sha
      at 4.2x the wall clock of one alone. A tool that spawns a subprocess is charged what it
      spawns. See `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
+     **A fan-out is charged too, and it is the easier one to miss.** `servers/rxnpredict`'s two
+     consensus tools `asyncio.gather` over every enabled predictor, each offloading its own forward
+     pass — measured, six worker threads in flight for one tool call — so a call-counting ceiling
+     there under-counts by a number the *deployment's* model list decides. And where a torch model
+     is involved, one of those threads is itself `torch.get_num_threads()` wide, which torch takes
+     from the machine's physical cores rather than from the container's cgroup. Read the width at
+     call time rather than assuming it.
+
+     **Whether a tool is gated is not the manifest's `read_only`/`state_changing` split**, even
+     though `servers/calc` derives it from exactly that. `render_structure` is `read_only` and
+     correctly so — drawing a molecule changes nothing — and it is the one tool in `servers/chem`
+     that holds the interpreter long enough to need a ceiling. Cost and mutability are different
+     axes. What every server here does instead is derive the gated set from its *served* surface and
+     name the ungated exceptions, so a heavy tool added next year is gated or its `test_admission.py`
+     says so.
+
+5. **You do not write a ceiling on sessions.** `mcp_server_kit` bounds those for every server at
+   `MCP_MAX_SESSIONS`, because a session is the transport's object rather than a capability's: it
+   costs the same measured 56.6 kB whatever the server serves, and no tool body can see it. Nothing
+   to add per server, and nothing to set in a deployment — the default is derived from the smallest
+   pod this fleet ships. See
+   `packages/mcp_server_kit/src/mcp_server_kit/sessions.py` and
+   `D-2026-09-12-a-session-is-memory-nobody-counted`.
+
 ## The files
 
 ```

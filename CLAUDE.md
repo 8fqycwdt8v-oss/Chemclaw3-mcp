@@ -340,6 +340,19 @@ the fork, and that the naive form does not, which is what makes the first assert
 Chemclaw3 cancels from its side too (`D-2026-08-26-a-request-timeout-bounds-the-wait-not-the-work`);
 this is the half that holds when the caller vanishes without saying anything.
 
+**"What the pod spends" is not only CPU, and the cheapest server in this fleet needs a ceiling too.**
+An MCP *session* is memory — 56.6 kB each, measured on the real `chem` app, growing linearly with
+no ceiling and at an arrival rate an idle timeout cannot see — and nothing a tool body can reach.
+So that bound is `mcp_server_kit`'s rather than a server's (`MCP_MAX_SESSIONS`, refused with a 503 and
+`Retry-After` on the handshake that would mint one), and a new server inherits it with nothing to
+write and nothing to set; `D-2026-09-12-a-session-is-memory-nobody-counted` has the arithmetic. Two
+things about the CPU half generalise less than they look, and both are in
+`D-2026-09-12-one-tool-call-is-not-one-thread`: one tool *call* may be many threads — `rxnpredict`'s
+consensus tools fan out over every enabled predictor, measured at six at once — and **whether a tool
+is gated is not the manifest's `read_only`/`state_changing` split**, which is how `servers/calc`
+derives it and which does not carry: `render_structure` is `read_only`, correctly, and is the one
+tool in `servers/chem` that needs a ceiling.
+
 ## Ports
 
 **`MODULES.md` is the port registry, and it is the only one.** Claim the next free port there, in

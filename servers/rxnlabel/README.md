@@ -82,6 +82,32 @@ stored in the caller's `reaction_species.functional_groups` and queried by exact
 with the extra installed and one labelled without it answer the same query differently. Renaming one
 is a `SERVER_VERSION` bump.
 
+## What bounds this pod
+
+Two bounds, and they are not the same bound.
+
+| Bound | Default | How |
+| --- | --- | --- |
+| Reactions in one request | 500 | `CHEMCLAW_RXNLABEL_MAX_BATCH`; refused with a message saying how much to ask for |
+| Labelling in flight | 2 slots | `CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES`; refused, never queued |
+
+**A slot is a core, not a call.** The pod is limited to two cores, so the ceiling is two — and what
+a call is *charged* is `mapping.inference_threads()`: one for the RDKit path, whatever the mapper's
+transformer is configured to spend where RXNMapper is installed. Charging one per call would
+under-count by torch's intra-op width, which torch takes from the machine's physical cores rather
+than from the container's cgroup, so on a large node one mapped batch could be sixty-four runnable
+threads inside a two-core pod.
+
+Measured on the RDKit-only path: **2.8 ms per reaction**, flat from a batch of 10 to a batch of 500,
+with wall clock equal to CPU time — SMARTS matching holds the GIL, so 1, 2 and 4 threads labelling
+50 reactions each gave 581, 425 and 418 reactions/s. Concurrency there buys nothing; the ceiling is
+what keeps a burst from making every batch slower than it would have been alone.
+
+**Refused, never queued.** A batch held behind another comes back after `connector.yaml`'s
+`request_timeout` has expired — an answer nobody is waiting for, computed at the expense of one
+somebody is. The drain's right response to a refusal is to re-send the identical batch.
+`engine/admission.py` has the argument.
+
 ## Running it
 
 ```
