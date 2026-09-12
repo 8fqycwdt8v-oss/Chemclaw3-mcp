@@ -44,11 +44,14 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 
 | Id | Title |
 | --- | --- |
+| [D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means](D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means.md) | A bound that can be set to zero has to say what zero means |
 | [D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed](D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed.md) | A bypass that is not in the suite is not closed |
+| [D-2026-09-12-a-ceiling-read-before-the-mint-is-a-ceiling-a-burst-walks-past](D-2026-09-12-a-ceiling-read-before-the-mint-is-a-ceiling-a-burst-walks-past.md) | A ceiling read before the mint is a ceiling a burst walks past |
 | [D-2026-09-12-a-ratchet-measures-what-it-parses](D-2026-09-12-a-ratchet-measures-what-it-parses.md) | A ratchet measures what it parses, not what it is named after |
 | [D-2026-09-12-a-raw-string-is-not-the-string-it-was-copied-from](D-2026-09-12-a-raw-string-is-not-the-string-it-was-copied-from.md) | A raw string is not the string it was copied from |
 | [D-2026-09-12-a-session-is-memory-nobody-counted](D-2026-09-12-a-session-is-memory-nobody-counted.md) | A session is memory nobody counted |
 | [D-2026-09-12-a-shared-helper-is-not-a-proof-it-was-applied](D-2026-09-12-a-shared-helper-is-not-a-proof-it-was-applied.md) | A shared helper is not a proof it was applied |
+| [D-2026-09-12-a-test-that-re-types-the-expression-under-test-asserts-nothing](D-2026-09-12-a-test-that-re-types-the-expression-under-test-asserts-nothing.md) | A test that re-types the expression under test asserts nothing |
 | [D-2026-09-12-an-assert-is-a-control-with-an-off-switch](D-2026-09-12-an-assert-is-a-control-with-an-off-switch.md) | An `assert` is a control with an off switch |
 | [D-2026-09-12-one-tool-call-is-not-one-thread](D-2026-09-12-one-tool-call-is-not-one-thread.md) | One tool call is not one thread |
 | [D-2026-09-12-whitespace-is-an-accident-on-the-side-that-provisions](D-2026-09-12-whitespace-is-an-accident-on-the-side-that-provisions.md) | Whitespace is an accident on the side that provisions |

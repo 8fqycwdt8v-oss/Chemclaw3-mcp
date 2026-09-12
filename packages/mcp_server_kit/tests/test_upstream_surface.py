@@ -205,3 +205,32 @@ async def test_list_tools_rebuilds_a_tools_schema_objects_every_time() -> None:
         "tool schema objects are stable across tools/list now; mcp_server_kit/schema_cache.py "
         "pays a canonical-JSON key per call to be safe against them not being"
     )
+
+
+def test_a_session_is_recorded_in_a_second_map_only_for_an_authenticated_scope_user() -> None:
+    """The **other** map `sessions._drop_terminated_sessions` does not sweep, and why it may not.
+
+    Upstream keeps `_session_owners` beside `_server_instances` and pops the two together on every
+    one of its own removal paths — including the `finally` in `run_server` that a polite `DELETE`
+    skips, because `terminate()` sets `is_terminated` first. `_drop_terminated_sessions` is what
+    covers that skipped `del`, and it covers exactly one of the two dicts.
+
+    That is sound today for one reason and one reason only: this fleet's `BearerAuthMiddleware`
+    never puts an `AuthenticatedUser` in `scope["user"]`, so `requestor` is `None` on every request
+    and upstream writes nothing. `tests/test_sessions.py` drives that half over a real socket. This
+    half pins the *condition*: if upstream ever records an owner unconditionally, or the kit adopts
+    upstream's own bearer middleware, every politely-deleted session starts leaking into a map
+    nothing sweeps — which is the leak `sessions.py` was written to close, one dict over.
+    """
+    source = inspect.getsource(StreamableHTTPSessionManager._handle_stateful_request)
+    assert "if requestor is not None:" in source, (
+        "upstream no longer guards `_session_owners` on an authenticated requestor; "
+        "mcp_server_kit/sessions.py sweeps `_server_instances` only, on the grounds that the "
+        "other map stays empty in this fleet"
+    )
+    assert "self._session_owners[http_transport.mcp_session_id] = requestor" in source
+    constructor = inspect.getsource(StreamableHTTPSessionManager.__init__)
+    assert "self._session_owners" in constructor, (
+        "upstream no longer keeps a second per-session map; re-read the sweep in "
+        "mcp_server_kit/sessions.py, which was written knowing about exactly this one"
+    )

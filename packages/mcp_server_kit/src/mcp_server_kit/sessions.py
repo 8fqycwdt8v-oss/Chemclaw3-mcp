@@ -98,7 +98,9 @@ from __future__ import annotations
 import logging
 import math
 import os
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import anyio
@@ -114,9 +116,12 @@ from mcp_server_kit.metrics import SESSIONS_CEILING, SESSIONS_LIVE, SESSIONS_REF
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AT_CAPACITY_RETRY_AFTER_SECONDS",
     "AT_CAPACITY_STATUS",
     "DEFAULT_MAX_SESSIONS",
     "DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS",
+    "DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS",
+    "REFUSAL_LOG_INTERVAL_SECONDS",
     "SESSION_BACKLOG_BUDGET_BYTES",
     "SESSION_COST_BYTES",
     "SMALLEST_POD_MEMORY_LIMIT_BYTES",
@@ -124,6 +129,7 @@ __all__ = [
     "apply_session_idle_timeout",
     "max_sessions",
     "session_idle_timeout",
+    "session_unused_timeout",
 ]
 
 # Upstream's own recommendation, and comfortably longer than the gap between two tool calls in one
@@ -131,9 +137,24 @@ __all__ = [
 # take — a call in flight holds the deadline off entirely (see `_hold_open_during_tool_calls`).
 DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800.0
 
+#: How long a session that has been minted and *never used again* may hold its slot. A handshake
+#: is not a conversation: upstream pushes the deadline forward on every request for an existing
+#: session, so any client that goes on to do anything at all — an MCP client sends
+#: `notifications/initialized` microseconds later — is promoted to the full idle timeout by
+#: upstream's own code with nothing here to do. What is left holding the short lease is exactly
+#: the session nobody ever came back for: an aborted handshake, a client that died between
+#: `initialize` and its first call, or a flood. Sixty seconds is four orders of magnitude above
+#: the gap a real client leaves and thirty times below the idle timeout, which is what turns the
+#: ceiling from a thirty-minute wedge into a minute-long one.
+DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS = 60.0
+
 # Marks a transport whose request handler already re-asserts the hold, so a second concurrent
 # call on the same session does not stack a second wrapper on top of the first.
 _REASSERTED = "_chemclaw_hold_reasserted"
+
+# Marks a session that has had at least one request of its own, so the short first lease
+# `_bound_a_new_sessions_first_lease` applies at mint is never applied over an active one.
+_USED = "_chemclaw_session_used"
 
 
 #: What one un-deleted session costs this process, in bytes of RSS. Measured on the real `chem`
@@ -174,6 +195,26 @@ DEFAULT_MAX_SESSIONS = 1024
 #: refusal is transient, which is the one thing a caller can act on.
 AT_CAPACITY_STATUS = 503
 
+#: What `Retry-After` tells a refused caller, in seconds. It shipped at **1**, which is the one
+#: value the pod cannot honour: the slots a full pod is holding are refunded no earlier than
+#: `MCP_SESSION_UNUSED_TIMEOUT_SECONDS` (a handshake nobody followed up) or
+#: `MCP_SESSION_IDLE_TIMEOUT_SECONDS` (a conversation that stopped), and until then every retry is
+#: refused again. Derived rather than chosen: a refusal costs this pod 0.8 ms of its own CPU
+#: (measured over one shared connection against the real app, 50 refusals, median 0.792 ms), so
+#: `DEFAULT_MAX_SESSIONS` displaced callers all retrying on this interval spend
+#: `1024 x 0.0008 / R` of a core on being told no. At the shipped 1 s that is **0.8 of a core** —
+#: on a pod limited to two, the refusal path becomes the load and starves the sessions that are
+#: still working. 10 s holds it under a tenth of a core, and is short enough that a caller whose
+#: turn is still worth having has not given up. It is *not* raised to the reclaim horizon: a pod
+#: that is merely busy frees slots as callers finish, in seconds, and a minute-long `Retry-After`
+#: would turn a two-second saturation into a minute-long outage for every client that obeyed it.
+AT_CAPACITY_RETRY_AFTER_SECONDS = 10
+
+#: How often a pod that is refusing handshakes says so in its log. The counter is exact and
+#: per-refusal; the log is for a human, and at the arrival rates this ceiling exists to survive a
+#: line per refusal is hundreds a second of one repeated sentence.
+REFUSAL_LOG_INTERVAL_SECONDS = 10.0
+
 #: JSON-RPC reserves -32000..-32099 for server-defined errors. Upstream spends `INVALID_REQUEST`
 #: (-32600) on "session not found", and re-using it would make a full pod indistinguishable from a
 #: stale session id in the body — which is exactly the confusion the status code avoids, so the
@@ -200,6 +241,30 @@ def session_idle_timeout() -> float | None:
         )
         return DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS
     return seconds if seconds > 0 else None
+
+
+def session_unused_timeout(idle: float) -> float:
+    """Seconds a just-minted session may sit unused before it is reaped.
+
+    `MCP_SESSION_UNUSED_TIMEOUT_SECONDS` is the knob. It is clamped to `idle` rather than allowed
+    to exceed it — a "first lease" longer than the ordinary one is not a shorter lease, and a
+    deployment that wants the old behaviour asks for it by setting the two equal. Unparseable
+    values fall back and say so, the shape both knobs above use; `0` means "no separate first
+    lease", which is that same request spelled differently.
+    """
+    raw = os.environ.get("MCP_SESSION_UNUSED_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return min(DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS, idle)
+    try:
+        seconds = float(raw)
+    except ValueError:
+        logger.warning(
+            "MCP_SESSION_UNUSED_TIMEOUT_SECONDS=%r is not a number; using %.0f s",
+            raw,
+            DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS,
+        )
+        return min(DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS, idle)
+    return idle if seconds <= 0 else min(seconds, idle)
 
 
 def _current_transport(server: FastMCP) -> tuple[str, Any] | None:
@@ -346,6 +411,114 @@ def _reclaim_after_every_request(server: FastMCP) -> None:
     manager.handle_request = handle_request  # type: ignore[method-assign]
 
 
+async def _discard_an_unusable_session(server: FastMCP, session_id: str) -> None:
+    """Close a session upstream minted for a request it then refused.
+
+    Upstream mints on the *absence* of the session-id header and nothing else — not the method, not
+    the body — so a bare `DELETE /mcp`, a bare `GET /mcp`, a `ping` with no session id and a
+    malformed body each answer **400 Bad Request** and each leave a fully-registered session
+    behind. Measured against the real app: `live 0 -> 1` for every one of those four, and a bare
+    `DELETE` at **476 requests/s**, which fills the shipped 1,024-session ceiling in about two
+    seconds using the cheapest request anybody can construct. Not one of those sessions can ever be
+    used: the caller was told its request was bad, and a session whose `initialize` never succeeded
+    serves nothing.
+
+    They are nameable, which is what makes this exact rather than a heuristic: upstream puts
+    `mcp-session-id` on the 400 as well as on the 200, so the response names the session it just
+    orphaned and no before/after diff of the instance map — which another request may have written
+    to concurrently — is needed.
+
+    `terminate()` first and then the `pop`, in that order and both: the pop alone would leave the
+    session's anyio task blocked in `Server.run` forever, and `terminate()` alone is what
+    `_drop_terminated_sessions` exists because upstream does not follow with a `del`.
+    """
+    try:
+        instances = server.session_manager._server_instances
+    except RuntimeError:  # pragma: no cover - no manager yet, so nothing to discard
+        return
+    transport = instances.get(session_id)
+    if transport is None:  # pragma: no cover - already swept
+        return
+    await transport.terminate()
+    instances.pop(session_id, None)
+
+
+def _bound_a_new_sessions_first_lease(server: FastMCP, *, unused: float) -> None:
+    """Give a just-minted session a short lease, and discard one that was minted by mistake.
+
+    **A handshake is not a conversation.** The idle timeout is 1,800 s because that is the right
+    bound on a session a chemist is between tool calls on; it is three orders of magnitude too
+    generous for one that was minted and never spoken to again. That gap is what makes the ceiling
+    one caller's denial-of-service rather than a memory bound: measured, 1,024 handshakes take
+    about four seconds to open and the slots are refunded no earlier than thirty minutes later,
+    during which every other caller is refused. Shortening only the *unused* lease costs a real
+    client nothing, because upstream already pushes the deadline to the full timeout on every
+    request for an existing session, and an MCP client sends `notifications/initialized`
+    microseconds after the handshake returns.
+
+    So this wrapper does two things to a minting request, both decided from the response upstream
+    wrote: if it was an error, the session it minted is unusable and is discarded on the spot; if
+    it was served, the session starts on the short lease and upstream's own push promotes it.
+
+    A session that has received any request at all is marked, and the short lease is never applied
+    to a marked one — that is not decoration, it is what closes the window between the mint
+    response being written and this code running. A client that read its session id off that
+    response and immediately started a tool call would otherwise have the hold-open deadline
+    (`math.inf`) overwritten with 60 s, and the call cancelled from inside the transport with no
+    error written anywhere, which is the exact failure `_hold_open_during_tool_calls` exists to
+    prevent.
+    """
+    manager = server.session_manager
+    wrapped = manager.handle_request
+
+    async def handle_request(scope: Scope, receive: Receive, send: Send) -> None:
+        if not _would_mint_a_session(scope):
+            _mark_session_used(server, _session_id_in(scope.get("headers", [])))
+            await wrapped(scope, receive, send)
+            return
+        minted: list[tuple[str, int]] = []
+
+        async def send_and_note_the_session(message: Any) -> None:
+            if message.get("type") == "http.response.start":
+                session_id = _session_id_in(message.get("headers", []))
+                if session_id is not None:
+                    minted.append((session_id, int(message["status"])))
+            await send(message)
+
+        await wrapped(scope, receive, send_and_note_the_session)
+        for session_id, status in minted:
+            if status >= 400:
+                await _discard_an_unusable_session(server, session_id)
+            else:
+                _start_the_short_lease(server, session_id, unused=unused)
+
+    manager.handle_request = handle_request  # type: ignore[method-assign]
+
+
+def _mark_session_used(server: FastMCP, session_id: str | None) -> None:
+    """Record that a session has had a request of its own, so its lease is no longer the first."""
+    if session_id is None:
+        return
+    try:
+        transport = server.session_manager._server_instances.get(session_id)
+    except RuntimeError:  # pragma: no cover - no manager yet
+        return
+    if transport is not None:
+        setattr(transport, _USED, True)
+
+
+def _start_the_short_lease(server: FastMCP, session_id: str, *, unused: float) -> None:
+    """Put the just-minted session on the unused lease, unless it is already in use."""
+    try:
+        transport = server.session_manager._server_instances.get(session_id)
+    except RuntimeError:  # pragma: no cover - no manager yet
+        return
+    scope = getattr(transport, "idle_scope", None)
+    if scope is None or getattr(transport, _USED, False) or scope.deadline == math.inf:
+        return
+    scope.deadline = anyio.current_time() + unused
+
+
 def max_sessions() -> int | None:
     """How many sessions this process will hold at once, or `None` for no ceiling.
 
@@ -374,12 +547,20 @@ def _would_mint_a_session(scope: Scope) -> bool:
     JSON-RPC body — a `GET` or a `DELETE` with no session id takes the same minting branch, and
     reading the body would mean consuming the ASGI receive channel before upstream needs it.
     """
-    if scope.get("type") != "http":
-        return False
-    return not any(
-        name.decode("latin-1").lower() == MCP_SESSION_ID_HEADER.lower()
-        for name, _ in scope.get("headers", [])
-    )
+    return scope.get("type") == "http" and _session_id_in(scope.get("headers", [])) is None
+
+
+def _session_id_in(headers: Iterable[tuple[bytes, bytes]]) -> str | None:
+    """The `mcp-session-id` an ASGI header list carries, or `None`. Case-insensitive, as HTTP is.
+
+    Used for both directions of one request: the id a caller presents (absent means a session is
+    about to be minted) and the id upstream puts on the response (which names the session that
+    request just minted, on an error response as much as on a served one).
+    """
+    for name, value in headers:
+        if name.decode("latin-1").lower() == MCP_SESSION_ID_HEADER.lower():
+            return value.decode("latin-1")
+    return None
 
 
 async def _refuse(scope: Scope, receive: Receive, send: Send, *, ceiling: int) -> None:
@@ -403,7 +584,7 @@ async def _refuse(scope: Scope, receive: Receive, send: Send, *, ceiling: int) -
         body.model_dump_json(by_alias=True, exclude_none=True),
         status_code=AT_CAPACITY_STATUS,
         media_type="application/json",
-        headers={"Retry-After": "1"},
+        headers={"Retry-After": str(AT_CAPACITY_RETRY_AFTER_SECONDS)},
     )
     await response(scope, receive, send)
 
@@ -432,6 +613,33 @@ def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
     Wrapped *outside* `_reclaim_after_every_request` so a refused request never reaches it — there
     is nothing to reclaim on a request that was not served, and the sweep above has already run.
 
+    **The slot is taken before the await, not derived from a dict upstream fills afterwards**, and
+    the first version of this function got that wrong in the one way that matters. `live` was
+    `len(manager._server_instances)` alone, read on the ASGI entry — but upstream registers the
+    session inside `_handle_stateful_request`, behind `async with self._session_creation_lock`,
+    several awaits later. Every concurrent handshake therefore observed the *pre-burst* count and
+    every one of them was admitted. Measured against the real app under uvicorn, all handshakes
+    released from one `threading.Barrier`: a ceiling of 8 admitted **64 of 64** and held 64 live
+    sessions, and a ceiling of 64 admitted **256 of 256**. A serial caller was bounded correctly,
+    which is why every test passed — the saturation probe filled the pod one handshake at a time
+    and only burst against an already-full pod, so it never opened the window. A burst is the exact
+    adversary the ceiling was written for: one client on loopback opens 261 handshakes a second.
+
+    So an admitted handshake takes a *reservation* — an integer this function owns, incremented
+    under a `threading.Lock` with no `await` between the read and the increment, the same shape
+    `servers/calc/engine/admission.py` uses one layer down — and the reservation is handed over to
+    `_server_instances` the moment upstream sends the response, because upstream registers the
+    transport strictly before it can write a byte. `send` is watched for that handover rather than
+    the request's return, so a request that holds its connection open (a sessionless `GET`, which
+    upstream mints for) does not hold a second slot for the life of the stream.
+
+    **The count stays derived from the map, and that is what keeps a reservation from leaking.**
+    The reservation covers only the window between the check and the registration — it is released
+    in a `finally` as well, so an exception, a cancellation or a client hang-up cannot strand one —
+    and everything after that window is `len(_server_instances)`, which a reap, a `DELETE` or a
+    crash empties on its own. A counter that *replaced* the map would have to be decremented on
+    every one of those paths, and the one it missed would wedge the pod permanently.
+
     Args:
         server: The `FastMCP` whose session manager is being bounded. Must already have had
             `streamable_http_app()` called on it, which is what builds that manager.
@@ -448,24 +656,80 @@ def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
     SESSIONS_CEILING.labels(name).set(ceiling)
     manager = server.session_manager
     wrapped = manager.handle_request
+    lock = threading.Lock()
+    reserved = 0
+    warned_at = -REFUSAL_LOG_INTERVAL_SECONDS
 
-    async def handle_request(scope: Scope, receive: Receive, send: Send) -> None:
-        if _would_mint_a_session(scope):
+    def warn_that_the_pod_is_full() -> None:
+        """Say the pod is full, at most once per `REFUSAL_LOG_INTERVAL_SECONDS`.
+
+        A refusal costs the pod 0.8 ms and the client is told to come back in
+        `AT_CAPACITY_RETRY_AFTER_SECONDS`, so a pod that is genuinely full is refusing everything
+        it displaced — hundreds of times a second at the shipped ceiling. A line each would bury
+        every other line in the pod's log, including the ones that say *why* it is full. The exact
+        per-refusal number is `chemclaw_mcp_sessions_refused_total`, which is incremented whether
+        or not this prints; no count is restated here, because a count of a window that has not
+        closed yet is a number nobody can act on.
+        """
+        nonlocal warned_at
+        now = time.monotonic()
+        with lock:
+            if now - warned_at < REFUSAL_LOG_INTERVAL_SECONDS:
+                return
+            warned_at = now
+        logger.warning(
+            "server %s: refusing session handshakes; all %d sessions are open, clients are being "
+            "told to retry in %d s, and this line is printed at most every %.0f s — "
+            "chemclaw_mcp_sessions_refused_total counts every one",
+            name,
+            ceiling,
+            AT_CAPACITY_RETRY_AFTER_SECONDS,
+            REFUSAL_LOG_INTERVAL_SECONDS,
+        )
+
+    def take_a_slot() -> bool:
+        """Claim one slot for a handshake, or report that the pod is full. Never awaits."""
+        nonlocal reserved
+        with lock:
             _drop_terminated_sessions(server)
             live = len(manager._server_instances)
             SESSIONS_LIVE.labels(name).set(live)
-            if live >= ceiling:
-                SESSIONS_REFUSED.labels(name).inc()
-                logger.warning(
-                    "server %s: refused a session handshake; %d of %d sessions are already open",
-                    name,
-                    live,
-                    ceiling,
-                )
-                await _refuse(scope, receive, send, ceiling=ceiling)
-                return
-        await wrapped(scope, receive, send)
-        SESSIONS_LIVE.labels(name).set(len(manager._server_instances))
+            if live + reserved >= ceiling:
+                return False
+            reserved += 1
+            return True
+
+    async def handle_request(scope: Scope, receive: Receive, send: Send) -> None:
+        nonlocal reserved
+        if not _would_mint_a_session(scope):
+            await wrapped(scope, receive, send)
+            SESSIONS_LIVE.labels(name).set(len(manager._server_instances))
+            return
+        if not take_a_slot():
+            SESSIONS_REFUSED.labels(name).inc()
+            warn_that_the_pod_is_full()
+            await _refuse(scope, receive, send, ceiling=ceiling)
+            return
+        handed_over = False
+
+        def hand_over() -> None:
+            """Give the slot to `_server_instances`, which upstream has by now written to."""
+            nonlocal reserved, handed_over
+            if not handed_over:
+                handed_over = True
+                with lock:
+                    reserved -= 1
+
+        async def send_and_hand_over(message: Any) -> None:
+            if message.get("type") == "http.response.start":
+                hand_over()
+            await send(message)
+
+        try:
+            await wrapped(scope, receive, send_and_hand_over)
+        finally:
+            hand_over()
+            SESSIONS_LIVE.labels(name).set(len(manager._server_instances))
 
     manager.handle_request = handle_request  # type: ignore[method-assign]
     return ceiling
@@ -494,4 +758,5 @@ def apply_session_idle_timeout(server: FastMCP) -> float | None:
     server.session_manager.session_idle_timeout = timeout
     _hold_open_during_tool_calls(server, timeout=timeout)
     _reclaim_after_every_request(server)
+    _bound_a_new_sessions_first_lease(server, unused=session_unused_timeout(timeout))
     return timeout

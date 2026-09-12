@@ -8,6 +8,8 @@ version must name every component whose output survives into a label.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from chemclaw_mcp_rxnlabel import tools
 from chemclaw_mcp_rxnlabel import tools as rxnlabel_tools
@@ -212,3 +214,22 @@ class TestALabelCarriesTheLabellerThatMadeIt:
         represented = await rxnlabel_tools.represent_reaction("CCO>>CC=O")
         named = await rxnlabel_tools.name_reaction("CCO>>CC=O")
         assert (represented.version, named.version) == (stamp, stamp)
+
+
+@pytest.mark.parametrize("tool", ["represent_reaction", "name_reaction"])
+@pytest.mark.parametrize("bad", ["not-a-reaction", "A>>", "CC>CC"])
+def test_a_string_that_is_not_a_reaction_is_refused_in_the_callers_terms(
+    tool: str, bad: str
+) -> None:
+    """The single-reaction tools index a batch that drops what it cannot read.
+
+    `_represent` and `_name` are deliberately lenient — a drain wants the rows it could label and a
+    list of what it could not, rather than one bad row failing ten thousand good ones — so they
+    *skip* a string that is not `reactants>agents>products`. Taking `[0]` of that then raised
+    `IndexError: list index out of range`, which is not a `ValueError`, so `connector_app` replaced
+    it with an opaque `error_id` and the model was told a fault had occurred rather than that its
+    own input was malformed. The class is the assertion: `ValueError` is the family this fleet
+    reserves for a message the model may read and act on.
+    """
+    with pytest.raises(ValueError, match="not a reaction"):
+        asyncio.run(getattr(tools, tool)(bad))
