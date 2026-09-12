@@ -131,6 +131,31 @@ decision leaves a record behind and the row goes.
   **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
 
+- [ ] **A refusal's echo is bounded in four engines by a constant each of them declares, and most
+  refusals do not go through it.** `chem`, `calc`, `safety` and `rxnpredict` each define their own
+  120-character `_MAX_ECHO_CHARS` and an `_echo`/`truncate_echo` beside it, and the reason is
+  recorded at `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`: `connector_app` passes a
+  `ValueError` to the model verbatim, so an unbounded echo is unbounded caller-influenced text in
+  the context window of the turn that asked. Most refusal sites interpolate the structure directly
+  instead. Re-derive the list with
+
+  ```sh
+  grep -rnE '\{[a-z_]*\.?smiles[^}]*!r\}' servers/*/src packages/*/src | grep -v '_echo\|truncate'
+  ```
+
+  The ceiling above them is not the echo bound but `mcp_server_kit.limits.MAX_SMILES_CHARS`, which
+  is 4000 — so these are bounded, at roughly thirty times the bound the four engines chose.
+  Measured 2026-09-12: `predict_pka` on `"C" * 1500` (inside both structural bounds, so it is an
+  ordinary accepted call) raises a **1,587-character** refusal where `_echo` would have produced
+  about two hundred. Two things to decide together, and that is why they are queued here as a pair: whether the
+  truncation belongs in `mcp_server_kit.limits` beside the bounds it pairs with rather than
+  copied per server, and whether a ratchet can tell a caller-derived echo from a corpus-derived
+  one — `servers/chem/src/chemclaw_mcp_chem/engine/reagents.py` quotes a *table's* own SMILES in a
+  duplicate-name error, which is not caller-influenced and needs no bound.
+  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/preprocessing.py`.
+
 ## 3 — The gate itself
 
 - [ ] **`make type` does not check the test tree, and there is an error waiting in it.** `$(SRC)`

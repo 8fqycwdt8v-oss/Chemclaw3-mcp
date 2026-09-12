@@ -1717,3 +1717,118 @@ def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
         "a root `tests/test_deploy.py` now exists; `CLAUDE.md` §4 says it does not and points at "
         "the per-server files instead"
     )
+
+
+# The modules whose *product* is an assertion failure. Both are imported by tests and by nothing
+# else — `testing.assert_manifest_matches`, `testing.assert_bearer_is_enforced` and
+# `no_egress.assert_no_egress` exist to fail a test — so an `assert` there is the verdict rather
+# than a control. Everything else under `src/` is serving code, where an `assert` is a control
+# `python -O` deletes.
+ASSERT_IS_THE_PRODUCT = {
+    "packages/mcp_server_kit/src/mcp_server_kit/testing.py",
+    "packages/mcp_server_kit/src/mcp_server_kit/no_egress.py",
+}
+
+
+def _assert_offences(roots: list[Path]) -> list[str]:
+    """Every `assert` statement under `roots`, minus the modules whose product is an assertion.
+
+    AST-based rather than grep-based, for `no_egress.py`'s reason one layer over: an `assert` in a
+    docstring, a comment or a string literal reads identically as text and not at all as a tree.
+    """
+    offences: list[str] = []
+    for root in roots:
+        for source in sorted(root.rglob("*.py")):
+            relative = (
+                source.relative_to(ROOT).as_posix()
+                if source.is_relative_to(ROOT)
+                else source.as_posix()
+            )
+            if relative in ASSERT_IS_THE_PRODUCT:
+                continue
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            offences += [
+                f"{relative}:{node.lineno}"
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Assert)
+            ]
+    return sorted(offences)
+
+
+def test_no_serving_module_enforces_an_invariant_with_assert() -> None:
+    """`python -O` deletes every `assert`, so an invariant enforced by one is conditional on a flag.
+
+    No file in this repository sets `PYTHONOPTIMIZE` and no Containerfile passes `-O`, which is the
+    reason this was never observed rather than a reason it is safe: the flag belongs to whoever
+    starts the process, and a control a platform can switch off by exporting an environment
+    variable is not one an operator can be told exists.
+
+    Two further costs make the rule worth having rather than deciding it case by case. An
+    `AssertionError` is not a `ValueError`, so `connector_app` replaces it with an `error_id` and
+    the model is told nothing it can act on. And an assert's message is written as a debugging aid,
+    so it echoes the offending input raw — `rxnpredict`'s tokenizer check interpolated the caller's
+    whole SMILES, past the truncation every engine in this fleet applies for exactly that reason.
+
+    So in serving code an invariant is an `if` and a `raise`.
+    `servers/calc/src/chemclaw_mcp_calc/engine/descriptors.py` already had that shape for the same
+    `MolFromSmiles` check `logd.py` was asserting, which makes this the fleet's own idiom rather
+    than a new rule imposed on it.
+    """
+    # `src/` only: a test module's asserts are its verdict, which is the same exemption
+    # `ASSERT_IS_THE_PRODUCT` grants the two helpers that live under `src/` because they are
+    # imported *by* tests. Derived from the tree rather than listed, so a new package or server is
+    # scanned the day it appears.
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    assert len(roots) > 1, "no source trees found; has the workspace layout changed?"
+    offences = _assert_offences(roots)
+    assert not offences, (
+        "these modules enforce a runtime invariant with `assert`, which `python -O` removes:\n  "
+        + "\n  ".join(offences)
+        + "\nUse `if not ...: raise` — a ValueError where the caller can act on it, otherwise a "
+        "RuntimeError that `connector_app` sanitises."
+    )
+
+
+def test_the_assert_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
+    """The bite test: an `assert` in serving code is flagged, one in prose is not.
+
+    Without it the check above is green over a tree containing no Python at all, and the property
+    that makes it AST-based rather than a `grep` is asserted nowhere.
+    """
+    (tmp_path / "flagged.py").write_text("def f(x: int) -> None:\n    assert x > 0\n", "utf-8")
+    (tmp_path / "clean.py").write_text(
+        '"""A docstring that says assert, and a string that is one."""\n'
+        'NOTE = "assert x > 0"\n'
+        "# assert x > 0\n"
+        "def f(x: int) -> None:\n"
+        "    if x <= 0:\n"
+        "        raise ValueError('x must be positive')\n",
+        "utf-8",
+    )
+    offences = _assert_offences([tmp_path])
+    assert offences == [f"{(tmp_path / 'flagged.py').as_posix()}:2"], offences
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_server_proves_its_bearer_check_against_a_running_server(server: Path) -> None:
+    """`assert_bearer_is_enforced` is called from every server's own `test_server.py`.
+
+    `connector_app` is shared, so one proof of the credential *looks* sufficient — and that is the
+    inference the failure this fleet guards against defeats. A mounted MCP surface is exactly the
+    route an enclosing app's declared credential does not reach, so the question "is the check on
+    `/mcp` in this image" is a question about each server's composition, not about the helper.
+
+    A shape assertion, deliberately, and it is the only kind available here: what the credential
+    *does* can only be seen by a request, which is what the call this looks for makes. Without it a
+    server added next year ships with the fleet's tidiest-looking auth story and nothing driving
+    it, which is how `servers/safety/src` once sat outside `make type` for a release.
+    """
+    tests = server / "tests" / "test_server.py"
+    assert tests.is_file(), f"{server.name} has no tests/test_server.py"
+    tree = ast.parse(tests.read_text(encoding="utf-8"), filename=str(tests))
+    called = {_called_name(node) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    assert "assert_bearer_is_enforced" in called, (
+        f"{tests.relative_to(ROOT)} never calls assert_bearer_is_enforced, so nothing drives this "
+        "server's bearer check against a running listener. The helper is in "
+        "`mcp_server_kit.testing`; see any other server's test_server.py."
+    )

@@ -155,6 +155,18 @@ that helper are non-obvious, and each is quiet when wrong:
 - **Fail closed.** A declared `token_env` whose variable is unset refuses every request. Chemclaw3
   once mounted a secret, recorded the control as enabled, and served every tool to anything that
   could reach the pod, because the serving side never checked.
+- **Every server proves that against its own running listener, and `connector_app` being shared is
+  not the reason it need not.** "The helper enforces it, so every server enforces it" is precisely
+  the inference a mount bypass defeats — the credential can be declared, reviewed and applied to
+  everything except the mounted route. So `mcp_server_kit.testing.assert_bearer_is_enforced` drives
+  each server's real app under uvicorn on loopback through the anonymous caller, a wrong token, the
+  right secret under the wrong scheme, the credential actually serving, and the declared variable
+  unset; the manifest is what it reads the variable's *name* from, so the serving side is held to
+  what Chemclaw3 was told to send.
+  `tests/test_fleet.py::test_every_server_proves_its_bearer_check_against_a_running_server` is what
+  makes an eighth server owe the same proof. What that lane does **not** prove is what an image
+  does: it runs this repository's `app` object under this repository's uvicorn, so a Containerfile
+  that starts a different entrypoint, or an ingress in front of the pod, is outside it.
 - **`X-Chemclaw-Actor/Session/Correlation-Id/Dry-Run` are logged, never trusted.** Authorization
   happened in Chemclaw3 before the call was made. A server that gated on one of these headers would
   be trusting an unauthenticated string while looking like it had access control.
@@ -464,6 +476,13 @@ make run-calc        # the heaviest one — a call here can be minutes or hours,
 ```
 
 - Python ≥ 3.11, `uv` workspace, `ruff` (line length 100), `mypy --strict`.
+- **No `assert` in serving code.** `python -O` deletes every one of them, so an invariant enforced
+  by an assert is a control conditional on how somebody started the process — and an
+  `AssertionError` is not a `ValueError`, so what reaches the model is an `error_id` rather than
+  something it can act on. Use `if ...: raise`. The only exemption is a module whose *product* is
+  an assertion failure (`mcp_server_kit`'s `testing.py` and `no_egress.py`, both imported by tests
+  and by nothing else), and
+  `tests/test_fleet.py::test_no_serving_module_enforces_an_invariant_with_assert` holds the line.
 - The `mcp` SDK is pinned to the **1.x line** deliberately: Chemclaw3 is on `mcp.server.fastmcp`,
   and matching its generation keeps `connector_app` line-for-line comparable with
   `chemclaw.connectors.server`. Moving to 2.x (`MCPServer`) is a deliberate migration for both

@@ -15,9 +15,10 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from typing import Any
 
-from ...preprocessing import canonical_smiles
+from ...preprocessing import canonical_smiles, truncate_echo
 from ...schemas import ForwardPrediction
 from .. import mark_unavailable, register_forward
 from ..base import BaseForwardPredictor
@@ -25,16 +26,38 @@ from ..base import BaseForwardPredictor
 logger = logging.getLogger(__name__)
 
 
-def _tokenize_smiles(smiles: str) -> str:
-    """Atom-wise SMILES tokenization expected by MolecularTransformer."""
-    import re
+# The tokenizer's alphabet, at module scope so the refusal below and the test that drives it read
+# the same pattern. A second transcription of it is a second claim about what this model accepts.
+TOKEN_PATTERN = re.compile(
+    r"(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|"
+    r"\(|\)|\.|=|#|-|\+|\\\\|\/|:|~|@|\?|>|\*|\$|\%[0-9]{2}|[0-9])"
+)
 
-    pattern = (
-        r"(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|"
-        r"\(|\)|\.|=|#|-|\+|\\\\|\/|:|~|@|\?|>|\*|\$|\%[0-9]{2}|[0-9])"
-    )
-    tokens = re.findall(pattern, smiles)
-    assert "".join(tokens) == smiles.replace(" ", ""), f"tokenizer drift: {smiles!r}"
+
+def _tokenize_smiles(smiles: str) -> str:
+    """Atom-wise SMILES tokenization expected by MolecularTransformer.
+
+    The round-trip check is the whole safety of this function and it is a **refusal**, not an
+    `assert`. A pattern that does not cover some character silently *drops* it — `Se` outside
+    brackets matches `S` and loses the `e` — so the model would be handed a different molecule from
+    the one the chemist asked about and would answer confidently about it. An `assert` enforcing
+    that on caller-derived data is removed by `python -O`, which is an interpreter flag no file in
+    this repository sets and every deployment can: a control whose existence depends on how the
+    process was started is not a control.
+
+    `ValueError` because the refusal is caller-safe and caller-actionable — `connector_app` passes
+    that family through verbatim, so the model is told this predictor cannot represent this
+    structure rather than being handed an `error_id`. The echo is truncated for the reason every
+    other message in this server truncates one: a megastring in a refusal floods the log and the
+    context the refusal was meant to protect.
+    """
+    tokens = TOKEN_PATTERN.findall(smiles)
+    if "".join(tokens) != smiles.replace(" ", ""):
+        raise ValueError(
+            "the Molecular Transformer tokenizer does not cover every character of this "
+            "structure, so tokenising it would silently drop part of the molecule and the "
+            f"prediction would be about a different one: {truncate_echo(smiles)!r}"
+        )
     return " ".join(tokens)
 
 

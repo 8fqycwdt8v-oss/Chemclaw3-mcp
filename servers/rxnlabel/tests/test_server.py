@@ -24,7 +24,7 @@ import pytest
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp_server_kit.testing import assert_manifest_matches
+from mcp_server_kit.testing import assert_bearer_is_enforced, assert_manifest_matches
 
 TOKEN = "test-token-for-rxnlabel"
 
@@ -110,16 +110,20 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     assert response.status_code == 200
 
 
-def test_the_mcp_surface_refuses_an_unauthenticated_caller(running_server: str) -> None:
-    """The refusal Chemclaw3's connector fleet did not have until an unauthenticated handshake
-    completed against it."""
-    response = httpx.post(
-        f"{running_server}/mcp",
-        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-        headers={"accept": "application/json, text/event-stream"},
-        timeout=5.0,
-    )
-    assert response.status_code == 401
+async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
+    running_server: str,
+) -> None:
+    """The refusal Chemclaw3's connector fleet did not have until an unauthenticated
+    handshake completed against it — and the further arms that one 401 never covered.
+
+    Driven against the running server rather than read off the source, because the defect this
+    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
+    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
+    the wrong scheme, the declared credential actually serving, and the declared variable unset —
+    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
+    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    """
+    await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
 
 @asynccontextmanager

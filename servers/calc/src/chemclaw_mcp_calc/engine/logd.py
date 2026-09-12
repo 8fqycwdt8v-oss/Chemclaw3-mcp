@@ -154,9 +154,14 @@ def predict_logd(job: LogdInput) -> LogdResult:
     ph = settings.logd_default_ph if job.ph is None else job.ph
     pka_result = predict_pka(PkaInput(smiles=job.smiles))
     # `pka_result.smiles` is already the canonical form `predict_pka` computed on, so this reparse
-    # cannot fail — the acid was already proven parseable to get here.
+    # cannot fail — the acid was already proven parseable to get here. Raised rather than
+    # `assert`ed all the same: `python -O` deletes an assert, and this one guards a `None` that
+    # would reach `Crippen.MolLogP` as a Boost argument error the caller could make no sense of.
+    # The shape is `descriptors.py`'s for the identical situation, which is the idiom this server
+    # already had.
     mol = Chem.MolFromSmiles(pka_result.smiles)
-    assert mol is not None  # pragma: no cover - guaranteed by predict_pka's own validation
+    if mol is None:  # pragma: no cover - `predict_pka` canonicalised this exact string
+        raise ValueError(f"invalid SMILES: {job.smiles!r}")
     clogp = Crippen.MolLogP(mol)  # type: ignore[attr-defined]  # rdkit-stubs gap
     # Henderson-Hasselbalch, and the sign of this exponent is the entire content of it.
     #   acid  HA  <-> A- + H+ : the ionized fraction *rises* with pH  -> 10**(pH - pKa)
