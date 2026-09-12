@@ -243,6 +243,7 @@ run-safety: ## Run the safety server on its dev port with a dev token.
 	CHEMCLAW_SAFETY_TOKEN=$${CHEMCLAW_SAFETY_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_safety.app:app --host 127.0.0.1 --port 8859
 
+.PHONY: run-pyexec
 run-pyexec: ## Run the pyexec analysis sandbox on its dev port with a dev token.
 	CHEMCLAW_PYEXEC_TOKEN=$${CHEMCLAW_PYEXEC_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_pyexec.app:app --host 127.0.0.1 --port 8899
@@ -251,3 +252,13 @@ run-pyexec: ## Run the pyexec analysis sandbox on its dev port with a dev token.
 run-calc: ## Run the calc server on its dev port with a dev token.
 	CHEMCLAW_CALC_TOKEN=$${CHEMCLAW_CALC_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_calc.app:app --host 127.0.0.1 --port 8860
+
+.PHONY: run-rxnlabel
+run-rxnlabel: ## Run the rxnlabel primitives on their dev port with a dev token.
+	CHEMCLAW_RXNLABEL_TOKEN=$${CHEMCLAW_RXNLABEL_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_rxnlabel.app:app --host 127.0.0.1 --port 8865
+
+.PHONY: run-rxnpredict
+run-rxnpredict: ## Run the rxnpredict ensemble on its dev port with a dev token (needs its extras).
+	CHEMCLAW_RXNPREDICT_TOKEN=$${CHEMCLAW_RXNPREDICT_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_rxnpredict.app:app --host 127.0.0.1 --port 8857

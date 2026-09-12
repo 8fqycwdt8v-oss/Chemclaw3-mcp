@@ -19,12 +19,15 @@ from a second table.
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shlex
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
+from mcp_server_kit.egress import GUARD_DISABLED_VALUES
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVERS = ROOT / "servers"
@@ -229,6 +232,55 @@ def test_ports_are_unique_and_inside_this_repository_s_block() -> None:
         assert port in PORT_RANGE, f"{server.name} claims {port}, outside 8850-8899"
         assert port not in seen, f"{server.name} and {seen[port]} both claim port {port}"
         seen[port] = server.name
+
+
+def test_every_server_has_a_run_target_on_the_port_its_manifest_publishes() -> None:
+    """`CLAUDE.md` publishes `make run-safety  # one per server`, so there is one per server.
+
+    Measured on 2026-09-12 that sentence was false in the direction that wastes a reader's time:
+    five `run-*` targets for seven servers, with `rxnlabel` and `rxnpredict` — the two whose local
+    dev address is hardest to guess, because neither appears in `manifests/` beside the others —
+    having none. The claim is now the cheaper half to make true, and this is what keeps it true.
+
+    The port is checked against the manifest rather than transcribed, for the reason `MODULES.md`
+    is the only port registry: a target that starts a server on a port nothing addresses it by is a
+    second declaration, and this repository has already published one of those.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    for server in server_dirs():
+        endpoint = manifest_of(server)["endpoint"]
+        assert isinstance(endpoint, dict)
+        published = re.search(r":(\d+)/mcp", str(endpoint["url"]))
+        assert published, f"{server.name}: cannot read a port out of {endpoint['url']!r}"
+        target = re.search(
+            rf"^run-{re.escape(server.name)}:.*?(?=^\S|\Z)", makefile, re.MULTILINE | re.DOTALL
+        )
+        assert target, (
+            f"no `run-{server.name}` target in the Makefile; `CLAUDE.md` says there is one per "
+            "server, and a reader who believes it goes looking for the port by hand"
+        )
+        assert f"--port {published.group(1)}" in target.group(0), (
+            f"`run-{server.name}` does not start it on {published.group(1)}, which is the port its "
+            "own manifest publishes"
+        )
+
+
+def test_the_scripts_map_lists_everything_beside_it() -> None:
+    """`scripts/README.md` is a map, and the top-level check only asks that the README exists.
+
+    `CLAUDE.md`'s row said `scripts/` holds "today, the offline check", and `scripts/README.md`
+    listed that one file — while `calibrate_rxnpredict_priors.py` has sat beside it since
+    2026-08-12. Both documents were edited in the commit that this check follows, and neither was
+    read against the directory. This is `test_the_docs_map_lists_everything_beside_it` one folder
+    over, for the same reason: a map nobody verifies is read, believed, and wrong.
+    """
+    scripts = ROOT / "scripts"
+    listed = set(re.findall(r"`([^`]+\.py)`", (scripts / "README.md").read_text(encoding="utf-8")))
+    present = {path.name for path in scripts.iterdir() if path.suffix == ".py"}
+    unlisted = sorted(present - listed)
+    assert not unlisted, f"present in scripts/ and not named in scripts/README.md: {unlisted}"
+    stale = sorted(name for name in listed if not (scripts / name).exists())
+    assert not stale, f"named in scripts/README.md and not present: {stale}"
 
 
 def test_the_map_and_the_tree_agree() -> None:
@@ -619,18 +671,66 @@ def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> No
     )
 
 
-def _env_pairs(node: object) -> list[tuple[str, str]]:
-    """Every `{name:, value:}` environment entry anywhere in a parsed manifest, however nested.
+# A variable a shipped file sets, and the value it sets it to — or `None` where the file *names* the
+# variable and does not hold the value: a `valueFrom:` reference into a ConfigMap or Secret, or a
+# Containerfile `ARG` the build supplies. Both ratchets below read `None` as unprovable rather than
+# as absent, which is the only safe reading of a file that cannot answer the question.
+EnvSetting = tuple[str, str | None]
+
+# A `NAME=value` assignment at the head of a command line, which is how a value is set *past*
+# every `env:` block and every `ENV` instruction:
+# `command: ["sh", "-c", "MCP_EGRESS_GUARD=off exec …"]`.
+_SHELL_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+
+
+def _inline_assignments(command: object) -> list[EnvSetting]:
+    """Every `NAME=value` a command line sets, whether it is a JSON array or one shell string.
+
+    A container that sets a variable in its own `command:` sets it for the server process exactly
+    as an `env:` entry would, and a parser reading only `env:` reports clean. Both shapes reduce to
+    the same thing: split every string with `shlex` and keep the tokens that are assignments —
+    over-inclusive on purpose, since a flag (`--port=8850`) cannot match and a real assignment must.
+    """
+    parts = command if isinstance(command, list) else [command]
+    found: list[EnvSetting] = []
+    for part in parts:
+        if not isinstance(part, str):
+            continue
+        try:
+            tokens = shlex.split(part)
+        except ValueError:
+            tokens = part.split()
+        for token in tokens:
+            match = _SHELL_ASSIGNMENT.match(token)
+            if match:
+                found.append((match.group(1), match.group(2)))
+    return found
+
+
+def _env_pairs(node: object) -> list[EnvSetting]:
+    """Every environment variable a parsed manifest sets, however nested and however spelled.
 
     Recursive rather than pathed, because the shape differs between a Deployment's container and
     anything a server may add later — and a check that only looks where the variable is *expected*
     finds it exactly where it is not a problem.
+
+    **Three shapes, because requiring `value` read two of them as setting nothing.** An entry whose
+    value comes from a `valueFrom:` reference is reported with `None`: the variable is set, and this
+    repository does not hold what to. A `command:`/`args:` assignment is reported with its value.
+    Measured before the fix, a `valueFrom` pulling `MCP_EGRESS_ALLOW` out of a ConfigMap and a
+    `command: ["sh", "-c", "MCP_EGRESS_GUARD=off exec uvicorn …"]` both returned no offences at all.
     """
-    found: list[tuple[str, str]] = []
+    found: list[EnvSetting] = []
     if isinstance(node, dict):
         name = node.get("name")
-        if isinstance(name, str) and "value" in node:
-            found.append((name, str(node["value"])))
+        if isinstance(name, str):
+            if "value" in node:
+                found.append((name, str(node["value"])))
+            elif "valueFrom" in node:
+                found.append((name, None))
+        for key in ("command", "args"):
+            if key in node:
+                found.extend(_inline_assignments(node[key]))
         for value in node.values():
             found.extend(_env_pairs(value))
     elif isinstance(node, list):
@@ -640,20 +740,25 @@ def _env_pairs(node: object) -> list[tuple[str, str]]:
 
 
 def _instructions(text: str) -> list[str]:
-    """A Containerfile's instructions, one per entry, with backslash continuations joined.
+    r"""A Containerfile's instructions, one per entry, with backslash continuations joined.
 
     Whole-line comments are dropped *before* the join, which is the order Docker's own parser uses
     and the only one that is safe here: every `ENV` in this fleet sits under a paragraph of prose,
     and joining first would let a comment line ending in a backslash swallow the instruction below
     it. A comment *inside* a continued instruction is removed without ending it, which is also
     Docker's behaviour.
+
+    **Each line is stripped on both sides, because Docker accepts leading whitespace and the
+    instruction match below is anchored at column 0.** Measured before the fix: a one-line
+    Containerfile reading `   ENV MCP_EGRESS_GUARD=off` produced no offences from either ratchet,
+    while a real `docker build` of it put `off` in the image.
     """
     joined: list[str] = []
     buffer = ""
     for line in text.splitlines():
-        if line.lstrip().startswith("#"):
+        stripped = line.strip()
+        if stripped.startswith("#"):
             continue
-        stripped = line.rstrip()
         if stripped.endswith("\\"):
             buffer += stripped[:-1] + " "
             continue
@@ -664,7 +769,7 @@ def _instructions(text: str) -> list[str]:
     return joined
 
 
-def _containerfile_env(label: str, text: str) -> list[tuple[str, str]]:
+def _containerfile_env(label: str, text: str) -> list[EnvSetting]:
     r"""Every variable a Containerfile's `ENV` instructions set, however the instruction is spelled.
 
     **A regex over physical lines reads two of this fleet's seven Containerfiles as setting
@@ -677,13 +782,22 @@ def _containerfile_env(label: str, text: str) -> list[tuple[str, str]]:
     So the parse is Docker's: continuations joined (`_instructions`), then `ENV k=v k2=v2` split
     into its pairs with `shlex` so a quoted value survives, and the legacy `ENV name value` form —
     still valid, still one variable — read as one. `label` only names the file in a message.
+
+    **`CMD` and `ENTRYPOINT` are read too**, for the reason a Deployment's `command:` is: a variable
+    assigned at the head of the command line is set for the server process, and a parser that knows
+    only `ENV` reports clean on it.
     """
-    found: list[tuple[str, str]] = []
+    found: list[EnvSetting] = []
     for instruction in _instructions(text):
-        if not re.match(r"ENV\s", instruction, re.IGNORECASE):
+        words = re.split(r"\s+", instruction, maxsplit=1)
+        verb, remainder = words[0], words[1] if len(words) > 1 else ""
+        if verb.upper() in {"CMD", "ENTRYPOINT"}:
+            found.extend(_inline_assignments(_command_words(remainder)))
+            continue
+        if verb.upper() != "ENV":
             continue
         try:
-            tokens = shlex.split(instruction)[1:]
+            tokens = shlex.split(remainder)
         except ValueError as exc:  # pragma: no cover - a malformed Containerfile
             raise AssertionError(f"{label}: cannot parse {instruction!r}: {exc}") from exc
         if not tokens:
@@ -698,7 +812,24 @@ def _containerfile_env(label: str, text: str) -> list[tuple[str, str]]:
     return found
 
 
-def _env_settings(label: str, text: str) -> list[tuple[str, str]]:
+def _command_words(remainder: str) -> list[str] | str:
+    """A `CMD`/`ENTRYPOINT` argument as its words — the JSON exec form, or the shell form verbatim.
+
+    Docker's two forms differ in quoting, not in effect: `["sh", "-c", "X=1 exec …"]` and
+    `sh -c "X=1 exec …"` both run the same process with the same environment.
+    """
+    if remainder.lstrip().startswith("["):
+        try:
+            parsed = json.loads(remainder)
+        except ValueError:
+            return remainder
+        if not isinstance(parsed, list):
+            return []
+        return [word for word in parsed if isinstance(word, str)]
+    return remainder
+
+
+def _env_settings(label: str, text: str) -> list[EnvSetting]:
     """Every environment variable one shipped file sets, whichever kind of file it is.
 
     `label` decides how the text is read — a deployment manifest is YAML with `env:` entries, a
@@ -708,6 +839,36 @@ def _env_settings(label: str, text: str) -> list[tuple[str, str]]:
     if label.endswith(".yaml"):
         return _env_pairs(list(yaml.safe_load_all(text)))
     return _containerfile_env(label, text)
+
+
+def _shown(value: str | None) -> str:
+    """A value as an offence reads it — `None` is a file naming the variable but not its value."""
+    return repr(value) if value is not None else "a value this file does not hold"
+
+
+def _provably_arms(value: str | None) -> bool:
+    """Whether this value, as written in the file, *provably* leaves the egress guard armed.
+
+    **The test is "provably on", not "not one of the words for off", and the inversion is the whole
+    point.** `arm_from_env` arms unless the value is in `GUARD_DISABLED_VALUES`, so the old rule —
+    flag the members of that set — read a value it could not resolve as clean. Measured before the
+    fix, this Containerfile produced no offences here, and a reviewer's `docker build` of it put
+    `MCP_EGRESS_GUARD=off` in the image:
+
+        ARG GUARD=off
+        ENV MCP_EGRESS_GUARD=${GUARD}
+
+    That idiom already ships for a legitimate reason — `servers/rxnpredict/Containerfile` stamps its
+    build revision with it — so it is the shape a developer reaches for, not a contrivance. Any `$`
+    means the file does not hold the value the image will carry, and a `valueFrom:` reference
+    (`None`) does not either. **An empty value arms**, because
+    `os.environ.get("MCP_EGRESS_GUARD", "on")` returns `""` and `""` is in no disable set — so a
+    bare `ENV MCP_EGRESS_GUARD=` is clean here, and `tests/test_egress.py` drives that against the
+    real `arm_from_env` rather than leaving it to this docstring.
+    """
+    if value is None or "$" in value:
+        return False
+    return value.strip().lower() not in GUARD_DISABLED_VALUES
 
 
 def _egress_offences(label: str, text: str) -> list[str]:
@@ -721,9 +882,15 @@ def _egress_offences(label: str, text: str) -> list[str]:
         offences.append(f"{label}: uses envFrom, which can carry MCP_EGRESS_* unseen")
     for name, value in _env_settings(label, text):
         if name == "MCP_EGRESS_ALLOW":
-            offences.append(f"{label}: sets MCP_EGRESS_ALLOW={value!r}")
-        if name == "MCP_EGRESS_GUARD" and value.strip().lower() in {"off", "0", "false", "no"}:
-            offences.append(f"{label}: disables the egress guard ({value!r})")
+            offences.append(f"{label}: sets MCP_EGRESS_ALLOW={_shown(value)}")
+        if name == "MCP_EGRESS_GUARD" and not _provably_arms(value):
+            if value is not None and value.strip().lower() in GUARD_DISABLED_VALUES:
+                offences.append(f"{label}: disables the egress guard ({value!r})")
+            else:
+                offences.append(
+                    f"{label}: sets MCP_EGRESS_GUARD to {_shown(value)}, so this file cannot show "
+                    "the guard is armed in the image it builds"
+                )
     return offences
 
 
@@ -831,6 +998,65 @@ def test_the_allowlist_check_bites() -> None:
     ) == [("MCP_EGRESS_ALLOW", "evil.example.com")]
 
 
+def test_no_shape_that_hides_a_value_from_this_ratchet_reads_as_clean() -> None:
+    """The four shapes three fresh-context reviewers walked the ratchet past, as the ratchet's own
+    data.
+
+    Each was measured returning `[]` before the fix, and a bypass that is not in the suite is not
+    closed — it is rediscovered. In order of how likely a developer is to write it by accident:
+
+    1. **`ARG` → `ENV` indirection.** `ARG GUARD=off` / `ENV MCP_EGRESS_GUARD=${GUARD}` builds an
+       image with the guard off, which a reviewer confirmed against a real `docker build`. The old
+       rule compared the value against the disable-set, and `${GUARD}` is in no set;
+       `_provably_arms` inverts that.
+       **This idiom already ships** — `servers/rxnpredict/Containerfile` stamps its revision with it
+       — so it is the shape a reader of this tree would reach for.
+    2. **A leading space.** Docker accepts `   ENV …` and the match was anchored at column 0; a
+       reviewer confirmed the variable reaches the built image.
+    3. **`valueFrom:`.** `_env_pairs` required a `value` key, so an entry pulling `MCP_EGRESS_ALLOW`
+       out of a ConfigMap named the variable and reported nothing. It cannot be resolved here, so it
+       is an offence: `envFrom` was already refused for exactly this reason and this is the same
+       file hiding the same thing one key deeper.
+    4. **A variable assigned in `command:`** (or in a Containerfile `CMD`/`ENTRYPOINT`), which sets
+       it for the server process without an `env:` block anywhere.
+
+    The two clean arms matter as much: an empty value **arms** the guard, and so does `on`. A
+    ratchet that flagged `ENV MCP_EGRESS_GUARD=` would be refusing the posture it exists to protect.
+    """
+    indirected = _egress_offences(
+        "servers/x/Containerfile", "FROM x\nARG GUARD=off\nENV MCP_EGRESS_GUARD=${GUARD}\n"
+    )
+    assert indirected == [
+        "servers/x/Containerfile: sets MCP_EGRESS_GUARD to '${GUARD}', so this file cannot show "
+        "the guard is armed in the image it builds"
+    ]
+    assert _egress_offences("servers/x/Containerfile", "ENV MCP_EGRESS_GUARD=\n") == []
+    assert _egress_offences("servers/x/Containerfile", "ENV MCP_EGRESS_GUARD=on\n") == []
+
+    assert _egress_offences("servers/x/Containerfile", "   ENV MCP_EGRESS_GUARD=off\n") == [
+        "servers/x/Containerfile: disables the egress guard ('off')"
+    ]
+
+    assert _egress_offences(
+        "servers/x/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n      env:\n"
+        "        - name: MCP_EGRESS_ALLOW\n          valueFrom:\n"
+        "            configMapKeyRef: {name: egress, key: hosts}\n",
+    ) == ["servers/x/deploy/deployment.yaml: sets MCP_EGRESS_ALLOW=a value this file does not hold"]
+
+    assert _egress_offences(
+        "servers/x/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n"
+        '      command: ["sh", "-c", "MCP_EGRESS_GUARD=off exec uvicorn app"]\n',
+    ) == ["servers/x/deploy/deployment.yaml: disables the egress guard ('off')"]
+    assert _egress_offences(
+        "servers/x/Containerfile", 'CMD ["sh", "-c", "MCP_EGRESS_GUARD=off exec uvicorn app"]\n'
+    ) == ["servers/x/Containerfile: disables the egress guard ('off')"]
+    assert _egress_offences(
+        "servers/x/Containerfile", "ENTRYPOINT MCP_EGRESS_ALLOW=evil.example.com uvicorn app\n"
+    ) == ["servers/x/Containerfile: sets MCP_EGRESS_ALLOW='evil.example.com'"]
+
+
 # Every environment variable a first-party module turns into a number is something a deployment can
 # move, and `_BOUND_ANCHORS` is the floor under the derivation below: a scan that silently stopped
 # finding variables — a renamed `env_prefix`, a read through a helper — would agree with an empty
@@ -878,16 +1104,32 @@ def _is_environ(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and node.id == "environ"
 
 
+def _called_name(node: ast.Call) -> str:
+    """The bare name a call names, whatever it hangs off — `os.getenv` and `getenv` read the
+    same."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return func.id if isinstance(func, ast.Name) else ""
+
+
 def _env_read(node: ast.AST) -> str | None:
-    """The variable name `node` reads from the environment, when it is a literal."""
+    """The variable name `node` reads from the environment, when it is a literal.
+
+    Three spellings: `os.environ["X"]`, `os.environ.get("X", …)` and `os.getenv("X", …)`. The third
+    was missed until 2026-09-12 — nothing in `src/` uses it today, so the gap was latent, and a
+    derivation that silently omits the most ordinary spelling of an environment read is the failure
+    this whole ratchet is about.
+    """
     if isinstance(node, ast.Call):
         func = node.func
+        called = _called_name(node)
         if (
             isinstance(func, ast.Attribute)
-            and func.attr in {"get", "setdefault"}
+            and called in {"get", "setdefault"}
             and _is_environ(func.value)
             and node.args
-        ):
+        ) or (called == "getenv" and node.args):
             first = node.args[0]
             if isinstance(first, ast.Constant) and isinstance(first.value, str):
                 return first.value
@@ -996,36 +1238,102 @@ def _numeric_settings_fields(tree: ast.Module) -> dict[str, int]:
 
 
 def _annotation_is_numeric(annotation: ast.expr) -> bool:
-    """Whether `annotation` is `int`, `float`, or one of those unioned with `None`."""
+    """Whether `annotation` is `int`, `float`, one of those unioned with `None`, or wrapped.
+
+    `Annotated[int, Field(ge=1)]` is the spelling a field grows the moment somebody wants a
+    constraint on it, and it was invisible here until 2026-09-12 — so a bound could have left the
+    ratchet's set by acquiring a validator. No field in the tree is written that way today;
+    `Optional[int]` is covered as the `|` form only, which is the form this repository writes.
+    """
     if isinstance(annotation, ast.Name):
         return annotation.id in _NUMERIC_CASTS
     if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
         return _annotation_is_numeric(annotation.left) or _annotation_is_numeric(annotation.right)
+    if isinstance(annotation, ast.Subscript) and _annotation_name(annotation.value) == "Annotated":
+        inner = annotation.slice
+        first = inner.elts[0] if isinstance(inner, ast.Tuple) and inner.elts else inner
+        return _annotation_is_numeric(first)
     return False
 
 
-def numeric_env_bounds() -> dict[str, str]:
+def _annotation_name(node: ast.expr) -> str:
+    """The bare name of an annotation's head — `Annotated` and `typing.Annotated` read the same."""
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+class Bound(NamedTuple):
+    """A number a deployment can move: where the code reads it, and how its name is matched.
+
+    `case_sensitive` is not decoration. `os.environ["MCP_MAX_SMILES_CHARS"]` reads that exact name
+    and nothing else, while `pydantic-settings` leaves `case_sensitive=False`, so *every* spelling
+    of a settings field's name is honoured. Measured on 2026-09-12 with the real classes:
+    `chemclaw_calc_max_concurrent_requests=99` gives `CalcSettings().calc_max_concurrent_requests ==
+    99`, and `mcp_max_smiles_chars=7` leaves `limits.MAX_SMILES_CHARS` at its default of 4000. So
+    the matching has to differ per mechanism: a uniform case-sensitive rule misses the lowercase
+    spelling of an admission ceiling, and a uniform case-insensitive one flags an `ENV` that does
+    nothing at all.
+    """
+
+    where: str
+    case_sensitive: bool
+
+
+def numeric_env_bounds() -> dict[str, Bound]:
     """Every environment variable first-party code turns into a number, and where it is read.
 
     Derived rather than listed, because a hand-written list of names is the drift hazard this
     repository keeps finding — the `Ports` section of `CLAUDE.md` is the worked example, a second
-    table that published two taken ports as free. The value is `path:line`, which is what makes an
-    offence actionable without a second lookup.
+    table that published two taken ports as free. `Bound.where` is `path:line`, which is what makes
+    an offence actionable without a second lookup.
+
+    **What the derivation does not see, stated rather than implied** — each measured on 2026-09-12
+    against a synthetic module, and none of these shapes exists in `src/` today:
+
+    - a read through a helper (`_env_int("X", 4)`), which needs the helper's body followed;
+    - a settings class inheriting from a `BaseSettings` *subclass*, where `env_prefix` is on the
+      parent;
+    - a nested `BaseModel` reached through `env_nested_delimiter`;
+    - `Field(4, validation_alias="REAL_NAME")`, which is found under the *prefixed field name*
+      rather than under the alias the environment actually uses — the one shape that is worse than
+      absent, because it reports a name nothing reads.
+
+    A row in `docs/BACKLOG.md` carries the decision about whether to follow them; `_BOUND_ANCHORS`
+    is the floor that keeps the derivation from quietly returning less than it did.
     """
-    found: dict[str, str] = {}
+    found: dict[str, Bound] = {}
     roots = sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src"))
     assert roots, "no first-party source roots found; has the layout changed?"
     for root in roots:
         for source in sorted(root.rglob("*.py")):
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            where = source.relative_to(ROOT)
             for name, line in _numeric_environ_reads(tree).items():
-                found[name] = f"{source.relative_to(ROOT)}:{line}"
+                found[name] = Bound(f"{where}:{line}", case_sensitive=True)
             for name, line in _numeric_settings_fields(tree).items():
-                found[name] = f"{source.relative_to(ROOT)}:{line}"
+                found[name] = Bound(f"{where}:{line}", case_sensitive=False)
     return found
 
 
-def _bound_offences(label: str, text: str, bounds: dict[str, str]) -> list[str]:
+def _matching_bound(name: str, bounds: dict[str, Bound]) -> tuple[str, Bound] | None:
+    """The bound a shipped spelling of `name` moves, under that bound's own matching rule.
+
+    A lowercase `ENV chemclaw_calc_max_concurrent_requests=99` moved `servers/calc`'s admission
+    ceiling to 99 with both ratchets silent, because the derivation uppercases a settings field's
+    name and matching was `name in bounds`.
+    """
+    exact = bounds.get(name)
+    if exact is not None:
+        return name, exact
+    canonical = name.upper()
+    insensitive = bounds.get(canonical)
+    if insensitive is not None and not insensitive.case_sensitive:
+        return canonical, insensitive
+    return None
+
+
+def _bound_offences(label: str, text: str, bounds: dict[str, Bound]) -> list[str]:
     """Every numeric setting one shipped file moves without an argued row.
 
     **The shape, and why it is this one rather than a widening check.** A ratchet asserting "a
@@ -1047,10 +1355,21 @@ def _bound_offences(label: str, text: str, bounds: dict[str, str]) -> list[str]:
     if label.endswith(".yaml") and "envFrom" in text:
         offences.append(f"{label}: uses envFrom, which can carry a resource bound unseen")
     for name, value in _env_settings(label, text):
-        if name in bounds and (label, name) not in _ARGUED_DEPLOYMENT_SETTINGS:
-            offences.append(
-                f"{label}: sets {name}={value!r}, which {bounds[name]} reads as a number"
-            )
+        matched = _matching_bound(name, bounds)
+        if matched is None:
+            continue
+        canonical, bound = matched
+        if (label, canonical) in _ARGUED_DEPLOYMENT_SETTINGS:
+            continue
+        spelling = (
+            ""
+            if name == canonical
+            else f" (written as {name}, which a case-insensitive settings field honours)"
+        )
+        offences.append(
+            f"{label}: sets {canonical}={_shown(value)}{spelling}, which {bound.where} reads as a "
+            "number"
+        )
     return offences
 
 
@@ -1065,10 +1384,15 @@ def test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment
     Chemclaw3's ledger, with nothing going red.
 
     The set is derived from the code that reads it (`numeric_env_bounds`), not listed here, so a
-    bound added next year is covered the day it is written. What this cannot see is stated rather
-    than implied: a pod `env:` a cluster operator adds outside these files, and an `envFrom` whose
-    values live in a ConfigMap this repository does not hold — the second is flagged where it
-    appears.
+    bound added next year in one of the shapes that derivation parses is covered the day it is
+    written — which is the honest form of a sentence that used to promise *any* new bound.
+    `numeric_env_bounds` names the four shapes it does not follow; a row in `docs/BACKLOG.md`
+    carries the decision.
+
+    What this cannot see is stated rather than implied: a pod `env:` a cluster operator adds outside
+    these files, and an `envFrom` whose values live in a ConfigMap this repository does not hold —
+    the second is flagged where it appears, and so now are a `valueFrom:` reference and a variable
+    assigned in a `command:`, both of which used to read as setting nothing.
     """
     bounds = numeric_env_bounds()
     assert set(bounds) >= _BOUND_ANCHORS, (
@@ -1096,7 +1420,9 @@ def test_the_bound_check_bites() -> None:
     Including the continuation `ENV`, because that is the shape the sibling egress ratchet was blind
     to for two of seven servers, and this check reads the same files through the same parser.
     """
-    bounds = {"CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS": "servers/chem/x.py:1"}
+    bounds = {
+        "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS": Bound("servers/chem/x.py:1", case_sensitive=False)
+    }
     assert _bound_offences(
         "servers/chem/deploy/deployment.yaml",
         "spec:\n  containers:\n    - name: server\n      env:\n"
@@ -1119,7 +1445,9 @@ def test_the_bound_check_bites() -> None:
     # An argued row is the one way through, and it is a *pair*: the real row exempts
     # `CHEMCLAW_CREST_THREADS` in calc's Containerfile and nowhere else, so the same variable set
     # from another file is still an offence.
-    threads = {"CHEMCLAW_CREST_THREADS": "servers/calc/.../config.py:215"}
+    threads = {
+        "CHEMCLAW_CREST_THREADS": Bound("servers/calc/.../config.py:215", case_sensitive=False)
+    }
     assert (
         _bound_offences("servers/calc/Containerfile", "ENV CHEMCLAW_CREST_THREADS=4\n", threads)
         == []
@@ -1141,6 +1469,110 @@ def test_the_bound_check_bites() -> None:
     ]
 
 
+def test_no_spelling_that_moved_a_bound_past_this_ratchet_reads_as_clean() -> None:
+    """The lowercase spelling, and the two hiding places, as this ratchet's own data.
+
+    **A lowercase environment name moves the ceiling of the server whose calls take minutes to
+    hours.** `pydantic-settings` leaves `case_sensitive=False`, so
+    `chemclaw_calc_max_concurrent_requests=99` gives `CalcSettings().calc_max_concurrent_requests ==
+    99` (measured 2026-09-12 against the real class), while the derivation uppercases what it finds
+    and matching was `name in bounds` — so the uppercase spelling was caught and the lowercase one
+    was invisible. Both are the same change to the pod.
+
+    The **other direction is asserted too**, because it is what stops this fix becoming a nuisance:
+    `os.environ` is case-sensitive, `mcp_max_smiles_chars=7` leaves `limits.MAX_SMILES_CHARS` at
+    4000 (measured the same way), and a ratchet that flagged it would be reporting an `ENV` that
+    changes nothing. That is why a bound carries how its name is matched rather than a flag on the
+    check.
+    """
+    ceiling = {
+        "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS": Bound(
+            "servers/calc/.../config.py:194", case_sensitive=False
+        ),
+        "MCP_MAX_SMILES_CHARS": Bound("packages/.../limits.py:40", case_sensitive=True),
+    }
+    assert _bound_offences(
+        "servers/calc/Containerfile", "ENV chemclaw_calc_max_concurrent_requests=99\n", ceiling
+    ) == [
+        "servers/calc/Containerfile: sets CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS='99' (written as "
+        "chemclaw_calc_max_concurrent_requests, which a case-insensitive settings field honours), "
+        "which servers/calc/.../config.py:194 reads as a number"
+    ]
+    assert (
+        _bound_offences("servers/chem/Containerfile", "ENV mcp_max_smiles_chars=7\n", ceiling) == []
+    )
+    assert _bound_offences(
+        "servers/chem/Containerfile", "ENV MCP_MAX_SMILES_CHARS=7\n", ceiling
+    ) == [
+        "servers/chem/Containerfile: sets MCP_MAX_SMILES_CHARS='7', which "
+        "packages/.../limits.py:40 reads as a number"
+    ]
+
+    # The *derived* set carries the same distinction, which the fixtures above cannot show: a
+    # mutation flipping every bound to case-insensitive left this test green until these two lines
+    # existed, because a hand-built fixture asserts the matching rule and not the derivation.
+    derived = numeric_env_bounds()
+    assert derived["MCP_MAX_SMILES_CHARS"].case_sensitive, (
+        "an `os.environ` read is case-sensitive; marking it otherwise makes the ratchet flag an "
+        "`ENV` that changes nothing"
+    )
+    assert not derived["CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS"].case_sensitive, (
+        "a `pydantic-settings` field is honoured in any case; marking it sensitive puts the "
+        "lowercase spelling of an admission ceiling back outside the ratchet"
+    )
+
+    # The same two hiding places the egress ratchet had, over the same parser: a bound pulled from a
+    # ConfigMap, and a bound assigned in the container's own command line.
+    assert _bound_offences(
+        "servers/calc/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n      env:\n"
+        "        - name: CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS\n          valueFrom:\n"
+        "            configMapKeyRef: {name: tuning, key: ceiling}\n",
+        ceiling,
+    ) == [
+        "servers/calc/deploy/deployment.yaml: sets CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS=a value "
+        "this file does not hold, which servers/calc/.../config.py:194 reads as a number"
+    ]
+    assert _bound_offences(
+        "servers/calc/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n"
+        '      command: ["sh", "-c", "MCP_MAX_SMILES_CHARS=9 exec uvicorn app"]\n',
+        ceiling,
+    ) == [
+        "servers/calc/deploy/deployment.yaml: sets MCP_MAX_SMILES_CHARS='9', which "
+        "packages/.../limits.py:40 reads as a number"
+    ]
+
+
+def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
+    """`os.getenv` and `Annotated[int, …]`, neither of which exists in `src/` today.
+
+    That is the point: a derivation is a claim about shapes rather than about this tree, and both of
+    these would have entered it as an ordinary line of code with the ratchet silent. Measured on
+    2026-09-12 before the fix, each of these modules contributed **nothing** to the bound set.
+
+    The shapes still outside it are named in `numeric_env_bounds`' docstring and queued with an
+    anchor, rather than left for the next reviewer to discover by writing one.
+    """
+    getenv = ast.parse('import os\n\nLIMIT = int(os.getenv("MCP_MAX_THINGS", "4"))\n')
+    assert set(_numeric_environ_reads(getenv)) == {"MCP_MAX_THINGS"}
+    bare = ast.parse('from os import getenv\n\nLIMIT = float(getenv("MCP_MAX_SECONDS", "1.5"))\n')
+    assert set(_numeric_environ_reads(bare)) == {"MCP_MAX_SECONDS"}
+
+    annotated = ast.parse(
+        "from typing import Annotated\n\n"
+        "class S(BaseSettings):\n"
+        '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_")\n'
+        "    max_runs: Annotated[int, Field(ge=1)] = 4\n"
+    )
+    assert set(_numeric_settings_fields(annotated)) == {"CHEMCLAW_MAX_RUNS"}
+
+    # And the boundary, asserted so the docstring naming it cannot quietly become false: a read
+    # through a helper is not followed, and that is a decision rather than an oversight.
+    helper = ast.parse('LIMIT = _env_int("MCP_MAX_THINGS", 4)\n')
+    assert _numeric_environ_reads(helper) == {}
+
+
 def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
     """A scan that knew only `os.environ` would find `servers/calc`'s whole config absent.
 
@@ -1154,11 +1586,11 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
     bounds = numeric_env_bounds()
     environ_read = {
         name
-        for name, where in bounds.items()
-        if where.startswith(("packages/", "servers/chem/", "servers/pyexec/"))
+        for name, bound in bounds.items()
+        if bound.where.startswith(("packages/", "servers/chem/", "servers/pyexec/"))
     }
     assert "MCP_MAX_SMILES_CHARS" in environ_read
-    calc = {name for name, where in bounds.items() if where.startswith("servers/calc/")}
+    calc = {name for name, bound in bounds.items() if bound.where.startswith("servers/calc/")}
     assert "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS" in calc, (
         "calc's admission ceiling is a settings field, not a constant; if the scan cannot see it "
         "the ratchet does not cover the one server whose calls take minutes"
@@ -1187,6 +1619,13 @@ def test_claude_md_and_the_guard_name_the_same_channels_as_outside_it() -> None:
 
     The phrases are the test's own data; the check is that each appears on both sides. A channel
     added to one document and not the other fails here, in either direction.
+
+    **A phrase check alone let both documents miscount what covers the four**, which is the half
+    added on 2026-09-12. `CLAUDE.md` read "Two of them layer 2 *can* [see]" and named `_socket` and
+    `grpc` — but `grpc` is not one of the four channels, it is an *instance* of the fourth, and the
+    same sentence then said `ctypes` is off layer 2's list on purpose, which only means anything
+    because layer 2 can see it. So the second half of this check is against `FORBIDDEN_MODULES`
+    itself: what the document says that list holds, and does not hold, is what it holds.
     """
     guard = (ROOT / "packages/mcp_server_kit/src/mcp_server_kit/egress.py").read_text(
         encoding="utf-8"
@@ -1208,6 +1647,21 @@ def test_claude_md_and_the_guard_name_the_same_channels_as_outside_it() -> None:
             "boundary that is not there"
         )
 
+    from mcp_server_kit.no_egress import FORBIDDEN_MODULES
+
+    for module in ("_socket", "grpc"):
+        assert module in FORBIDDEN_MODULES, (
+            f"`CLAUDE.md` §1 says layer 2 refuses {module!r}; `no_egress.FORBIDDEN_MODULES` does "
+            "not list it, so the document describes a control that is not there"
+        )
+        assert f"`{module}`" in layer_one, (
+            f"{module!r} is on layer 2's list and `CLAUDE.md` §1 no longer says so"
+        )
+    assert "ctypes" not in FORBIDDEN_MODULES, (
+        "`CLAUDE.md` §1 and `no_egress.py` both argue `ctypes` is off layer 2's list on purpose; "
+        "it is on the list now, so both paragraphs are wrong and the argument needs rewriting"
+    )
+
 
 def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
     """A document that cites a test as the thing holding a claim must cite one that exists.
@@ -1219,12 +1673,28 @@ def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
     can open is the same failure as the port table this repository deleted — a second declaration
     nothing checks.
 
-    Only paths rooted at a real top-level directory are checked, which needs no allowlist: this
+    Only paths rooted at a real top-level *entry* are checked, which needs no allowlist: this
     document also writes `app.py`, `connector.yaml` and `mcp_server_kit/egress.py` as deliberate
-    shorthand for "the one in every server" or "the module", and none of those begins with a
-    directory that exists here.
+    shorthand for "the one in every server" or "the module", and none of those begins with an entry
+    that exists here.
+
+    **An entry, not a directory.** This filtered to `is_dir()` while the sibling check in
+    `tests/test_backlog_register.py` — written in the same commit, and claiming in its docstring to
+    use "the same trick" — did not. The consequence was silent: a citation to a root-level *file*
+    was unchecked, and the files in question are `MODULES.md` (this repository's only port
+    registry), `Makefile`, `pyproject.toml` and `uv.lock`. The backlog version was the correct one.
+    Measured on 2026-09-12, dropping the filter brings `MODULES.md`, `README.md` and `conftest.py`
+    into the check, all three resolving.
+
+    **What this heuristic cannot do, measured rather than assumed**: catch a citation to a
+    root-level file that has been *removed*. "Is this token a path" is decided by whether its first
+    segment exists, so a single-segment citation is self-rooting — renaming `MODULES.md` in this
+    document to `MODULESGONE.md` leaves the check green, because the token stops being read as a
+    path at the same moment it stops resolving. What it does catch is a path *under* an entry that
+    exists, which is every citation in this document that names a test, a module or a manifest. The
+    same limit applies to `tests/test_backlog_register.py`'s anchor check, which shares the trick.
     """
-    top_level = {path.name for path in ROOT.iterdir() if path.is_dir()}
+    top_level = {path.name for path in ROOT.iterdir()}
     cited = sorted(
         set(
             re.findall(

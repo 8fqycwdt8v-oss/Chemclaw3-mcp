@@ -1,6 +1,12 @@
 # D-2026-09-12-a-ratchet-measures-what-it-parses — A ratchet measures what it parses, not what it is named after
 
-**Status:** accepted · **Date:** 2026-09-12 · **Commits:** `68083a4`, `39ba4a7`, `362e764`, `1161473`
+**Status:** accepted · **Date:** 2026-09-12 · **Commit:** `c1772fb` (PR #54)
+
+> **Citations corrected 2026-09-12** by
+> [`D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed`](D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed.md):
+> the four branch commits this record named did not survive the squash merge, so every hash below is
+> now the merge commit that contains that work, and the reproduction in §2 runs against it. Nothing
+> else is changed — a decision is not rewritten by making its evidence openable.
 
 ## Context
 
@@ -16,7 +22,7 @@ Every figure below is a measurement of the commit named beside it. Nothing here 
 
 ## Decision
 
-### 1 · Parse the file's own grammar, not its lines (`68083a4`)
+### 1 · Parse the file's own grammar, not its lines (`c1772fb`)
 
 `_egress_offences` matched `^ENV\s+(MCP_EGRESS_[A-Z_]+)=(.*)$` against a Containerfile's raw text.
 Docker's `ENV` takes a backslash continuation, and two servers use it: measured across the seven
@@ -32,7 +38,7 @@ nobody's code.** The parse is now Docker's: comments dropped first, continuation
 `_env_settings` is the one reader every ratchet over these files uses, so two of them cannot
 disagree about what a file sets.
 
-### 2 · Derive the bound set by AST, because a grep cannot see a settings field (`39ba4a7`)
+### 2 · Derive the bound set by AST, because a grep cannot see a settings field (`c1772fb`)
 
 **Nothing ratcheted a resource bound at all.** The egress check read every shipped `deploy/*.yaml`
 and Containerfile and discarded every environment pair whose name was not `MCP_EGRESS_*`, so an
@@ -40,9 +46,9 @@ and Containerfile and discarded every environment pair whose name was not `MCP_E
 retune the pKa calibration constants that key Chemclaw3's ledger, with nothing going red.
 
 The survey behind this work listed twelve variables to protect. Derived from the code that reads
-them, the inventory measured **42** (at `39ba4a7`, unchanged at `1161473`). That survey also
+them, the inventory measured **42** (at `c1772fb`). That survey also
 exempted `servers/calc` — the heaviest server in the fleet, whose calls take minutes — on the
-grounds that its bounds "are constants, not env-readable". Measured at `39ba4a7`:
+grounds that its bounds "are constants, not env-readable". Measured at `c1772fb`:
 
 ```
 CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS=99 CHEMCLAW_XTB_MAX_ATOMS=99999
@@ -59,11 +65,11 @@ finding — `CLAUDE.md`'s deleted port table is the worked example, a second dec
 checked that published two taken ports as free.
 
 **A worked example of this record's own rule about numbers, and the first draft of this paragraph
-was the second example.** `39ba4a7`'s commit message says calc owns 25 of the inventory; the same
+was the second example.** `c1772fb`'s commit message says calc owns 25 of the inventory; the same
 derivation returns 28. This paragraph originally reported that as a drift — "returns 28, with no line
 of `engine/config.py` rewritten between them" — which is a claim that the ratchet's basis moves under
 it, and would be the more serious finding of the two. It is false. Running the derivation **as that
-commit itself wrote it** (`git show 39ba4a7:tests/test_fleet.py`, executed in place so its
+commit itself wrote it** (`git show c1772fb:tests/test_fleet.py`, executed in place so its
 `parents[1]` root still resolves) returns `total 42 | calc 28`, and five consecutive runs at `HEAD`
 return 42 every time. The number was wrong when it was written, not when it was re-read; nothing
 drifted and nothing is unstable. The reason it cost nothing is that
@@ -85,7 +91,7 @@ limit does not change. That is a **narrowing**, and a default comparison would h
 and waved it through as a widening. It is recorded as a (file, variable) pair with its reason, so the
 same variable set from another file is still an offence.
 
-### 4 · `grpc` is on the static scan's list; `ctypes` is deliberately off it (`362e764`)
+### 4 · `grpc` is on the static scan's list; `ctypes` is deliberately off it (`c1772fb`)
 
 `arm()` patches nine callables and all nine refuse and count. A compiled extension is outside that
 by construction, and `grpcio` is one — it is in `uv.lock`, pulled under `servers/rxnpredict`'s ML
@@ -106,7 +112,7 @@ false positive teaches the next reader to reach for one. So the case is **stated
 inferable from a clean scan, and pinned from both ends: the module stays off the list, and the set
 of files importing it stays at the one whose use was argued.
 
-### 5 · A document about a mechanism is checked against the mechanism (`1161473`)
+### 5 · A document about a mechanism is checked against the mechanism (`c1772fb`)
 
 `egress.py`'s docstring names four channels outside the runtime guard by construction. `CLAUDE.md`
 §1 named three, and the omitted one is the one the guard *provably* cannot reach: the private C type

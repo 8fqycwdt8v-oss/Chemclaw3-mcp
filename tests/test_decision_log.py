@@ -33,12 +33,15 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import warnings
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 _DOCS = ROOT / "docs"
 _DECISIONS = _DOCS / "decisions"
+_BACKLOG = _DOCS / "BACKLOG.md"
 _INDEX = _DECISIONS / "README.md"
 
 # The one id shape: the whole stem, not the date. Two records on one day is normal here, so an id
@@ -48,17 +51,43 @@ _FILENAME = re.compile(rf"^{_DATED}$")
 _HEADING = re.compile(rf"^# ({_DATED}) — ", re.MULTILINE)
 _INDEX_ROW = re.compile(rf"^\| \[({_DATED})\]\(([^)]+)\) \| ([^|]*)\|", re.MULTILINE)
 _TEST_CITATION = re.compile(r"`(?:[\w./*-]+::)?(test_[a-z0-9_]+)`")
+# A commit a record cites. At least one digit, because an all-letter hex word ("defaced") is a real
+# English string and an abbreviated hash that happens to be all letters is rare enough to be worth
+# the trade: a false positive here fails a run confusingly, a false negative only skips a check.
+_COMMIT = re.compile(r"`(?=[0-9a-f]{7,40}`)(?=[a-f]*[0-9])([0-9a-f]{7,40})`")
 _KEEPS_IT_TRUE = "## What keeps it true"
+# Commits a record names *as unreachable*, which is the one honest reason to write a hash `HEAD`
+# does not contain. These four are PR #54's branch commits:
+# `D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed` §5 quotes them because the finding
+# *is* that they do not resolve, and `D-2026-09-12-a-ratchet-measures-what-it-parses` cited them as
+# evidence until the same pass replaced every one with the merge commit containing them. The
+# exemption is checked in both directions below: if one of these ever becomes reachable, the row is
+# wrong and has to go.
+_QUOTED_AS_UNREACHABLE = frozenset({"68083a4", "39ba4a7", "362e764", "1161473"})
 
 
-def _records() -> list[Path]:
+def _records(directory: Path = _DECISIONS) -> list[Path]:
     """Every record in record order. The date leads the stem, so a plain sort is chronology."""
-    return sorted(_DECISIONS.glob("D-*.md"))
+    return sorted(directory.glob("D-*.md"))
 
 
-def _record_ids() -> list[str]:
+def _record_ids(directory: Path = _DECISIONS) -> list[str]:
     """Every id that has a file, in record order."""
-    return [path.stem for path in _records()]
+    return [path.stem for path in _records(directory)]
+
+
+def _unfiled_documents(directory: Path = _DECISIONS) -> list[str]:
+    """Every `.md` beside the records that is not one — the blind spot of a `D-*` glob.
+
+    `_records` globs `D-*.md`, so a record filed as `2026-09-13-a-decision.md` is not a duplicate,
+    not a dangling id and not a missing ledger row: it is *absent*, and every check in this file
+    passes while a decision sits unlisted next to them.
+    """
+    return sorted(
+        path.name
+        for path in directory.glob("*.md")
+        if path.name != "README.md" and not _FILENAME.match(path.stem)
+    )
 
 
 def _index_rows() -> list[tuple[str, str, str]]:
@@ -148,17 +177,141 @@ def test_no_record_carries_an_unresolved_conflict_marker() -> None:
         assert not offenders, f"unresolved merge conflict markers: {offenders}"
 
 
-def test_two_records_on_one_day_are_distinct_ids() -> None:
-    """The property the dated form exists for, asserted rather than described.
+def test_two_records_on_one_day_are_distinct_ids(tmp_path: Path) -> None:
+    """The property the dated form exists for, now driven over the record machinery.
 
-    Two sessions writing a record on the same day is routine across this family. If the id were the
-    *date*, the form would reproduce the collision it replaces; because the id is the whole stem,
-    same-day records are distinct and only an identical slug collides — as an add/add conflict on a
-    filename, which git reports loudly.
+    **This test was vacuous when it was written and is recorded as such rather than quietly
+    rewritten.** It read `first, second = Path("D-…-one-decision.md"),
+    Path("D-…-another-entirely.md")`
+    and asserted `first.stem != second.stem` — two literals compared against each other, which
+    cannot fail for any state of this repository. Measured on 2026-09-12: filing a record in
+    `docs/decisions/` under a date-only name left it green while
+    `test_every_filename_matches_its_heading` went red, so it contributed nothing that the tree
+    could
+    break. `c1772fb`'s commit message said one new test came back vacuous and recorded it nowhere;
+    this is that record.
+
+    What makes it bite now: the record machinery is run over a directory it is given, so two
+    same-day
+    records are *built* and read back. A `_records` glob that stopped matching, an `_FILENAME` that
+    lost the slug (which is exactly the date-only id this form exists to refuse), or an
+    `_unfiled_documents` that stopped seeing a stray file all fail here.
     """
-    first, second = Path("D-2026-09-12-one-decision.md"), Path("D-2026-09-12-another-entirely.md")
-    assert first.stem != second.stem
-    assert _FILENAME.match(first.stem) and _FILENAME.match(second.stem)
+    for stem in ("D-2026-09-12-one-decision", "D-2026-09-12-another-entirely"):
+        (tmp_path / f"{stem}.md").write_text(f"# {stem} — A title\n", encoding="utf-8")
+
+    ids = _record_ids(tmp_path)
+    assert ids == ["D-2026-09-12-another-entirely", "D-2026-09-12-one-decision"]
+    assert len(set(ids)) == len(ids), "same-day records must not share an id"
+    for path in _records(tmp_path):
+        assert _FILENAME.match(path.stem), f"{path.name} is not a record filename"
+        assert _HEADING.findall(path.read_text(encoding="utf-8")) == [path.stem]
+        # The date-only form the id deliberately is not: it would name both of these files.
+        assert not _FILENAME.match(path.stem[: len("D-2026-09-12")])
+    assert _unfiled_documents(tmp_path) == []
+
+
+def test_a_record_filed_under_another_name_is_not_invisible(tmp_path: Path) -> None:
+    """A `D-*` glob is a check that cannot see what it does not glob, which is the hole.
+
+    Every check in this file starts from `_records()`, so a decision filed as
+    `2026-09-13-unfiled.md` is not a duplicate, not a dangling id and not an unlisted row — it is
+    simply absent, with nothing anywhere saying so. Measured on 2026-09-12: such a file in
+    `docs/decisions/` passed the whole module. The missing direction is the one every other map
+    check in this repository already has: *everything beside the records is a record*.
+    """
+    assert _unfiled_documents() == [], (
+        "docs/decisions/ holds a document that is neither README.md nor a `D-YYYY-MM-DD-slug.md` "
+        "record; rename it, because no check in this file can see it where it is"
+    )
+
+    (tmp_path / "2026-09-13-unfiled.md").write_text("# unfiled\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# ledger\n", encoding="utf-8")
+    (tmp_path / "D-2026-09-13-filed.md").write_text("# D-2026-09-13-filed — T\n", encoding="utf-8")
+    assert _records(tmp_path) == [tmp_path / "D-2026-09-13-filed.md"]
+    assert _unfiled_documents(tmp_path) == ["2026-09-13-unfiled.md"]
+
+
+def test_every_commit_the_registers_cite_is_reachable_from_head() -> None:
+    """A record's commit citations are its evidence, and a squash merge can retire all of them.
+
+    `docs/decisions/README.md` rests the whole numbering convention on one sentence — "a number
+    written here is a dated measurement of a named commit, never a claim about `HEAD`" — and the
+    naming half broke on the first record written under it.
+    `D-2026-09-12-a-ratchet-measures-what-it-parses` cited four branch commits and told the reader
+    to
+    run `git show 39ba4a7:tests/test_fleet.py`; PR #54 was **squash**-merged, so none of the four is
+    an ancestor of `main` and the command fails for anyone who clones it. Measured on 2026-09-12
+    with
+    full history (this checkout was unshallowed first): all four objects still exist *here*, because
+    this is the branch they were written on, and `git merge-base --is-ancestor` reports none of them
+    reachable from `HEAD`. A citation that resolves only in the session that wrote it is the deleted
+    port table with a hash in it.
+
+    So the check is ancestry, not existence — existence is exactly what misleads. On a shallow clone
+    ancestry cannot be decided at all, and the honest answer is to say what was not looked at rather
+    than to pass: the warning is the same shape `test_every_anchor_a_row_names_exists` uses for a
+    row it cannot open.
+
+    **One exemption, and it is the shape this file's own sibling check describes**: a record may
+    name a hash `HEAD` cannot reach when the *point* is that it cannot, which is what §5 of
+    `D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed` does. `_QUOTED_AS_UNREACHABLE`
+    carries those four with the reason, and the exemption is asserted in both directions: a hash
+    listed there that becomes reachable fails too, so the allowlist cannot outlive its argument.
+
+    `docs/BACKLOG.md` is read here too, and for one reason rather than two: it cited the same
+    unreachable `362e764` in a row about the static scan, and a second copy of this regex in
+    `tests/test_backlog_register.py` would be the second declaration this repository keeps deleting.
+    """
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    cited = {
+        commit: path.name
+        for path in [*_records(), _BACKLOG]
+        for commit in _COMMIT.findall(path.read_text(encoding="utf-8"))
+    }
+    if shallow.returncode != 0 or shallow.stdout.strip() != "false":
+        warnings.warn(
+            f"the commit citations in docs/ ({sorted(cited)}) were not checked: this is "
+            "a shallow clone, where `git merge-base --is-ancestor` cannot decide reachability. "
+            "Re-run after `git fetch --unshallow`.",
+            stacklevel=1,
+        )
+        return
+
+    def reachable(commit: str) -> bool:
+        return (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+
+    stale_exemption = sorted(
+        commit for commit in _QUOTED_AS_UNREACHABLE & set(cited) if reachable(commit)
+    )
+    assert not stale_exemption, (
+        f"{stale_exemption} is exempted as a hash `HEAD` cannot reach and `HEAD` reaches it; the "
+        "row in `_QUOTED_AS_UNREACHABLE` is no longer true and the record can cite it plainly"
+    )
+    unreachable = sorted(
+        f"{record} cites {commit}"
+        for commit, record in cited.items()
+        if commit not in _QUOTED_AS_UNREACHABLE and not reachable(commit)
+    )
+    assert not unreachable, (
+        f"commit(s) cited in docs/ that `HEAD` does not contain: {unreachable}. A branch "
+        "commit does not survive a squash merge; cite the merge commit and the pull request, which "
+        "are what a reader of `main` can open."
+    )
 
 
 def test_a_malformed_id_is_still_rejected() -> None:

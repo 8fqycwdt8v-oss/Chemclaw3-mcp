@@ -207,8 +207,7 @@ def test_udp_payload_cannot_leave() -> None:
     """A connectionless socket never calls `connect`, so `sendto` was the whole channel.
 
     Measured before the fix: 16 bytes actually reached 8.8.8.8:53 with the guard armed. This is
-    the only unguarded channel that moved payload, which is why it is closed rather than
-    documented.
+    the only unguarded channel that moved payload, which is why it is closed rather than documented.
     """
     with (
         pytest.raises(egress.EgressForbidden, match=r"203\.0\.113\.10"),
@@ -377,3 +376,45 @@ def test_a_disabled_guard_still_publishes_the_widening_it_was_configured_with(
     assert not egress.armed()
     assert _sample("chemclaw_mcp_egress_guard_armed") == 0.0
     assert _sample("chemclaw_mcp_egress_allowed_hosts") == 1.0
+
+
+def test_every_value_that_disarms_the_guard_is_in_the_set_the_ratchet_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`GUARD_DISABLED_VALUES` is what `arm_from_env` does, driven rather than transcribed.
+
+    `tests/test_fleet.py` refuses a shipped `MCP_EGRESS_GUARD` it cannot prove arms the guard, and
+    it
+    imports this set to decide. That makes the set a contract between a ratchet and a runtime, so it
+    is driven here through the real entry point: every member disarms, and the values a reader is
+    most likely to get wrong arm.
+
+    **The empty string arms**, which is the arm of this table that was reasoned about rather than
+    run: `os.environ.get(_GUARD_ENV, "on")` returns `""` for a bare `ENV MCP_EGRESS_GUARD=`, and
+    `""` is in no disable set, so the guard goes up. A ratchet that flagged it would be refusing a
+    file that ships the posture it is asking for.
+
+    `${GUARD}` arms too, and that is the case the ratchet cannot use: *this* process sees an
+    unexpanded literal, while `docker build` expands it against an `ARG` and the image gets whatever
+    the build was given. So the value arms here and is an offence there — the asymmetry is the
+    point, and `test_the_allowlist_check_bites` holds the other half.
+    """
+    disabling = ["off", "0", "false", "no", "OFF", " off ", "False"]
+    for value in disabling:
+        monkeypatch.setenv("MCP_EGRESS_GUARD", value)
+        egress.disarm()
+        egress.arm_from_env()
+        assert not egress.armed(), f"{value!r} should disarm the guard"
+    for value in ["", "on", "1", "true", "${GUARD}", "anything else"]:
+        monkeypatch.setenv("MCP_EGRESS_GUARD", value)
+        egress.disarm()
+        egress.arm_from_env()
+        assert egress.armed(), f"{value!r} should arm the guard"
+
+    # The table is written out rather than iterated off the constant, and this is why: driving
+    # `sorted(GUARD_DISABLED_VALUES)` was the first version, and dropping `"no"` from the set left
+    # it green — the loop simply stopped testing the value that had left (measured). So the values
+    # are the test's own data, and the constant is compared against them, which fails in *both*
+    # directions: a spelling removed here disarms nothing and is caught above, and one added there
+    # is caught here before it can go undriven.
+    assert {value.strip().lower() for value in disabling} == egress.GUARD_DISABLED_VALUES
