@@ -29,12 +29,18 @@ assumption.
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 from pathlib import Path
 
 import mcp_server_kit
-from mcp_server_kit.no_egress import assert_no_egress_sources, host_literals, network_imports
+from mcp_server_kit.no_egress import (
+    FORBIDDEN_MODULES,
+    assert_no_egress_sources,
+    host_literals,
+    network_imports,
+)
 
 PACKAGE = Path(mcp_server_kit.__file__).parent
 EGRESS = PACKAGE / "egress.py"
@@ -197,3 +203,60 @@ def test_a_host_split_across_string_literals_is_still_a_host(tmp_path: Path) -> 
     loopback = tmp_path / "loopback.py"
     loopback.write_text('URL = "http://127." + "0.0.1:8850/healthz"\n', encoding="utf-8")
     assert host_literals(loopback) == []
+
+
+def test_a_grpc_channel_is_flagged_however_it_is_spelled(tmp_path: Path) -> None:
+    """`grpcio` opens its sockets from C, so the runtime guard never sees them.
+
+    Measured against a listener on a non-loopback address with `arm()` in force: a Python
+    `socket.create_connection` raised `EgressForbidden` and incremented
+    `chemclaw_mcp_egress_refused_total`, while `grpc.insecure_channel` to the same address completed
+    a real TCP connection and incremented nothing. That makes this scan the only in-repo layer that
+    can see it arriving — the same position `_socket` is in — and `grpcio` is not hypothetical here:
+    it is in `uv.lock`, pulled under `servers/rxnpredict`'s ML extras by `tensorboard`.
+    """
+    plain = tmp_path / "channel.py"
+    plain.write_text("import grpc\n", encoding="utf-8")
+    assert network_imports(plain) == ["grpc"]
+
+    asynchronous = tmp_path / "aio.py"
+    asynchronous.write_text("from grpc.aio import insecure_channel\n", encoding="utf-8")
+    assert network_imports(asynchronous) == ["grpc.aio"]
+
+    dynamic = tmp_path / "dynamic.py"
+    dynamic.write_text('import importlib\nimportlib.import_module("grpc")\n', encoding="utf-8")
+    assert network_imports(dynamic) == ["grpc"]
+
+
+def test_ctypes_is_outside_both_in_repo_layers_and_has_exactly_one_caller() -> None:
+    """The `ctypes` case is argued rather than covered, and this is what keeps the argument honest.
+
+    `ctypes.CDLL("libc.so.6").connect(...)` walks past the armed guard for grpc's reason, and it is
+    *not* in `FORBIDDEN_MODULES` — because the one place in this fleet that imports it is
+    `servers/pyexec/engine/sandbox.py`, calling `prctl(PR_SET_DUMPABLE, 0)`. Banning the module
+    would mean exempting that file, and `exempt` is reserved for a file whose network import is the
+    disabling one; `no_egress.py`'s docstring says why a wider exemption is worse than no check.
+
+    So the decision is pinned from both ends: the module stays off the list, and the list of files
+    that import it stays at the one whose use was argued. A second importer fails here, which is the
+    moment to decide whether `ctypes` has become a network surface in this tree.
+    """
+    assert "ctypes" not in FORBIDDEN_MODULES
+
+    workspace = PACKAGE.parents[2].parent
+    roots = sorted(workspace.glob("packages/*/src")) + sorted(workspace.glob("servers/*/src"))
+    assert roots, f"no first-party source roots under {workspace}; has the layout changed?"
+    importers = {
+        str(source.relative_to(workspace))
+        for root in roots
+        for source in root.rglob("*.py")
+        if any(
+            (isinstance(node, ast.Import) and any(a.name == "ctypes" for a in node.names))
+            or (isinstance(node, ast.ImportFrom) and node.module == "ctypes")
+            for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
+        )
+    }
+    assert importers == {"servers/pyexec/src/chemclaw_mcp_pyexec/engine/sandbox.py"}, (
+        f"{sorted(importers)!r} import ctypes; the module is off FORBIDDEN_MODULES because exactly "
+        "one file needed it for `prctl`, and a second caller has to argue that again"
+    )
