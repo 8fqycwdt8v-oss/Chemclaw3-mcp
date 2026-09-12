@@ -476,6 +476,13 @@ make run-calc        # the heaviest one — a call here can be minutes or hours,
 ```
 
 - Python ≥ 3.11, `uv` workspace, `ruff` (line length 100), `mypy --strict`.
+- **No `assert` in serving code.** `python -O` deletes every one of them, so an invariant enforced
+  by an assert is a control conditional on how somebody started the process — and an
+  `AssertionError` is not a `ValueError`, so what reaches the model is an `error_id` rather than
+  something it can act on. Use `if ...: raise`. The only exemption is a module whose *product* is
+  an assertion failure (`mcp_server_kit`'s `testing.py` and `no_egress.py`, both imported by tests
+  and by nothing else), and
+  `tests/test_fleet.py::test_no_serving_module_enforces_an_invariant_with_assert` holds the line.
 - The `mcp` SDK is pinned to the **1.x line** deliberately: Chemclaw3 is on `mcp.server.fastmcp`,
   and matching its generation keeps `connector_app` line-for-line comparable with
   `chemclaw.connectors.server`. Moving to 2.x (`MCPServer`) is a deliberate migration for both

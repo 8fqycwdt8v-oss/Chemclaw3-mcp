@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 _MAX_ECHO_CHARS = 120
 
 
-def _truncate(text: str, limit: int = _MAX_ECHO_CHARS) -> str:
+def truncate_echo(text: str, limit: int = _MAX_ECHO_CHARS) -> str:
     """The caller's string for a message, capped so a megastring cannot flood the log or context."""
     return text if len(text) <= limit else f"{text[:limit]}… ({len(text)} chars)"
 
@@ -30,7 +30,7 @@ def canonical_smiles(smiles: str) -> str:
         raise ValueError(reason)
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"Invalid SMILES: {_truncate(smiles)!r}")
+        raise ValueError(f"Invalid SMILES: {truncate_echo(smiles)!r}")
     if reason := atom_count_error(mol.GetNumAtoms(), subject="this SMILES"):
         raise ValueError(reason)
     return Chem.MolToSmiles(mol)
@@ -56,7 +56,7 @@ def parse_reaction(text: str) -> tuple[str, str, str]:
         return text, "", ""
     match = _RXN_RE.match(text)
     if not match:
-        raise ValueError(f"Malformed reaction SMILES: {text!r}")
+        raise ValueError(f"Malformed reaction SMILES: {truncate_echo(text)!r}")
     return match.group("reactants"), match.group("agents"), match.group("products")
 
 
