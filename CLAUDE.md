@@ -23,7 +23,7 @@ and no core edit is needed. So the target every server here is built against is:
 | `packages/mcp_server_kit/` | The shape every server has, written once: transport, auth, identity, trace continuation, datasets, the egress guard. |
 | `manifests/` | One directory per **connector** holding its `connector.yaml` (a symlink). What `CHEMCLAW_CONNECTORS_DIR` points at, and only what may safely go there. |
 | `manifests-internal/` | The same, for the servers Chemclaw3 must **not** discover — `calc` (a backend behind `cached_compute`) and `rxnlabel` (a background drain's primitives). No published `export` line names it, and each manifest here declares `mount: backend`, a key Chemclaw3's `extra="forbid"` manifest model refuses. |
-| `docs/` | How to wire this fleet to Chemclaw3, and the checklist for adding a server. |
+| `docs/` | How to wire this fleet to Chemclaw3, the checklist for adding a server, and the open queue (`docs/BACKLOG.md`). |
 | `scripts/` | Operational scripts outside any server's runtime — today, the offline check. |
 | `tests/` | The fleet-level invariants no single server can see about itself. |
 | `MODULES.md` | The catalogue and the authoritative port registry. |
@@ -422,6 +422,17 @@ its own *output* is a loop with state, and a loop with state is a durable job �
 the two CREST searches are, each separately keyed. Chemclaw3's activities assemble thermochemistry,
 scan profiles, reaction energetics and interaction energies from them, and cache one row per
 primitive instead of one per job. See `servers/calc/README.md` and `docs/integration.md`.
+
+## What is open
+
+What is still open is [`docs/BACKLOG.md`](docs/BACKLOG.md), and it is a **queue, not a log**: a
+closed row is deleted in the commit that closes it, every row names an anchor a `grep` can open, and
+a row about another repository says so because nothing here can check it.
+`tests/test_backlog_register.py` opens the anchors and reports the rows it had to skip.
+
+**It may not state a count of itself.** `grep -c '^- \[ \]' docs/BACKLOG.md` answers, and a number
+in prose is a claim about its author's afternoon — the same argument as the deleted port table, one
+document over.
 
 ## Working in this repository
 
