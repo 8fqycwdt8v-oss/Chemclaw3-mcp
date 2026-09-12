@@ -185,6 +185,22 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
+- [ ] **Five environment-read bounds still accept a value that silently breaks the server.**
+  `D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means` fixed the three W23
+  added — a batch bound of `0` started a `rxnlabel` pod that passed readiness and refused every
+  call — and left the older ones as they were: `MCP_MAX_SMILES_CHARS` and `MCP_MAX_MOLECULE_ATOMS`
+  in the kit, `CHEMCLAW_CHEM_RENDER_SIZE_PX`, `CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS` and
+  `CHEMCLAW_CHEM_MAX_DEPICTION_CHARS` in `chem`, plus `CHEMCLAW_SAFETY_MAX_COMPONENTS`. Each is a
+  bare `int(os.environ.get(...))` that accepts `0` and negatives. The obvious fix — one
+  `env_int(name, default)` helper — is the one thing that must not be done without a second change:
+  `tests/test_fleet.py::test_the_bound_scan_sees_both_configuration_mechanisms` pins that the
+  ratchet's inventory deliberately does not follow a read through a helper, so converting these
+  would take all seven out of the ratchet that exists to watch them. So the row is two decisions in
+  order: whether the scan should follow one named helper, and only then whether to share the check.
+  **Anchors:** `tests/test_fleet.py::_numeric_environ_reads`,
+  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
+  `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
+
 ## 3 — The gate itself
 
 - [ ] **`make type` does not check the test tree, and there is an error waiting in it.** `$(SRC)`
