@@ -28,6 +28,29 @@ the call leaves Python entirely.
 `socket` is on the list even though it is stdlib and the guard patches it, because a server here has
 no legitimate reason to hold one — and a module that imports it can also un-patch the guard.
 
+**`grpc` is on the list for the same reason as `_socket`, and it is reachable from this
+lockfile.** `grpcio`'s transport is a compiled extension: its sockets are opened from C, so none of
+the nine callables `arm()` patches is consulted and nothing is counted on
+`chemclaw_mcp_egress_refused_total`. Measured against a listener on a non-loopback address with the
+guard armed: a Python `socket.create_connection` to it raised `EgressForbidden` and booked a
+refusal, while `grpc.insecure_channel` to the same address completed a real TCP connection and
+booked none. `grpcio` is not a direct dependency of anything here and it is in `uv.lock` anyway,
+pulled in under `servers/rxnpredict`'s ML extras by `tensorboard` — so "nobody would import it" was
+the only thing standing between this fleet and an uncounted channel out. A prefix match covers
+`grpc.aio` and the rest of the package.
+
+**`ctypes` is deliberately *not* on the list, and that is stated here because a clean scan would
+otherwise be read as covering it.** `ctypes.CDLL("libc.so.6").connect(...)` and `libc.getaddrinfo`
+both succeed with the guard armed, for exactly grpc's reason — the call never passes through
+Python's `socket` module. Unlike `grpc`, though, `ctypes` has a real caller in this fleet that has
+nothing to do with the network: `servers/pyexec/engine/sandbox.py` calls `prctl(PR_SET_DUMPABLE, 0)`
+through it, which is one constant against a whole dependency. Banning it would mean exempting that
+file, and `exempt` is for a file whose network import is the *disabling* one — an exemption granted
+for any other reason is how a scan stops being read. So `ctypes` is outside **both** in-repo layers,
+the runtime guard by construction and this scan by decision, and `make offline-run` is what covers
+it. `tests/test_no_egress.py` pins the tree's only importer of it, so a second one has to argue the
+case again instead of inheriting this one.
+
 **`_socket` is on the list too, and it is the one the runtime guard cannot reach.** `socket.socket`
 subclasses the C type `_socket.socket`, and `egress.arm()` rebinds the Python subclass — a
 `_socket.socket().connect(...)` goes straight to the C method the guard never touched (measured: a
@@ -62,6 +85,7 @@ FORBIDDEN_MODULES = frozenset(
         "aiohttp",
         "boto3",
         "ftplib",
+        "grpc",
         "http.client",
         "httpcore",
         "httplib2",

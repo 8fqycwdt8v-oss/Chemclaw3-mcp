@@ -42,7 +42,7 @@ from chemclaw_mcp_calc.engine.admission import (
     Admission,
     AtCapacityError,
 )
-from chemclaw_mcp_calc.engine.config import settings
+from chemclaw_mcp_calc.engine.config import CalcSettings, settings
 from chemclaw_mcp_calc.engine.structure import Structure
 from mcp_server_kit.testing import load_manifest
 
@@ -304,3 +304,29 @@ def test_every_state_changing_tool_is_gated_and_no_read_only_one_is() -> None:
     # 10.5 ms for the ungated `calculation_key`). Re-deriving the split from cost would ungate them
     # and break an agreement that spans two repositories.
     assert {"predict_solubility", "predict_developability_profile"} <= gated
+
+
+def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """This pod's ceiling is settable from outside the image, which is easy to read the other way.
+
+    `engine/config.py` writes `calc_max_concurrent_requests: int = Field(default=4, ge=1)`, which
+    looks like a constant on the page. `CalcSettings` is a `pydantic-settings` class with
+    `env_prefix="CHEMCLAW_"`, so the real name of that number is
+    `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` and a `deploy/deployment.yaml` `env:` entry moves it —
+    along with `xtb_max_atoms`, the bound that keeps one call's cost priced.
+
+    Asserted here because the belief that these are constants is what would let the fleet ratchet
+    (`tests/test_fleet.py::test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment`)
+    be written to cover only the servers that call `os.environ` — and this server, whose calls take
+    minutes and whose ceiling is the one `CLAUDE.md` calls non-negotiable, would be the one it
+    skipped. The measurement, not the shape: the object is constructed twice and the numbers differ.
+    """
+    default = CalcSettings()
+    assert (default.calc_max_concurrent_requests, default.xtb_max_atoms) == (4, 500)
+
+    monkeypatch.setenv("CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS", "99")
+    monkeypatch.setenv("CHEMCLAW_XTB_MAX_ATOMS", "99999")
+    widened = CalcSettings()
+    assert (widened.calc_max_concurrent_requests, widened.xtb_max_atoms) == (99, 99999)
