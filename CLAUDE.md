@@ -132,9 +132,10 @@ that helper are non-obvious, and each is quiet when wrong:
 - **Bearer on `/mcp`; `/healthz` and `/metrics` stay open.** A kubelet probe and a Prometheus
   scrape have no identity. The exposition is the default registry's — `python_info` and the
   `process_*` collectors — **plus this fleet's own per-tool counters and latencies**
-  (`packages/mcp_server_kit/metrics.py`), and it carries nothing about a *caller*: no actor, no
-  session, no correlation id, no tool argument. It said "counts only" for as long as it published
-  the interpreter version, and the test that covered the endpoint asserted the non-count was there.
+  (`packages/mcp_server_kit/src/mcp_server_kit/metrics.py`), and it carries nothing about a
+  *caller*: no actor, no session, no correlation id, no tool argument. It said "counts only" for as
+  long as it published the interpreter version, and the test that covered the endpoint asserted the
+  non-count was there.
   A labelled metric on this endpoint must never take an actor, a session or a tool argument as a
   label; a tool **name** is none of those and is allowed, on the condition that it is clamped to
   the served surface — the name in a `tools/call` is caller-supplied, so an unclamped label mints
@@ -197,9 +198,15 @@ independent layers because a rule that lives in one place rots:
    **It covered only `connect` for a while, and the docstring named DNS anyway** — so two of the
    three examples above walked past it, and a `bytes` host in the address tuple walked past it in
    pure Python. What is still outside it *by construction* is now stated rather than implied: a
-   **child process**, a **`ctypes` call into `libc`**, and any syscall from a compiled extension.
-   Layer 3 below cannot see those either; `make offline-run` is the layer that does, because it
-   takes the network away instead of asking Python nicely.
+   **child process**, a **`ctypes` call into `libc`**, the private C type **`_socket.socket`**
+   (`arm()` rebinds the methods of the Python `socket.socket` subclass, never the C type it
+   inherits from), and any syscall from a **compiled extension** — `grpcio`'s transport is the one
+   this lockfile actually reaches, measured opening a real connection to a non-loopback address
+   with the guard armed and the refusal counter flat. Layer 3 below cannot see any of the four
+   either. Two of them layer 2 *can*, and it is the only in-repo layer that can, so both are on its
+   list: `_socket` and `grpc`. The other two are `make offline-run`'s, because it takes the network
+   away instead of asking Python nicely — and `ctypes` is off layer 2's list on purpose, for the
+   reason `no_egress.py` gives in the paragraph naming its one caller.
 2. **The static scan** (`mcp_server_kit/no_egress.py`), one three-line test per server. AST-based,
    not grep-based — `import httpx as h` and `from requests import get` read differently as text and
    identically as a tree.
@@ -207,7 +214,9 @@ independent layers because a rule that lives in one place rots:
    reaching the internet fails instead, which is what makes a vendored dataset *proven* sufficient.
    `make offline-run` goes further and takes the network away entirely.
 4. **Default-deny egress at the deployment** (`servers/*/deploy/networkpolicy.yaml`), asserted by
-   `tests/test_deploy.py` in both directions — `Egress` in `policyTypes` *and* an empty `egress:`.
+   each server's own `servers/*/tests/test_deploy.py` in both directions — `Egress` in
+   `policyTypes` *and* an empty `egress:`. The root `tests/` holds no `test_deploy.py` at all, and
+   the file there with the closest name, `tests/test_deploy_shape.py`, carries no egress assertion.
 
 Two consequences that decide what gets built:
 

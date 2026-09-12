@@ -1167,3 +1167,83 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
         f"the settings mechanism contributes {len(calc)} of calc's numbers; a collapse here is a "
         "ratchet that has quietly stopped covering the server with the most to move"
     )
+
+
+# What `egress.py` says is outside the runtime guard, as the distinctive phrase for each channel.
+# Transcribed here rather than parsed out of either document, because what is checked is that two
+# independently-written paragraphs name the same set — and a derivation from one of them would make
+# the other's omission invisible, which is the defect this test exists for.
+_UNGUARDED_CHANNELS = ("child process", "ctypes", "_socket.socket", "compiled extension")
+
+
+def test_claude_md_and_the_guard_name_the_same_channels_as_outside_it() -> None:
+    """`CLAUDE.md` named three of the four channels the guard cannot reach, and omitted `_socket`.
+
+    That is the omission that matters most of the four: `_socket.socket` is the one the guard
+    *provably* cannot reach — `arm()` rebinds the Python subclass's methods, never the C type's —
+    and a reader of the shorter list would take the static scan's `_socket` entry for
+    belt-and-braces rather than for the only in-repo layer that sees it. Both documents are prose
+    about the same mechanism, written months apart, and nothing compared them.
+
+    The phrases are the test's own data; the check is that each appears on both sides. A channel
+    added to one document and not the other fails here, in either direction.
+    """
+    guard = (ROOT / "packages/mcp_server_kit/src/mcp_server_kit/egress.py").read_text(
+        encoding="utf-8"
+    )
+    guard_docstring = guard[: guard.index('"""', guard.index('"""') + 3)]
+
+    readme = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    start = readme.index("1. **The runtime guard**")
+    layer_one = readme[start : readme.index("\n2. **The static scan**", start)]
+
+    for channel in _UNGUARDED_CHANNELS:
+        assert channel in guard_docstring, (
+            f"`egress.py` no longer names {channel!r} as outside the guard; if the guard now "
+            "covers it, `CLAUDE.md` §1 and this list are what say so"
+        )
+        assert channel in layer_one, (
+            f"`CLAUDE.md`'s 'No egress. Ever.' §1 does not name {channel!r}, which `egress.py` "
+            "says is outside the runtime guard — a reader of the shorter list believes in a "
+            "boundary that is not there"
+        )
+
+
+def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
+    """A document that cites a test as the thing holding a claim must cite one that exists.
+
+    `CLAUDE.md` named `tests/test_deploy.py` as what asserts the NetworkPolicy in both directions.
+    That file has never existed: the assertion is each server's own
+    `servers/*/tests/test_deploy.py`, and the root file with the closest name,
+    `tests/test_deploy_shape.py`, carries no egress assertion at all. A citation to a file nobody
+    can open is the same failure as the port table this repository deleted — a second declaration
+    nothing checks.
+
+    Only paths rooted at a real top-level directory are checked, which needs no allowlist: this
+    document also writes `app.py`, `connector.yaml` and `mcp_server_kit/egress.py` as deliberate
+    shorthand for "the one in every server" or "the module", and none of those begins with a
+    directory that exists here.
+    """
+    top_level = {path.name for path in ROOT.iterdir() if path.is_dir()}
+    cited = sorted(
+        set(
+            re.findall(
+                r"`([A-Za-z0-9_./*-]+\.(?:py|yaml|yml|json|md|toml))`",
+                (ROOT / "CLAUDE.md").read_text(encoding="utf-8"),
+            )
+        )
+    )
+    rooted = [path for path in cited if path.split("/")[0] in top_level]
+    assert rooted, "no rooted paths found in CLAUDE.md; has the citation style changed?"
+    missing = [
+        path
+        for path in rooted
+        if not (sorted(ROOT.glob(path)) if "*" in path else (ROOT / path).exists())
+    ]
+    assert not missing, f"`CLAUDE.md` cites paths that do not exist: {missing!r}"
+
+    # The negative half of the claim above, so the corrected sentence cannot go stale the other way.
+    assert not (ROOT / "tests/test_deploy.py").exists(), (
+        "a root `tests/test_deploy.py` now exists; `CLAUDE.md` §4 says it does not and points at "
+        "the per-server files instead"
+    )
