@@ -24,14 +24,22 @@ Inference is CPU-bound and runs in a worker thread (`BasePredictor.predict` uses
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
-from typing import Annotated, Any, TypeVar
+import os
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Annotated, Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from chemclaw_mcp_rxnpredict.engine.admission import (
+    ADMISSION_MARKER,
+    DEFAULT_MAX_CONCURRENT_PREDICTIONS,
+    Admission,
+)
 from chemclaw_mcp_rxnpredict.engine.base_doubles import register_requested
-from chemclaw_mcp_rxnpredict.engine.config import get_settings
+from chemclaw_mcp_rxnpredict.engine.config import get_settings, inference_threads
 from chemclaw_mcp_rxnpredict.engine.meta.aggregator import (
     aggregate_conditions,
     aggregate_forward,
@@ -57,6 +65,22 @@ from chemclaw_mcp_rxnpredict.engine.schemas import (
 logger = logging.getLogger(__name__)
 
 server = FastMCP("rxnpredict")
+
+# The pod's ceiling on concurrent inference, built at import; a test that needs a different ceiling
+# replaces this attribute rather than the variable, because the number a gate enforces and the
+# number it was built from must be the same number. `engine/admission.py` has the measurement — one
+# ensemble call is one worker thread *per enabled predictor*, measured at six — and the argument for
+# refusing rather than queueing.
+_admission = Admission(
+    int(
+        os.environ.get(
+            "CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS",
+            str(DEFAULT_MAX_CONCURRENT_PREDICTIONS),
+        )
+    )
+)
+
+_P = ParamSpec("_P")
 
 # The largest `top_k` a caller may ask any tool here for.
 #
@@ -171,6 +195,91 @@ def _not_served(kind: str, model_name: str, served: list[object]) -> ValueError:
 _Prediction = TypeVar("_Prediction")
 
 
+_T = TypeVar("_T")
+
+
+def _release_slots(task: asyncio.Task[Any], *, charge: int) -> None:
+    """Give the slots back when the *work* finishes, not when whoever asked for it stops waiting.
+
+    Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
+    left to receive its failure, and asyncio logs "exception was never retrieved" at exit for every
+    one of them — noise in the logs of exactly the incident this gate exists for.
+    """
+    _admission.release(charge)
+    if not task.cancelled():
+        task.exception()
+
+
+def _single_model_slots() -> int:
+    """What one named-model call costs: one predictor's forward pass, at its configured width."""
+    return inference_threads()
+
+
+def _forward_ensemble_slots() -> int:
+    """What one `predict_forward_reaction` costs, in cores: fan-out width times thread width.
+
+    The fan-out is real and measured — `asyncio.gather` over every enabled predictor, six worker
+    threads in flight for six predictors — so a call-counting charge would under-count by whatever
+    the deployment's enabled-model list happens to hold.
+
+    **Read from the deployment's own enabled list rather than from the caller's `models`
+    argument**, deliberately: a charge a caller can lower by naming fewer models is a ceiling a
+    caller can walk past, and the exposure this gate bounds is the pod's rather than one request's.
+    """
+    return max(1, len(_forward_predictors(None))) * inference_threads()
+
+
+def _conditions_ensemble_slots() -> int:
+    """`_forward_ensemble_slots` for the conditions ensemble, over its own predictor registry."""
+    return max(1, len(_conditions_predictors(None))) * inference_threads()
+
+
+def _admitted(
+    work: Callable[_P, Awaitable[_T]], *, cost: Callable[[], int] = _single_model_slots
+) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how much inference runs at once, refusing promptly when the pod is full.
+
+    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
+    `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the served
+    surface instead of against a second hand-kept list here.
+
+    **The slot is released when the work finishes, not when the caller stops waiting**, and
+    `asyncio.shield` is what buys that. Cancelling the awaiting coroutine does not stop the worker
+    threads underneath it — and an ensemble has one per predictor — so releasing on cancellation
+    would hand slots to a retry while the original forward passes were still running, which is the
+    precise failure this gate is for.
+
+    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
+    from `inspect.signature`, which follows `__wrapped__` back to the real signature and resolves
+    its annotations against *that* function's module. Without it every tool here would advertise
+    `(*args, **kwargs)`.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        charge = _admission.acquire(work.__name__, cost())
+        task = asyncio.ensure_future(work(*args, **kwargs))
+        task.add_done_callback(functools.partial(_release_slots, charge=charge))
+        return await asyncio.shield(task)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
+
+
+def _admitted_forward_ensemble(
+    work: Callable[_P, Awaitable[_T]],
+) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """`_admitted` for the forward consensus, which costs one thread set per enabled predictor."""
+    return _admitted(work, cost=_forward_ensemble_slots)
+
+
+def _admitted_conditions_ensemble(
+    work: Callable[_P, Awaitable[_T]],
+) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """`_admitted` for the conditions consensus. See `_forward_ensemble_slots`."""
+    return _admitted(work, cost=_conditions_ensemble_slots)
+
+
 def _survivors(
     kind: str,
     predictors: list[object],
@@ -232,6 +341,7 @@ def _no_predictors(kind: str) -> ValueError:
 
 
 @server.tool()
+@_admitted_forward_ensemble
 async def predict_forward_reaction(
     reactants: str,
     top_k: TopK = 5,
@@ -272,7 +382,10 @@ async def predict_forward_reaction(
         ValueError: if this deployment has no forward predictor installed, or if every predictor it
             queried failed. The second is a fault in the server — an unloadable checkpoint, an
             environment refusing what a model tries to fetch — and not a statement about the
-            chemistry, so do not re-ask the same question until it is fixed.
+            chemistry, so do not re-ask the same question until it is fixed. A third case is
+            neither: a consensus runs every enabled predictor at once, so a busy pod refuses this
+            call promptly rather than queueing it. That refusal names the ceiling and is worth
+            retrying, or worth replacing with `predict_forward_single_model`, which costs less.
     """
     settings = get_settings()
     predictors = _forward_predictors(models)
@@ -296,6 +409,7 @@ async def predict_forward_reaction(
 
 
 @server.tool()
+@_admitted_conditions_ensemble
 async def predict_reaction_conditions(
     reactants: str,
     product: str,
@@ -335,7 +449,9 @@ async def predict_reaction_conditions(
     Raises:
         ValueError: if this deployment has no condition predictor installed, or if every predictor
             it queried failed — which is a fault in the server rather than a statement about the
-            chemistry, and the message says which predictors and what kind of fault.
+            chemistry, and the message says which predictors and what kind of fault. A busy pod
+            also refuses this call promptly rather than queueing it, because a consensus runs every
+            enabled predictor at once; that refusal names the ceiling and is worth retrying.
     """
     settings = get_settings()
     predictors = _conditions_predictors(models)
@@ -363,6 +479,7 @@ async def predict_reaction_conditions(
 
 
 @server.tool()
+@_admitted
 async def predict_forward_single_model(
     model_name: str,
     reactants: str,
@@ -393,6 +510,7 @@ async def predict_forward_single_model(
 
 
 @server.tool()
+@_admitted
 async def predict_conditions_single_model(
     model_name: str,
     reactants: str,

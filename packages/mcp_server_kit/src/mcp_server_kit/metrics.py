@@ -36,6 +36,9 @@ __all__ = [
     "EGRESS_REFUSED",
     "READY",
     "REQUESTS",
+    "SESSIONS_CEILING",
+    "SESSIONS_LIVE",
+    "SESSIONS_REFUSED",
     "TOOL_CALLS",
     "TOOL_DURATION",
     "UNAUTHENTICATED_REQUESTS",
@@ -90,6 +93,29 @@ BUILD_INFO = Gauge(
 READY = Gauge(
     "chemclaw_mcp_ready",
     "1 when this server's readiness check last passed, 0 when it last failed.",
+    ("server",),
+)
+
+# The three series that make a session ceiling checkable from a scrape rather than believed. All
+# three carry the server and nothing else: a session *count* is not a session *id*, and none of
+# them can name a caller, so the rule this module opens with is untouched. Together they answer the
+# only three questions an operator has about the bound — how full is the pod, what is it full
+# against, and is anything being turned away.
+SESSIONS_LIVE = Gauge(
+    "chemclaw_mcp_sessions_live",
+    "MCP sessions this process is currently holding open.",
+    ("server",),
+)
+
+SESSIONS_CEILING = Gauge(
+    "chemclaw_mcp_sessions_ceiling",
+    "The configured ceiling on concurrent MCP sessions. Absent when a deployment turns it off.",
+    ("server",),
+)
+
+SESSIONS_REFUSED = Counter(
+    "chemclaw_mcp_sessions_refused_total",
+    "Session handshakes refused because the pod was already holding its ceiling.",
     ("server",),
 )
 

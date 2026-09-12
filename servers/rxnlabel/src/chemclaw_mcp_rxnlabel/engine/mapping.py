@@ -62,6 +62,30 @@ def map_reaction(reaction_smiles: str) -> str | None:
     return str(mapped) if mapped else None
 
 
+def inference_threads() -> int:
+    """Cores one mapped batch may spend, which is what the admission gate charges it.
+
+    **Read from torch rather than assumed**, for the reason `engine/admission.py` gives at length:
+    torch's intra-op width is sized from the machine's physical cores and not from the container's
+    cgroup, so a pod limited to two cores on a large node gives one forward pass a thread count
+    nobody chose — and no image in this fleet pins `OMP_NUM_THREADS` for it. Charging the ceiling
+    what the process is *actually* configured to spend is the only honest number available, and it
+    follows a deployment that does pin the variable without this function knowing that it did.
+
+    `1` with no mapper installed, which is the measured truth of the RDKit-only path: SMARTS
+    matching holds the GIL, and 1, 2 and 4 threads labelling 50 reactions each measured 581, 425
+    and 418 reactions/s — one core's worth at every width. `1` also when torch is present but
+    cannot be asked, because a cost of zero would make the tool uncounted.
+    """
+    if _mapper() is None:
+        return 1
+    try:
+        import torch
+    except Exception:  # pragma: no cover - the mapper loaded, so torch is installed
+        return 1
+    return max(1, int(torch.get_num_threads()))
+
+
 def contributing_reactants(mapped: str | None) -> set[str] | None:
     """The reactants that put at least one atom into a product, as canonical SMILES.
 

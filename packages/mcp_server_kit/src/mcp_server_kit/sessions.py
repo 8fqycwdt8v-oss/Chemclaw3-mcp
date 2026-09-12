@@ -16,9 +16,15 @@ That is a leak with a real arrival rate rather than a theoretical one. Chemclaw3
 per turn per connector, so a pod sees roughly one session open per second at 200 users, and the
 client's `DELETE` is in a `finally` that a cancelled turn, a front-door restart or a dropped
 connection does not reach. Measured on `chem`: 500 sessions opened and never deleted took RSS from
-150.3 MB to 223.1 MB — 149 kB each, never recovered — and a session whose client had exited, whose
-TCP connection was gone, still answered HTTP 200 ten seconds later. At 512Mi that is an OOMKill
-every day or so, on a Deployment with one replica.
+138.3 MB to 166.0 MB — **56.6 kB each**, never recovered — and a session whose client had exited,
+whose TCP connection was gone, still answered HTTP 200 ten seconds later.
+
+(That figure read **149 kB** here until it was re-measured for the ceiling below, against the same
+server by the same method, and it is corrected rather than quietly dropped. The direction matters
+in both halves: the leak is two and a half times cheaper per session than this file claimed, which
+makes the *reaper* less urgent than it read — and the ceiling below more so, because the number of
+sessions one caller can hold inside a 512Mi pod is two and a half times larger than anyone
+reading this paragraph would have assumed.)
 
 **Upstream's "idle" means "no HTTP request arrived", and for this fleet that is not the same thing
 as idle.** The deadline is pushed forward when a request for the session arrives; a tool call is
@@ -49,6 +55,42 @@ was being answered on just stops. No JSON-RPC error is ever written. The caller 
 own timeout with no idea anything happened, and the only trace on the server is one line reading
 "idle timeout". `tests/test_sessions.py` drives that counterfactual, so the hold-open tests
 beside it are evidence that the timeout is armed rather than that it is absent.
+
+**A timeout bounds how long a session lives and nothing bounded how many there are**, which is a
+different control and the one this module was still missing. `_server_instances` is a plain dict
+that upstream adds to on every `initialize` with no admission of any kind: a session's cost is paid
+at creation and refunded, at the earliest, `MCP_SESSION_IDLE_TIMEOUT_SECONDS` later, so the reaper
+sets the *steady state* and the arrival rate sets the *peak*. Measured against the real `chem` app
+under uvicorn, the server in its own process so the figures are the pod's and not a client's:
+un-deleted sessions cost **56.6 kB each** and grow strictly linearly (55,292 kB over 1,000
+sessions, and the per-session figure is flat to three digits at every 200-session mark), and one
+client on loopback opens **261 of them per second**. A session that has been *used* — handshake,
+GET stream, `tools/list`, one `tools/call`, then abandoned — costs more at first and converges on
+the same marginal figure: 126 kB at 50 sessions falling to 87 kB at 300, whose last three
+increments are 56, 64 and 60 kB.
+
+Two consequences, and the second is why a ceiling is not optional. At Chemclaw3's own ~1
+session/s the reaper holds a fully-abandoned pod at about 1,800 sessions, which is ~102 MB — large
+but survivable. At the rate one authenticated caller can actually dial, the same 30-minute window
+is hundreds of thousands of sessions: the smallest pod in this fleet is limited to 512Mi and every
+one of them is an OOMKill, which takes down every other session sharing the pod, including a CREST
+search four hours in. **An idle timeout cannot see that at all**, because nothing has been idle
+long enough to reap.
+
+So `MCP_MAX_SESSIONS` is a ceiling on how many sessions exist at once, enforced on the request that
+would mint one, and a pod at its ceiling refuses **promptly** rather than queueing — the same
+argument `servers/calc/engine/admission.py` makes for a calculation, one layer down. It belongs
+here rather than beside that one because a session is the *transport's* object: every server in
+this fleet has the same one, pays the same 56.6 kB for it, and none of them can see it from a tool
+body. An admission ceiling on calls and a ceiling on sessions are not the same bound and neither
+implies the other — `props` gates no call at all and still holds sessions.
+
+**The refusal is an HTTP status, not a worded string, and that is the difference from the tool
+path.** `servers/calc` needs `AT_CAPACITY_MARKER` because a refused *tool call* has no channel but
+its own text: the protocol flattens every exception into one `isError=True` text block with no
+code. A refused handshake is a plain HTTP response on `/mcp`, so it carries a real status —
+**503** with `Retry-After` — which no other outcome on that path returns. A client that reads the
+status needs nothing from the body; the body says what happened for a human reading a capture.
 """
 
 from __future__ import annotations
@@ -63,12 +105,24 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel.server import request_ctx
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
+from mcp.types import ErrorData, JSONRPCError
+from starlette.responses import Response
+from starlette.types import Receive, Scope, Send
+
+from mcp_server_kit.metrics import SESSIONS_CEILING, SESSIONS_LIVE, SESSIONS_REFUSED
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AT_CAPACITY_STATUS",
+    "DEFAULT_MAX_SESSIONS",
     "DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS",
+    "SESSION_BACKLOG_BUDGET_BYTES",
+    "SESSION_COST_BYTES",
+    "SMALLEST_POD_MEMORY_LIMIT_BYTES",
+    "apply_session_ceiling",
     "apply_session_idle_timeout",
+    "max_sessions",
     "session_idle_timeout",
 ]
 
@@ -80,6 +134,51 @@ DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800.0
 # Marks a transport whose request handler already re-asserts the hold, so a second concurrent
 # call on the same session does not stack a second wrapper on top of the first.
 _REASSERTED = "_chemclaw_hold_reasserted"
+
+
+#: What one un-deleted session costs this process, in bytes of RSS. Measured on the real `chem`
+#: app under uvicorn in its own process: 1,000 raw `initialize` handshakes, never deleted, took RSS
+#: from 133,428 kB to 188,720 kB — 56.6 kB each, flat to three digits at every 200-session mark, so
+#: the growth is linear rather than amortising. A *used* session (GET stream, `tools/list`, one
+#: `tools/call`) starts higher and converges on the same marginal figure: 126 kB at 50 falling to
+#: 87 kB at 300, with its last three 50-session increments at 56, 64 and 60 kB. The conservative
+#: half of that range is the one written down.
+SESSION_COST_BYTES = 57_900
+
+#: The smallest `resources.limits.memory` any pod in this fleet runs under — `props`, `chem` and
+#: `safety` are all 512Mi. It is the pod a fleet-wide default has to be safe on, and
+#: `tests/test_fleet.py` re-reads it from the shipped Deployments rather than trusting this line,
+#: because a server whose limit is lowered below it moves the derivation below.
+SMALLEST_POD_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
+
+#: How much of that limit a *backlog of sessions* may hold. A session is overhead, not work: it is
+#: what is left over from turns nobody finished, and the pod's memory is for the corpus it serves
+#: and the calls in flight. An eighth is the budget, which leaves the reaper's own steady state
+#: (~1,800 sessions at Chemclaw3's ~1/s arrival and a 1,800 s timeout) above the ceiling — that is
+#: deliberate and is the trade this bound exists to make: a pod that is *fully* abandoned refuses
+#: new handshakes, and losing one turn is cheaper than the OOMKill that takes every session in the
+#: pod with it, a four-hour CREST search included.
+SESSION_BACKLOG_BUDGET_BYTES = SMALLEST_POD_MEMORY_LIMIT_BYTES // 8
+
+#: The ceiling on concurrent sessions, derived from the two numbers above and rounded *down* to a
+#: round figure so the budget is a bound rather than a target: 1,024 sessions is 59.3 MB against a
+#: 64 MiB budget. Overridable with `MCP_MAX_SESSIONS`; `0` turns the ceiling off, which is the
+#: shape a deployment would choose only to reproduce the unbounded behaviour deliberately.
+#: `tests/test_sessions.py` re-derives it, so lowering `SESSION_COST_BYTES` or raising this
+#: without the other cannot pass.
+DEFAULT_MAX_SESSIONS = 1024
+
+#: What a refused handshake answers with. 503 is the only status `/mcp` returns for this reason —
+#: upstream answers 404 for an unknown session, 200 for a served one, 401/413 from the middleware
+#: above — so a client needs nothing from the body to tell the cases apart. `Retry-After` says the
+#: refusal is transient, which is the one thing a caller can act on.
+AT_CAPACITY_STATUS = 503
+
+#: JSON-RPC reserves -32000..-32099 for server-defined errors. Upstream spends `INVALID_REQUEST`
+#: (-32600) on "session not found", and re-using it would make a full pod indistinguishable from a
+#: stale session id in the body — which is exactly the confusion the status code avoids, so the
+#: body must not reintroduce it.
+_AT_CAPACITY_CODE = -32000
 
 
 def session_idle_timeout() -> float | None:
@@ -245,6 +344,131 @@ def _reclaim_after_every_request(server: FastMCP) -> None:
             _drop_terminated_sessions(server)
 
     manager.handle_request = handle_request  # type: ignore[method-assign]
+
+
+def max_sessions() -> int | None:
+    """How many sessions this process will hold at once, or `None` for no ceiling.
+
+    `MCP_MAX_SESSIONS` is the knob; `0` restores the unbounded behaviour, which a deployment would
+    ask for only to reproduce the exhaustion this bound exists to stop. A value that is not an
+    integer is a misconfiguration rather than a licence to serve unbounded, so it falls back to the
+    default and says so — the same shape `session_idle_timeout` uses one function up.
+    """
+    raw = os.environ.get("MCP_MAX_SESSIONS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_SESSIONS
+    try:
+        ceiling = int(raw)
+    except ValueError:
+        logger.warning("MCP_MAX_SESSIONS=%r is not an integer; using %d", raw, DEFAULT_MAX_SESSIONS)
+        return DEFAULT_MAX_SESSIONS
+    return ceiling if ceiling > 0 else None
+
+
+def _would_mint_a_session(scope: Scope) -> bool:
+    """Whether this request is one that creates a session rather than using an existing one.
+
+    Upstream's `_handle_stateful_request` branches on the `mcp-session-id` header alone: absent, it
+    mints a transport and registers it; present, it either serves that session or answers 404. So
+    the header is the whole test, and it is read here rather than inferred from the method or the
+    JSON-RPC body — a `GET` or a `DELETE` with no session id takes the same minting branch, and
+    reading the body would mean consuming the ASGI receive channel before upstream needs it.
+    """
+    if scope.get("type") != "http":
+        return False
+    return not any(
+        name.decode("latin-1").lower() == MCP_SESSION_ID_HEADER.lower()
+        for name, _ in scope.get("headers", [])
+    )
+
+
+async def _refuse(scope: Scope, receive: Receive, send: Send, *, ceiling: int) -> None:
+    """Answer one handshake with "this pod is full", promptly and in terms a caller can act on."""
+    body = JSONRPCError(
+        jsonrpc="2.0",
+        id="server-error",
+        error=ErrorData(
+            code=_AT_CAPACITY_CODE,
+            message=(
+                f"this server is already holding {ceiling} MCP sessions, which is its configured "
+                "ceiling, so this handshake was refused rather than queued: a session is memory "
+                "held until its client says goodbye or the idle timeout reaps it, and admitting "
+                "past the ceiling would exhaust the pod and take every session on it down "
+                "together. Retry — sessions are reclaimed as callers finish — or raise "
+                "MCP_MAX_SESSIONS on a pod with more memory."
+            ),
+        ),
+    )
+    response = Response(
+        body.model_dump_json(by_alias=True, exclude_none=True),
+        status_code=AT_CAPACITY_STATUS,
+        media_type="application/json",
+        headers={"Retry-After": "1"},
+    )
+    await response(scope, receive, send)
+
+
+def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
+    """Refuse a new session once `max_sessions()` of them are already open.
+
+    Installed on the session manager's own ASGI entry, which is the last seam that runs before
+    upstream decides whether to mint a transport — and the only one where a refusal costs nothing,
+    because no session, no task and no memory object stream exist yet. That is what makes this
+    admission control rather than a clock: nothing is abandoned mid-flight, because nothing was
+    started.
+
+    **Terminated sessions are swept before the count is taken, and the reason is narrower than it
+    first looks.** `_reclaim_after_every_request` already sweeps after every served request, so on
+    the shipped configuration this one finds nothing — a `DELETE` is reclaimed by the request that
+    performed it, long before the next handshake counts anything. The case it exists for is
+    `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0`: that turns `apply_session_idle_timeout` off entirely, and
+    the reclaim sweep goes with it, so without this line a pod whose callers all said goodbye would
+    refuse at a ceiling of corpses — a ceiling turning a *supported* configuration into a
+    permanently full pod. It is written down this way because it was first written down the other
+    way, and a mutation removing the call left every test green.
+
+    The sweep is O(live sessions) on a map this ceiling is what keeps small.
+
+    Wrapped *outside* `_reclaim_after_every_request` so a refused request never reaches it — there
+    is nothing to reclaim on a request that was not served, and the sweep above has already run.
+
+    Args:
+        server: The `FastMCP` whose session manager is being bounded. Must already have had
+            `streamable_http_app()` called on it, which is what builds that manager.
+        name: The server's name, for the metric labels and the one log line an operator reads.
+
+    Returns:
+        The ceiling applied, or `None` if a deployment has turned it off.
+    """
+    ceiling = max_sessions()
+    if ceiling is None:
+        # No gauge is published either: a `chemclaw_mcp_sessions_ceiling` of 0 would read as "this
+        # pod admits nothing", which is the opposite of what turning the ceiling off means.
+        return None
+    SESSIONS_CEILING.labels(name).set(ceiling)
+    manager = server.session_manager
+    wrapped = manager.handle_request
+
+    async def handle_request(scope: Scope, receive: Receive, send: Send) -> None:
+        if _would_mint_a_session(scope):
+            _drop_terminated_sessions(server)
+            live = len(manager._server_instances)
+            SESSIONS_LIVE.labels(name).set(live)
+            if live >= ceiling:
+                SESSIONS_REFUSED.labels(name).inc()
+                logger.warning(
+                    "server %s: refused a session handshake; %d of %d sessions are already open",
+                    name,
+                    live,
+                    ceiling,
+                )
+                await _refuse(scope, receive, send, ceiling=ceiling)
+                return
+        await wrapped(scope, receive, send)
+        SESSIONS_LIVE.labels(name).set(len(manager._server_instances))
+
+    manager.handle_request = handle_request  # type: ignore[method-assign]
+    return ceiling
 
 
 def apply_session_idle_timeout(server: FastMCP) -> float | None:

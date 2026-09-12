@@ -276,6 +276,18 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
        request, so this arm needs no second server — and it is restored and re-served afterwards,
        which is what makes the 401 attributable to the unset variable rather than to a wedged
        process.
+    6. The variable holding **only whitespace**, which is the shape an empty secret template
+       produces. Fail closed, for the same reason as 5 — and it is a separate arm because the
+       normalisation below is what could have turned it into an empty secret rather than an
+       absent one.
+    7. **Whitespace around the credential, on both sides.** `auth.py` strips it from the offered
+       header *and* from the provisioned variable, so this asserts the tolerance in the direction
+       it exists for (a secret written by `echo`, carrying a trailing newline, still authenticates
+       an unpadded caller) and in the direction a caller controls (a padded header against an
+       unpadded secret). It was asserted in neither direction while the offered side alone was
+       stripped, which is how the asymmetry survived. The refusal arms above keep this from
+       widening into "anything close enough": a token differing by one non-whitespace byte is
+       already arm 2.
 
     `/healthz` is driven through the same arm: a kubelet probe carries no identity, so the failure
     mode where a token problem takes the pod out of the cluster as well as off the network is one
@@ -308,6 +320,39 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
 
     served = await served_tools(mcp_url, token=token)
     assert served, f"{mcp_url} served no tools to the declared credential"
+
+    # Whitespace, both ways round. The padded *secret* is the arm that matters operationally: a
+    # Kubernetes Secret written with `echo` carries a trailing newline, and before this the server
+    # refused every request including one offering exactly those bytes.
+    # The padded header is padded on the *inside* (`Bearer  <tok>`) rather than trailing: h11
+    # refuses to send a field value with leading or trailing whitespace, so the trailing-tab
+    # variant a raw socket found is not expressible through an HTTP client at all. This arm still
+    # reaches the same `offered.strip()`.
+    for description, provisioned, offered in (
+        ("a padded header against the provisioned secret", token, f" {token}"),
+        ("an unpadded header against a newline-provisioned secret", f"{token}\n", token),
+    ):
+        os.environ[token_env] = provisioned
+        try:
+            response = _tools_list(mcp_url, {"authorization": f"Bearer {offered}"})
+            assert response.status_code != 401, (
+                f"{mcp_url} refused {description}. Surrounding whitespace is normalised on both "
+                "sides deliberately — see `auth.BearerAuthMiddleware` — and a secret provisioned "
+                "with a trailing newline otherwise takes the whole server off the network."
+            )
+        finally:
+            os.environ[token_env] = token
+
+    os.environ[token_env] = "   \n\t "
+    try:
+        response = _tools_list(mcp_url, {"authorization": f"Bearer {token}"})
+        assert response.status_code == 401, (
+            f"{mcp_url} answered {response.status_code} with {token_env} holding nothing but "
+            "whitespace. That is an unset credential, and the normalisation this file asserts "
+            "above must not turn it into an empty secret that an empty offer matches."
+        )
+    finally:
+        os.environ[token_env] = token
 
     del os.environ[token_env]
     try:

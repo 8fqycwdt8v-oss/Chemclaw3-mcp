@@ -16,6 +16,18 @@ wrong place:
   a 500 with a traceback that any remote party can produce at will.
 - **Fail closed.** A declared `token_env` whose variable is missing or empty refuses every request.
   A misconfigured deployment must serve nothing, not everything.
+- **Surrounding whitespace is stripped from *both* sides, deliberately.** It used to be stripped
+  from the offered header only, which is the asymmetry rather than the tolerance: driven with raw
+  sockets against a running `props`, `Bearer <tok> `, `Bearer  <tok>`, `Bearer \t<tok>` and
+  `Bearer <tok>\t  ` were all accepted, while a secret *provisioned* with a trailing newline — an
+  `echo`-written Kubernetes Secret, a `.env` line — refused every request including the one
+  carrying exactly those bytes. So the side where whitespace is an accident was the strict one and
+  the side where it is a caller's sloppiness was the lenient one. Both are stripped now, and the
+  cost is stated rather than discovered: **a secret and the same secret with surrounding
+  whitespace are the same secret**, so rotating between them rotates nothing. That is a property
+  worth having written down; it was true of the caller's half already and nothing said so.
+  `testing.assert_bearer_is_enforced` drives all three arms — padded offer, padded secret, and a
+  token differing by one non-whitespace byte, which is still refused.
 
 `/healthz` and `/metrics` stay open: a kubelet probe and a Prometheus scrape happen independently
 of any identity. The exposition is the default registry's — `python_info` and the `process_*`
@@ -145,11 +157,17 @@ class BearerAuthMiddleware:
         if _is_open(path):
             await self._app(scope, receive, send)
             return
-        expected = os.environ.get(self._token_env, "")
+        # Stripped here rather than at the comparison, so the `not expected` arm below sees
+        # the same value the comparison does: a variable holding only whitespace is an *unset*
+        # credential and must fail closed, not compare equal to an empty offered token.
+        expected = os.environ.get(self._token_env, "").strip()
         scheme, _, offered = Headers(scope=scope).get("authorization", "").partition(" ")
         if (
             not expected
             or scheme.lower() != "bearer"
+            # `expected` is already stripped above; stripping it a second time here would be a
+            # second place to change and a normalisation a mutation of the first could not reach —
+            # which is exactly what happened while both existed.
             or not compare_digest(
                 offered.strip().encode("utf-8", "surrogateescape"),
                 expected.encode("utf-8", "surrogateescape"),

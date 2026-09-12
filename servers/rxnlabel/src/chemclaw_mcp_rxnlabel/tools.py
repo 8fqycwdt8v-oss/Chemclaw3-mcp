@@ -24,20 +24,99 @@ the call `chem` makes for the same reason.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import functools
+import os
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, roles, species, version
+from chemclaw_mcp_rxnlabel.engine.admission import (
+    ADMISSION_MARKER,
+    DEFAULT_MAX_CONCURRENT_BATCHES,
+    Admission,
+)
 
 server = FastMCP("rxnlabel")
 
 # One request may carry at most this many reactions. The bound exists because the request body is
 # already capped in bytes by the transport, and a body of ten thousand one-line reactions is under
 # that cap and is minutes of transformer time — a timeout the caller reads as an outage rather than
-# as "ask for less".
-MAX_BATCH = 500
+# as "ask for less". Measured on the RDKit-only path at 2.8 ms/reaction, so 500 is 1.4 s of one
+# core before a mapper is installed and more after.
+#
+# Read from the environment for the reason every other bound in this fleet is: a magic number is a
+# bound nobody can loosen for a genuinely larger drain without editing code, and being readable is
+# also what puts it in `tests/test_fleet.py`'s derived inventory of what a deployment can move.
+MAX_BATCH = int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))
+
+# The pod's ceiling on concurrent labelling, built at import like the batch bound above; a test that
+# needs a different ceiling replaces this attribute rather than the variable, because the number a
+# gate enforces and the number it was built from must be the same number.
+_admission = Admission(
+    int(
+        os.environ.get(
+            "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", str(DEFAULT_MAX_CONCURRENT_BATCHES)
+        )
+    )
+)
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _release_slots(task: asyncio.Task[Any], *, charge: int) -> None:
+    """Give the slots back when the *work* finishes, not when whoever asked for it stops waiting.
+
+    Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
+    left to receive its failure, and asyncio logs "exception was never retrieved" at exit for every
+    one of them — noise in the logs of exactly the incident this gate exists for.
+    """
+    _admission.release(charge)
+    if not task.cancelled():
+        task.exception()
+
+
+def _batch_slots() -> int:
+    """What one labelling call costs, in cores — `mapping.inference_threads()`, never a call count.
+
+    One where no mapper is installed, because the RDKit path is measured GIL-bound; the mapper's
+    configured intra-op width where one is, because torch releases the GIL and sizes itself from the
+    node rather than from the container. `engine/admission.py` has the measurement and the argument,
+    and it is read at call time so an operator and the gate see the same number.
+    """
+    return mapping.inference_threads()
+
+
+def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how much CPU is labelling at once, refusing promptly when the pod is full.
+
+    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
+    `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the served
+    surface instead of against a second hand-kept list here.
+
+    **The slot is released when the work finishes, not when the caller stops waiting**, and
+    `asyncio.shield` is what buys that. Cancelling the awaiting coroutine does not stop the worker
+    thread underneath it, so releasing on cancellation would hand a slot to the drain's retry while
+    the original batch was still burning — which is the precise failure this gate is for.
+
+    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
+    from `inspect.signature`, which follows `__wrapped__` back to the real signature and resolves
+    its annotations against *that* function's module. Without it every tool here would advertise
+    `(*args, **kwargs)`.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        charge = _admission.acquire(work.__name__, _batch_slots())
+        task = asyncio.ensure_future(work(*args, **kwargs))
+        task.add_done_callback(functools.partial(_release_slots, charge=charge))
+        return await asyncio.shield(task)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
 
 
 class SpeciesRepresentation(BaseModel):
@@ -202,6 +281,7 @@ async def labeller_version() -> LabellerVersion:
 
 
 @server.tool()
+@_admitted
 async def represent_reaction(
     reaction_smiles: str, species: list[str] | None = None
 ) -> ReactionRepresentation:
@@ -232,6 +312,7 @@ async def represent_reaction(
 
 
 @server.tool()
+@_admitted
 async def name_reaction(reaction_smiles: str) -> ReactionNaming:
     """Classify one reaction into a named reaction and a reaction class.
 
@@ -248,11 +329,17 @@ async def name_reaction(reaction_smiles: str) -> ReactionNaming:
 
 
 @server.tool()
+@_admitted
 async def represent_reactions(reactions: list[ReactionRequest]) -> RepresentBatch:
     """`represent_reaction` over a batch — the form a corpus-labelling drain should call.
 
-    At most 500 reactions per request. A reaction that could not be represented is absent from
-    `results` rather than present and empty, so a caller can record what it got and leave the rest.
+    At most `CHEMCLAW_RXNLABEL_MAX_BATCH` reactions per request (500 by default). A reaction that
+    could not be represented is absent from `results` rather than present and empty, so a caller can
+    record what it got and leave the rest.
+
+    This server also bounds how many batches it labels **at once**: past that it refuses promptly,
+    naming the ceiling, rather than queueing a batch that would come back after you stopped waiting
+    for it. Re-send the identical batch when that happens.
     """
     _check_batch(reactions)
     return RepresentBatch(
@@ -261,10 +348,13 @@ async def represent_reactions(reactions: list[ReactionRequest]) -> RepresentBatc
 
 
 @server.tool()
+@_admitted
 async def name_reactions(reactions: list[NamingRequest]) -> NameBatch:
     """`name_reaction` over a batch — the form a corpus-labelling drain should call.
 
-    At most 500 reactions per request. A reaction that could not be read is absent from `results`.
+    At most `CHEMCLAW_RXNLABEL_MAX_BATCH` reactions per request (500 by default). A reaction that
+    could not be read is absent from `results`. Past this server's concurrency ceiling the call is
+    refused promptly rather than queued; re-send the identical batch.
     """
     _check_batch(reactions)
     return NameBatch(version=_version().version, results=await asyncio.to_thread(_name, reactions))

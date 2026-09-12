@@ -56,6 +56,27 @@ operator applied cannot be walked around through a different tool. For a working
 CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a  # see engine/base_doubles.py
 ```
 
+## What bounds this pod
+
+| Bound | Default | How |
+| --- | --- | --- |
+| `top_k` on any tool | see the tool signatures | refused by the served input schema |
+| Inference in flight | 2 slots | `CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS`; refused, never queued |
+
+**One tool call is not one thread, which is why a slot is a core.** `predict_forward_reaction` and
+`predict_reaction_conditions` run every enabled predictor at once — measured through the real tool
+against six doubles, **one call finished in 0.468 s against a serial 2.4 s with six worker threads
+in flight**. Each of those threads is itself `torch.get_num_threads()` wide, and torch sizes that
+from the machine's physical cores rather than from the container's cgroup. So an ensemble is charged
+`enabled predictors x that width`, a single-model call is charged the width, and a cost above the
+whole ceiling is clamped to it: at the shipped ceiling a full ensemble has the pod to itself, which
+is the intended answer. Two ensembles over five models is ten forward passes on two cores, every one
+slower than it would have been alone.
+
+`list_available_models` and `classify_reaction` are outside the gate: neither reaches a worker
+thread, and the first is how a caller finds out what this build has — including why a consensus was
+refused or thin. `engine/admission.py` has the argument; `tests/test_admission.py` drives it.
+
 ## The predictors, and which ones this image carries
 
 The shipped image installs **`reaction_t5_v2`** and **`rxn_insight`** — upstream's Phase A, and the

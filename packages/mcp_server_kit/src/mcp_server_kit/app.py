@@ -47,10 +47,13 @@ since):
 - **Nothing sizes the pool every tool body offloads into, so CPython does — from the node.**
   `min(32, os.cpu_count() + 4)` is 32 threads in a one-CPU pod on a 64-core worker. `executor.py`
   sizes it from the cgroup's own quota instead.
-- **Nothing expires an MCP session, so a client that vanishes leaks one.** `FastMCP` never passes
-  upstream's `session_idle_timeout`, and 149 kB plus a live task per orphan is an OOMKill on a
-  512Mi pod. `sessions.py` sets it, and holds it off for the duration of a tool call so a
-  four-hour CREST search is not reaped as "idle".
+- **Nothing expires an MCP session, so a client that vanishes leaks one**, and nothing counted how
+  many there were. `FastMCP` never passes upstream's `session_idle_timeout`, and 56.6 kB plus a
+  live task per orphan is an OOMKill on a 512Mi pod once enough of them arrive — which one
+  authenticated caller can make happen in seconds, far inside any idle window. `sessions.py` sets
+  the timeout, holds it off for the duration of a tool call so a four-hour CREST search is not
+  reaped as "idle", and refuses a handshake past `MCP_MAX_SESSIONS` with a 503 rather than minting
+  the session that exhausts the pod.
 - **`configure_logging()` must force, and must not run at import.** `FastMCP.__init__` calls
   `basicConfig` at import of the server's `tools.py`, so anything that does not pass `force=True`
   silently loses to it. But every server builds its app at *module scope*, so calling it from
@@ -100,7 +103,7 @@ from mcp_server_kit.identity import (
 from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
 from mcp_server_kit.schema_cache import install_validator_cache
-from mcp_server_kit.sessions import apply_session_idle_timeout
+from mcp_server_kit.sessions import apply_session_ceiling, apply_session_idle_timeout
 from mcp_server_kit.tracing import tool_call_span
 
 logger = logging.getLogger(__name__)
@@ -492,6 +495,11 @@ def connector_app(
     # describing nothing about the call — it only keeps the session alive while the call runs, so
     # a CREST search is never cut short by the timeout that exists to reap abandoned sessions.
     apply_session_idle_timeout(server)
+    # And the other half of the same resource: the timeout bounds how long one session lives, this
+    # bounds how many exist. Installed after it, so the ceiling's wrapper is the outermost on the
+    # manager and a refused handshake never reaches the reclaim sweep — there is nothing to reclaim
+    # on a request that was not served. See `sessions.apply_session_ceiling`.
+    apply_session_ceiling(server, name=name)
     # A pool of exactly one, and its own rather than the default. `asyncio.to_thread` hands work to
     # the *default* executor — the same pool every `servers/calc` tool offloads a calculation into,
     # and the one `engine/admission.py`'s ceiling does not govern — so a readiness check that

@@ -158,6 +158,31 @@ def test_a_live_session_is_reachable_by_id_through_the_managers_instance_map() -
     assert MCP_SESSION_ID_HEADER == "mcp-session-id"
 
 
+def test_a_session_is_minted_exactly_when_the_session_id_header_is_absent() -> None:
+    """The branch `sessions._would_mint_a_session` mirrors, read out of upstream's own source.
+
+    `apply_session_ceiling` has to decide *before* upstream does whether a request will add to
+    `_server_instances`, and it decides on the header alone. Upstream's `_handle_stateful_request`
+    branches the same way — session id present and known, serve it; present and unknown, 404;
+    absent, mint — and reads no method, no JSON-RPC body and no HTTP verb to do it.
+
+    Asserted against the source rather than by driving a request, because what must not drift is the
+    *condition*: a release that started minting on `method == "initialize"` instead would leave the
+    ceiling gating a set of requests that no longer overlaps the ones that cost memory, with every
+    behavioural test still green because the header is absent on an `initialize` either way.
+    """
+    source = inspect.getsource(StreamableHTTPSessionManager._handle_stateful_request)
+    assert "request_mcp_session_id = request.headers.get(MCP_SESSION_ID_HEADER)" in source
+    assert "if request_mcp_session_id is None:" in source, (
+        "upstream no longer decides to mint a session on the absence of the session-id header; "
+        "`mcp_server_kit.sessions._would_mint_a_session` mirrors that branch and has to be "
+        "re-derived from whatever replaced it"
+    )
+    # And the map it adds to is the one the ceiling counts, so "will mint" and "is counted" are
+    # about the same dict.
+    assert "self._server_instances[http_transport.mcp_session_id] = http_transport" in source
+
+
 async def test_list_tools_rebuilds_a_tools_schema_objects_every_time() -> None:
     """Why `schema_cache` keys on content: the schema *object* is not stable for a process.
 
