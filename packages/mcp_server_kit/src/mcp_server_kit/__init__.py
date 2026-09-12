@@ -17,6 +17,7 @@ egress.arm_from_env()
 
 # E402 is deliberate here: these imports MUST follow arming, not precede it — that is the whole
 # point of the block above. Moving them up (what the lint wants) reintroduces the bug.
+from mcp_server_kit import degradation as degradation  # noqa: E402
 from mcp_server_kit.app import DEFAULT_MAX_REQUEST_BYTES as DEFAULT_MAX_REQUEST_BYTES  # noqa: E402
 from mcp_server_kit.app import connector_app as connector_app  # noqa: E402
 from mcp_server_kit.datasets import Dataset as Dataset  # noqa: E402
@@ -35,6 +36,7 @@ __all__ = [
     "EgressForbidden",
     "connector_app",
     "current_caller",
+    "degradation",
     "egress",
     "load_dataset",
     "read_records",
