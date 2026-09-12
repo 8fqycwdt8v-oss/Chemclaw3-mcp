@@ -72,6 +72,22 @@ decision leaves a record behind and the row goes.
   **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors`.
 
+- [ ] **A path cited in a module docstring is checked by nothing, and the check that would do it is
+  not the one `CLAUDE.md` gets.** Until 2026-09-12
+  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py` named the pyexec sandbox at a path
+  missing its `src/<package>` segment, in two places, both copied rather than opened — the failure
+  `test_every_path_claude_md_cites_under_a_real_directory_resolves` exists to stop, one document
+  over. Extending that test to first-party source prose was measured the same day and is **not** a
+  one-liner: of 86 rooted path tokens under `packages/*/src` and `servers/*/src`, 52 do not resolve
+  from the repository root — a server's docstrings name their own tests directory *server-relatively*
+  and the fleet writes a sibling server's engine module with the `src/<package>` segment elided. So
+  the row is the resolution rule rather than the glob: decide whether a citation inside a server's
+  own source resolves against that server first, and whether the elided form is spelled out or
+  taught to the checker.
+  **Anchors:** `tests/test_fleet.py::test_every_path_claude_md_cites_under_a_real_directory_resolves`,
+  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
+
 ## 2 — The resource-bound ratchet, where it stops
 
 - [ ] **Neither ratchet can see a pod `env:` a cluster operator adds outside these files.** Both
