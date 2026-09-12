@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -638,24 +639,87 @@ def _env_pairs(node: object) -> list[tuple[str, str]]:
     return found
 
 
+def _instructions(text: str) -> list[str]:
+    """A Containerfile's instructions, one per entry, with backslash continuations joined.
+
+    Whole-line comments are dropped *before* the join, which is the order Docker's own parser uses
+    and the only one that is safe here: every `ENV` in this fleet sits under a paragraph of prose,
+    and joining first would let a comment line ending in a backslash swallow the instruction below
+    it. A comment *inside* a continued instruction is removed without ending it, which is also
+    Docker's behaviour.
+    """
+    joined: list[str] = []
+    buffer = ""
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        stripped = line.rstrip()
+        if stripped.endswith("\\"):
+            buffer += stripped[:-1] + " "
+            continue
+        joined.append(buffer + stripped)
+        buffer = ""
+    if buffer:
+        joined.append(buffer)
+    return joined
+
+
+def _containerfile_env(label: str, text: str) -> list[tuple[str, str]]:
+    r"""Every variable a Containerfile's `ENV` instructions set, however the instruction is spelled.
+
+    **A regex over physical lines reads two of this fleet's seven Containerfiles as setting
+    nothing.** `servers/rxnlabel` and `servers/rxnpredict` set `MCP_EGRESS_GUARD=on` as a
+    backslash-continuation of a multi-line `ENV`, so an `^ENV\s+MCP_EGRESS_...` match never saw it
+    — and would not have seen an `off` written the same way either. Measured before the fix: a
+    widened continuation form returned no offences at all, which is a ratchet reporting clean on
+    the one shape the tree actually uses.
+
+    So the parse is Docker's: continuations joined (`_instructions`), then `ENV k=v k2=v2` split
+    into its pairs with `shlex` so a quoted value survives, and the legacy `ENV name value` form —
+    still valid, still one variable — read as one. `label` only names the file in a message.
+    """
+    found: list[tuple[str, str]] = []
+    for instruction in _instructions(text):
+        if not re.match(r"ENV\s", instruction, re.IGNORECASE):
+            continue
+        try:
+            tokens = shlex.split(instruction)[1:]
+        except ValueError as exc:  # pragma: no cover - a malformed Containerfile
+            raise AssertionError(f"{label}: cannot parse {instruction!r}: {exc}") from exc
+        if not tokens:
+            continue
+        if "=" not in tokens[0]:
+            found.append((tokens[0], " ".join(tokens[1:])))
+            continue
+        for token in tokens:
+            name, _, value = token.partition("=")
+            if name:
+                found.append((name, value))
+    return found
+
+
+def _env_settings(label: str, text: str) -> list[tuple[str, str]]:
+    """Every environment variable one shipped file sets, whichever kind of file it is.
+
+    `label` decides how the text is read — a deployment manifest is YAML with `env:` entries, a
+    Containerfile is `ENV` instructions. Shared by both ratchets below, so the two cannot disagree
+    about what a file sets.
+    """
+    if label.endswith(".yaml"):
+        return _env_pairs(list(yaml.safe_load_all(text)))
+    return _containerfile_env(label, text)
+
+
 def _egress_offences(label: str, text: str) -> list[str]:
     """Every way one shipped file departs from the posture: guard on, allowlist empty.
 
-    `label` names the file in the message and decides how it is read — a deployment manifest is
-    YAML with `env:` entries, a Containerfile is `ENV NAME=value` lines. Split out from the test so
-    the ratchet can be shown to bite on a widened manifest without one existing in the tree.
+    Split out from the test so the ratchet can be shown to bite on a widened manifest without one
+    existing in the tree.
     """
     offences: list[str] = []
-    if label.endswith(".yaml"):
-        settings = _env_pairs(list(yaml.safe_load_all(text)))
-        if "envFrom" in text:
-            offences.append(f"{label}: uses envFrom, which can carry MCP_EGRESS_* unseen")
-    else:
-        settings = [
-            (match.group(1), match.group(2).strip().strip("\"'"))
-            for match in re.finditer(r"^ENV\s+(MCP_EGRESS_[A-Z_]+)=(.*)$", text, re.MULTILINE)
-        ]
-    for name, value in settings:
+    if label.endswith(".yaml") and "envFrom" in text:
+        offences.append(f"{label}: uses envFrom, which can carry MCP_EGRESS_* unseen")
+    for name, value in _env_settings(label, text):
         if name == "MCP_EGRESS_ALLOW":
             offences.append(f"{label}: sets MCP_EGRESS_ALLOW={value!r}")
         if name == "MCP_EGRESS_GUARD" and value.strip().lower() in {"off", "0", "false", "no"}:
@@ -701,7 +765,14 @@ def test_the_allowlist_check_bites() -> None:
     """A ratchet that passes on everything is not a ratchet, so it is shown failing on purpose.
 
     The tree it guards is clean today — which is exactly why the check above cannot demonstrate
-    that it works. These three inputs are the shapes a widening would arrive in.
+    that it works. These inputs are the shapes a widening would arrive in.
+
+    **The continuation arm is here because its absence was the hole.** This test drove only the
+    own-line `ENV MCP_EGRESS_GUARD=off` form — which is the one shape `servers/rxnlabel` and
+    `servers/rxnpredict` do *not* use. Both set the guard inside a multi-line `ENV`, and the
+    physical-line regex this check used to run could not see it, so for two of seven servers a
+    deployment could have written `off` in situ with the ratchet still green. Certifying the arm the
+    tree does not exercise is the failure mode, not the regex.
     """
     widened = _egress_offences(
         "servers/x/deploy/deployment.yaml",
@@ -715,3 +786,46 @@ def test_the_allowlist_check_bites() -> None:
         "servers/x/Containerfile: disables the egress guard ('off')"
     ]
     assert _egress_offences("servers/x/Containerfile", "ENV MCP_EGRESS_GUARD=on\n") == []
+
+    # The shape the two ML servers actually ship: one `ENV` spanning lines, the guard not first and
+    # not last, a comment paragraph above it and a comment line inside the continuation.
+    continued = (
+        "# The three switches that keep inference local.\n"
+        "ENV HF_HOME=/opt/models/hf \\\n"
+        "    HF_HUB_OFFLINE=1 \\\n"
+        "# a comment inside a continuation does not end it\n"
+        "    MCP_EGRESS_GUARD=off \\\n"
+        '    MCP_EGRESS_ALLOW="evil.example.com" \\\n'
+        "    CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models\n"
+    )
+    assert _egress_offences("servers/x/Containerfile", continued) == [
+        "servers/x/Containerfile: disables the egress guard ('off')",
+        "servers/x/Containerfile: sets MCP_EGRESS_ALLOW='evil.example.com'",
+    ]
+    assert _egress_offences(
+        "servers/x/Containerfile", continued.replace("GUARD=off", "GUARD=on")
+    ) == ["servers/x/Containerfile: sets MCP_EGRESS_ALLOW='evil.example.com'"]
+
+    # The guard set on as a continuation is what every shipped file that uses the form does, and it
+    # must read as clean — a parser that flagged it would be noticed, a parser that cannot see it
+    # at all is what shipped.
+    assert _containerfile_env(
+        "servers/x/Containerfile", continued.replace("GUARD=off", "GUARD=on")
+    ) == [
+        ("HF_HOME", "/opt/models/hf"),
+        ("HF_HUB_OFFLINE", "1"),
+        ("MCP_EGRESS_GUARD", "on"),
+        ("MCP_EGRESS_ALLOW", "evil.example.com"),
+        ("CHEMCLAW_RXNPREDICT_MODEL_DIR", "/opt/models"),
+    ]
+
+    # A comment line ending in a backslash must not swallow the instruction under it, which is why
+    # comments are dropped before the join rather than after.
+    assert _containerfile_env(
+        "servers/x/Containerfile", "# a trailing backslash in prose \\\nENV MCP_EGRESS_GUARD=off\n"
+    ) == [("MCP_EGRESS_GUARD", "off")]
+
+    # Docker's legacy space-separated form sets one variable to the rest of the line.
+    assert _containerfile_env(
+        "servers/x/Containerfile", "ENV MCP_EGRESS_ALLOW evil.example.com"
+    ) == [("MCP_EGRESS_ALLOW", "evil.example.com")]
