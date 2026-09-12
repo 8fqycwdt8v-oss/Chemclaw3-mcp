@@ -379,11 +379,19 @@ def binary_version() -> str:
     side rather than a silent stale hit — the same rule `engine_version` applies to tblite.
 
     **Returns `"absent"` rather than raising**, and that is the behaviour the whole port exists to
-    contain. Here it is honest: this process really did resolve the backend, found no binary, and
-    `resolve_backend()` will therefore never select `"xtb"`, so the string never reaches a key. A
+    contain. Here it is honest: this process really did resolve the backend and found no binary. A
     *client* calling an equivalent function would get the same word for a different reason — it
     never had the binary to begin with — and would stamp a valid-looking version onto a prediction
     the ledger cannot match. Hence: derived here, shipped in the result, never re-derived.
+
+    **This paragraph used to add "and `resolve_backend()` will therefore never select `xtb`, so the
+    string never reaches a key", which is true under `xtb_engine=auto` and false under the explicit
+    setting** — that branch returns `"xtb"` without asking whether a binary exists. Measured on an
+    image with none: `CHEMCLAW_XTB_ENGINE=xtb` produced a well-formed `calc_version` ending
+    `opt-GFN2-xTB+xtb+xtb-absent/...`, which is a Chemclaw3 ledger key naming a program that never
+    ran. What stops that reaching a key now is `app._readiness`, which refuses traffic for the
+    combination rather than this function refusing to answer — a readiness failure names the
+    configuration to fix, where a raise here would surface as a failed calculation.
 
     The first call in a process shells out; `lru_cache` means it happens once. `app.py` warms it at
     startup so no request pays the 30 s worst case on the event loop.

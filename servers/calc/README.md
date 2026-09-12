@@ -203,6 +203,13 @@ than raising**. So the reconstruction would be well-formed, would match zero led
 calibration that is merely unreachable. Silent, not loud, which is why it is a returned field and a
 test (`tests/test_calc_version.py`) rather than a convention.
 
+**This pod can produce the same string, and `/healthz` is what stops it.** `resolve_backend()`
+honours an explicit `CHEMCLAW_XTB_ENGINE=xtb` without checking that the binary exists, so on an
+image with none the version came back `...opt-GFN2-xTB+xtb+xtb-absent/...` — well-formed, derived
+here rather than reconstructed, and still naming a program that never ran. The readiness probe now
+refuses that combination rather than serving it (`tests/test_readiness.py`,
+`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`).
+
 ### The three copied definitions — and the one that still has to agree
 
 Neither repository may import the other, so three definitions are copied. Each has a test pinning it
