@@ -16,14 +16,16 @@ imports it can also un-patch the guard". Both spellings are covered now, and so 
 as `"http://" + "example" + ".com"`, which the text regex read as three harmless fragments.
 
 **What is deliberately still not covered, so that nobody has to infer it from a clean scan:** an
-import whose module name is computed (`importlib.import_module(name)`), and any address assembled
-at runtime — an f-string, a `%` format, a `"".join`, a decoded blob. The first has a real caller in
-this fleet (`servers/rxnpredict` loads its optional predictor plug-ins that way), and flagging the
-shape would make correct code fail while teaching the next reader to reach for `exempt`. The
-second is unbounded by construction: no static reader evaluates arbitrary expressions. **This is a
-review-time control against what somebody writes down, not a boundary** — what a computed import
-or a computed address actually does is `egress.py`'s job at runtime and `make offline-run`'s when
-the call leaves Python entirely.
+import whose module name is computed *from a value* (`importlib.import_module(name)`), and any
+address assembled at runtime — an f-string, a `%` format, a `"".join`, a decoded blob. The first has
+a real caller in this fleet (`servers/rxnpredict` loads its optional predictor plug-ins that way),
+and flagging the shape would make correct code fail while teaching the next reader to reach for
+`exempt`. The second is unbounded by construction: no static reader evaluates arbitrary
+expressions. A name assembled from *literals* is a different case and **is** covered —
+`import_module("gr" + "pc")` folds to `grpc`, the same folding `host_literals` does on a split
+address. **This is a review-time control against what somebody writes down, not a boundary** — what
+a computed import or a computed address actually does is `egress.py`'s job at runtime and
+`make offline-run`'s when the call leaves Python entirely.
 
 `socket` is on the list even though it is stdlib and the guard patches it, because a server here has
 no legitimate reason to hold one — and a module that imports it can also un-patch the guard.
@@ -39,17 +41,27 @@ pulled in under `servers/rxnpredict`'s ML extras by `tensorboard` — so "nobody
 the only thing standing between this fleet and an uncounted channel out. A prefix match covers
 `grpc.aio` and the rest of the package.
 
+**What that entry does and does not buy, because the sentence above it used to overstate it.** This
+scan reads **first-party roots only** — the `src/` trees a server passes in — so a
+`tensorboard`→`grpcio` import inside the environment is invisible to it in both the old state and
+the new. The entry refuses `grpc` in *our* code, which is cheap and correct and is the whole claim:
+it is a review-time ban on writing the import, not a boundary around the dependency tree. What the
+installed packages do with the module is the runtime guard's business — and `grpc` is precisely the
+case the runtime guard cannot see either, which is why `make offline-run` exists.
+
 **`ctypes` is deliberately *not* on the list, and that is stated here because a clean scan would
 otherwise be read as covering it.** `ctypes.CDLL("libc.so.6").connect(...)` and `libc.getaddrinfo`
 both succeed with the guard armed, for exactly grpc's reason — the call never passes through
 Python's `socket` module. Unlike `grpc`, though, `ctypes` has a real caller in this fleet that has
-nothing to do with the network: `servers/pyexec/engine/sandbox.py` calls `prctl(PR_SET_DUMPABLE, 0)`
-through it, which is one constant against a whole dependency. Banning it would mean exempting that
-file, and `exempt` is for a file whose network import is the *disabling* one — an exemption granted
-for any other reason is how a scan stops being read. So `ctypes` is outside **both** in-repo layers,
-the runtime guard by construction and this scan by decision, and `make offline-run` is what covers
-it. `tests/test_no_egress.py` pins the tree's only importer of it, so a second one has to argue the
-case again instead of inheriting this one.
+nothing to do with the network: `servers/pyexec/src/chemclaw_mcp_pyexec/engine/sandbox.py` calls
+`prctl(PR_SET_DUMPABLE, 0)` through it, which is one constant against a whole dependency. Banning it
+would mean exempting that file, and `exempt` is for a file whose network import is the *disabling*
+one — an exemption granted for any other reason is how a scan stops being read. So `ctypes` is
+outside **both** in-repo layers, the runtime guard by construction and this scan by decision, and
+`make offline-run` is what covers it. `tests/test_no_egress.py` pins its only importer under the
+first-party `src/` roots — which is the set this scan reads, and not the tree:
+`servers/pyexec/tests/test_sandbox.py` imports `ctypes` too, to check the sandbox it is testing. So
+a second *server module* has to argue the case again instead of inheriting this one.
 
 **`_socket` is on the list too, and it is the one the runtime guard cannot reach.** `socket.socket`
 subclasses the C type `_socket.socket`, and `egress.arm()` rebinds the Python subclass — a
@@ -120,7 +132,12 @@ def _is_forbidden(module: str) -> bool:
 
 
 def _dynamic_import_target(node: ast.Call) -> str | None:
-    """The module a `__import__("x")` or `import_module("x")` call names, when it is a literal."""
+    """The module a `__import__("x")` or `import_module("x")` call names, when it is a literal.
+
+    Folded through `_constant_string`, so `import_module("gr" + "pc")` is the module it spells — the
+    same folding `host_literals` already did for an address split across literals, and the same
+    reason: a static reader that stops at `ast.Constant` reads a split name as no name at all.
+    """
     func = node.func
     if isinstance(func, ast.Attribute):
         called = func.attr
@@ -130,10 +147,7 @@ def _dynamic_import_target(node: ast.Call) -> str | None:
         return None
     if called not in _DYNAMIC_IMPORTS or not node.args:
         return None
-    first = node.args[0]
-    if isinstance(first, ast.Constant) and isinstance(first.value, str):
-        return first.value
-    return None
+    return _constant_string(node.args[0])
 
 
 def network_imports(source: Path) -> list[str]:

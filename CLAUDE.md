@@ -24,7 +24,7 @@ and no core edit is needed. So the target every server here is built against is:
 | `manifests/` | One directory per **connector** holding its `connector.yaml` (a symlink). What `CHEMCLAW_CONNECTORS_DIR` points at, and only what may safely go there. |
 | `manifests-internal/` | The same, for the servers Chemclaw3 must **not** discover — `calc` (a backend behind `cached_compute`) and `rxnlabel` (a background drain's primitives). No published `export` line names it, and each manifest here declares `mount: backend`, a key Chemclaw3's `extra="forbid"` manifest model refuses. |
 | `docs/` | How to wire this fleet to Chemclaw3, the checklist for adding a server, the decision record (`docs/decisions/`) and the open queue (`docs/BACKLOG.md`). |
-| `scripts/` | Operational scripts outside any server's runtime — today, the offline check. |
+| `scripts/` | Operational scripts outside any server's runtime; `scripts/README.md` lists them, and a test reads that list against the directory. |
 | `tests/` | The fleet-level invariants no single server can see about itself. |
 | `MODULES.md` | The catalogue and the authoritative port registry. |
 
@@ -197,16 +197,24 @@ independent layers because a rule that lives in one place rots:
 
    **It covered only `connect` for a while, and the docstring named DNS anyway** — so two of the
    three examples above walked past it, and a `bytes` host in the address tuple walked past it in
-   pure Python. What is still outside it *by construction* is now stated rather than implied: a
-   **child process**, a **`ctypes` call into `libc`**, the private C type **`_socket.socket`**
-   (`arm()` rebinds the methods of the Python `socket.socket` subclass, never the C type it
-   inherits from), and any syscall from a **compiled extension** — `grpcio`'s transport is the one
-   this lockfile actually reaches, measured opening a real connection to a non-loopback address
-   with the guard armed and the refusal counter flat. Layer 3 below cannot see any of the four
-   either. Two of them layer 2 *can*, and it is the only in-repo layer that can, so both are on its
-   list: `_socket` and `grpc`. The other two are `make offline-run`'s, because it takes the network
-   away instead of asking Python nicely — and `ctypes` is off layer 2's list on purpose, for the
-   reason `no_egress.py` gives in the paragraph naming its one caller.
+   pure Python. What is still outside it *by construction* is now stated rather than implied, and it
+   is **four channels**: a **child process**, a **`ctypes` call into `libc`**, the private C type
+   **`_socket.socket`** (`arm()` rebinds the methods of the Python `socket.socket` subclass, never
+   the C type it inherits from), and any syscall from a **compiled extension**.
+
+   Which of the other layers reaches which is worth getting right, because this paragraph had it
+   wrong in both directions: it counted `grpc` as one of the four, and it said layer 2 sees two of
+   them. `grpc` is not a channel, it is the **instance** of the fourth that this lockfile actually
+   reaches — measured opening a real connection to a non-loopback address with the guard armed and
+   the refusal counter flat. And what layer 2 sees is an **import**, which is a different object
+   from a channel: three of the four arrive as one (`ctypes`, `_socket`, and a named compiled
+   extension such as `grpc`), and layer 2 refuses two of those three. `_socket` and `grpc` are on
+   its list; `ctypes` is off it on purpose, for the reason `no_egress.py` gives in the paragraph
+   naming its one caller — so "layer 2 cannot see `ctypes`" and "`ctypes` is deliberately off layer
+   2's list" are not both available, and only the second is true. The **child process** is the one
+   no static reader can help with at all, because `subprocess` is how `pyexec` and `calc` do their
+   work. Layer 3 sees none of the four. What is left is `make offline-run`'s, because it takes the
+   network away instead of asking Python nicely.
 2. **The static scan** (`mcp_server_kit/no_egress.py`), one three-line test per server. AST-based,
    not grep-based — `import httpx as h` and `from requests import get` read differently as text and
    identically as a tree.
@@ -451,7 +459,7 @@ make check           # lint + mypy --strict + the whole suite + the dependency a
 make deps-audit      # that last step alone: pip-audit over the exported lockfile
 make offline-run     # the same suite with the network namespace taken away
 make run-props       # the reference server on 127.0.0.1:8850
-make run-safety      # one per server; see the Makefile for the full list
+make run-safety      # one per server, on the port that server's own manifest publishes
 make run-calc        # the heaviest one — a call here can be minutes or hours, deliberately
 ```
 

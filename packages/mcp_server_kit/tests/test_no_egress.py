@@ -37,6 +37,7 @@ from pathlib import Path
 import mcp_server_kit
 from mcp_server_kit.no_egress import (
     FORBIDDEN_MODULES,
+    _dynamic_import_target,
     assert_no_egress_sources,
     host_literals,
     network_imports,
@@ -227,19 +228,43 @@ def test_a_grpc_channel_is_flagged_however_it_is_spelled(tmp_path: Path) -> None
     dynamic.write_text('import importlib\nimportlib.import_module("grpc")\n', encoding="utf-8")
     assert network_imports(dynamic) == ["grpc"]
 
+    # A name split across literals is one name. `_constant_string` was already in this module for
+    # `host_literals`, so the fix was to call it — and until it was called, `"gr" + "pc"` was a
+    # dynamic import of nothing at all.
+    folded = tmp_path / "folded.py"
+    folded.write_text('import importlib\nimportlib.import_module("gr" + "pc")\n', encoding="utf-8")
+    assert network_imports(folded) == ["grpc"]
+
 
 def test_ctypes_is_outside_both_in_repo_layers_and_has_exactly_one_caller() -> None:
     """The `ctypes` case is argued rather than covered, and this is what keeps the argument honest.
 
     `ctypes.CDLL("libc.so.6").connect(...)` walks past the armed guard for grpc's reason, and it is
     *not* in `FORBIDDEN_MODULES` — because the one place in this fleet that imports it is
-    `servers/pyexec/engine/sandbox.py`, calling `prctl(PR_SET_DUMPABLE, 0)`. Banning the module
+    `servers/pyexec/src/chemclaw_mcp_pyexec/engine/sandbox.py`, calling `prctl(PR_SET_DUMPABLE, 0)`.
+    Banning the module
     would mean exempting that file, and `exempt` is reserved for a file whose network import is the
     disabling one; `no_egress.py`'s docstring says why a wider exemption is worse than no check.
 
     So the decision is pinned from both ends: the module stays off the list, and the list of files
     that import it stays at the one whose use was argued. A second importer fails here, which is the
     moment to decide whether `ctypes` has become a network surface in this tree.
+
+    **"Pinned at both ends" was true of `ctypes` and false of `ctypes.util`**, which is the same
+    module with a submodule after it. This compared `alias.name == "ctypes"` exactly, so three
+    spellings walked past it — measured 2026-09-12, each importing cleanly and each binding a name
+    with full access to `CDLL`:
+
+        import ctypes.util                       # binds `ctypes`; `ctypes.CDLL` is right there
+        from ctypes.util import find_library     # the library resolver, which is the first step
+        importlib.import_module("ctypes")        # the spelling `network_imports` already covers
+
+    The comparison is on the **root package** now, and the dynamic form goes through the scanner's
+    own `_dynamic_import_target` rather than a second copy of it.
+
+    The set of importers is the first-party `src/` roots, which is what this scan reads. It is not
+    the tree: `servers/pyexec/tests/test_sandbox.py` imports `ctypes` to drive the sandbox, and a
+    test is not a server module. The module docstring says it that way too.
     """
     assert "ctypes" not in FORBIDDEN_MODULES
 
@@ -250,13 +275,39 @@ def test_ctypes_is_outside_both_in_repo_layers_and_has_exactly_one_caller() -> N
         str(source.relative_to(workspace))
         for root in roots
         for source in root.rglob("*.py")
-        if any(
-            (isinstance(node, ast.Import) and any(a.name == "ctypes" for a in node.names))
-            or (isinstance(node, ast.ImportFrom) and node.module == "ctypes")
-            for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
-        )
+        if _imports_root(ast.parse(source.read_text(encoding="utf-8")), "ctypes")
     }
     assert importers == {"servers/pyexec/src/chemclaw_mcp_pyexec/engine/sandbox.py"}, (
         f"{sorted(importers)!r} import ctypes; the module is off FORBIDDEN_MODULES because exactly "
         "one file needed it for `prctl`, and a second caller has to argue that again"
     )
+
+    # The three spellings that used to walk past this check, and the one that never did.
+    for source in (
+        "import ctypes.util",
+        "from ctypes.util import find_library",
+        'import importlib\nimportlib.import_module("ctypes")',
+        "import ctypes",
+    ):
+        assert _imports_root(ast.parse(source), "ctypes"), (
+            f"{source!r} reads as not importing ctypes"
+        )
+    assert not _imports_root(ast.parse("import ctypeslike"), "ctypes"), (
+        "a module whose name merely starts with the root is not that root"
+    )
+
+
+def _imports_root(tree: ast.Module, root: str) -> bool:
+    """Whether `tree` imports `root` or anything under it, however the import is spelled."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name.split(".")[0] == root for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == root:
+                return True
+        elif isinstance(node, ast.Call):
+            target = _dynamic_import_target(node)
+            if target is not None and target.split(".")[0] == root:
+                return True
+    return False

@@ -29,11 +29,14 @@ host. And four channels are outside any in-process patch by construction — a *
 (`subprocess`, `os.system`), a **`ctypes` call straight into `libc.connect`**, the private C type
 **`_socket.socket`** (whose methods `arm()` rebinds only on the Python `socket.socket` subclass, so
 a `_socket.socket().connect(...)` never sees the guard — caught statically by `no_egress.py`, which
-lists `_socket`), and any syscall made from a compiled extension. Those are `make offline-run`'s
-job: it takes the network namespace away,
-which is the only layer that does not depend on the caller going through Python. `servers/pyexec`
-is the server this matters most for, and its README states the same division — the child process
-and its rlimits are the boundary there, not the guards inside the parent.
+lists `_socket`), and any syscall made from a compiled extension — of which `grpc` is the instance
+this lockfile reaches, and `no_egress.py` lists it for `_socket`'s reason: a *named* extension can
+be refused statically, the channel as a class cannot. A child process is the one of the four that
+no static reader can help with either, because `subprocess` is how `pyexec` and `calc` do their
+work. Those are `make offline-run`'s job: it takes the network namespace away, which is the only
+layer that does not depend on the caller going through Python. `servers/pyexec` is the server this
+matters most for, and its README states the same division — the child process and its rlimits are
+the boundary there, not the guards inside the parent.
 
 The allowlist is `MCP_EGRESS_ALLOW`, and it is **empty by default and empty in the shipped chart**.
 It exists so a build-time ingestion step — the one sanctioned moment a dataset is fetched — can run
@@ -52,7 +55,14 @@ from typing import Any
 
 from mcp_server_kit.metrics import EGRESS_ALLOWED_HOSTS, EGRESS_GUARD_ARMED, EGRESS_REFUSED
 
-__all__ = ["EgressForbidden", "allowed_hosts", "arm", "armed", "disarm"]
+__all__ = [
+    "GUARD_DISABLED_VALUES",
+    "EgressForbidden",
+    "allowed_hosts",
+    "arm",
+    "armed",
+    "disarm",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +77,14 @@ class EgressForbidden(OSError):
 
 _ALLOW_ENV = "MCP_EGRESS_ALLOW"
 _GUARD_ENV = "MCP_EGRESS_GUARD"
+
+# The values of `MCP_EGRESS_GUARD` that mean "do not arm". Public and a module constant rather than
+# a literal inside `arm_from_env`, because the ratchet that refuses a shipped disabling
+# (`tests/test_fleet.py`) has to know *exactly* this set: it flags any value it cannot prove arms
+# the guard, and a transcribed copy would go on agreeing with itself if a spelling were added here.
+# Everything else arms, **the empty string included** — a bare `ENV MCP_EGRESS_GUARD=` is not a
+# disabling, and `tests/test_egress.py` drives the whole table rather than asserting it in prose.
+GUARD_DISABLED_VALUES = frozenset({"off", "0", "false", "no"})
 
 _original_connect = socket.socket.connect
 _original_connect_ex = socket.socket.connect_ex
@@ -322,13 +340,13 @@ def disarm() -> None:
 
 
 def arm_from_env() -> None:
-    """Arm unless `MCP_EGRESS_GUARD` is explicitly `off`.
+    """Arm unless `MCP_EGRESS_GUARD` holds one of `GUARD_DISABLED_VALUES`.
 
     Called from this package's `__init__`, so importing any part of a server arms it. The opt-out
     exists for the ingestion scripts and for debugging; it is not set in any shipped deployment,
     and `tests/test_egress.py` asserts the default is on.
     """
-    if os.environ.get(_GUARD_ENV, "on").strip().lower() in {"off", "0", "false", "no"}:
+    if os.environ.get(_GUARD_ENV, "on").strip().lower() in GUARD_DISABLED_VALUES:
         # Recorded rather than merely returned: a deployment that shipped `MCP_EGRESS_GUARD=off`
         # used to be visible only in a docstring, and the gauge is what makes "the guard is armed"
         # a fact a scrape can check instead of a claim a document makes. The allowlist it was

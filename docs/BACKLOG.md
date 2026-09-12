@@ -5,10 +5,13 @@ What is still open in this fleet, highest-consequence first. Top = next.
 **1 · A queue, not a log.** A closed row is **deleted** in the commit that closes it. The commit is
 the record and `git log` is the history: do not strike a row through, do not append "Done" under it,
 and do not add a dated section saying a row above has gone stale. `Chemclaw3`'s own file is the
-evidence for the rule rather than an argument for it — it reached 4,717 lines in twenty-one days,
-growing about three lines for every line removed, because closing a row there meant annotating it.
-(That register's own length is a number about another checkout, so it is not quoted here; rule 4
-below is the general form of the same caution.)
+evidence for the rule rather than an argument for it, and the figure is dated because it belongs to
+a checkout no test here can read: measured 2026-09-12 against a full clone of that repository, its
+`docs/planning/BACKLOG.md` grew from 68 lines on the day it was created (2026-07-19) to **4,737** on
+2026-08-15 — twenty-seven days — because closing a row there meant annotating it; one pass the next
+day cut it to 419. That is rule 4 applied to a number instead of to a row, and the date is why it is
+worth keeping: the same history read against a *shallow* clone measures a maximum of 1,534 lines and
+reads as a refutation.
 
 **2 · Every row names an anchor in the tree** — a file, a symbol, a manifest key, a port — so any
 row can be checked with one `grep` instead of an argument. A row that cannot name one is not ready
@@ -44,9 +47,11 @@ decision leaves a record behind and the row goes.
 - [ ] **Two of the four channels outside the runtime guard are covered by nothing `make check`
   runs.** `egress.py` names four channels it cannot reach by construction: a child process, a
   `ctypes` call into `libc`, the private C type `_socket.socket`, and any syscall from a compiled
-  extension. The static scan sees two of them (`_socket`, and `grpc` since `362e764`). The other two
+  extension. Three of those arrive as an *import*, which is what the static scan reads, and it
+  refuses two: `_socket`, and a named compiled extension (`grpc` since `c1772fb`). The other two
   — `ctypes`, off that list deliberately because `servers/pyexec`'s sandbox needs it for
-  `prctl(PR_SET_DUMPABLE, 0)`, and a child process, off it by construction — are covered only by
+  `prctl(PR_SET_DUMPABLE, 0)`, and a child process, which no static reader can help with because
+  `subprocess` is how `pyexec` and `calc` work — are covered only by
   `make offline-run`, which takes the network namespace away. That target is **not** in `make
   check`: it needs `unshare`, so CI runs it as its own step and a local gate can be green without
   it. Decide whether the Makefile can detect `unshare` and fold it in, or whether the honest
@@ -54,6 +59,34 @@ decision leaves a record behind and the row goes.
   `tests/test_backlog_register.py` uses for the rows it cannot open.
   **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/egress.py`,
   `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`, `scripts/offline_check.py`, `Makefile`.
+
+- [ ] **A dynamic import whose name is computed from a *value* is outside the static scan, and
+  always will be.** `importlib.import_module("gr" + "pc")` is folded to `grpc` since 2026-09-12, but
+  `import_module(name)` cannot be resolved by any static reader, and `servers/rxnpredict` loads its
+  optional predictor plug-ins exactly that way — so flagging the shape would fail correct code and
+  teach the next reader to reach for `exempt`. The same is true of an address assembled at runtime.
+  What covers them is the runtime guard for anything going through Python and `make offline-run` for
+  anything that is not, which is the target `make check` does not run — the row above. Decide
+  whether that pair is the answer or whether a server loading plug-ins owes a manifest of the module
+  names it may load, which *is* statically checkable.
+  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors`.
+
+- [ ] **A path cited in a module docstring is checked by nothing, and the check that would do it is
+  not the one `CLAUDE.md` gets.** Until 2026-09-12
+  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py` named the pyexec sandbox at a path
+  missing its `src/<package>` segment, in two places, both copied rather than opened — the failure
+  `test_every_path_claude_md_cites_under_a_real_directory_resolves` exists to stop, one document
+  over. Extending that test to first-party source prose was measured the same day and is **not** a
+  one-liner: of 86 rooted path tokens under `packages/*/src` and `servers/*/src`, 52 do not resolve
+  from the repository root — a server's docstrings name their own tests directory *server-relatively*
+  and the fleet writes a sibling server's engine module with the `src/<package>` segment elided. So
+  the row is the resolution rule rather than the glob: decide whether a citation inside a server's
+  own source resolves against that server first, and whether the elided form is spelled out or
+  taught to the checker.
+  **Anchors:** `tests/test_fleet.py::test_every_path_claude_md_cites_under_a_real_directory_resolves`,
+  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
 ## 2 — The resource-bound ratchet, where it stops
 
@@ -64,7 +97,9 @@ decision leaves a record behind and the row goes.
   is whether the serving side should *say* what it is running: an admission ceiling and an atom
   bound reported on `/healthz` beside the corpus versions would make the live value observable from
   a probe rather than inferred from an image. That is a readiness-payload change, not a ratchet
-  change. (`envFrom` is already refused outright, which is the one case a file can hide.)
+  change. (An `envFrom` block, a `valueFrom:` reference and a `command:` assignment are all refused
+  outright now. This sentence used to say `envFrom` was "the one case a file can hide", which was
+  false when it was written: the other two were parsed as setting nothing at all.)
   **Anchors:** `tests/test_fleet.py::_bound_offences`, `servers/calc/deploy/deployment.yaml`,
   `packages/mcp_server_kit/src/mcp_server_kit/app.py`.
 
@@ -80,6 +115,20 @@ decision leaves a record behind and the row goes.
   whether the ratchet covers container annotations whose validator accepts a string, or whether this
   field is argued in the register instead.
   **Anchors:** `tests/test_fleet.py::_numeric_settings_fields`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
+
+- [ ] **The bound derivation reads two configuration mechanisms and four shapes past them are
+  invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
+  of these shapes exists in `src/` today and each would enter it as an ordinary line: a read through
+  a helper (`_env_int("X", 4)`), a settings class inheriting from a `BaseSettings` *subclass* (the
+  `env_prefix` is on the parent), a nested `BaseModel` reached through `env_nested_delimiter`, and
+  `Field(4, validation_alias="REAL_NAME")` — the last being worse than absent, because the bound is
+  found under the prefixed field name rather than under the alias the environment actually reads, so
+  the ratchet would refuse the wrong variable and wave the real one through. `os.getenv` and
+  `Annotated[int, …]` were in this list and are closed. Decide whether following an alias and a
+  parent class is worth the AST, or whether the honest arrangement is the floor that already exists
+  (`_BOUND_ANCHORS`) plus this row.
+  **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
 
 ## 3 — The gate itself
