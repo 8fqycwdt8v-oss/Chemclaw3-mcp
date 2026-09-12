@@ -78,7 +78,8 @@ servers/<name>/
     ├── test_tools.py            # what the tools answer, and what they refuse
     ├── test_no_egress.py        # three lines; see props
     ├── test_deploy.py           # the NetworkPolicy, asserted in both directions
-    └── test_server.py           # real socket, real handshake, real 401, manifest mirror
+    └── test_server.py           # real socket, real handshake, the manifest mirror, and
+                                 #   assert_bearer_is_enforced on every arm of the credential
 ```
 
 Then symlink the manifest — never copy it — into the bucket that says what the server *is*:
@@ -208,5 +209,12 @@ Then wire it to a real Chemclaw3 checkout following [`integration.md`](integrati
 agent a question only this server can answer. Confirm the tool was called — `source` in the answer
 is the tell — and check `/readyz`, because an unreachable connector degrades silently rather than
 erroring.
+
+The suite already refuses a server that skips the credential proof: `test_server.py` must call
+`mcp_server_kit.testing.assert_bearer_is_enforced` against the running fixture, and
+`tests/test_fleet.py::test_every_server_proves_its_bearer_check_against_a_running_server` is what
+notices that it does not. Copy the call from any existing server — it needs the base URL, the
+manifest and the token the fixture put in the environment, and it drives the anonymous caller, a
+wrong token, a wrong scheme, the credential serving, and the declared variable unset.
 
 Finally, update `MODULES.md`'s status row and the port table in `CLAUDE.md` if a block changed.

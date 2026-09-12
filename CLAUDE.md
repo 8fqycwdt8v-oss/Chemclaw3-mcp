@@ -155,6 +155,18 @@ that helper are non-obvious, and each is quiet when wrong:
 - **Fail closed.** A declared `token_env` whose variable is unset refuses every request. Chemclaw3
   once mounted a secret, recorded the control as enabled, and served every tool to anything that
   could reach the pod, because the serving side never checked.
+- **Every server proves that against its own running listener, and `connector_app` being shared is
+  not the reason it need not.** "The helper enforces it, so every server enforces it" is precisely
+  the inference a mount bypass defeats — the credential can be declared, reviewed and applied to
+  everything except the mounted route. So `mcp_server_kit.testing.assert_bearer_is_enforced` drives
+  each server's real app under uvicorn on loopback through the anonymous caller, a wrong token, the
+  right secret under the wrong scheme, the credential actually serving, and the declared variable
+  unset; the manifest is what it reads the variable's *name* from, so the serving side is held to
+  what Chemclaw3 was told to send.
+  `tests/test_fleet.py::test_every_server_proves_its_bearer_check_against_a_running_server` is what
+  makes an eighth server owe the same proof. What that lane does **not** prove is what an image
+  does: it runs this repository's `app` object under this repository's uvicorn, so a Containerfile
+  that starts a different entrypoint, or an ingress in front of the pod, is outside it.
 - **`X-Chemclaw-Actor/Session/Correlation-Id/Dry-Run` are logged, never trusted.** Authorization
   happened in Chemclaw3 before the call was made. A server that gated on one of these headers would
   be trusting an unauthenticated string while looking like it had access control.

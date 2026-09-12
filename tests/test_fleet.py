@@ -1717,3 +1717,28 @@ def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
         "a root `tests/test_deploy.py` now exists; `CLAUDE.md` §4 says it does not and points at "
         "the per-server files instead"
     )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_server_proves_its_bearer_check_against_a_running_server(server: Path) -> None:
+    """`assert_bearer_is_enforced` is called from every server's own `test_server.py`.
+
+    `connector_app` is shared, so one proof of the credential *looks* sufficient — and that is the
+    inference the failure this fleet guards against defeats. A mounted MCP surface is exactly the
+    route an enclosing app's declared credential does not reach, so the question "is the check on
+    `/mcp` in this image" is a question about each server's composition, not about the helper.
+
+    A shape assertion, deliberately, and it is the only kind available here: what the credential
+    *does* can only be seen by a request, which is what the call this looks for makes. Without it a
+    server added next year ships with the fleet's tidiest-looking auth story and nothing driving
+    it, which is how `servers/safety/src` once sat outside `make type` for a release.
+    """
+    tests = server / "tests" / "test_server.py"
+    assert tests.is_file(), f"{server.name} has no tests/test_server.py"
+    tree = ast.parse(tests.read_text(encoding="utf-8"), filename=str(tests))
+    called = {_called_name(node) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    assert "assert_bearer_is_enforced" in called, (
+        f"{tests.relative_to(ROOT)} never calls assert_bearer_is_enforced, so nothing drives this "
+        "server's bearer check against a running listener. The helper is in "
+        "`mcp_server_kit.testing`; see any other server's test_server.py."
+    )
