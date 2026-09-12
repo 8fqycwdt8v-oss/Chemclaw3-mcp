@@ -26,7 +26,6 @@ forgetful change adds.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import threading
 import time
@@ -41,9 +40,11 @@ from chemclaw_mcp_rxnlabel import tools
 from chemclaw_mcp_rxnlabel.engine import mapping
 from chemclaw_mcp_rxnlabel.engine.admission import (
     ADMISSION_MARKER,
+    DEFAULT_MAX_BATCH,
     DEFAULT_MAX_CONCURRENT_BATCHES,
     Admission,
 )
+from mcp_server_kit.testing import reimported
 
 DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
@@ -294,37 +295,57 @@ def test_every_labelling_tool_is_gated_and_only_the_version_probe_is_not() -> No
     )
 
 
-def test_both_bounds_are_environment_variables_and_not_constants(
+def test_both_bounds_the_module_serves_behind_are_the_environment_variables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The ceiling and the batch bound are both settable from outside the image.
 
     `MAX_BATCH` was a bare `500` in the source, which is a bound nobody can loosen for a genuinely
-    larger drain without editing code — and, just as importantly, one the fleet's own ratchet over
-    what a deployment can move could not see. Asserted by reading the module twice with different
-    environments rather than by reading its source.
+    larger drain without editing code — and one the fleet's own ratchet over what a deployment may
+    move could not see either.
+
+    **This test claimed to read the module twice and did neither.** It set two variables and then
+    compared a re-typed copy of the expression under test — `int(os.environ.get(...))` — to the
+    numbers it had just set, which asserts that `os.environ.get` works. `tools.MAX_BATCH` was never
+    read: hardcoding it back to `500` left this and 208 other tests green. It now executes the
+    module's own source under each environment and reads the values off *that*.
     """
     monkeypatch.setenv("CHEMCLAW_RXNLABEL_MAX_BATCH", "7")
     monkeypatch.setenv("CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", "9")
-    assert int(os.environ["CHEMCLAW_RXNLABEL_MAX_BATCH"]) == 7
-    reread = int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))
-    ceiling = int(
-        os.environ.get(
-            "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", str(DEFAULT_MAX_CONCURRENT_BATCHES)
-        )
-    )
-    assert (reread, ceiling) == (7, 9)
+    configured = reimported(tools)
+    assert (configured.MAX_BATCH, configured._admission.limit) == (7, 9)
     monkeypatch.delenv("CHEMCLAW_RXNLABEL_MAX_BATCH")
     monkeypatch.delenv("CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES")
-    assert int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500")) == 500
-    assert (
-        int(
-            os.environ.get(
-                "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", str(DEFAULT_MAX_CONCURRENT_BATCHES)
-            )
-        )
-        == DEFAULT_MAX_CONCURRENT_BATCHES
+    default = reimported(tools)
+    assert (default.MAX_BATCH, default._admission.limit) == (
+        DEFAULT_MAX_BATCH,
+        DEFAULT_MAX_CONCURRENT_BATCHES,
     )
+
+
+def test_the_shipped_gate_enforces_the_shipped_default() -> None:
+    """The module-level gate is the one the server serves behind, at the default ceiling.
+
+    Cheap and easy to leave out, and it is what makes every `monkeypatch`ed ceiling in this file
+    evidence about the real gate rather than about an `Admission` the tests built for themselves.
+    `servers/chem` has had it since its gate was written; this server copied the gate and not the
+    test.
+    """
+    assert isinstance(tools._admission, Admission)
+    assert tools._admission.limit == DEFAULT_MAX_CONCURRENT_BATCHES
+    assert tools.MAX_BATCH == DEFAULT_MAX_BATCH
+
+
+def test_a_gated_tool_still_advertises_its_real_signature() -> None:
+    """`functools.wraps` is load-bearing: without it the tool's schema is `(*args, **kwargs)`.
+
+    FastMCP builds each tool's input schema from `inspect.signature`, which follows `__wrapped__`.
+    A gate that quietly replaced every argument name with `kwargs` would be invisible in this
+    server's own tests and fatal to the agent reading the schema.
+    """
+    schema = asyncio.run(tools.server.list_tools())
+    batched = next(tool for tool in schema if tool.name == "represent_reactions")
+    assert set(batched.inputSchema["properties"]) == {"reactions"}
 
 
 def test_the_ceiling_is_the_pods_own_core_count() -> None:
@@ -342,3 +363,27 @@ def test_the_ceiling_is_the_pods_own_core_count() -> None:
         f"the ceiling is {DEFAULT_MAX_CONCURRENT_BATCHES} slots and the pod is limited to "
         f"{limits['cpu']} cores; a slot is a core, so the two have to be the same number"
     )
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+@pytest.mark.parametrize(
+    "variable", ["CHEMCLAW_RXNLABEL_MAX_BATCH", "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES"]
+)
+def test_a_bound_set_to_nothing_refuses_at_import_and_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    """Neither of this server's bounds has an "off", and both now say so instead of implying it.
+
+    `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, so `0` is the value an operator is most
+    likely to try here — and it meant the opposite in both knobs. The ceiling raised a `ValueError`
+    that named the *number* and not the variable, which is a CrashLoopBackOff and a source to
+    guess. `CHEMCLAW_RXNLABEL_MAX_BATCH=0` was quieter and worse: measured, the pod started, passed
+    its readiness probe, and refused every batch with "0 reactions in one request exceeds the batch
+    limit of 0".
+
+    The assertion is on the variable's own name appearing in the message, because that is the one
+    thing an operator reading a crash loop can act on.
+    """
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(ValueError, match=variable):
+        reimported(tools)

@@ -29,7 +29,6 @@ makes that obvious.
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import time
 from collections.abc import Iterator
@@ -41,6 +40,7 @@ from chemclaw_mcp_chem.engine.admission import (
     DEFAULT_MAX_CONCURRENT_RENDERS,
     Admission,
 )
+from mcp_server_kit.testing import reimported
 
 #: What the blocking stand-in holds a slot for, and the yardstick a refusal is measured against.
 BLOCK_SECONDS = 2.0
@@ -232,8 +232,11 @@ def test_only_the_depiction_is_gated_and_it_is_gated() -> None:
     Deliberately *not* derived from the manifest's `state_changing` list, which is how
     `servers/calc` checks the same thing: `render_structure` is `read_only` there and correctly so.
     Cost and mutability are different axes, and reusing one list for both would either gate the
-    enumerations (which change nothing and cost nothing) or ungate the one tool that holds the
-    interpreter for 97 ms.
+    enumerations (which change nothing and cost nothing) or ungate the one tool that lays out a
+    molecule and holds the interpreter while it does — milliseconds rather than microseconds, and
+    the only tool here that holds it at all. No figure is transcribed: this sentence shipped saying
+    97 ms, which is a molecule `MAX_DEPICTION_CHARS` refuses outright. What the ceiling is derived
+    from is `test_depiction_bound.py`'s `WORST_LEGAL_MOLECULE`, measured there.
     """
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
@@ -248,25 +251,21 @@ def test_only_the_depiction_is_gated_and_it_is_gated() -> None:
     )
 
 
-def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
+def test_the_ceiling_the_gate_was_built_from_is_the_environment_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The default is settable from outside the image, which is what puts it in the fleet ratchet.
 
-    The measurement, not the shape: the variable is read twice with different environments and the
-    numbers differ. `tests/test_fleet.py` is what then refuses a shipped file that moves it.
+    Read off the module under two environments rather than re-typed into this file. The version
+    this replaces had a `_configured_ceiling()` helper *here* that restated `tools.py`'s own
+    expression, so it compared the test to itself and never touched `tools._admission` — the same
+    shape that left `servers/rxnlabel` able to hardcode its batch bound with 209 tests green.
+    `tests/test_fleet.py` is what then refuses a shipped file that moves the variable.
     """
     monkeypatch.delenv("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", raising=False)
-    assert _configured_ceiling() == DEFAULT_MAX_CONCURRENT_RENDERS
+    assert reimported(tools)._admission.limit == DEFAULT_MAX_CONCURRENT_RENDERS
     monkeypatch.setenv("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", "3")
-    assert _configured_ceiling() == 3
-
-
-def _configured_ceiling() -> int:
-    """The ceiling `tools.py` would build at import, re-read from the environment as it does."""
-    return int(
-        os.environ.get("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", str(DEFAULT_MAX_CONCURRENT_RENDERS))
-    )
+    assert reimported(tools)._admission.limit == 3
 
 
 def test_the_shipped_gate_enforces_the_shipped_default() -> None:

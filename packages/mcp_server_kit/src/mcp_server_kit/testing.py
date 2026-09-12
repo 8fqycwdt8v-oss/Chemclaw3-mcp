@@ -31,10 +31,12 @@ manifest costs it nothing and is read in the same diff as the change that moves 
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import httpx
@@ -49,6 +51,7 @@ __all__ = [
     "assert_bearer_is_enforced",
     "assert_manifest_matches",
     "load_manifest",
+    "reimported",
     "served_tools",
     "tool_surface",
 ]
@@ -60,6 +63,39 @@ SURFACE_FILENAME = "tool-surface.json"
 # Set this to rewrite the golden. Never set in CI, so a mismatch there is a failure rather than a
 # silent re-record — the property that makes an accidental rename loud.
 SURFACE_UPDATE_ENV = "MCP_UPDATE_TOOL_SURFACE"
+
+
+def reimported(module: ModuleType) -> ModuleType:
+    """Execute `module`'s source again, under the environment in force now, as a separate object.
+
+    What it is for: a server's admission ceiling and batch bound are read from the environment
+    **at import**, so the only honest way to show that the variable is what built them is to
+    build them again with the variable set to something else and read the *module's* value back.
+
+    Every server that tried to assert that instead re-typed the expression under test into its own
+    test — `int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))` compared to `(7, 9)` — which
+    asserts that `os.environ.get` works. Measured: replacing the module's read with a hardcoded
+    constant left 209 tests green in one server and 203 in another, and `tests/test_fleet.py`'s
+    inventory of numeric bounds could not catch it either, because that inventory is *derived from
+    the source* and a removed read simply shrinks it.
+
+    `importlib.reload` would do the reading and is the wrong tool: it rebinds the entry in
+    `sys.modules`, so every other module that did `from ...tools import server` at import keeps a
+    reference to the old object while new callers get a different one. This executes the same
+    source into a throwaway module instead, so nothing outside the assertion can see it.
+    """
+    if module.__spec__ is None or module.__spec__.origin is None:  # pragma: no cover - not a file
+        raise ValueError(f"{module.__name__} has no source file to re-execute")
+    spec = importlib.util.spec_from_file_location(
+        f"{module.__name__}__reimported_for_a_test", module.__spec__.origin
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - unreadable source
+        raise ValueError(
+            f"{module.__name__} could not be re-imported from {module.__spec__.origin}"
+        )
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+    return fresh
 
 
 def load_manifest(path: Path) -> dict[str, Any]:

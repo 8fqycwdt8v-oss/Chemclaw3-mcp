@@ -71,14 +71,25 @@ server = FastMCP("rxnpredict")
 # number it was built from must be the same number. `engine/admission.py` has the measurement — one
 # ensemble call is one worker thread *per enabled predictor*, measured at six — and the argument for
 # refusing rather than queueing.
-_admission = Admission(
-    int(
-        os.environ.get(
-            "CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS",
-            str(DEFAULT_MAX_CONCURRENT_PREDICTIONS),
-        )
+_MAX_CONCURRENT_PREDICTIONS = int(
+    os.environ.get(
+        "CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS",
+        str(DEFAULT_MAX_CONCURRENT_PREDICTIONS),
     )
 )
+if _MAX_CONCURRENT_PREDICTIONS < 1:
+    # `0` is the value an operator is most likely to try, because `MCP_MAX_SESSIONS=0` means "no
+    # ceiling" one layer down. Here it means "serve nothing", and `Admission` refuses it with a
+    # message naming the ceiling rather than the variable that set it — a CrashLoopBackOff and a
+    # number whose source the operator has to guess. See
+    # `D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means`.
+    raise ValueError(
+        f"CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS={_MAX_CONCURRENT_PREDICTIONS} would "
+        "refuse every prediction this server is asked for; an admission ceiling has no 'off' "
+        f"setting, so unset it for the default of {DEFAULT_MAX_CONCURRENT_PREDICTIONS} or give it "
+        "a positive number"
+    )
+_admission = Admission(_MAX_CONCURRENT_PREDICTIONS)
 
 _P = ParamSpec("_P")
 

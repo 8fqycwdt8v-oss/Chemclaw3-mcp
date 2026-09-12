@@ -67,6 +67,14 @@ ADMISSION_MARKER = "__admission_gated__"
 #: this sentence.
 DEFAULT_MAX_CONCURRENT_BATCHES = 2
 
+#: How many reactions one request may carry. The transport already caps the request *body* in
+#: bytes, and ten thousand one-line reactions are comfortably under that cap and minutes of
+#: transformer time — a timeout the caller reads as an outage rather than as "ask for less".
+#: Measured on the RDKit-only path at 2.8 ms/reaction, so 500 is 1.4 s of one core before a mapper
+#: is installed and more after. Overridable with `CHEMCLAW_RXNLABEL_MAX_BATCH`, read in `tools.py`;
+#: the number lives here beside the argument for it, and beside the ceiling it is priced against.
+DEFAULT_MAX_BATCH = 500
+
 
 class Admission:
     """A budget of concurrent labelling slots, refused rather than queued past it.

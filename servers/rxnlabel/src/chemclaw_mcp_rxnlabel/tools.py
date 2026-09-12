@@ -35,33 +35,48 @@ from pydantic import BaseModel, Field
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, roles, species, version
 from chemclaw_mcp_rxnlabel.engine.admission import (
     ADMISSION_MARKER,
+    DEFAULT_MAX_BATCH,
     DEFAULT_MAX_CONCURRENT_BATCHES,
     Admission,
 )
 
 server = FastMCP("rxnlabel")
 
-# One request may carry at most this many reactions. The bound exists because the request body is
-# already capped in bytes by the transport, and a body of ten thousand one-line reactions is under
-# that cap and is minutes of transformer time — a timeout the caller reads as an outage rather than
-# as "ask for less". Measured on the RDKit-only path at 2.8 ms/reaction, so 500 is 1.4 s of one
-# core before a mapper is installed and more after.
-#
-# Read from the environment for the reason every other bound in this fleet is: a magic number is a
-# bound nobody can loosen for a genuinely larger drain without editing code, and being readable is
-# also what puts it in `tests/test_fleet.py`'s derived inventory of what a deployment can move.
-MAX_BATCH = int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))
+# One request may carry at most this many reactions; `engine/admission.py` carries the measurement
+# the default rests on. Read from the environment for the reason every other bound in this fleet
+# is: a magic number is a bound nobody can loosen for a genuinely larger drain without editing
+# code, and being readable is also what puts it in `tests/test_fleet.py`'s derived inventory of
+# what a deployment can move.
+MAX_BATCH = int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", str(DEFAULT_MAX_BATCH)))
+if MAX_BATCH < 1:
+    # `0` is the value an operator is most likely to try, because `MCP_MAX_SESSIONS=0` means "no
+    # ceiling" one layer down — and here it meant the opposite and said nothing: every batch was
+    # refused with "0 reactions in one request exceeds the batch limit of 0", on a pod that started
+    # cleanly and passed its readiness probe. A bound whose whole job is to refuse cannot have an
+    # "off", so this refuses at import instead, naming the variable a traceback from `int()` does
+    # not. See `D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means`.
+    raise ValueError(
+        f"CHEMCLAW_RXNLABEL_MAX_BATCH={MAX_BATCH} would refuse every batch this server is asked "
+        "for; a batch bound has no 'off' setting, so unset it for the default of "
+        f"{DEFAULT_MAX_BATCH} or give it a positive number"
+    )
 
 # The pod's ceiling on concurrent labelling, built at import like the batch bound above; a test that
 # needs a different ceiling replaces this attribute rather than the variable, because the number a
 # gate enforces and the number it was built from must be the same number.
-_admission = Admission(
-    int(
-        os.environ.get(
-            "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", str(DEFAULT_MAX_CONCURRENT_BATCHES)
-        )
-    )
+_MAX_CONCURRENT_BATCHES = int(
+    os.environ.get("CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", str(DEFAULT_MAX_CONCURRENT_BATCHES))
 )
+if _MAX_CONCURRENT_BATCHES < 1:
+    # `Admission` refuses this too, and its message names the ceiling rather than the variable that
+    # set it — which leaves an operator with a CrashLoopBackOff and a number they have to guess the
+    # source of. Same argument as the batch bound above.
+    raise ValueError(
+        f"CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES={_MAX_CONCURRENT_BATCHES} would refuse every "
+        "batch this server is asked for; an admission ceiling has no 'off' setting, so unset it "
+        f"for the default of {DEFAULT_MAX_CONCURRENT_BATCHES} or give it a positive number"
+    )
+_admission = Admission(_MAX_CONCURRENT_BATCHES)
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -301,14 +316,16 @@ async def represent_reaction(
     `reaction_smiles`, so an empty `unreadable_species` is what says the reaction came back whole.
 
     Args:
-        reaction_smiles: `reactants>agents>products`, agents kept.
+        reaction_smiles: `reactants>agents>products`, agents kept. A string that is not a
+            reaction at all is refused, naming what the form is; a reaction whose *species* could
+            not all be read is answered, with those named in `unreadable_species`.
         species: The structures to classify, in your order; the answer is positional against it.
             Omit it to classify every species the reaction names, left to right.
     """
     request = ReactionRequest(
         id="1", reaction_smiles=reaction_smiles, species=species or _all_species(reaction_smiles)
     )
-    return (await asyncio.to_thread(_represent, [request]))[0]
+    return _the_one_answer(await asyncio.to_thread(_represent, [request]), reaction_smiles)
 
 
 @server.tool()
@@ -322,10 +339,12 @@ async def name_reaction(reaction_smiles: str) -> ReactionNaming:
     Every field is null when nothing matched, and that is a real answer rather than a failure —
     most of what a patent corpus contains has no name. It is also null when the optional classifier
     is not installed in this deployment; `labeller_version` is what tells the two apart, and what
-    makes the rows re-label once it is.
+    makes the rows re-label once it is. A string that is not a reaction at all — anything but
+    `reactants>agents>products` — is refused rather than answered with nulls, because those two
+    are different facts.
     """
     request = NamingRequest(id="1", reaction_smiles=reaction_smiles)
-    return (await asyncio.to_thread(_name, [request]))[0]
+    return _the_one_answer(await asyncio.to_thread(_name, [request]), reaction_smiles)
 
 
 @server.tool()
@@ -333,7 +352,8 @@ async def name_reaction(reaction_smiles: str) -> ReactionNaming:
 async def represent_reactions(reactions: list[ReactionRequest]) -> RepresentBatch:
     """`represent_reaction` over a batch — the form a corpus-labelling drain should call.
 
-    At most `CHEMCLAW_RXNLABEL_MAX_BATCH` reactions per request (500 by default). A reaction that
+    There is a limit on how many reactions one request may carry; a larger batch is refused with a
+    message naming the limit in force, so split it and re-send. A reaction that
     could not be represented is absent from `results` rather than present and empty, so a caller can
     record what it got and leave the rest.
 
@@ -352,7 +372,8 @@ async def represent_reactions(reactions: list[ReactionRequest]) -> RepresentBatc
 async def name_reactions(reactions: list[NamingRequest]) -> NameBatch:
     """`name_reaction` over a batch — the form a corpus-labelling drain should call.
 
-    At most `CHEMCLAW_RXNLABEL_MAX_BATCH` reactions per request (500 by default). A reaction that
+    There is a limit on how many reactions one request may carry; a larger batch is refused with a
+    message naming the limit in force, so split it and re-send. A reaction that
     could not be read is absent from `results`. Past this server's concurrency ceiling the call is
     refused promptly rather than queued; re-send the identical batch.
     """
@@ -378,6 +399,32 @@ def _check_batch(reactions: Sequence[object]) -> None:
 def _version() -> LabellerVersion:
     """The version and its components, computed synchronously."""
     return LabellerVersion(version=version.labeller_version(), components=version.components())
+
+
+def _the_one_answer(answers: list[_T], reaction_smiles: str) -> _T:
+    """The single-reaction form of a batch call that *drops* what it cannot read.
+
+    The batch tools are deliberately lenient — a corpus-labelling drain wants what could be read
+    and a list of what could not, rather than one bad row failing ten thousand good ones — so
+    `_represent` and `_name` skip a reaction that is not `reactants>agents>products`. The
+    single-reaction tools then took `[0]` of that list, and an unreadable input came back as
+    `IndexError: list index out of range`: not a `ValueError`, so `connector_app` replaced it with
+    an opaque `error_id` and the model was told a fault had occurred rather than that its input was
+    malformed. Refuse in the caller's terms instead, which is what every other refusal in this
+    fleet does.
+
+    The offending string is quoted back because it is the caller's own, and truncated because a
+    tool argument has no bound a message wants to inherit.
+    """
+    if answers:
+        return answers[0]
+    shown = reaction_smiles if len(reaction_smiles) <= 120 else reaction_smiles[:120] + "..."
+    raise ValueError(
+        f"this is not a reaction: {shown!r}. A reaction is written "
+        "`reactants>agents>products` — three slots separated by two '>' characters, any of them "
+        "empty — with each slot a '.'-separated list of SMILES. Nothing in this one could be read, "
+        "so there is nothing to label."
+    )
 
 
 def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]:

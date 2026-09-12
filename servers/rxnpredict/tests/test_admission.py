@@ -26,7 +26,6 @@ must not be forgotten is exactly the thing a forgetful change adds.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import threading
 import time
@@ -49,6 +48,7 @@ from chemclaw_mcp_rxnpredict.engine.cache import reset_cache_for_tests
 from chemclaw_mcp_rxnpredict.engine.config import reset_settings_for_tests
 from chemclaw_mcp_rxnpredict.engine.predictors.base import BaseForwardPredictor
 from chemclaw_mcp_rxnpredict.engine.schemas import ForwardPrediction
+from mcp_server_kit.testing import reimported
 
 DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
@@ -342,33 +342,97 @@ def test_every_predicting_tool_is_gated_and_only_the_two_that_offload_nothing_ar
     )
 
 
-def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
+def test_the_ceiling_the_gate_was_built_from_is_the_environment_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """This pod's ceiling is settable from outside the image, which is what puts it in the ratchet.
+    """This pod's ceiling is settable from outside the image, and the gate is what was built.
 
-    The measurement, not the shape: the variable is read twice with different environments and the
-    numbers differ.
+    Read off the module under two environments rather than re-typed into this file. The version
+    this replaces compared `int(os.environ.get(...))` to itself and asserted that `os.environ.get`
+    works: hardcoding `tools._admission = Admission(64)` — 32x the pod's cores, the variable
+    ignored — left it and 202 other tests green.
     """
     monkeypatch.delenv("CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS", raising=False)
-    assert (
-        int(
-            os.environ.get(
-                "CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS",
-                str(DEFAULT_MAX_CONCURRENT_PREDICTIONS),
-            )
-        )
-        == DEFAULT_MAX_CONCURRENT_PREDICTIONS
-    )
+    assert reimported(tools)._admission.limit == DEFAULT_MAX_CONCURRENT_PREDICTIONS
     monkeypatch.setenv("CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS", "11")
-    assert (
-        int(
-            os.environ.get(
-                "CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS",
-                str(DEFAULT_MAX_CONCURRENT_PREDICTIONS),
-            )
-        )
-        == 11
+    assert reimported(tools)._admission.limit == 11
+
+
+def test_the_shipped_gate_enforces_the_shipped_default() -> None:
+    """The module-level gate is the one the server serves behind, at the default ceiling.
+
+    Cheap and easy to leave out, and it is what makes every `monkeypatch`ed ceiling in this file
+    evidence about the real gate rather than about an `Admission` the tests built for themselves.
+    `servers/chem` has had it since its gate was written; this server copied the gate and not the
+    test, so until now nothing here read `tools._admission` at all.
+    """
+    assert isinstance(tools._admission, Admission)
+    assert tools._admission.limit == DEFAULT_MAX_CONCURRENT_PREDICTIONS
+
+
+def test_a_gated_tool_still_advertises_its_real_signature() -> None:
+    """`functools.wraps` is load-bearing: without it the tool's schema is `(*args, **kwargs)`.
+
+    FastMCP builds each tool's input schema from `inspect.signature`, which follows `__wrapped__`.
+    A gate that quietly replaced every argument name with `kwargs` would be invisible in this
+    server's own tests and fatal to the agent reading the schema — and the gate's own docstring is
+    the only thing that said so in this server until now.
+    """
+    schema = asyncio.run(tools.server.list_tools())
+    predicted = next(tool for tool in schema if tool.name == "predict_forward_reaction")
+    assert set(predicted.inputSchema["properties"]) == {"reactants", "top_k", "models"}
+
+
+class _RecordingAdmission(Admission):
+    """An `Admission` that remembers what each call was charged before charging it."""
+
+    def __init__(self, limit: int) -> None:
+        """A gate wide enough that nothing is refused; only the charges are under test."""
+        super().__init__(limit)
+        self.charges: list[int] = []
+
+    def acquire(self, what: str, cost: int = 1) -> int:
+        """Record the charge, then take the slots exactly as the real gate does."""
+        self.charges.append(cost)
+        return super().acquire(what, cost)
+
+
+async def test_the_charge_does_not_follow_the_callers_models_argument(
+    registry_of: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The most-argued property of this gate, and nothing in this file asserted it.
+
+    `_forward_ensemble_slots` reads `_forward_predictors(None)` — the *deployment's* enabled list —
+    rather than the caller's `models`, because a charge a caller can lower by naming one model is a
+    ceiling a caller can walk past. The execution path narrows on `models` and the charge does not,
+    which is the asymmetry that makes the walk-past possible and the reason both halves are
+    asserted here: a version that narrowed neither would pass an assertion about the charge alone
+    while having nothing left to protect.
+
+    Mutating `_admitted` to take its cost from `kwargs.get("models")` left all 11 tests in this
+    file and all 112 in this server green.
+    """
+    registry_of(*(_SlowPredictor(f"slow_{index}") for index in range(FAN_OUT)))
+    one = ["slow_0"]
+    assert [predictor.name for predictor in tools._forward_predictors(one)] == one, (
+        "the execution path no longer narrows on `models`, so there is nothing to walk past"
+    )
+    ensemble = tools._forward_ensemble_slots()
+    gate = _RecordingAdmission(ensemble * 4)
+    monkeypatch.setattr(tools, "_admission", gate)
+
+    # By keyword first, because that is how the tool is invoked in service — FastMCP unpacks the
+    # validated arguments as `**kwargs` — and positionally second, so a charge that read the
+    # narrowing off either calling convention is caught. The first of those two is the arm that
+    # matters: a mutation taking the cost from `kwargs.get("models")` is invisible to the other.
+    await tools.predict_forward_reaction(reactants=REACTANTS, top_k=1, models=one)
+    await tools.predict_forward_reaction(REACTANTS, 1, one)
+    await tools.predict_forward_reaction(REACTANTS, 1)
+
+    assert gate.charges == [ensemble] * 3, (
+        f"naming 1 of {FAN_OUT} enabled models was charged {gate.charges[:2]} slots against "
+        f"{gate.charges[2]} for the whole ensemble; the fan-out is the registry's either way, so "
+        "a caller could hold the pod at a fraction of what it is running"
     )
 
 
@@ -385,3 +449,20 @@ def test_the_ceiling_is_the_pods_own_core_count() -> None:
         f"the ceiling is {DEFAULT_MAX_CONCURRENT_PREDICTIONS} slots and the pod is limited to "
         f"{limits['cpu']} cores; a slot is a core, so the two have to be the same number"
     )
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_the_ceiling_set_to_nothing_refuses_at_import_and_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """This server's ceiling has no "off", and it now says so instead of implying it.
+
+    `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, so `0` is the value an operator is most
+    likely to try here — and it means the opposite. `Admission` refuses it, but its message names
+    the ceiling rather than the variable that set it, which leaves a CrashLoopBackOff and a number
+    whose source has to be guessed. The assertion is on the variable's own name, because that is
+    the one thing an operator reading a crash loop can act on.
+    """
+    monkeypatch.setenv("CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS", value)
+    with pytest.raises(ValueError, match="CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS"):
+        reimported(tools)
