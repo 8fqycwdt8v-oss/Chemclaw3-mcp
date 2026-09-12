@@ -251,7 +251,7 @@ def test_only_the_depiction_is_gated_and_it_is_gated() -> None:
     )
 
 
-def test_the_ceiling_the_gate_was_built_from_is_the_environment_variable(
+def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The default is settable from outside the image, which is what puts it in the fleet ratchet.

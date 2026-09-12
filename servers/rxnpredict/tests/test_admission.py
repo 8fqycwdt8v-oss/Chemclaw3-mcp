@@ -342,7 +342,7 @@ def test_every_predicting_tool_is_gated_and_only_the_two_that_offload_nothing_ar
     )
 
 
-def test_the_ceiling_the_gate_was_built_from_is_the_environment_variable(
+def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """This pod's ceiling is settable from outside the image, and the gate is what was built.

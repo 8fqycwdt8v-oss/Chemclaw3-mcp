@@ -295,7 +295,7 @@ def test_every_labelling_tool_is_gated_and_only_the_version_probe_is_not() -> No
     )
 
 
-def test_both_bounds_the_module_serves_behind_are_the_environment_variables(
+def test_both_bounds_are_environment_variables_and_not_constants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The ceiling and the batch bound are both settable from outside the image.
