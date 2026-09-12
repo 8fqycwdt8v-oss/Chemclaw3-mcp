@@ -23,6 +23,7 @@ degrading: the corpus repairs itself the moment they arrive.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Collection
 from importlib import metadata
 
 from chemclaw_mcp_rxnlabel.engine import mapping, naming
@@ -39,27 +40,63 @@ SERVER_VERSION = "2"
 
 _ABSENT = "absent"
 
+# A component that was present, ran, and raised. **A third word rather than reuse of `absent`**, and
+# the distinction is the whole reason this parameter exists: the rule this module opens with is that
+# the string names every component whose output *survives into a label*, and a mapper that raised
+# contributed nothing. Stamping such a row with the mapper's version made it indistinguishable from
+# a correctly mapped one forever — no drain would ever re-derive it, because its stored version
+# already equalled a healthy pod's. `failed` differs from both a version and from `absent`, so the
+# row is stale against a healthy pod and legible to a chemist reading it directly.
+_FAILED = "failed"
 
-def labeller_version() -> str:
-    """The identity every label produced by this process is stamped with."""
+
+def labeller_version(failed: Collection[str] = ()) -> str:
+    """The identity a label produced by this process is stamped with.
+
+    Args:
+        failed: Component keys — `atom_mapper`, `reaction_namer` — that ran and raised while
+            producing *this* label. Empty for the deployment's own version, which is what
+            `labeller_version` the tool answers and what a healthy row carries.
+    """
     return ":".join(
         (
             f"rxnlabel@{SERVER_VERSION}",
             f"rdkit@{_installed('rdkit')}",
-            f"mapper@{_installed('rxnmapper') if mapping.available() else _ABSENT}",
-            f"namer@{_installed('rxn-insight') if naming.available() else _ABSENT}",
+            f"mapper@{_component('atom_mapper', 'rxnmapper', mapping.available, failed)}",
+            f"namer@{_component('reaction_namer', 'rxn-insight', naming.available, failed)}",
         )
     )
 
 
-def components() -> dict[str, str]:
-    """The same facts, itemised — what an operator reads to see why a version changed."""
+def components(failed: Collection[str] = ()) -> dict[str, str]:
+    """The same facts, itemised — what an operator reads to see why a version changed.
+
+    Args:
+        failed: As `labeller_version`.
+    """
     return {
         "server": SERVER_VERSION,
         "rdkit": _installed("rdkit"),
-        "atom_mapper": _installed("rxnmapper") if mapping.available() else _ABSENT,
-        "reaction_namer": _installed("rxn-insight") if naming.available() else _ABSENT,
+        "atom_mapper": _component("atom_mapper", "rxnmapper", mapping.available, failed),
+        "reaction_namer": _component("reaction_namer", "rxn-insight", naming.available, failed),
     }
+
+
+def _component(
+    key: str,
+    distribution: str,
+    available: Callable[[], bool],
+    failed: Collection[str],
+) -> str:
+    """One component's word: `failed`, `absent`, or the installed version, in that order.
+
+    `failed` wins over a version because it is a statement about *this* label rather than about the
+    image, and it wins over `absent` because the two are different facts an operator acts on
+    differently — nothing to install versus something to replace.
+    """
+    if key in failed:
+        return _FAILED
+    return _installed(distribution) if available() else _ABSENT
 
 
 def _installed(distribution: str) -> str:

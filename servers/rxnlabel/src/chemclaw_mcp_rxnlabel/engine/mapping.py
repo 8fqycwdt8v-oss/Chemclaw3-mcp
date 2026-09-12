@@ -20,16 +20,46 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Any
 
+from mcp_server_kit import degradation
 from mcp_server_kit.limits import atom_count_error
 from rdkit import Chem
 
 logger = logging.getLogger(__name__)
 
+SERVER = "rxnlabel"
+
+# What this module is, as a metric label and in an answer. A module constant rather than a string
+# spelled at each call site, because the two would drift and the label rule in
+# `mcp_server_kit/metrics.py` only holds while the set of them is closed.
+COMPONENT = "atom_mapper"
+
 _LOCK = threading.Lock()
 _MAPPER: Any | None = None
 _TRIED = False
+
+
+@dataclass(frozen=True)
+class MapResult:
+    """The atom map, and whether the mapper *ran and failed* — which `None` alone cannot say.
+
+    This type exists because `map_reaction` used to answer `None` to three different questions and
+    the caller could not tell them apart: no mapper installed, a reaction RDKit could not read, and
+    a mapper that raised. The first is a deployment's decision and the last is a broken pod, and
+    they reached a chemist as the same unmapped reaction stamped with the same `labeller_version` —
+    so a corpus labelled by a pod whose checkpoint had gone would never re-label, because the stamp
+    claimed the mapper had contributed.
+
+    Attributes:
+        mapped: The atom-mapped reaction, or `None` where there is none.
+        failure: `None` when nothing went wrong, otherwise the `mcp_server_kit.degradation` cause.
+            A cause here means the answer is *degraded* rather than merely mapless.
+    """
+
+    mapped: str | None = None
+    failure: str | None = None
 
 
 def available() -> bool:
@@ -37,29 +67,47 @@ def available() -> bool:
     return _mapper() is not None
 
 
-def map_reaction(reaction_smiles: str) -> str | None:
-    """The atom-mapped form of `reaction_smiles`, or `None` if it could not be mapped.
+def map_reaction(reaction_smiles: str) -> MapResult:
+    """The atom-mapped form of `reaction_smiles`, and whether the mapper failed producing it.
 
-    `None` covers three different things on purpose — no mapper installed, a reaction RDKit could
-    not read, a mapper that raised on this input — because the caller does the same thing with all
-    three: records no mapping and moves on. Which it was is in the log and in the version string.
+    Catching every exception is still right, and for the reason it always was: RXNMapper raises on
+    inputs it cannot tokenise (an over-long reaction, an element outside its vocabulary) and the
+    correct response is an unmapped reaction rather than a failed batch of two hundred. **What was
+    wrong is that the answer did not say so.** A torch OOM, a checkpoint that will not parse and an
+    `EgressForbidden` from a loader reaching for weights all became a plain `None` — the same value
+    a deployment with no mapper installed produces on purpose — with one unconditional WARNING that
+    named neither the reaction nor the fault, and no counter anywhere.
+
+    So the cause is classified, counted on `chemclaw_mcp_degraded_total` and returned. The log line
+    carries the exception's `repr` rather than only a sentence, because "this reaction could not be
+    mapped" is what a malformed input and a broken pod both look like from a log with nothing in it.
+
+    Args:
+        reaction_smiles: `reactants>agents>products`.
+
+    Returns:
+        A `MapResult` whose `failure` is `None` on the two normal paths — no mapper, or a reaction
+        the mapper had nothing to say about — and a degradation cause when the mapper raised.
     """
     mapper = _mapper()
     if mapper is None:
-        return None
+        return MapResult()
     try:
         results = mapper.get_attention_guided_atom_maps([reaction_smiles], canonicalize_rxns=False)
-    except Exception:
-        # Every exception, and this is the one place in this server where that is right: RXNMapper
-        # raises on inputs it cannot tokenise (an over-long reaction, an element outside its
-        # vocabulary) and the correct response to all of them is an unmapped reaction rather than a
-        # failed batch of two hundred.
-        logger.warning("atom mapping failed for a reaction; it will be labelled without a map")
-        return None
+    except Exception as exc:
+        cause = degradation.classify(exc)
+        degradation.record(server=SERVER, component=COMPONENT, cause=cause)
+        logger.warning(
+            "atom mapping failed (%s); this reaction is labelled without a map and stamped as "
+            "degraded: %r",
+            cause,
+            exc,
+        )
+        return MapResult(failure=cause)
     if not results:
-        return None
+        return MapResult()
     mapped = results[0].get("mapped_rxn")
-    return str(mapped) if mapped else None
+    return MapResult(mapped=str(mapped) if mapped else None)
 
 
 def inference_threads() -> int:
@@ -155,10 +203,17 @@ def _mapper() -> Any | None:
             return None
         try:
             _MAPPER = RXNMapper()
-        except Exception:
+        except Exception as exc:
             # Constructing it downloads or loads weights. In this fleet the image bakes them at
             # build time, so a failure here means a broken image rather than a missing network —
             # and the server must still start and still assign roles.
+            #
+            # **Counted as well as logged**, and this branch is why the counter takes a cause: a
+            # deployment whose weights are absent from the image raises here, and one whose loader
+            # reached for the hub raises `EgressForbidden` here. `readiness.verify_labeller` already
+            # refuses to take traffic in both cases; the counter is what makes the difference
+            # visible from a scrape rather than from a pod's first log lines.
+            degradation.record(server=SERVER, component=COMPONENT, cause=degradation.classify(exc))
             logger.exception("rxnmapper is installed but could not be constructed")
             return None
         return _MAPPER

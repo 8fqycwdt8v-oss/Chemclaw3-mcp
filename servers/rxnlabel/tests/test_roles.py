@@ -40,7 +40,7 @@ def _roles_of(reaction: str, structures: list[str]) -> dict[str, str]:
     Maps the reaction the way the tool surface does — once, and passes the result in — so these
     tests exercise the call `_represent` actually makes.
     """
-    mapped = mapping.map_reaction(reaction)
+    mapped = mapping.map_reaction(reaction).mapped
     return dict(zip(structures, roles.assign(reaction, structures, mapped), strict=True))
 
 
