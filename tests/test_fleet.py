@@ -829,3 +829,341 @@ def test_the_allowlist_check_bites() -> None:
     assert _containerfile_env(
         "servers/x/Containerfile", "ENV MCP_EGRESS_ALLOW evil.example.com"
     ) == [("MCP_EGRESS_ALLOW", "evil.example.com")]
+
+
+# Every environment variable a first-party module turns into a number is something a deployment can
+# move, and `_BOUND_ANCHORS` is the floor under the derivation below: a scan that silently stopped
+# finding variables — a renamed `env_prefix`, a read through a helper — would agree with an empty
+# tree forever. These five are the ones whose loss would matter most, one per
+# mechanism and one per server that owns an admission ceiling, which `CLAUDE.md` calls the bound a
+# slow tool owes the fleet. They are named here rather than in prose for the reason this repository
+# keeps relearning: a count or a list in a document goes stale on somebody else's merge.
+_BOUND_ANCHORS = frozenset(
+    {
+        "MCP_MAX_SMILES_CHARS",
+        "MCP_MAX_MOLECULE_ATOMS",
+        "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS",
+        "CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS",
+        "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS",
+    }
+)
+
+# A shipped deployment file that sets a derived numeric setting, and the argument for it. One row,
+# and it is the one this check found on its first run over the real tree — which is also the
+# counter-example to the widening check this one replaced. `crest_threads` defaults to `0`, meaning
+# "let CREST's OpenMP size itself from `/proc/cpuinfo`", which is the *node's* core count and not
+# something a container CPU limit changes; `servers/calc/Containerfile` sets `4`, and a comparison
+# against the default would have read that narrowing as `4 > 0` and called it a widening.
+#
+# Everything else derived below is either a resource bound (`MCP_MAX_*`, the admission ceilings, the
+# thread pool) or — in `servers/calc` — a *scientific* constant that enters `calc_version`, the
+# primary key of Chemclaw3's calibration ledger; that server's own config docstring says changing
+# one "is a scientific decision, not a deployment tweak". The two classes fail differently and need
+# the same gate: one lets a pod be exhausted, the other writes rows nothing reconciles against.
+_ARGUED_DEPLOYMENT_SETTINGS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # CREST is the one thing in this image that should use more than one core, and the scrubbed
+        # child environment means it has to be told so here rather than inherit `OMP_NUM_THREADS`.
+        ("servers/calc/Containerfile", "CHEMCLAW_CREST_THREADS"),
+    }
+)
+
+_NUMERIC_CASTS = frozenset({"int", "float"})
+
+
+def _is_environ(node: ast.AST) -> bool:
+    """Whether `node` is `os.environ` (or a bare `environ` imported from it)."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "environ"
+    return isinstance(node, ast.Name) and node.id == "environ"
+
+
+def _env_read(node: ast.AST) -> str | None:
+    """The variable name `node` reads from the environment, when it is a literal."""
+    if isinstance(node, ast.Call):
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in {"get", "setdefault"}
+            and _is_environ(func.value)
+            and node.args
+        ):
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                return first.value
+    if isinstance(node, ast.Subscript) and _is_environ(node.value):
+        key = node.slice
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            return key.value
+    return None
+
+
+def _env_read_within(node: ast.AST) -> str | None:
+    """The first literal environment read anywhere inside `node`.
+
+    A subtree rather than the node itself, because the read is rarely the bare argument: the fleet
+    writes `int(os.environ.get("X", "4"))` and `os.environ.get("X", "").strip()`.
+    """
+    for child in ast.walk(node):
+        found = _env_read(child)
+        if found is not None:
+            return found
+    return None
+
+
+def _numeric_environ_reads(tree: ast.Module) -> dict[str, int]:
+    """Every environment variable this module turns into a number, and the line it happens on.
+
+    Two shapes, because the fleet uses both: the read wrapped directly in `int`/`float`, and the
+    read bound to a local that is converted further down (`raw = os.environ.get(...).strip()` then
+    `float(raw)` — `executor.py` and `sessions.py` are written that way, and a scan that only
+    matched the direct form would report those three variables absent).
+    """
+    from_var: dict[str, tuple[str, int]] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            read = _env_read_within(node.value)
+            if read is not None:
+                from_var[node.targets[0].id] = (read, node.lineno)
+    found: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _NUMERIC_CASTS
+            and node.args
+        ):
+            continue
+        argument = node.args[0]
+        read, line = _env_read_within(argument), node.lineno
+        if read is None and isinstance(argument, ast.Name) and argument.id in from_var:
+            read, line = from_var[argument.id]
+        if read is not None:
+            found.setdefault(read, line)
+    return found
+
+
+def _numeric_settings_fields(tree: ast.Module) -> dict[str, int]:
+    """Every numeric `pydantic-settings` field this module declares, as its environment name.
+
+    `servers/calc` and `servers/rxnpredict` configure themselves through `BaseSettings` with an
+    `env_prefix`, so their bounds never appear in an `os.environ` call at all — the variable name is
+    the prefix plus the field name, and `case_sensitive` is pydantic's default of `False`. A scan
+    that knew only `os.environ` finds most of `servers/calc`'s numbers absent, including its
+    admission ceiling — see `test_the_bound_scan_sees_both_configuration_mechanisms`, which holds
+    the figure rather than this sentence.
+
+    Scalar `int`/`float` annotations only, `X | None` included. A number inside a container
+    annotation (`dict[str, float]`) is not a bound anything here could compare, and is left out
+    rather than half-covered.
+    """
+    found: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = {
+            base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
+            for base in node.bases
+        }
+        if "BaseSettings" not in bases:
+            continue
+        prefix = ""
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "model_config"
+                    for target in statement.targets
+                )
+                and isinstance(statement.value, ast.Call)
+            ):
+                continue
+            for keyword in statement.value.keywords:
+                if keyword.arg == "env_prefix" and isinstance(keyword.value, ast.Constant):
+                    prefix = str(keyword.value.value)
+        for statement in node.body:
+            if (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and _annotation_is_numeric(statement.annotation)
+            ):
+                found[(prefix + statement.target.id).upper()] = statement.lineno
+    return found
+
+
+def _annotation_is_numeric(annotation: ast.expr) -> bool:
+    """Whether `annotation` is `int`, `float`, or one of those unioned with `None`."""
+    if isinstance(annotation, ast.Name):
+        return annotation.id in _NUMERIC_CASTS
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return _annotation_is_numeric(annotation.left) or _annotation_is_numeric(annotation.right)
+    return False
+
+
+def numeric_env_bounds() -> dict[str, str]:
+    """Every environment variable first-party code turns into a number, and where it is read.
+
+    Derived rather than listed, because a hand-written list of names is the drift hazard this
+    repository keeps finding — the `Ports` section of `CLAUDE.md` is the worked example, a second
+    table that published two taken ports as free. The value is `path:line`, which is what makes an
+    offence actionable without a second lookup.
+    """
+    found: dict[str, str] = {}
+    roots = sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src"))
+    assert roots, "no first-party source roots found; has the layout changed?"
+    for root in roots:
+        for source in sorted(root.rglob("*.py")):
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            for name, line in _numeric_environ_reads(tree).items():
+                found[name] = f"{source.relative_to(ROOT)}:{line}"
+            for name, line in _numeric_settings_fields(tree).items():
+                found[name] = f"{source.relative_to(ROOT)}:{line}"
+    return found
+
+
+def _bound_offences(label: str, text: str, bounds: dict[str, str]) -> list[str]:
+    """Every numeric setting one shipped file moves without an argued row.
+
+    **The shape, and why it is this one rather than a widening check.** A ratchet asserting "a
+    shipped value does not *widen* the default" is stronger where the default is discoverable and
+    the direction is known, and that is true of neither half here: `MCP_THREAD_POOL_SIZE` and
+    `MCP_SESSION_IDLE_TIMEOUT_SECONDS` are read with an empty-string default and get their real one
+    from a constant or from a cgroup read at runtime, and for `servers/calc`'s fitted pKa
+    calibration constants "wider" means nothing at all. A direction the check had to guess would be
+    a check that passes on the cases it cannot classify — which is how the egress ratchet above came
+    to certify the one shape the tree does not use.
+
+    So the rule is uniform and needs no direction: a shipped file sets none of these unless the pair
+    is in `_ARGUED_DEPLOYMENT_SETTINGS`. It catches a narrowing too, deliberately — narrowing
+    `MCP_MAX_SMILES_CHARS` in one server's image is a behaviour change a caller discovers as a
+    refusal, and it is the same review either way. The one argued row in the tree is a narrowing,
+    and a default comparison would have scored it as a widening; see that constant.
+    """
+    offences: list[str] = []
+    if label.endswith(".yaml") and "envFrom" in text:
+        offences.append(f"{label}: uses envFrom, which can carry a resource bound unseen")
+    for name, value in _env_settings(label, text):
+        if name in bounds and (label, name) not in _ARGUED_DEPLOYMENT_SETTINGS:
+            offences.append(
+                f"{label}: sets {name}={value!r}, which {bounds[name]} reads as a number"
+            )
+    return offences
+
+
+def test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment() -> None:
+    """Nothing in `deploy/` or a Containerfile moves a number first-party code reads as a bound.
+
+    `CLAUDE.md` makes two of these non-negotiable — "a ceiling on how many of it may run at once" is
+    what a slow tool owes the fleet — and nothing checked any of them at either end. The sibling
+    ratchet above reads the same files for `MCP_EGRESS_*` and throws every other pair away, so a
+    `deploy/deployment.yaml` `env:` entry or a Containerfile `ENV` could have doubled an admission
+    ceiling, widened the SMILES bound that stops a SIGSEGV, or retuned the pKa calibration that keys
+    Chemclaw3's ledger, with nothing going red.
+
+    The set is derived from the code that reads it (`numeric_env_bounds`), not listed here, so a
+    bound added next year is covered the day it is written. What this cannot see is stated rather
+    than implied: a pod `env:` a cluster operator adds outside these files, and an `envFrom` whose
+    values live in a ConfigMap this repository does not hold — the second is flagged where it
+    appears.
+    """
+    bounds = numeric_env_bounds()
+    assert set(bounds) >= _BOUND_ANCHORS, (
+        f"the bound scan lost {sorted(_BOUND_ANCHORS - set(bounds))!r}; a derivation that stops "
+        "finding variables agrees with an empty tree forever"
+    )
+    shipped = sorted(SERVERS.glob("*/deploy/*.yaml")) + sorted(SERVERS.glob("*/Containerfile"))
+    assert shipped, "no deployment manifests found; has the layout changed?"
+    offences = [
+        offence
+        for manifest in shipped
+        for offence in _bound_offences(
+            str(manifest.relative_to(ROOT)), manifest.read_text(encoding="utf-8"), bounds
+        )
+    ]
+    assert not offences, (
+        "a bound is moved in a shipped file with no argued row in "
+        "`_ARGUED_DEPLOYMENT_SETTINGS`:\n  " + "\n  ".join(offences)
+    )
+
+
+def test_the_bound_check_bites() -> None:
+    """The tree is clean, so the check is shown failing on purpose — in both file shapes.
+
+    Including the continuation `ENV`, because that is the shape the sibling egress ratchet was blind
+    to for two of seven servers, and this check reads the same files through the same parser.
+    """
+    bounds = {"CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS": "servers/chem/x.py:1"}
+    assert _bound_offences(
+        "servers/chem/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n      env:\n"
+        "        - name: CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS\n          value: '64'\n",
+        bounds,
+    ) == [
+        "servers/chem/deploy/deployment.yaml: sets CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS='64', "
+        "which servers/chem/x.py:1 reads as a number"
+    ]
+    assert _bound_offences(
+        "servers/chem/Containerfile",
+        "ENV PYTHONUNBUFFERED=1 \\\n    CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS=64\n",
+        bounds,
+    ) == [
+        "servers/chem/Containerfile: sets CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS='64', "
+        "which servers/chem/x.py:1 reads as a number"
+    ]
+    # A setting nothing reads as a number is not this check's business.
+    assert _bound_offences("servers/chem/Containerfile", "ENV HF_HUB_OFFLINE=1\n", bounds) == []
+    # An argued row is the one way through, and it is a *pair*: the real row exempts
+    # `CHEMCLAW_CREST_THREADS` in calc's Containerfile and nowhere else, so the same variable set
+    # from another file is still an offence.
+    threads = {"CHEMCLAW_CREST_THREADS": "servers/calc/.../config.py:215"}
+    assert (
+        _bound_offences("servers/calc/Containerfile", "ENV CHEMCLAW_CREST_THREADS=4\n", threads)
+        == []
+    )
+    assert _bound_offences(
+        "servers/chem/Containerfile", "ENV CHEMCLAW_CREST_THREADS=4\n", threads
+    ) == [
+        "servers/chem/Containerfile: sets CHEMCLAW_CREST_THREADS='4', which "
+        "servers/calc/.../config.py:215 reads as a number"
+    ]
+    # A ConfigMap this repository does not hold can carry any of them.
+    assert _bound_offences(
+        "servers/chem/deploy/deployment.yaml",
+        "spec:\n  containers:\n    - name: server\n      envFrom:\n"
+        "        - configMapRef:\n            name: tuning\n",
+        bounds,
+    ) == [
+        "servers/chem/deploy/deployment.yaml: uses envFrom, which can carry a resource bound unseen"
+    ]
+
+
+def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
+    """A scan that knew only `os.environ` would find `servers/calc`'s whole config absent.
+
+    This is the half of the inventory that is easy to get wrong in the reassuring direction. `calc`
+    reads none of its numbers through `os.environ` — its bounds look like constants in
+    `engine/config.py`, and they are `pydantic-settings` fields under `env_prefix="CHEMCLAW_"`, so
+    every one of them is an environment variable. `servers/calc/tests/test_admission.py` measures
+    the consequence on the ceiling itself; this asserts the *scan* can see it, which is what makes
+    the ratchet above cover the heaviest server in the fleet rather than silently skip it.
+    """
+    bounds = numeric_env_bounds()
+    environ_read = {
+        name
+        for name, where in bounds.items()
+        if where.startswith(("packages/", "servers/chem/", "servers/pyexec/"))
+    }
+    assert "MCP_MAX_SMILES_CHARS" in environ_read
+    calc = {name for name, where in bounds.items() if where.startswith("servers/calc/")}
+    assert "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS" in calc, (
+        "calc's admission ceiling is a settings field, not a constant; if the scan cannot see it "
+        "the ratchet does not cover the one server whose calls take minutes"
+    )
+    assert len(calc) > 20, (
+        f"the settings mechanism contributes {len(calc)} of calc's numbers; a collapse here is a "
+        "ratchet that has quietly stopped covering the server with the most to move"
+    )
