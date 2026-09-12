@@ -58,12 +58,18 @@ rather than listed because a hand-written list of names is the drift hazard this
 finding — `CLAUDE.md`'s deleted port table is the worked example, a second declaration nothing
 checked that published two taken ports as free.
 
-**A worked example of this record's own rule about numbers.** `39ba4a7`'s commit message says calc
-owns 25 of the inventory; re-running the same derivation on 2026-09-12 at `1161473` returns 28, with
-no line of `engine/config.py` rewritten between them by this branch. The figure that matters is
-therefore in `test_the_bound_scan_sees_both_configuration_mechanisms` as a floor, not in any
-sentence: what the ratchet must not lose is the *mechanism*, and a digit in prose would have had to
-be corrected twice already.
+**A worked example of this record's own rule about numbers, and the first draft of this paragraph
+was the second example.** `39ba4a7`'s commit message says calc owns 25 of the inventory; the same
+derivation returns 28. This paragraph originally reported that as a drift — "returns 28, with no line
+of `engine/config.py` rewritten between them" — which is a claim that the ratchet's basis moves under
+it, and would be the more serious finding of the two. It is false. Running the derivation **as that
+commit itself wrote it** (`git show 39ba4a7:tests/test_fleet.py`, executed in place so its
+`parents[1]` root still resolves) returns `total 42 | calc 28`, and five consecutive runs at `HEAD`
+return 42 every time. The number was wrong when it was written, not when it was re-read; nothing
+drifted and nothing is unstable. The reason it cost nothing is that
+`test_the_bound_scan_sees_both_configuration_mechanisms` holds a floor rather than the digit — which
+is the rule this section is about, now demonstrated twice: once by the miscount, and once by a
+paragraph that reached for the more alarming explanation before measuring which one was true.
 
 ### 3 · "Sets it at all", not "widens past the default"
 
