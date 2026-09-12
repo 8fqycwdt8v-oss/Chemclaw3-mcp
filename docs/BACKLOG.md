@@ -34,6 +34,9 @@ anchor**, because no test here can open it. This repository has been burned by e
 clearance as a dated observation rather than a boundary, and a row here gets the same treatment —
 the anchor check skips it, and says out loud that it did.
 
+Related: [`decisions/`](decisions/) — why the fleet is the way it is; a row here that turns into a
+decision leaves a record behind and the row goes.
+
 ---
 
 ## 1 — The no-egress posture, where it stops
