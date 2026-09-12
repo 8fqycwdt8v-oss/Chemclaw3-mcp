@@ -132,4 +132,5 @@ except Exception as exc:
         ReactionT5V2Forward.name,
         "forward",
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[reaction_t5]`): {exc!r}",
+        exc=exc,
     )

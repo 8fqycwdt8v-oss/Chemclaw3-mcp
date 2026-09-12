@@ -96,4 +96,5 @@ except Exception as exc:
         ASKCOSConditionRecommender.name,
         "conditions",
         f"askcos suite not importable (install askcos-core from MIT's repo): {exc!r}",
+        exc=exc,
     )

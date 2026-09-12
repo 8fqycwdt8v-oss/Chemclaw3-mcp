@@ -47,7 +47,13 @@ CHEMCLAW_RXNPREDICT_TOKEN=dev-token \
 
 With no predictor extras installed the server starts, serves its tools, and reports every predictor
 as unavailable with the reason — which is the honest behaviour and is what `list_available_models`
-is for. The same tool reports a predictor that *did* load but is switched off by
+is for. Each entry now also carries an `unavailable_cause` from a fixed set, because every module
+writes "missing optional deps" into the reason whatever actually happened: `not_installed` is this
+case and is not a fault, while `failed` or `egress_refused` is a predictor this image *carries* and
+could not load. `/healthz` reads the same field and refuses traffic for the second kind — and for
+any name an `ENABLED_*_MODELS` allow-list carries that is not registered, which before this answered
+200 while every prediction raised. See
+`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`. The same tool reports a predictor that *did* load but is switched off by
 `CHEMCLAW_RXNPREDICT_DISABLED_MODELS` or the `ENABLED_*_MODELS` allow-lists as unavailable too, and
 the single-model tools refuse it: one function decides what this deployment serves, so a control an
 operator applied cannot be walked around through a different tool. For a working tool surface with no model weights at all, enable a deterministic double:

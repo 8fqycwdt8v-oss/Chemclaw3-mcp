@@ -18,6 +18,7 @@ from mcp_server_kit import Dataset, connector_app
 
 from chemclaw_mcp_rxnpredict.engine.config import DATA_DIR, get_settings
 from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import priors_dataset
+from chemclaw_mcp_rxnpredict.engine.readiness import verify_predictors
 from chemclaw_mcp_rxnpredict.tools import server
 
 
@@ -35,8 +36,15 @@ def _readiness() -> list[Dataset]:
 
     `priors_dataset` is `lru_cache`d, so naming the version here after `get_settings()` has already
     loaded it costs nothing further.
+
+    **And the corpus was never the thing most likely to be missing here.** This server's answer is
+    an *ensemble*, assembled at import from optional predictor modules, and a module that raised
+    was recorded and logged and nothing more — so a pod that had lost every forward predictor
+    passed this probe and raised on every call. `verify_predictors` is that half; see
+    `engine/readiness.py` for why an absent extra is ready and a broken one is not.
     """
     get_settings()
+    verify_predictors()
     return [priors_dataset(DATA_DIR)]
 
 

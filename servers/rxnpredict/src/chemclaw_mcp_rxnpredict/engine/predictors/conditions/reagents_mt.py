@@ -109,4 +109,5 @@ except Exception as exc:
         "conditions",
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[reagents_mt]` and download "
         f"checkpoint to $REAGENTS_MT_MODEL_PATH): {exc!r}",
+        exc=exc,
     )

@@ -31,6 +31,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Annotated, Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit import degradation
 from pydantic import Field
 
 from chemclaw_mcp_rxnpredict.engine.admission import (
@@ -46,6 +47,7 @@ from chemclaw_mcp_rxnpredict.engine.meta.aggregator import (
 )
 from chemclaw_mcp_rxnpredict.engine.meta.classifier import classify_reaction as _classify
 from chemclaw_mcp_rxnpredict.engine.predictors import (
+    SERVER,
     discover_predictors,
     list_conditions,
     list_forward,
@@ -323,6 +325,13 @@ def _survivors(
     for predictor, result in zip(predictors, results, strict=True):
         name = predictor.name  # type: ignore[attr-defined]
         if isinstance(result, BaseException):
+            # **Counted as well as logged, and this is the half the refusal below cannot cover.**
+            # The refusal fires only when *every* predictor failed; four of five failing is still
+            # an answer, still `outcome="ok"` on `chemclaw_mcp_tool_calls_total`, and was until now
+            # visible nowhere but a log line. The label is the predictor's registry name, which is
+            # a constant in this package — `/metrics` is unauthenticated, so nothing a caller sends
+            # may become a label.
+            degradation.record(server=SERVER, component=name, cause=degradation.classify(result))
             logger.warning("%s predictor %s failed: %r", kind, name, result)
             failures.append(f"{name} ({type(result).__name__})")
             continue
@@ -600,10 +609,11 @@ def list_available_models() -> ModelsResponse:
                 kind=kind,  # type: ignore[arg-type]
                 available=False,
                 description="(not loaded)",
-                unavailable_reason=reason,
+                unavailable_reason=entry.reason,
+                unavailable_cause=entry.cause,
             )
-            for name, (found_kind, reason) in unavailable_by_name.items()
-            if found_kind == kind
+            for name, entry in unavailable_by_name.items()
+            if entry.kind == kind
         )
         return rows
 
