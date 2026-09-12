@@ -36,8 +36,10 @@ from mcp.server.fastmcp import FastMCP
 from mcp_server_kit.app import connector_app
 from mcp_server_kit.metrics import SESSIONS_REFUSED
 from mcp_server_kit.sessions import (
+    AT_CAPACITY_RETRY_AFTER_SECONDS,
     AT_CAPACITY_STATUS,
     DEFAULT_MAX_SESSIONS,
+    REFUSAL_LOG_INTERVAL_SECONDS,
     SESSION_BACKLOG_BUDGET_BYTES,
     SESSION_COST_BYTES,
     SMALLEST_POD_MEMORY_LIMIT_BYTES,
@@ -55,6 +57,11 @@ PROBE_CEILING = 8
 #: How many handshakes arrive *together* at the already-full pod. More than one because a single
 #: refusal cannot distinguish "refused promptly" from "got lucky on an empty queue".
 PROBE_BURST = 12
+
+#: How many handshakes arrive together against an **empty** pod in the burst probe. Much wider than
+#: the ceiling, because what it is looking for is how far past the bound a concurrent caller gets,
+#: and a width of ceiling-plus-one could only ever show one extra.
+BURST_WIDTH = PROBE_CEILING * 8
 
 #: How much slower than an *admitted* handshake a refused one may be. A ratio rather than a wall
 #: clock, and that is the whole point: measured, a 12-way burst of refusals took 487 ms at the
@@ -293,7 +300,6 @@ def test_the_refusal_says_which_bound_it_hit_and_that_it_is_worth_retrying(
     base, _ = full_pod
     response = _handshake(base)
     assert response.status_code == AT_CAPACITY_STATUS
-    assert response.headers.get("Retry-After") == "1"
     message = response.json()["error"]["message"]
     assert str(PROBE_CEILING) in message
     assert "MCP_MAX_SESSIONS" in message
@@ -451,4 +457,124 @@ def test_a_session_costs_about_what_the_ceiling_was_derived_from(
         f"ceiling of {DEFAULT_MAX_SESSIONS} was derived from; the default is now "
         f"{DEFAULT_MAX_SESSIONS * growth / 1024 / 1024:.0f} MB of a "
         f"{SESSION_BACKLOG_BUDGET_BYTES / 1024 / 1024:.0f} MB budget"
+    )
+
+
+def _simultaneous_burst(base: str, width: int) -> list[int]:
+    """`width` handshakes released from one barrier, so they are in flight together.
+
+    `_burst` above starts its threads in a loop, which is concurrent enough to compare two
+    latencies and *not* enough to open a check-then-act window reliably: the first request can be
+    served before the last thread has started. Here every thread blocks on the barrier until the
+    last one reaches it, so the requests leave together and the server sees them before it has
+    answered any of them — which is what one client on loopback does at 261 handshakes a second,
+    and the only arrival pattern that can catch an admission decision taken before the mint.
+    """
+    gate = threading.Barrier(width)
+    statuses: list[int] = []
+    lock = threading.Lock()
+
+    def knock() -> None:
+        gate.wait(timeout=60)
+        response = _handshake(base)
+        with lock:
+            statuses.append(response.status_code)
+
+    threads = [threading.Thread(target=knock) for _ in range(width)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    return statuses
+
+
+def test_a_simultaneous_burst_against_an_empty_pod_cannot_admit_past_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
+) -> None:
+    """The ceiling holds against the arrival pattern it was written for, not only a serial caller.
+
+    The shipped ceiling read `len(_server_instances)` on the ASGI entry, but upstream registers a
+    session inside `_handle_stateful_request` behind `async with self._session_creation_lock` —
+    several awaits later. So every request in a burst observed the *pre-burst* count and every one
+    of them was admitted. Measured against this app before the fix: a ceiling of 8 admitted 64 of
+    64 and held 64 live sessions; a ceiling of 64 admitted 256 of 256.
+
+    Nothing in this file caught it, and the reason is worth writing down: the saturation probe
+    above fills the pod one handshake at a time and only bursts against an *already-full* pod, so
+    the window between the check and the mint is never open when the burst arrives. This test
+    bursts against an **empty** one.
+
+    Asserted on the live count as well as on the statuses, because they are different claims: the
+    statuses say what the pod told its callers, and `_server_instances` says what it actually did.
+    """
+    monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
+    server = _probe_server("burst")
+    app = connector_app(server, name="burst", token_env=TOKEN_ENV)
+    with serving(app) as base:
+        statuses = _simultaneous_burst(base, BURST_WIDTH)
+        live = len(server.session_manager._server_instances)
+
+    admitted = statuses.count(200)
+    assert len(statuses) == BURST_WIDTH, "a thread in the burst never answered"
+    assert admitted == PROBE_CEILING, (
+        f"{BURST_WIDTH} handshakes arriving together against an empty pod with a ceiling of "
+        f"{PROBE_CEILING} were admitted {admitted} times; a ceiling read before upstream mints is "
+        "a ceiling every concurrent caller walks past"
+    )
+    assert statuses.count(AT_CAPACITY_STATUS) == BURST_WIDTH - PROBE_CEILING
+    assert live == PROBE_CEILING, (
+        f"the pod is holding {live} sessions against a ceiling of {PROBE_CEILING}"
+    )
+
+
+def test_the_refusals_status_and_retry_interval_are_what_a_client_is_told(
+    full_pod: tuple[str, FastMCP],
+) -> None:
+    """The two numbers on the wire, pinned as literals rather than through their own constants.
+
+    Every other assertion in this file compares `response.status_code` to `AT_CAPACITY_STATUS`,
+    which compares the constant to itself: setting it to 200 left all nine of them green, so the
+    status a client actually reads was unpinned while looking thoroughly asserted. The JSON-RPC
+    code beside it was already a literal, so the pattern was known and applied to one of the two
+    channels. Both are a contract with a caller this repository does not own, which is exactly the
+    kind of number a test transcribes rather than imports.
+
+    `Retry-After` is 10 s because a refusal costs this pod 0.8 ms and the slots it is holding are
+    refunded no sooner than `MCP_SESSION_UNUSED_TIMEOUT_SECONDS`. It shipped at 1 s, which every
+    displaced caller can obey for free and the pod cannot: 1,024 of them retrying every second
+    spend 0.8 of a core on being told no.
+    """
+    base, _ = full_pod
+    response = _handshake(base)
+    assert response.status_code == 503
+    assert AT_CAPACITY_STATUS == 503
+    assert response.headers.get("Retry-After") == "10"
+    assert AT_CAPACITY_RETRY_AFTER_SECONDS == 10
+
+
+def test_a_pod_that_is_refusing_says_so_once_an_interval_and_not_once_a_refusal(
+    full_pod: tuple[str, FastMCP], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The counter is per refusal; the log is per operator, and the two are not the same channel.
+
+    A refusal costs this pod 0.8 ms, and it now tells the client to retry in 10 s, so a pod that is
+    genuinely full is refused by everything it displaced — hundreds of times a second at the shipped
+    ceiling. A `logger.warning` each buries every other line in the pod's log, including the ones an
+    operator needs in order to find out *why* it is full. `chemclaw_mcp_sessions_refused_total` is
+    the exact channel and is asserted by the burst probe above; this asserts the other one stays
+    readable, and that the line it prints says how many refusals it stood in for.
+    """
+    base, _ = full_pod
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="mcp_server_kit.sessions"):
+        refusals = _burst(base, PROBE_BURST)
+    assert [status for status, _ in refusals] == [AT_CAPACITY_STATUS] * PROBE_BURST
+    lines = [record for record in caplog.records if record.name == "mcp_server_kit.sessions"]
+    assert len(lines) == 1, (
+        f"{PROBE_BURST} refusals inside one {REFUSAL_LOG_INTERVAL_SECONDS:.0f} s window produced "
+        f"{len(lines)} warning lines"
+    )
+    assert "chemclaw_mcp_sessions_refused_total" in lines[0].getMessage(), (
+        "the one line printed does not point at the channel that does carry every refusal: "
+        f"{lines[0].getMessage()}"
     )
