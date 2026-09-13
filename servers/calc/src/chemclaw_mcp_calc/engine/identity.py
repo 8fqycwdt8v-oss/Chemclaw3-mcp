@@ -71,6 +71,15 @@ and the tool was removed rather than shipped uncacheable — Chemclaw3 assembles
 *is* derivable with no crest — and it would name a program that cannot run, addressing a row nothing
 will ever write. So the derivation calls `crest_search.require_crest()` exactly as the compute path
 does: the probe refuses precisely where the calculation would.
+
+**And so do the two binary-only xTB panels, which for one wave did not** —
+`compute_atomic_descriptors`
+and `compute_surface_potential` answered an `xtb-absent` key on a pod with no binary, arguing in
+their
+own docstrings that the CREST pair above set that precedent. They set this one.
+`require_binary_backend`
+is now called here for the same reason `require_crest` is, and the rule holds for every tool on this
+server rather than for most of them.
 """
 
 from __future__ import annotations
@@ -170,29 +179,42 @@ def _site_reactivity(arguments: dict[str, Any]) -> CalculationIdentity:
 
 
 def _atomic_descriptors(arguments: dict[str, Any]) -> CalculationIdentity:
-    """`compute_atomic_descriptors`.
+    """`compute_atomic_descriptors` — refuses without the binary, exactly as the panel does.
 
-    **This derives a key even where no binary is installed**, naming `xtb-absent`, and that is the
-    fleet's existing convention rather than a new one: the two CREST searches do the same. Deriving
-    an identity is not running a calculation, and this probe exists precisely so a caller can ask
-    before committing; the refusal happens in `compute_atomic_descriptors`, where it is actionable.
+    **This used to derive a key naming `xtb-absent` and argue that the CREST searches set the
+    precedent.** They set the opposite one, two functions below: both call
+    `crest_search.require_crest()`, and the rule this module's own docstring states is that "the
+    probe refuses precisely where the calculation would". Measured under the shipped default
+    (`CHEMCLAW_XTB_ENGINE` unset, no `xtb` on PATH) a **ready** pod answered
+    `xtb.atomic@GFN2-xTB+xtb+xtb-absent/...`, a well-formed Chemclaw3 cache and ledger key naming a
+    program it does not carry — for this tool and `compute_surface_potential`, because
+    `xtb_spec._FIXED_BACKEND` pins their task to the binary whatever `resolve_backend()` answers.
+
+    `require_binary_backend` is the compute path's own refusal, so the two cannot diverge: it covers
+    the absent binary *and* the open-shell fallback, which would otherwise key as tblite here and
+    raise there — a key addressing a row nothing will ever write, which is the same defect in the
+    other direction.
     """
+    spec, structure = xtb_atomic.atomic_inputs(str(arguments["smiles"]), _solvent(arguments))
     return _from_spec(
         "compute_atomic_descriptors",
-        *xtb_atomic.atomic_inputs(str(arguments["smiles"]), _solvent(arguments)),
+        xtb_atomic.require_binary_backend(spec, structure),
+        structure,
     )
 
 
 def _surface_potential(arguments: dict[str, Any]) -> CalculationIdentity:
-    """`compute_surface_potential` — a second xtb run, so a second key.
+    """`compute_surface_potential` — a second xtb run, so a second key, and the same refusal.
 
     Keyed apart from the atomic panel rather than folded into it as an argument: the two produce
     different payloads from different single points, and one key standing for both would serve a
     surface request the panel-only row it found.
     """
+    spec, structure = xtb_atomic.surface_inputs(str(arguments["smiles"]), _solvent(arguments))
     return _from_spec(
         "compute_surface_potential",
-        *xtb_atomic.surface_inputs(str(arguments["smiles"]), _solvent(arguments)),
+        xtb_atomic.require_binary_backend(spec, structure),
+        structure,
     )
 
 

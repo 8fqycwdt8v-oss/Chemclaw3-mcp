@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_calc import tools
-from chemclaw_mcp_calc.engine import crest_cli, xtb_engine
+from chemclaw_mcp_calc.engine import crest_cli, xtb_cli, xtb_engine
 from chemclaw_mcp_calc.engine.identity import COMPUTE_TOOLS, calculation_identity
 from chemclaw_mcp_calc.engine.key import CalculationKey
 
@@ -65,6 +65,28 @@ def sweep_arguments(tool: str, accepts: frozenset[str], geometry: dict[str, Any]
 # forced it: repeating thermochemistry in Chemclaw3 costs 0.007 s against 0.816 s cold for ethanol
 # and 0.012 s against 3.273 s for ethyl acetate. Decomposed, every one of those hits still hits.
 WITHOUT_A_DERIVABLE_KEY = frozenset({"predict_logd"})
+
+# The tools whose *identity* refuses on an image without the program that would run them, so the
+# loops below have nothing to derive. Two CREST searches and the two binary-only xTB panels.
+#
+# **The second pair is the correction this constant exists for.** `xtb_spec._FIXED_BACKEND` pins
+# `atomic` and `surface` to the `xtb` binary regardless of configuration, while the readiness gate
+# tests `resolve_backend()` — which under the shipped `auto` default answers `tblite`. Measured
+# on an image with no binary: a **ready** pod answered `calculation_key` with
+# `xtb.atomic@GFN2-xTB+xtb+xtb-absent/...`, a well-formed Chemclaw3 ledger key naming a program it
+# does not have. They now refuse exactly where their compute path does, which is the rule
+# `engine/identity.py`'s docstring already stated for CREST.
+#
+# A skip that asserts why it skipped: `test_the_tools_that_need_a_binary_refuse_rather_than_key`
+# drives every member, and the tools *outside* the set, on this checkout.
+NEEDS_A_BINARY = frozenset(
+    {
+        "search_conformer_ensemble",
+        "search_binding_modes",
+        "compute_atomic_descriptors",
+        "compute_surface_potential",
+    }
+)
 
 # One argument set per tool, and the compute coroutine that must agree with it. Deliberately the
 # *same* arguments on both sides — that is the property, and passing different ones would make the
@@ -267,8 +289,8 @@ async def test_deriving_a_key_runs_no_scf() -> None:
     xtb_engine.Calculator = _explode  # type: ignore[misc]
     try:
         for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
-            if tool.startswith("search_"):
-                continue  # refuses on the missing binary before any of this is reached
+            if tool in NEEDS_A_BINARY and not xtb_cli.is_available():
+                continue  # refuses on the missing program before any of this is reached
             identity = calculation_identity(tool, sweep_arguments(tool, accepts, geometry))
             assert identity.calc_version
     finally:
@@ -285,10 +307,39 @@ async def test_only_the_named_tool_lacks_a_derivable_key() -> None:
 
     geometry = structure_from_smiles("CC(=O)O", optimize=True).model_dump()
     for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
-        if tool.startswith("search_"):
-            continue  # keyed like the rest; refuses without the binary, checked separately
+        if tool in NEEDS_A_BINARY and not xtb_cli.is_available():
+            continue  # keyed like the rest; refuses without the program, checked separately
         identity = calculation_identity(tool, sweep_arguments(tool, accepts, geometry))
         assert (identity.calc_key is None) == (tool in WITHOUT_A_DERIVABLE_KEY), tool
+
+
+def test_the_tools_that_need_a_binary_refuse_rather_than_key() -> None:
+    """The skip above, earning its place — in both directions.
+
+    A key naming a program this image does not carry is worse than no key at all: it is well-formed,
+    it addresses a row in Chemclaw3's cache and calibration ledger that nothing will ever write,
+    and the compute call it describes refuses. Measured under the shipped default, with
+    `CHEMCLAW_XTB_ENGINE` unset and no `xtb` on PATH, a ready pod answered
+    `xtb.atomic@GFN2-xTB+xtb+xtb-absent/...` for two of this server's seventeen tools.
+
+    The second half is what stops this set growing by accident: every tool *outside* it must answer,
+    so adding a tool to `NEEDS_A_BINARY` to silence a failure makes this test fail instead.
+    """
+    from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+
+    geometry = structure_from_smiles("CC(=O)O", optimize=True).model_dump()
+    for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
+        arguments = sweep_arguments(tool, accepts, geometry)
+        if tool in NEEDS_A_BINARY and not xtb_cli.is_available():
+            with pytest.raises(ValueError) as refused:
+                calculation_identity(tool, arguments)
+            assert "installed" in str(refused.value) or "binary" in str(refused.value), tool
+            continue
+        identity = calculation_identity(tool, arguments)
+        assert "absent" not in identity.calc_version, (
+            f"{tool} derived {identity.calc_version!r}, which names a program this image does not "
+            "carry; that is a Chemclaw3 ledger key addressing a row nothing will write"
+        )
 
 
 async def test_the_one_tool_without_a_key_says_why() -> None:

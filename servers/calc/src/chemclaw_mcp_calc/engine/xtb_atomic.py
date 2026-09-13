@@ -142,10 +142,20 @@ def atomic_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Str
     calculators use, so a caller may join a polarisability onto a Fukui index for the same atom of
     the same structure without a second embedding.
 
-    **This derives a key even where no binary is installed**, naming `xtb-absent`, which is the same
-    thing the two CREST searches do and for the same reason: deriving an identity is not running a
-    calculation, and `calculation_key` exists precisely so a caller can ask *before* committing.
-    The refusal belongs at the point of compute, where it is actionable, not at the point of asking.
+    **This does not derive a key where no binary is installed, and the paragraph that used to stand
+    here said the opposite and cited a precedent that says the opposite too.** It claimed deriving
+    `xtb-absent` was "the same thing the two CREST searches do" — but `identity._conformer_ensemble`
+    and `identity._binding_modes` call `crest_search.require_crest()`, and `identity.py`'s own
+    docstring states the rule as "the probe refuses precisely where the calculation would". Measured
+    under the shipped default (`CHEMCLAW_XTB_ENGINE` unset, no binary on PATH): `/healthz` **200**
+    and `calculation_key` answering
+    `xtb.atomic@GFN2-xTB+xtb+xtb-absent/tblite-0.7.0/rdkit-2026.3.5/h2:...` — a well-formed
+    Chemclaw3 ledger key naming a program the pod does not have, for 2 of this server's 17 tools,
+    because `_FIXED_BACKEND` pins these two tasks to the binary *regardless of configuration* and
+    the readiness gate tests `resolve_backend()`, which under `auto` answers `tblite`.
+
+    The spec is still built here; what refuses is `identity.py`, through
+    `require_binary_backend` — the same call the compute path makes.
     """
     return XtbSpec(task="atomic", engine="xtb", solvent=solvent), property_structure(smiles)
 
@@ -167,7 +177,7 @@ def compute_surface_potential(spec: XtbSpec, structure: Structure) -> SurfacePot
         ValueError: the binary is absent, or the spec did not resolve to it.
         CliError: the run failed or produced no grid.
     """
-    resolved = _require_binary_backend(spec, structure)
+    resolved = require_binary_backend(spec, structure)
     return SurfacePotentialResult(
         calc_version=resolved.calc_version(),
         calc_key=resolved.cache_key(structure).as_str(),
@@ -184,8 +194,16 @@ def compute_surface_potential(spec: XtbSpec, structure: Structure) -> SurfacePot
     )
 
 
-def _require_binary_backend(spec: XtbSpec, structure: Structure) -> XtbSpec:
-    """Resolve `spec` and refuse unless the binary really is what will run it."""
+def require_binary_backend(spec: XtbSpec, structure: Structure) -> XtbSpec:
+    """Resolve `spec` and refuse unless the binary really is what will run it.
+
+    Public because `engine/identity.py` calls it too, and that is the whole of the fix for a key
+    naming a program this image does not carry: `calculation_key` has to refuse precisely where the
+    calculation would, which is the sentence that module's own docstring already makes about CREST.
+    One function rather than a second spelling of the same two refusals — the binary's absence and
+    the open-shell fallback — because a probe that refused on a *different* condition from the
+    compute path is a probe that answers a key nothing will ever write.
+    """
     require_binary()
     resolved = spec.for_structure(structure)
     if resolved.engine != "xtb":
@@ -208,7 +226,7 @@ def compute_atomic_descriptors(spec: XtbSpec, structure: Structure) -> AtomicDes
         ValueError: the binary is absent, or the spec did not resolve to it.
         CliError: the run failed or produced no property table.
     """
-    resolved = _require_binary_backend(spec, structure)
+    resolved = require_binary_backend(spec, structure)
     result = xtb_cli.run(
         structure,
         task="sp",
