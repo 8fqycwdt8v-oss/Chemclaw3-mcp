@@ -130,8 +130,13 @@ def test_the_pod_is_hardened() -> None:
     assert resources["requests"]["cpu"] and resources["requests"]["memory"]
     assert resources["limits"]["cpu"] and resources["limits"]["memory"]
 
+    # **Two routes, and asserted as a pair rather than as one loop.** A liveness failure kills the
+    # container and a readiness failure only sheds traffic, so pointing both at `/healthz` made
+    # every dependency that route consults a restart trigger. `tests/test_deploy_shape.py` holds
+    # this for the whole fleet; here it is held against this server's own file.
+    assert container["readinessProbe"]["httpGet"]["path"] == "/healthz"
+    assert container["livenessProbe"]["httpGet"]["path"] == "/livez"
     for probe in ("readinessProbe", "livenessProbe"):
-        assert container[probe]["httpGet"]["path"] == "/healthz"
         assert container[probe]["httpGet"]["port"] == "http"
 
 
