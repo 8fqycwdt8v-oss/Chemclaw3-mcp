@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from mcp_server_kit import Dataset
+from mcp_server_kit import Dataset, degradation
 
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, roles, species, version
 
@@ -77,8 +77,10 @@ def verify_labeller() -> tuple[Dataset, ...]:
                 f"{component} existed — indistinguishable from a deployment that chose not to "
                 "install one. Check the checkpoint mount and the container logs."
             )
-    mapped = mapping.map_reaction(_PROBE_REACTION)
-    roles.assign(_PROBE_REACTION, _PROBE_SPECIES, mapped)
+    attempt = mapping.map_reaction(_PROBE_REACTION)
+    _refuse_if_permanent("atom mapper", attempt.failure)
+    _refuse_if_permanent("reaction namer", naming.name(_PROBE_REACTION).failure)
+    roles.assign(_PROBE_REACTION, _PROBE_SPECIES, attempt.mapped)
     for smiles in _PROBE_SPECIES:
         if species.canonical_smiles(smiles) is None:
             raise RuntimeError(
@@ -87,3 +89,39 @@ def verify_labeller() -> tuple[Dataset, ...]:
             )
         species.functional_groups(smiles)
     return ()
+
+
+def _refuse_if_permanent(component: str, cause: str | None) -> None:
+    """Refuse traffic for a component that raised on the probe — unless the cause is transient.
+
+    **Construction is not the only way a component breaks, and checking only construction left the
+    larger half open.** The loop above catches a distribution that will not build; measured against
+    a namer that imported cleanly and raised on every reaction, `/healthz` answered **200** and the
+    server labelled a corpus "nothing matched" under a version string carrying the namer's own
+    number. Running the component on the fixture is what closes that, and it costs one forward pass
+    per process because `verify_labeller` is `lru_cache`d.
+
+    **The transient exclusion is deliberate and is the risk this function has to get right.** Every
+    Deployment in this repository points `readinessProbe` *and* `livenessProbe` at `/healthz`, so an
+    unready answer does not shed load, it restarts the pod — and a signal that flips when a
+    transformer runs out of memory turns one busy minute into a fleet-wide restart loop, each
+    restart arriving into the same pressure. `degradation.PERMANENT_CAUSES` is therefore what this
+    acts on: a checkpoint that will not parse and an `EgressForbidden` from a loader reaching for
+    the hub are properties of the image and will not improve, while `resource_exhausted` is a
+    property of the moment. The transient case is not ignored — `mapping` and `naming` counted it on
+    `chemclaw_mcp_degraded_total` before returning, and that counter is where a pod thrashing on
+    memory shows up without anything being restarted for it.
+
+    Args:
+        component: What to name in the refusal.
+        cause: The `mcp_server_kit.degradation` cause the component reported, or `None`.
+
+    Raises:
+        RuntimeError: `cause` is in `degradation.PERMANENT_CAUSES`.
+    """
+    if cause in degradation.PERMANENT_CAUSES:
+        raise RuntimeError(
+            f"the {component} is installed in this image and raised ({cause}) on the readiness "
+            "fixture, so every reaction would come back degraded. This pod must not take a batch "
+            "of five hundred reactions to label; check the checkpoint mount and the container logs."
+        )

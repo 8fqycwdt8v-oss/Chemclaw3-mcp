@@ -13,7 +13,7 @@ import asyncio
 import pytest
 from chemclaw_mcp_rxnlabel import tools
 from chemclaw_mcp_rxnlabel import tools as rxnlabel_tools
-from chemclaw_mcp_rxnlabel.engine import roles, version
+from chemclaw_mcp_rxnlabel.engine import mapping, roles, version
 
 BUCHWALD = (
     "Brc1ccccc1.NC1CCCCC1"
@@ -141,9 +141,9 @@ class TestAReactionIsMappedOnce:
     def test_ten_reactions_are_ten_mapper_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
 
-        def counted(reaction_smiles: str) -> str | None:
+        def counted(reaction_smiles: str) -> mapping.MapResult:
             calls.append(reaction_smiles)
-            return None
+            return mapping.MapResult()
 
         monkeypatch.setattr(rxnlabel_tools.mapping, "map_reaction", counted)
         requests = [

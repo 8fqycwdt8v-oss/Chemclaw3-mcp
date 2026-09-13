@@ -103,4 +103,5 @@ except Exception as exc:
         "forward",
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[reaction_t5]` and provide "
         f"a Chemformer checkpoint at $CHEMFORMER_MODEL_PATH): {exc!r}",
+        exc=exc,
     )

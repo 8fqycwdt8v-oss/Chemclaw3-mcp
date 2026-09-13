@@ -184,8 +184,31 @@ What a *new server* still owes:
    it verified; `connector_app` answers 503 with the reason when it raises. Without one `/healthz`
    is a constant 200, which is how a pod with a corpus that failed its checksum passes the kubelet
    probe, takes traffic and fails every call.
-2. **A metric for anything expensive the server can do to itself** — a killed subprocess, a spent
-   budget, a resource limit firing. `servers/calc/src/chemclaw_mcp_calc/engine/metrics.py` and its
+
+   **Run the thing, do not merely name it**, and prove that by breaking it: all seven servers had a
+   `readiness` callable and three of them still answered 200 with a real dependency broken
+   (`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`). A probe
+   that checks a component *constructed*, or that a version string could be *derived*, passes a
+   component that builds and then fails on every call.
+
+   **And decide what is permanent before you refuse.** Every `deploy/deployment.yaml` here points
+   `readinessProbe` and `livenessProbe` at the same `/healthz`, so an unready answer restarts the
+   pod rather than shedding load — a signal that flips under memory pressure turns one busy minute
+   into a fleet-wide restart loop. Refuse only for `mcp_server_kit.degradation.PERMANENT_CAUSES`;
+   count the rest.
+2. **A metric for every way this server can answer with less than it was built to answer with.**
+   `mcp_server_kit.degradation` is the fleet-wide one: `record(server=..., component=..., cause=...)`
+   on any path that catches an exception and returns an answer anyway, with `classify(exc)` for the
+   cause. It exists because four such paths shipped with a log line and no counter, so a pod whose
+   weights had vanished scraped identically to a pod being asked easy questions — and because
+   `EgressForbidden` is an `OSError`, which means a swallowed one is how the no-egress posture goes
+   quietly missing. **An answer that is short of a component must say so to the model as well**, in
+   a field of its own; `servers/rxnlabel`'s `degraded` and its `namer@failed` version stamp are the
+   worked example, and the stamp matters because a degraded row carrying a healthy pod's version is
+   a row nothing will ever re-derive.
+
+   Beside that, **a metric for anything expensive the server can do to itself** — a killed
+   subprocess, a spent budget, a resource limit firing. `servers/calc/src/chemclaw_mcp_calc/engine/metrics.py` and its
    `pyexec` sibling are the two worked examples. The rule for a label is the one
    in `packages/mcp_server_kit/metrics.py`: `/metrics` is unauthenticated, so **never** an actor, a
    session, a correlation id or a tool argument, and never a value a caller chooses unless it is

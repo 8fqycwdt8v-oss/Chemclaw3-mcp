@@ -148,6 +148,15 @@ that helper are non-obvious, and each is quiet when wrong:
   Datasets here load lazily, so before this a `chem` pod with a corpus that failed its checksum
   passed the probe, took traffic and failed every call. A new server passes `readiness=` to
   `connector_app`; see `docs/adding-a-server.md`.
+  **Passing one is not the same as the check working, and the gap was three of seven**
+  (`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`): a probe
+  that checks a component *constructed*, or that a version string could be *derived*, passes a
+  component that builds and then fails on every call — so a probe runs the thing, on a fixture, and
+  a new one proves it by breaking a dependency and reading the status. The other half is what a
+  probe must **not** act on: readiness and liveness share this route in every Deployment here, so
+  an unready answer restarts the pod rather than shedding load, and only
+  `mcp_server_kit.degradation.PERMANENT_CAUSES` may cause one. A transient resource exhaustion is
+  counted and left alone.
 - **Declare `auth: {mode: bearer, token_env: ...}` in every manifest, even on the loopback dev
   URL.** Chemclaw3's `HttpEndpoint` would accept `mode: none` for loopback and refuse it the moment
   a deployment moved the address — and a manifest whose auth mode changes with its address is one
@@ -192,10 +201,14 @@ independent layers because a rule that lives in one place rots:
    `chemclaw_mcp_egress_refused_total`, and raises `EgressForbidden`. **The log and the counter are
    load-bearing rather than decorative**: `EgressForbidden` subclasses `OSError`, so what a refusal
    looks like from outside depends on who catches it — `calc` reports it as "could not resolve the
-   xTB backend", `rxnpredict` gathers it into a silently degraded ensemble, and any library's own
-   `except OSError: retry` swallows it whole. `chemclaw_mcp_egress_guard_armed` is what makes a
-   deployment that shipped `MCP_EGRESS_GUARD=off` visible from a scrape rather than from a
-   docstring. This is the layer that catches what a
+   xTB backend", and any library's own `except OSError: retry` swallows it whole. `rxnpredict` used
+   to gather it into a *silently* degraded ensemble and no longer does: every path in this fleet
+   that catches an exception and answers anyway now classifies it through
+   `mcp_server_kit/degradation.py`, which tests `EgressForbidden` before anything else precisely
+   because the inheritance would otherwise sort a refusal beside a connection reset, and counts it
+   on `chemclaw_mcp_degraded_total{server,component,cause}`.
+   `chemclaw_mcp_egress_guard_armed` is what makes a deployment that shipped `MCP_EGRESS_GUARD=off`
+   visible from a scrape rather than from a docstring. This is the layer that catches what a
    static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
    `MCP_EGRESS_ALLOW` is empty by default and empty in every shipped deployment.
 

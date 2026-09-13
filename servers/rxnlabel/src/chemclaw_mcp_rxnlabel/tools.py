@@ -193,6 +193,18 @@ class ReactionRepresentation(BaseModel):
     species: list[SpeciesRepresentation] = Field(
         default_factory=list, description="Positional against the species list that was sent."
     )
+    degraded: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Components that were installed, ran on this reaction, and **failed** — "
+            "`atom_mapper`, `reaction_namer`. Empty is the normal case. Non-empty means this "
+            "answer is missing something a working pod would have produced, which is a different "
+            "fact from a component this deployment never installed: that one shows up as "
+            "`absent` in `version` and is not an error. Do not store a label with this non-empty "
+            "as though it were complete; `version` also carries `failed` in the component's slot, "
+            "so the row re-labels against a healthy pod."
+        ),
+    )
 
 
 class ReactionNaming(BaseModel):
@@ -224,6 +236,16 @@ class ReactionNaming(BaseModel):
     )
     method: str | None = Field(
         default=None, description="`smirks` where a rule matched, null where none did."
+    )
+    degraded: list[str] = Field(
+        default_factory=list,
+        description=(
+            "`reaction_namer` when the classifier was installed, ran on this reaction and failed. "
+            "Empty is the normal case — including the common one where the classifier ran and "
+            "nothing matched, which is a real answer about the chemistry. Non-empty means the "
+            "nulls above are a fault in this pod rather than a statement about the reaction, and "
+            "`version` says `namer@failed` so the row re-labels."
+        ),
     )
 
 
@@ -428,7 +450,13 @@ def _the_one_answer(answers: list[_T], reaction_smiles: str) -> _T:
 
 
 def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]:
-    """Represent each reaction, skipping the ones RDKit cannot read."""
+    """Represent each reaction, skipping the ones RDKit cannot read.
+
+    **The stamp is per row, not per batch, and only because a row can be degraded.** A reaction the
+    mapper raised on carries `mapper@failed` rather than the mapper's version, so it is stale
+    against a healthy pod and re-labels; every other row carries the batch's own stamp, computed
+    once. See `engine/version._component`.
+    """
     stamp = _version().version
     answers = []
     for request in reactions:
@@ -438,12 +466,15 @@ def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]
         # **Mapped once.** `roles.assign` needs the map for the reactant-versus-reagent split and
         # the answer carries it as a field; deriving it in both places ran the transformer twice
         # per reaction, which is the cost `MAX_BATCH` was set against.
-        mapped = mapping.map_reaction(request.reaction_smiles)
+        attempt = mapping.map_reaction(request.reaction_smiles)
+        mapped = attempt.mapped
+        degraded = [mapping.COMPONENT] if attempt.failure is not None else []
         assigned = roles.assign(request.reaction_smiles, request.species, mapped)
         answers.append(
             ReactionRepresentation(
                 id=request.id,
-                version=stamp,
+                version=version.labeller_version(degraded) if degraded else stamp,
+                degraded=degraded,
                 reaction_smiles=canonical,
                 mapped_smiles=mapped,
                 unreadable_species=_unreadable(request),
@@ -485,17 +516,23 @@ def _unreadable(request: ReactionRequest) -> list[str]:
 
 
 def _name(reactions: list[NamingRequest]) -> list[ReactionNaming]:
-    """Classify each reaction; a miss is a result with null fields, not an omission."""
+    """Classify each reaction; a miss is a result with null fields, not an omission.
+
+    A *failure* is a result with null fields too, and `degraded` plus a `namer@failed` stamp is what
+    tells the two apart — see `_represent` for the same argument on the mapper.
+    """
     stamp = _version().version
     answers = []
     for request in reactions:
         if _canonical_reaction(request.reaction_smiles) is None:
             continue
         found = naming.name(request.reaction_smiles)
+        degraded = [naming.COMPONENT] if found.failure is not None else []
         answers.append(
             ReactionNaming(
                 id=request.id,
-                version=stamp,
+                version=version.labeller_version(degraded) if degraded else stamp,
+                degraded=degraded,
                 named_reaction=found.named_reaction,
                 reaction_class=found.reaction_class,
                 method=found.method,

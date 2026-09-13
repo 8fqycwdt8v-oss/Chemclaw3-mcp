@@ -106,4 +106,5 @@ except Exception as exc:
         RxnInsightConditions.name,
         "conditions",
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[rxn_insight]`): {exc!r}",
+        exc=exc,
     )

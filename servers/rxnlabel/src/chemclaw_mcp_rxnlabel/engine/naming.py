@@ -32,7 +32,14 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from mcp_server_kit import degradation
+
 logger = logging.getLogger(__name__)
+
+SERVER = "rxnlabel"
+
+# What this module is, as a metric label and in an answer — see `mapping.COMPONENT`.
+COMPONENT = "reaction_namer"
 
 _LOCK = threading.Lock()
 _NAMER: Any | None = None
@@ -46,11 +53,18 @@ _UNNAMED = {"otherreaction", "other", "unknown", ""}
 
 @dataclass(frozen=True)
 class Naming:
-    """One reaction's classification. Every field optional, because a miss is a real answer."""
+    """One reaction's classification. Every field optional, because a miss is a real answer.
+
+    `failure` is what separates the two answers that used to be the same object. A namer that runs
+    and matches nothing returns all-`None`, and so did a namer that raised — so "most of a patent
+    corpus has no name", which is true, covered for a pod whose rule table would not load, which is
+    a fault. A cause here means the classification is *missing*, not that nothing matched.
+    """
 
     named_reaction: str | None = None
     reaction_class: str | None = None
     method: str | None = None
+    failure: str | None = None
 
 
 def available() -> bool:
@@ -59,20 +73,41 @@ def available() -> bool:
 
 
 def name(reaction_smiles: str) -> Naming:
-    """Classify one reaction, or answer that nothing matched.
+    """Classify one reaction, or answer that nothing matched — or that the namer broke.
 
-    A raise from the namer is caught and reported as unnamed: Rxn-INSIGHT parses the reaction
-    itself and throws on inputs it cannot read, and the correct response is one unnamed reaction
-    rather than a failed batch of two hundred.
+    A raise from the namer is still caught, and for the reason it always was: Rxn-INSIGHT parses
+    the reaction itself and throws on inputs it cannot read, and the correct response is one
+    unnamed reaction rather than a failed batch of two hundred. **What was wrong is that the
+    answer was `Naming()` — byte-identical to the commonest correct answer this server gives.** A
+    pod whose SMIRKS table had gone therefore reported "nothing matched" for every reaction in a
+    corpus, stamped with the namer's own version, and nothing moved.
+
+    So the cause is classified, counted on `chemclaw_mcp_degraded_total`, and carried back in
+    `failure`. The log line names the cause and the exception, which the unconditional one-line
+    warning it replaces did not.
+
+    Args:
+        reaction_smiles: `reactants>agents>products`.
+
+    Returns:
+        A `Naming`. `failure` is `None` on both normal paths — no namer installed, or a namer that
+        matched nothing — and a degradation cause when it raised.
     """
     namer = _namer()
     if namer is None:
         return Naming()
     try:
         info = namer(reaction_smiles)
-    except Exception:
-        logger.warning("reaction naming failed for one reaction; it is recorded as unnamed")
-        return Naming()
+    except Exception as exc:
+        cause = degradation.classify(exc)
+        degradation.record(server=SERVER, component=COMPONENT, cause=cause)
+        logger.warning(
+            "reaction naming failed (%s); this reaction is recorded unnamed and stamped as "
+            "degraded rather than as an unmatched rule: %r",
+            cause,
+            exc,
+        )
+        return Naming(failure=cause)
     named = _clean(info.get("NAME"))
     return Naming(
         named_reaction=named,

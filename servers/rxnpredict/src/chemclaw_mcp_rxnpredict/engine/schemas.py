@@ -121,6 +121,18 @@ class ModelInfo(BaseModel):
         description="pip extra to install this predictor's dependencies, e.g. 'reaction_t5'.",
     )
     unavailable_reason: str | None = None
+    unavailable_cause: str | None = Field(
+        default=None,
+        description=(
+            "Why this predictor is missing, as one of a fixed set rather than as prose: "
+            "`not_installed` (this deployment does not carry it — normal, and not a fault), "
+            "`egress_refused` (it reached for the network, which this fleet forbids), "
+            "`resource_exhausted` (it ran out of memory — transient), or `failed` (it is present "
+            "in this image and broke, which is a broken pod). `unavailable_reason` beside it says "
+            "the same thing in a sentence, but every module writes 'missing optional deps' there "
+            "whatever happened, so that text cannot be used to tell the four apart."
+        ),
+    )
 
 
 class ModelsResponse(BaseModel):

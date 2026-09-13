@@ -61,6 +61,17 @@ fixture reaction end to end so that a broken RDKit fails the probe rather than e
 components a pod actually has is `labeller_version`'s answer, on the authenticated surface where a
 caller needs it to decide whether a stored label is stale.
 
+**Construction was the only thing that comparison could see, and breakage is the larger half.** A
+namer that *imports* and raises on every reaction reported present, answered 200, and labelled a
+corpus "nothing matched" — which is also the commonest correct answer this server gives. The probe
+now runs both components on the fixture, and a reaction they raised on comes back with `degraded`
+naming them and a version stamped `mapper@failed` / `namer@failed` — a third word, distinct from
+`absent` and from a version number, so the row is stale against a healthy pod instead of equalling
+one. Each such answer is counted on `chemclaw_mcp_degraded_total`; see
+`D-2026-09-12-a-degradation-that-is-not-counted-is-a-degradation-nobody-sees`. An out-of-memory is
+counted and reported the same way but is **not** a reason to take the pod out, because readiness and
+liveness share `/healthz` here and a transient refusal would restart it into the same pressure.
+
 ## What this server deliberately does not answer
 
 - **`rxno_id` is always null.** Rxn-INSIGHT names reactions in its own vocabulary and carries no

@@ -201,7 +201,36 @@ decision leaves a record behind and the row goes.
   `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
   `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
 
-## 3 — The gate itself
+## 3 — Readiness, where it still stops
+
+- [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference
+  is what an operator can see.** Driven on 2026-09-12 by mutating each vendored corpus in place:
+  `chem` and `safety` answered **503** naming the table and both hashes, while `props` and
+  `rxnpredict` raised `DatasetError` at *import* — `props`'s `tools.py` calls
+  `len(records.all_solvents())` at module scope, and `rxnpredict`'s settings load pulls
+  `trust_priors.json` in. Neither pod ever serves, so neither is dangerous; what is lost is the
+  reason, which reaches a kubelet as `CrashLoopBackOff` and a container log instead of as a probe
+  body naming the two hashes. Decide whether a corpus load belongs behind the probe on every server
+  (which means `props` giving up the incidental module-scope load its own `_readiness` docstring
+  already calls an accident) or whether a crash loop is the honest answer for a corpus that cannot
+  be read at all.
+  **Anchors:** `servers/props/src/chemclaw_mcp_props/tools.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
+  `packages/mcp_server_kit/src/mcp_server_kit/datasets.py`.
+
+- [ ] **`calc`'s probe now covers the xTB backend and says nothing about CREST.**
+  `D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check` closed the
+  `xtb-absent` key, which was dangerous because it wrote a *wrong record* into Chemclaw3's ledger.
+  `crest_cli.binary_version()` has the same `"absent"` shape, but a CREST call on a pod without the
+  binary raises `CliError` naming it — an honest failure rather than a corrupted key — so it was
+  left out rather than folded in. What is still true is that such a pod reports ready and cannot
+  serve `search_conformers` or `search_complex`. Decide whether a pod that can serve thirteen of
+  fifteen tools is ready, which is a question about partial capability that no other server in this
+  fleet has had to answer yet.
+  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/crest_cli.py::binary_version`,
+  `servers/calc/src/chemclaw_mcp_calc/app.py::_readiness`.
+
+## 4 — The gate itself
 
 - [ ] **`make type` does not check the test tree, and there is an error waiting in it.** `$(SRC)`
   lists eight `src/` roots and no test directory, so `mypy --strict` never reads the files that
@@ -217,7 +246,7 @@ decision leaves a record behind and the row goes.
   per-root invocations.
   **Anchors:** `Makefile`, `servers/calc/tests/test_admission.py`, `pyproject.toml`.
 
-## 4 — Corpora that are not yet licensed to exist
+## 5 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA and `chembl` cannot be built until somebody has read what that obliges.**
   Attribution obligations follow the data into anything derived from it, which for this fleet means
@@ -245,7 +274,7 @@ decision leaves a record behind and the row goes.
   **Anchors:** `MODULES.md`, `packages/mcp_server_kit/src/mcp_server_kit/datasets.py`,
   `servers/props/src/chemclaw_mcp_props/data`.
 
-## 5 — Consuming a server hosted elsewhere
+## 6 — Consuming a server hosted elsewhere
 
 - [ ] **`retro` cannot be consumed until six things are true of it, and this repository owes it a
   manifest.** **Other repository:** `chemclaw2_retrosynthesis` — its anchors are that repo's

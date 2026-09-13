@@ -170,4 +170,5 @@ except Exception as exc:
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[molecular_transformer]` "
         "and download MIT_mixed_augm_model_average.pt to "
         f"$MOLECULAR_TRANSFORMER_MODEL_PATH): {exc!r}",
+        exc=exc,
     )

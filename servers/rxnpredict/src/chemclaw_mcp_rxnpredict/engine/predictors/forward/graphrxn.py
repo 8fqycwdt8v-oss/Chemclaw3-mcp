@@ -84,4 +84,5 @@ except Exception as exc:
         "forward",
         "missing optional deps (install `chemclaw-mcp-rxnpredict[graphrxn]` and the GraphRXN "
         f"repo): {exc!r}",
+        exc=exc,
     )

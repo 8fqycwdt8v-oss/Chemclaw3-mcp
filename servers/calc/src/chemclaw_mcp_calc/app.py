@@ -25,7 +25,9 @@ from __future__ import annotations
 from fastapi import FastAPI
 from mcp_server_kit import Dataset, connector_app
 
+from chemclaw_mcp_calc.engine import xtb_cli
 from chemclaw_mcp_calc.engine.pka import calc_version
+from chemclaw_mcp_calc.engine.xtb_spec import resolve_backend
 from chemclaw_mcp_calc.tools import resolve_calculator_versions, server
 
 
@@ -44,8 +46,26 @@ def _readiness() -> list[Dataset]:
 
     `calc_version` is a string built from cached backend lookups, so the probe pays the subprocess
     resolution at most once per process; `connector_app` runs it off the event loop regardless.
+
+    **Deriving the string is not the same as the string being usable, and for one configuration it
+    was not.** `resolve_backend()` honours an explicit `CHEMCLAW_XTB_ENGINE=xtb` without asking
+    whether the binary exists, and `xtb_cli.binary_version()` answers `"absent"` rather than
+    raising — deliberately, and its own docstring argues the case on the grounds that "`resolve_
+    backend()` will therefore never select `xtb`", which is true under `auto` and false under the
+    explicit setting. Measured on an image with no `xtb` on `PATH`: `/healthz` returned **200** and
+    `calc_version()` returned a well-formed string ending `opt-GFN2-xTB+xtb+xtb-absent/...`. That
+    string is the primary key of Chemclaw3's calculation cache and calibration ledger, so the pod
+    would have taken traffic and written rows under a version naming a program that is not in the
+    image — unreachable forever once the binary arrives and the key moves.
     """
     calc_version()
+    backend = resolve_backend()
+    if backend == "xtb" and not xtb_cli.is_available():
+        raise RuntimeError(
+            "CHEMCLAW_XTB_ENGINE selects the xtb binary and this image has none on PATH, so every "
+            "result would be keyed `xtb-absent` in Chemclaw3's cache and calibration ledger. "
+            "Install xtb in the image or unset the variable to fall back to tblite."
+        )
     return []
 
 
