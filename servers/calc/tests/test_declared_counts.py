@@ -83,7 +83,7 @@ def test_calculation_key_names_only_tools_that_exist_as_the_ones_without_a_key()
     keyless = {
         tool
         for tool, (accepted, _) in COMPUTE_TOOLS.items()
-        if "smiles" in accepted and calculation_identity(tool, {"smiles": "CCO"}).key is None
+        if "smiles" in accepted and _answers_without_a_key(tool)
     }
     assert keyless == {"predict_logd"}
     doc = tools.calculation_key.__doc__ or ""
@@ -92,6 +92,21 @@ def test_calculation_key_names_only_tools_that_exist_as_the_ones_without_a_key()
         if tool not in keyless:
             assert f"`{tool}`" not in doc, f"{tool} has a key and must not be named as lacking one"
     assert "compute_thermochemistry" not in doc
+
+
+def _answers_without_a_key(tool: str) -> bool:
+    """Whether `tool` derives an identity carrying no key — which a *refusal* is not.
+
+    The four tools that need a program this image may not carry refuse instead of answering, and a
+    refusal is the opposite of what this set is about: "no key" reads to a caller as "not computed
+    yet", which is why it has to be named in the docstring, while a refusal says what to fix. Before
+    the two binary-only xTB panels refused, they answered a key naming `xtb-absent` and fell through
+    this comprehension as "has a key" — which was true and was the defect.
+    """
+    try:
+        return calculation_identity(tool, {"smiles": "CCO"}).key is None
+    except ValueError:
+        return False
 
 
 def test_a_tool_the_docstring_used_to_name_is_still_not_on_this_server() -> None:

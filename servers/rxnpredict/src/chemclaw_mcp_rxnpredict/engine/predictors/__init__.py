@@ -115,22 +115,46 @@ def unavailable() -> dict[str, Unavailable]:
 
 _DISCOVERY_DONE = False
 
-_FORWARD_MODULES = [
-    "chemclaw_mcp_rxnpredict.engine.predictors.forward.reaction_t5",
-    "chemclaw_mcp_rxnpredict.engine.predictors.forward.t5chem",
-    "chemclaw_mcp_rxnpredict.engine.predictors.forward.molecular_transformer",
-    "chemclaw_mcp_rxnpredict.engine.predictors.forward.megan",
-    "chemclaw_mcp_rxnpredict.engine.predictors.forward.graphrxn",
-    "chemclaw_mcp_rxnpredict.engine.predictors.forward.chemformer",
-]
+# Module path -> the **registry name** the predictor in it answers to. A mapping rather than two
+# lists, for two reasons that are the same reason.
+#
+# The first is a real defect: `discover_predictors`'s catch-all recorded a module that blew up
+# *outside* its own guard under the module's short name, while the module's own guard records the
+# registry name. For ten of eleven those strings are equal; for `reaction_t5` they are
+# `reaction_t5` and `reaction_t5_v2`, so one predictor was counted under two component names and an
+# operator grepping `/metrics` for the id `list_available_models` advertises found nothing under the
+# catch-all path. Driven: `sorted(unavailable())` carried `reaction_t5_v2` on the guarded path and
+# `reaction_t5` on the other.
+#
+# The second is that `degradation.record` now clamps its `component` label to a declared set, and
+# this is the only place in this package where the whole set of names is stated once. The values are
+# checked against each predictor class's own `name` by
+# `tests/test_readiness.py::test_the_module_map_agrees_with_the_registry_names`, so the duplication
+# is held rather than trusted.
+_FORWARD_MODULES = {
+    "chemclaw_mcp_rxnpredict.engine.predictors.forward.reaction_t5": "reaction_t5_v2",
+    "chemclaw_mcp_rxnpredict.engine.predictors.forward.t5chem": "t5chem",
+    "chemclaw_mcp_rxnpredict.engine.predictors.forward.molecular_transformer": (
+        "molecular_transformer"
+    ),
+    "chemclaw_mcp_rxnpredict.engine.predictors.forward.megan": "megan",
+    "chemclaw_mcp_rxnpredict.engine.predictors.forward.graphrxn": "graphrxn",
+    "chemclaw_mcp_rxnpredict.engine.predictors.forward.chemformer": "chemformer",
+}
 
-_CONDITIONS_MODULES = [
-    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.rxn_insight",
-    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.parrot",
-    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.reagents_mt",
-    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.two_stage_dnn",
-    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.askcos_condition",
-]
+_CONDITIONS_MODULES = {
+    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.rxn_insight": "rxn_insight",
+    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.parrot": "parrot",
+    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.reagents_mt": "reagents_mt",
+    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.two_stage_dnn": "two_stage_dnn",
+    "chemclaw_mcp_rxnpredict.engine.predictors.conditions.askcos_condition": "askcos_condition",
+}
+
+# Every component name this server may publish on `chemclaw_mcp_degraded_total`, declared before the
+# first `mark_unavailable` can fire. `cause` was clamped to a closed set and `component` was clamped
+# by the habit of spelling it as a source constant — which is not a mechanism, and is the half
+# `register_components` turns into one.
+degradation.register_components(*_FORWARD_MODULES.values(), *_CONDITIONS_MODULES.values())
 
 
 def discover_predictors() -> None:
@@ -138,16 +162,19 @@ def discover_predictors() -> None:
     global _DISCOVERY_DONE
     if _DISCOVERY_DONE:
         return
-    for modname in _FORWARD_MODULES + _CONDITIONS_MODULES:
+    for modname, name in (*_FORWARD_MODULES.items(), *_CONDITIONS_MODULES.items()):
         try:
             importlib.import_module(modname)
         except Exception as exc:
             # Predictor modules call mark_unavailable themselves when their hard deps fail;
             # this is the catch-all for truly broken modules. It is the one that most needs the
             # exception passed through: a module that raised *outside* its own guard did not fail
-            # on an optional import, so it classifies as `failed` and `engine/readiness.py` refuses
-            # to take traffic for it.
-            short = modname.rsplit(".", 1)[-1]
-            kind = "forward" if "forward" in modname else "conditions"
-            mark_unavailable(short, kind, f"import failed: {exc!r}", exc=exc)
+            # on an optional import, so it classifies as `failed` rather than as an absent extra.
+            #
+            # **The registry name, not the module's short name.** Those differ for `reaction_t5`,
+            # whose predictor answers to `reaction_t5_v2`, so this branch used to file one predictor
+            # under a component name that `list_available_models` and
+            # `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS` do not use.
+            kind = "forward" if modname in _FORWARD_MODULES else "conditions"
+            mark_unavailable(name, kind, f"import failed: {exc!r}", exc=exc)
     _DISCOVERY_DONE = True

@@ -10,9 +10,14 @@ from __future__ import annotations
 import httpx
 import pytest
 from fastapi import FastAPI
-from mcp_server_kit.auth import BearerAuthMiddleware, BodySizeLimit, _is_open
+from mcp_server_kit.auth import OPEN_PATHS, BearerAuthMiddleware, BodySizeLimit, _is_open
 
 TOKEN_ENV = "TEST_SERVER_TOKEN"
+
+
+async def _ok() -> dict[str, str]:
+    """The body an open probe route answers with; the status is what these tests are about."""
+    return {"status": "ok"}
 
 
 def _app(*, token_env: str | None, max_bytes: int = 0) -> FastAPI:
@@ -22,9 +27,12 @@ def _app(*, token_env: str | None, max_bytes: int = 0) -> FastAPI:
     if max_bytes:
         app.add_middleware(BodySizeLimit, max_bytes=max_bytes)
 
-    @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    # One route per open path, both spellings, so a test that expects 200 is testing the middleware
+    # rather than the route table — a missing route answers 404, which is *also* not 401 and is how
+    # the trailing-slash test below once passed while every probe in the fleet got 404.
+    for path in sorted(OPEN_PATHS):
+        app.add_api_route(path, _ok, methods=["GET"])
+        app.add_api_route(f"{path}/", _ok, methods=["GET"])
 
     @app.post("/mcp")
     async def mcp() -> dict[str, str]:
@@ -40,10 +48,17 @@ async def _call(app: FastAPI, method: str, path: str, **kwargs: object) -> httpx
         return await client.request(method, path, **kwargs)  # type: ignore[arg-type]
 
 
-async def test_healthz_is_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A kubelet probe has no identity, and the payload carries nothing worth protecting."""
+@pytest.mark.parametrize("path", sorted(OPEN_PATHS))
+async def test_every_probe_route_is_open(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
+    """A kubelet probe and a Prometheus scrape have no identity, and carry nothing to protect.
+
+    Parametrized over `OPEN_PATHS` rather than naming `/healthz`, because the set grew: `/livez` was
+    added when liveness stopped sharing the readiness route, and a liveness probe refused with 401
+    kills the container — the loudest way there is to get an exemption wrong. A fourth route added
+    without a credential decision is covered the day it appears.
+    """
     monkeypatch.setenv(TOKEN_ENV, "s3cret")
-    response = await _call(_app(token_env=TOKEN_ENV), "GET", "/healthz")
+    response = await _call(_app(token_env=TOKEN_ENV), "GET", path)
     assert response.status_code == 200
 
 
@@ -121,7 +136,7 @@ async def test_an_oversized_body_is_refused(monkeypatch: pytest.MonkeyPatch) -> 
     assert response.status_code == 413
 
 
-@pytest.mark.parametrize("path", ["/healthz/", "/metrics/"])
+@pytest.mark.parametrize("path", ["/healthz/", "/livez/", "/metrics/"])
 async def test_a_probe_path_with_a_trailing_slash_is_not_refused(
     monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
@@ -151,6 +166,14 @@ async def test_the_open_paths_are_not_a_prefix_rule(monkeypatch: pytest.MonkeyPa
     """Normalising the trailing slash must not become "anything starting with /healthz"."""
     monkeypatch.setenv(TOKEN_ENV, "s3cret")
     app = _app(token_env=TOKEN_ENV)
-    for path in ("/healthz/../mcp", "//metrics", "/HEALTHZ", "/healthzz", "/metrics/../mcp"):
+    for path in (
+        "/healthz/../mcp",
+        "//metrics",
+        "/HEALTHZ",
+        "/healthzz",
+        "/livezz",
+        "/LIVEZ",
+        "/metrics/../mcp",
+    ):
         response = await _call(app, "GET", path)
         assert response.status_code == 401, f"{path} reached the app unauthenticated"

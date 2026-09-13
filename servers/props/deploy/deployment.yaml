@@ -110,8 +110,18 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
+            # **`/livez`, not `/healthz`, and the two are different questions.** A liveness failure
+            # kills the container; a readiness failure only takes the pod out of the Service and is
+            # undone by the next passing probe. Both probes pointed here at `/healthz`, so every
+            # dependency that route consults — a corpus checksum, an optional predictor's
+            # checkpoint, a transformer that would not construct — was also a kill after
+            # periodSeconds x failureThreshold. Measured on `rxnpredict`: one missing checkpoint
+            # among eleven *optional* predictors answered 503, and a restart cannot recreate a
+            # missing file, so a pod serving ten of eleven went to CrashLoopBackOff and served none.
+            # `/livez` consults nothing: it answers only if the process is still serving HTTP, which
+            # is the fault a restart fixes. See `mcp_server_kit.app.connector_app`.
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             initialDelaySeconds: 35
             periodSeconds: 30

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,10 +36,24 @@ SERVER = "rxnlabel"
 # spelled at each call site, because the two would drift and the label rule in
 # `mcp_server_kit/metrics.py` only holds while the set of them is closed.
 COMPONENT = "atom_mapper"
+degradation.register_components(COMPONENT)
+
+# How long a *transient* construction failure is believed before the mapper is built again. Weights
+# are ~50 MB and several seconds, so retrying per call would be a second way to exhaust the thing
+# that failed; a minute is the same window `readiness.VERDICT_TTL_SECONDS` uses, so at most one
+# retry happens per probe.
+CONSTRUCTION_RETRY_SECONDS = 60.0
 
 _LOCK = threading.Lock()
 _MAPPER: Any | None = None
 _TRIED = False
+# When the last construction attempt ran, and what it failed with. **The cause used to be computed,
+# counted and discarded** — `readiness.verify_labeller` then refused without being able to say
+# whether the failure was a corrupt checkpoint or a busy minute, and `_TRIED` latched on that first
+# attempt so the process never looked again: measured, a `MemoryError` out of `RXNMapper()` left the
+# pod permanently unready with nothing able to change its mind.
+_ATTEMPTED_AT: float | None = None
+_FAILURE: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,17 @@ class MapResult:
 def available() -> bool:
     """Whether a mapper could be constructed in this process."""
     return _mapper() is not None
+
+
+def construction_failure() -> str | None:
+    """The `degradation` cause the last construction attempt failed with, or `None`.
+
+    Read by `readiness._probe`, which is the only caller and the whole reason this exists: the cause
+    was classified and counted inside `_mapper` and then thrown away, so the refusal it produced
+    could not say what had gone wrong — and nothing could tell a pod that needs replacing from one
+    that needs a moment.
+    """
+    return _FAILURE
 
 
 def map_reaction(reaction_smiles: str) -> MapResult:
@@ -187,12 +213,22 @@ def _labels(smiles: str) -> set[int]:
 
 
 def _mapper() -> Any | None:
-    """The process-wide mapper, constructed once, or `None` where the extra is not installed."""
-    global _MAPPER, _TRIED
+    """The process-wide mapper, or `None` where the extra is absent or would not build.
+
+    Built at most once on the happy path. A *transient* failure is retried no more often than
+    `CONSTRUCTION_RETRY_SECONDS`, and that retry is the difference between a pod that is not ready
+    *yet* and one that is stuck: `_TRIED` latched unconditionally before, so a `MemoryError` out of
+    `RXNMapper()` — a pod that would have built it fine a minute later — left the process
+    mapless for
+    its whole life, answering 503 that only a restart could clear. A permanent cause still latches,
+    because re-parsing a corrupt checkpoint every minute spends seconds of CPU to learn nothing.
+    """
+    global _MAPPER, _TRIED, _ATTEMPTED_AT, _FAILURE
     with _LOCK:
-        if _TRIED:
+        if _MAPPER is not None or (_TRIED and not _retry_due()):
             return _MAPPER
         _TRIED = True
+        _ATTEMPTED_AT = time.monotonic()
         try:
             from rxnmapper import RXNMapper
         except ImportError:
@@ -213,7 +249,23 @@ def _mapper() -> Any | None:
             # reached for the hub raises `EgressForbidden` here. `readiness.verify_labeller` already
             # refuses to take traffic in both cases; the counter is what makes the difference
             # visible from a scrape rather than from a pod's first log lines.
-            degradation.record(server=SERVER, component=COMPONENT, cause=degradation.classify(exc))
-            logger.exception("rxnmapper is installed but could not be constructed")
+            _FAILURE = degradation.classify(exc)
+            degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
+            logger.exception(
+                "rxnmapper is installed but could not be constructed (%s); it will be retried in "
+                "%.0fs if that cause is transient",
+                _FAILURE,
+                CONSTRUCTION_RETRY_SECONDS,
+            )
             return None
+        _FAILURE = None
         return _MAPPER
+
+
+def _retry_due() -> bool:
+    """Whether a failed construction may be attempted again. Called under `_LOCK`."""
+    if _FAILURE is None or _FAILURE in degradation.PERMANENT_CAUSES:
+        return False
+    return _ATTEMPTED_AT is not None and (
+        time.monotonic() - _ATTEMPTED_AT >= CONSTRUCTION_RETRY_SECONDS
+    )

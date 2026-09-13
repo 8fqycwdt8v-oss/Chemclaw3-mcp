@@ -32,8 +32,11 @@ from pathlib import Path
 import httpx
 import pytest
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit import degradation
 from mcp_server_kit.app import READINESS_FAILURE_TTL_SECONDS, connector_app
 from mcp_server_kit.datasets import Dataset
+from mcp_server_kit.egress import EgressForbidden
+from prometheus_client import REGISTRY
 
 # The reason a corpus check gives when it fails, carrying the two things such a message really does
 # carry: a filesystem path an operator needs, and a credential nobody may publish.
@@ -191,3 +194,129 @@ async def test_a_recovered_server_is_readied_once_the_memo_expires(
 
     assert recovered.status_code == 200
     assert recovered.json()["datasets"] == ["probe-corpus@1"]
+
+
+# One exception per member of `degradation.CAUSES`, as a module constant so the coverage test below
+# can read it. A literal list inside the decorator is a list nothing can check against `CAUSES`.
+_VERDICT_CASES: dict[str, BaseException] = {
+    degradation.CAUSE_EGRESS_REFUSED: EgressForbidden(f"{REASON} (huggingface.co)"),
+    degradation.CAUSE_RESOURCE_EXHAUSTED: MemoryError(REASON),
+    degradation.CAUSE_NOT_INSTALLED: ImportError(REASON),
+    degradation.CAUSE_FAILED: RuntimeError(REASON),
+}
+
+
+@pytest.mark.parametrize("cause", sorted(_VERDICT_CASES), ids=str)
+async def test_only_a_permanent_cause_answers_unready(cause: str) -> None:
+    """The rule the fleet stated and two callables implemented for one branch each.
+
+    `PERMANENT_CAUSES` was read in exactly **two** places in all of `src/` while all seven servers
+    passed a `readiness=` callable, so every other line of every callable raised straight into an
+    unconditional 503 — and at the time both probes shared this route, so that 503 was a kill.
+    Driven on `rxnlabel` before the funnel: a `MemoryError` out of `RXNMapper()` booked
+    `resource_exhausted` on `chemclaw_mcp_degraded_total`, `resource_exhausted in PERMANENT_CAUSES`
+    was False, and `/healthz` answered 503 anyway.
+
+    Parametrized over the four causes and asserted against `PERMANENT_CAUSES` membership rather than
+    against a transcribed list of status codes: a fifth cause added to `CAUSES` without a decision
+    about this route makes `test_every_cause_reaches_this_funnel` red, and moving a cause between
+    the two sets flips the expectation here without anybody editing it.
+    """
+    exc = _VERDICT_CASES[cause]
+    expected = 503 if cause in degradation.PERMANENT_CAUSES else 200
+
+    def readiness() -> tuple[Dataset, ...]:
+        """Fail the way a component does, with a cause `classify` can see."""
+        raise exc
+
+    app = connector_app(
+        FastMCP(f"verdict-{cause}"), name=f"verdict-{cause}", token_env=None, readiness=readiness
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://readiness.test"
+    ) as client:
+        response = await client.get("/healthz")
+        alive = await client.get("/livez")
+
+    assert degradation.classify(exc) == cause, "the premise: this exception classifies as stated"
+    assert response.status_code == expected, (
+        f"a {cause} readiness failure answered {response.status_code}; the rule is that only "
+        f"{sorted(degradation.PERMANENT_CAUSES)} may take a pod out of rotation"
+    )
+    body = response.json()
+    if expected == 200:
+        assert body["degraded"] == cause, "a pod left in service must say what it could not verify"
+        assert "datasets" not in body, "nothing was verified, so nothing may be claimed as verified"
+    else:
+        assert body["status"] == "unready" and REASON.split(";")[0] in body["reason"]
+    assert alive.status_code == 200, (
+        "liveness must not read readiness: a 503 here would kill the pod rather than shed its "
+        "traffic, which is what sharing one route did"
+    )
+
+
+def test_every_cause_reaches_this_funnel() -> None:
+    """A fifth cause must not be able to arrive with no decision about what the probe answers.
+
+    The parametrization above is a list, and a list is exactly the thing that silently stops
+    covering its subject. This asserts the list *is* `CAUSES`.
+    """
+    covered = frozenset(_VERDICT_CASES)
+    assert covered == degradation.CAUSES, (
+        f"the verdict test covers {sorted(covered)} of {sorted(degradation.CAUSES)}; a cause with "
+        "no case here is a cause whose effect on a kubelet probe nobody decided"
+    )
+
+
+async def test_the_transient_verdict_is_counted_for_a_scrape() -> None:
+    """Leaving a pod in service is only defensible if the degradation is visible somewhere."""
+    labels = {
+        "server": "readiness-counted",
+        "component": "readiness",
+        "cause": degradation.CAUSE_RESOURCE_EXHAUSTED,
+    }
+    before = REGISTRY.get_sample_value("chemclaw_mcp_degraded_total", labels) or 0.0
+
+    def readiness() -> tuple[Dataset, ...]:
+        """Run out of memory, the way a transformer probe does under pressure."""
+        raise MemoryError("Unable to allocate 48.0 MiB for an array")
+
+    app = connector_app(
+        FastMCP("readiness-counted"),
+        name="readiness-counted",
+        token_env=None,
+        readiness=readiness,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://readiness.test"
+    ) as client:
+        assert (await client.get("/healthz")).status_code == 200
+
+    assert REGISTRY.get_sample_value("chemclaw_mcp_degraded_total", labels) == before + 1.0
+
+
+async def test_livez_answers_while_healthz_refuses() -> None:
+    """The decoupling, driven: the two routes disagree, which is the whole point of there being two.
+
+    Before this, one 503 meant both "stop sending me traffic" and "replace me" — `periodSeconds: 30`
+    and `failureThreshold: 3`, so ~90 s. `/livez` must therefore be reachable, answer 200, and touch
+    nothing the readiness check touches: the recorder below counts its invocations, and a `/livez`
+    that consulted readiness would both raise and move that count.
+    """
+    recorder = _Recorder()
+    async with _client(recorder, name="readiness-livez") as client:
+        unready = await client.get("/healthz")
+        alive = await client.get("/livez")
+        aliased = await client.get("/livez/", follow_redirects=False)
+
+    assert unready.status_code == 503, "the premise: this pod is not ready"
+    assert alive.status_code == 200 and alive.json()["status"] == "alive"
+    assert aliased.status_code == 200, (
+        "a kubelet probe written `path: /livez/` must answer the probe itself, not a 307 or a 404 "
+        "from the MCP mount — kubelet counts a 3xx as a pass, so a redirect would report a dead "
+        "pod alive"
+    )
+    assert recorder.calls == 1, (
+        f"the readiness check ran {recorder.calls} times for one /healthz and two /livez calls; a "
+        "liveness probe that runs the readiness check is the coupling this route exists to remove"
+    )

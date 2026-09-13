@@ -243,3 +243,37 @@ def test_the_autoscaler_reads_a_signal_the_requests_make_meaningful(server: Path
         f"{server.name} requests {requests['cpu']} of CPU; every unit of work in this fleet is "
         "CPU-bound, so a token request makes the HPA's utilization percentage meaningless"
     )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_liveness_and_readiness_do_not_share_a_route(server: Path) -> None:
+    """The two probes mean different things and kubelet acts on them differently.
+
+    Every Deployment here pointed both at `/healthz`. That route consults a corpus checksum, a
+    sandbox fork, an optional predictor's checkpoint and a transformer's construction, so a 503 from
+    any of them was a **kill** after `periodSeconds x failureThreshold` — 30 s x 3 — rather than a
+    pod leaving its Service. Driven on `rxnpredict` before the split: one missing checkpoint among
+    eleven *optional* predictors answered 503, and since a restart cannot recreate a missing
+    file the
+    result was `CrashLoopBackOff` on a pod that had been serving ten of eleven.
+
+    **Both directions, and the inequality as well**, because "liveness is on `/livez`" and
+    "readiness
+    is on `/healthz`" are each satisfiable by a file that points *both* at the same one of them. The
+    paths are literals rather than constants imported from `mcp_server_kit`, deliberately: a kubelet
+    reads these files and not this repository's Python, so a test that derived the expected path
+    from
+    the code under test would agree with a rename that broke every probe in the cluster.
+    """
+    container = _pod_spec(server)["containers"][0]
+    readiness = container["readinessProbe"]["httpGet"]["path"]
+    liveness = container["livenessProbe"]["httpGet"]["path"]
+    assert readiness == "/healthz", f"{server.name} reads readiness from {readiness!r}"
+    assert liveness == "/livez", (
+        f"{server.name} points livenessProbe at {liveness!r}; on /healthz a broken optional "
+        "component is a restart loop rather than a pod out of rotation"
+    )
+    assert readiness != liveness, (
+        f"{server.name} points both probes at {readiness!r}, so shedding traffic and replacing the "
+        "pod are one answer again"
+    )
