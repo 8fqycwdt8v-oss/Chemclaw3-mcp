@@ -524,8 +524,9 @@ table, one document over.
 
 ```sh
 make install         # uv sync
-make check           # lint + mypy --strict + the whole suite + the dependency audit
-make deps-audit      # that last step alone: pip-audit over the exported lockfile
+make check           # lint + mypy --strict + the suite with its coverage floor + the dependency audit
+make cov             # the suite alone, with coverage measured against `[tool.coverage.report]`
+make deps-audit      # the supply-chain step alone: pip-audit over the exported lockfile
 make offline-run     # the same suite with the network namespace taken away
 make run-props       # the reference server on 127.0.0.1:8850
 make run-safety      # one per server, on the port that server's own manifest publishes
@@ -533,6 +534,23 @@ make run-calc        # the heaviest one — a call here can be minutes or hours,
 ```
 
 - Python ≥ 3.11, `uv` workspace, `ruff` (line length 100), `mypy --strict`.
+- **Ruff selects `S`, `ASYNC` and `BLE` beyond the obvious set, and `BLE` is the one that pays**
+  (`D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for`). The claim two
+  sections up — that every path here which catches an exception and answers anyway classifies it —
+  had nothing behind it and one path did not; `BLE001` lands on exactly those lines, so each carries
+  a `# noqa: BLE001` and its reason *at the site*, and a new blind handler is red until somebody
+  writes one. `S101` is deliberately **off**: `tests/test_fleet.py` already holds the no-`assert`
+  rule over serving code and carries the argument for its two exemptions, and a `per-file-ignores`
+  list would be a second copy of that list with nothing reconciling the two.
+- **An image installs what `uv.lock` resolves, not what pip resolves on the day of the build**
+  (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`). Every Containerfile copies
+  the lock and installs `uv export --frozen`'s output with `--require-hashes`; measured on `props`,
+  the re-resolving form shipped 11 of 37 packages the audit had never seen, `mcp` 1.29.0 → 1.30.0
+  among them. `docs/BACKLOG.md` names the one install that is still outside it.
+- **A published image needs the gate to have run on the revision it is built from.** Jenkins cannot
+  see GitHub Actions, so `Preflight` refuses a publishing run with `RUN_GATE` off rather than
+  claiming a control in another system
+  (`D-2026-09-13-a-gate-in-another-system-is-not-a-gate-this-one-can-see`).
 - **No `assert` in serving code.** `python -O` deletes every one of them, so an invariant enforced
   by an assert is a control conditional on how somebody started the process — and an
   `AssertionError` is not a `ValueError`, so what reaches the model is an `error_id` rather than

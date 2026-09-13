@@ -157,7 +157,7 @@ _OPAQUE = r"[A-Za-z0-9_\-.~+/=]"
 # Not preceded by a token character. `\b` matches between `-` and `e`, so every `-eyJ` in a hostile
 # string would be a fresh start position whose tail rescans the remainder — quadratic, on a path
 # that holds the stdlib logging lock.
-_NOT_MID_TOKEN = r"(?<![A-Za-z0-9_\-.])"
+_NOT_MID_TOKEN = r"(?<![A-Za-z0-9_\-.])"  # noqa: S105 - a lookbehind named for what it guards
 # "Contains a digit" — the cheap discriminator between a credential and an identifier. Bounded for
 # the same reason `_NOT_MID_TOKEN` exists: every anchor scans at most 255 characters instead of the
 # rest of the line.
@@ -353,7 +353,10 @@ class SecretRedactingFilter(logging.Filter):
         # and enters a context manager every time. Nothing else about the two differs here.
         try:  # noqa: SIM105
             self._redact(record)
-        except Exception:
+        # S110/BLE001: swallowing is the decision, argued in this class's docstring. A filter that
+        # raises takes the record to logging's own error path, which is where the unredacted text
+        # would be printed - so the one thing this must never do is let an exception out.
+        except Exception:  # noqa: S110, BLE001
             pass
         return True
 
@@ -393,7 +396,10 @@ def _redacted_for_diagnostic(value: object) -> str:
     """
     try:
         return redact_secrets(value if isinstance(value, str) else repr(value))
-    except Exception:
+    # BLE001: this runs inside logging's error path on a record that already failed to render, so a
+    # hostile `__repr__` is the expected input. Narrowing the catch would let the second exception
+    # out of the handler reporting the first.
+    except Exception:  # noqa: BLE001
         return _REDACTED
 
 
@@ -451,7 +457,8 @@ def _install_redacting_handle_error(handler: logging.Handler) -> None:
                 record.args = {key: _redacted_for_diagnostic(value) for key, value in args.items()}
             elif args is not None:
                 record.args = _redacted_for_diagnostic(args)
-        except Exception:
+        # BLE001: same reason as `_redacted_for_diagnostic` above - already inside the error path.
+        except Exception:  # noqa: BLE001
             # An unscrubbable argument is dropped, never printed: this runs because formatting
             # already failed once, so the value is exactly the kind that might carry a secret.
             record.args = None

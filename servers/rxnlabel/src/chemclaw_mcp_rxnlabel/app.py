@@ -58,7 +58,7 @@ def _readiness() -> list[Dataset]:
 app: FastAPI = connector_app(
     server,
     name="rxnlabel",
-    token_env="CHEMCLAW_RXNLABEL_TOKEN",
+    token_env="CHEMCLAW_RXNLABEL_TOKEN",  # noqa: S106 - an environment variable's *name*, never a credential
     on_start=_report_components,
     readiness=_readiness,
 )

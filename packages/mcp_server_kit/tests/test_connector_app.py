@@ -340,7 +340,7 @@ async def test_metrics_is_open_and_carries_no_identity(
     async with mcp_session(running_server, token=TOKEN, headers=identity) as session:
         await session.call_tool("echo", {"text": CALLER_ARGUMENT})
 
-    response = httpx.get(f"{running_server}/metrics", timeout=5.0)
+    response = httpx.get(f"{running_server}/metrics", timeout=5.0)  # noqa: ASYNC210
     assert response.status_code == 200
     exposition = response.text
     for supplied in (ACTOR, SESSION, CORRELATION, CALLER_ARGUMENT, TOKEN):
@@ -401,7 +401,7 @@ async def test_metrics_publishes_what_a_tool_call_did(
         await session.call_tool("boom_domain", {})
         await session.call_tool("boom_internal", {})
 
-    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
+    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text  # noqa: ASYNC210
     for expected in (
         'chemclaw_mcp_tool_calls_total{outcome="ok",server="probe",tool="echo"}',
         'chemclaw_mcp_tool_calls_total{outcome="refused",server="probe",tool="boom_domain"}',
@@ -432,7 +432,7 @@ async def test_an_unknown_tool_name_cannot_mint_a_metric_series(
         result = await session.call_tool("definitely_not_a_tool_here", {})
         assert result.isError is True
 
-    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
+    exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text  # noqa: ASYNC210
     assert "definitely_not_a_tool_here" not in exposition, (
         "a caller-supplied tool name reached a metric label; the label set is then unbounded and "
         "anything that can reach the pod can grow it until the process runs out of memory"

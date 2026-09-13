@@ -109,7 +109,9 @@ def _canonical_or_none(canonicalise: Callable[[str], str], smiles: str) -> str |
     except ValueError as exc:
         logger.debug("not caching %s: %s", truncate_echo(smiles), exc)
         return None
-    except Exception as exc:
+    # BLE001: blind on purpose and classified on the next line - see this function's docstring for
+    # why the `ValueError` arm above is separated out rather than folded in here.
+    except Exception as exc:  # noqa: BLE001
         cause = degradation.classify(exc)
         degradation.record(server=SERVER, component=COMPONENT, cause=cause)
         logger.warning(

@@ -111,7 +111,9 @@ def name(reaction_smiles: str) -> Naming:
         return Naming()
     try:
         info = namer(reaction_smiles)
-    except Exception as exc:
+    # BLE001: blind on purpose and classified in the next line - the second of `degradation.py`'s
+    # three named call sites.
+    except Exception as exc:  # noqa: BLE001
         cause = degradation.classify(exc)
         degradation.record(server=SERVER, component=COMPONENT, cause=cause)
         logger.warning(

@@ -165,7 +165,9 @@ def discover_predictors() -> None:
     for modname, name in (*_FORWARD_MODULES.items(), *_CONDITIONS_MODULES.items()):
         try:
             importlib.import_module(modname)
-        except Exception as exc:
+        # BLE001: the catch-all for a predictor module that blew up outside its own guard. Blind is
+        # the point - `mark_unavailable` classifies `exc` rather than reading its text.
+        except Exception as exc:  # noqa: BLE001
             # Predictor modules call mark_unavailable themselves when their hard deps fail;
             # this is the catch-all for truly broken modules. It is the one that most needs the
             # exception passed through: a module that raised *outside* its own guard did not fail

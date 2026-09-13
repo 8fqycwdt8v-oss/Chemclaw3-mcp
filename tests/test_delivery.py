@@ -87,6 +87,41 @@ def test_dry_run_is_the_default() -> None:
     assert "booleanParam(name: 'DRY_RUN', defaultValue: true" in _pipeline()
 
 
+def test_a_publishing_run_cannot_skip_the_gate() -> None:
+    """`RUN_GATE` defaults off, and nothing in this pipeline can see GitHub Actions.
+
+    The parameter's description said "off because GitHub Actions is the gate", which is a true
+    sentence about a system this file never consults: no step reads a check run, a status or a
+    conclusion for `env.REVISION`. So every publishing run could ship an image built from a
+    revision whose `make check` had never run
+    (`D-2026-09-13-a-gate-in-another-system-is-not-a-gate-this-one-can-see`).
+
+    Read as source rather than driven, because driving it needs a Jenkins. Three separate facts,
+    because the refusal is wrong if any one of them is missing and each fails differently:
+
+    - the refusal names **all three** conditions - a publish is `!DRY_RUN` *and* a registry *and*
+      `!RUN_GATE`, and dropping the registry term would refuse a build-only run that ships nothing;
+    - it `error`s rather than warns, because a pipeline that logs and continues has published by
+      the time anybody reads the log;
+    - the `Gate` stage it points at still runs `make check`, or the refusal sends an operator to a
+      stage that proves nothing.
+    """
+    text = _pipeline()
+    guard = "if (!params.DRY_RUN && params.IMAGE_REGISTRY?.trim() && !params.RUN_GATE) {"
+    assert guard in text, (
+        "the Preflight stage does not refuse a publishing run with RUN_GATE off; an image can "
+        "again be published from a revision this pipeline never gated"
+    )
+    after = text.split(guard, 1)[1]
+    assert after.lstrip().startswith("error("), (
+        "the guard does not `error`: a warning is indistinguishable from no guard by the time the "
+        "digest has been pushed"
+    )
+    assert "when { expression { params.RUN_GATE } }" in text and "sh 'make check'" in text, (
+        "the refusal points operators at a `Gate` stage that no longer runs `make check`"
+    )
+
+
 def _shell_as_the_shell_receives_it(block: str) -> str:
     r"""Resolve a Groovy GString to the text bash is actually handed.
 

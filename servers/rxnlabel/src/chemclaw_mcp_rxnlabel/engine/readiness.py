@@ -120,7 +120,9 @@ def verify_labeller() -> tuple[Dataset, ...]:
         if cached is None or time.monotonic() >= cached[0]:
             try:
                 verdict: tuple[Dataset, ...] | str | BaseException = _probe()
-            except Exception as exc:
+            # BLE001: the probe's *verdict* is what is being computed, so any failure is an answer
+            # rather than an error - it is stored and re-raised to the caller below.
+            except Exception as exc:  # noqa: BLE001
                 verdict = exc
             _VERDICT = (time.monotonic() + VERDICT_TTL_SECONDS, verdict)
             cached = _VERDICT

@@ -72,7 +72,7 @@ def _readiness() -> list[Dataset]:
 app: FastAPI = connector_app(
     server,
     name="calc",
-    token_env="CHEMCLAW_CALC_TOKEN",
+    token_env="CHEMCLAW_CALC_TOKEN",  # noqa: S106 - an environment variable's *name*, never a credential
     on_start=resolve_calculator_versions,
     readiness=_readiness,
 )

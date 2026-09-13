@@ -30,11 +30,14 @@ ROOT = Path(__file__).resolve().parents[3]
 
 # How many `degradation.record` call sites this fleet has. A number rather than an emptiness check,
 # for the reason `test_every_call_site_derives_its_cause_rather_than_writing_one` gives. Four in
-# `rxnlabel` (`mapping.map_reaction`, `mapping._mapper`, `naming.name`, `naming._namer`), two in
-# `rxnpredict` (`predictors.mark_unavailable` at import, `tools._survivors` at request time), and
-# the readiness funnel in `mcp_server_kit.app` — the only site that counts a *probe* failure,
+# `rxnlabel` (`mapping.map_reaction`, `mapping._mapper`, `naming.name`, `naming._namer`), three in
+# `rxnpredict` (`predictors.mark_unavailable` at import, `tools._survivors` at request time, and
+# `cache._canonical_or_none` — added by
+# `D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key`, which found that path
+# swallowing `ImportError`, `EgressForbidden` and `MemoryError` alike and counting none of them),
+# and the readiness funnel in `mcp_server_kit.app` — the only site that counts a *probe* failure,
 # because `rxnlabel`'s probe re-raises and lets that funnel classify rather than classifying twice.
-RECORD_CALL_SITES = 7
+RECORD_CALL_SITES = 8
 
 
 def _refusal() -> BaseException:

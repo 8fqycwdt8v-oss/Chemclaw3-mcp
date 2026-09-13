@@ -222,7 +222,9 @@ def run_isolated(
     """
     binary = Path(argv[0]).name
     started = time.monotonic()
-    process = subprocess.Popen(
+    # S603: same as `crest_cli` - argv is built here from the configured binary and a private
+    # tempdir, and `start_new_session=True` is what makes the timeout able to kill the group.
+    process = subprocess.Popen(  # noqa: S603
         argv,
         cwd=cwd,
         env=env,
@@ -399,7 +401,8 @@ def binary_version() -> str:
     path = binary_path()
     if path is None:
         return "absent"
-    output = subprocess.run(
+    # S603: `path` is the resolved binary and `--version` is a literal; nothing here is a caller's.
+    output = subprocess.run(  # noqa: S603
         [path, "--version"], capture_output=True, text=True, timeout=30, check=False
     ).stdout
     for line in output.splitlines():

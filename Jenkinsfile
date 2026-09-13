@@ -30,7 +30,7 @@ pipeline {
     choice(name: 'IMAGE_BUILDER', choices: ['autodetect', 'buildah', 'podman', 'kaniko', 'docker'],
            description: 'How to build. OpenShift agents get no Docker socket.')
     booleanParam(name: 'RUN_GATE', defaultValue: false,
-                 description: 'Run `make check` and the no-network suite here too. Off because GitHub Actions is the gate.')
+                 description: 'Run `make check` and the no-network suite here too. Off for a dry run, because GitHub Actions is the gate for the source. REQUIRED to publish: see Preflight.')
     booleanParam(name: 'DRY_RUN', defaultValue: true,
                  description: 'Build and verify without publishing. Default true, deliberately.')
     string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: 'chemclaw-registry',
@@ -57,6 +57,29 @@ pipeline {
           env.IMAGE_PREFIX = params.IMAGE_REGISTRY ? "${params.IMAGE_REGISTRY}/" : ''
           env.IMAGE_TAG = env.REVISION.take(12)
           echo "revision ${env.REVISION}\nservers  ${env.SERVER_LIST}"
+
+          // **A publishing run may not skip the gate, and until this refusal existed every one
+          // could.** `RUN_GATE` defaults to false and its description said "off because GitHub
+          // Actions is the gate" - a true sentence about a *different* system, and nothing in this
+          // file ever looked at it: no step reads a check run, a status, or a conclusion for
+          // `env.REVISION`. So an image could be built and published, by digest, from a revision
+          // whose `make check` had never run or had run red, and the release descriptor that
+          // digest lands in would carry no trace of which.
+          //
+          // Asking GitHub was considered and is deliberately not what this does: it needs a
+          // credential this agent does not have, and it would make a publish depend on a third
+          // party being reachable - a new failure mode in the one pipeline that has to work during
+          // an incident. What is decidable *here* is the local gate, so publishing requires it. A
+          // dry run still does not: a build that ships nothing is allowed to be fast, which is what
+          // the parameter was for.
+          if (!params.DRY_RUN && params.IMAGE_REGISTRY?.trim() && !params.RUN_GATE) {
+            error(
+              "RUN_GATE is off and this run would publish to ${params.IMAGE_REGISTRY}. Nothing in " +
+              "this pipeline can see whether GitHub Actions was green for ${env.REVISION}, so an " +
+              "image published from here would carry no evidence that the gate ever ran against " +
+              "it. Either set RUN_GATE=true, or leave DRY_RUN=true and publish from a run that did."
+            )
+          }
         }
         // The shared library rather than a fourth copy of `build_and_push`. Vendoring it here is
         // what makes the digest-not-tag rule one implementation instead of four that drift.

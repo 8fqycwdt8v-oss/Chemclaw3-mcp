@@ -69,7 +69,9 @@ async def _evaluate(records: list[dict[str, Any]], top_k: int) -> dict[str, dict
         for p in predictors:
             try:
                 preds = await p.predict(rec["reactants"], top_k)
-            except Exception as exc:
+            # BLE001: an offline calibration sweep over a corpus. One predictor failing on one
+            # record must not end the run; the record is logged and the sweep continues.
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("[%s] failed on '%s': %r", p.name, rec["reactants"], exc)
                 continue
             top1 = preds[0].product_smiles if preds else None
