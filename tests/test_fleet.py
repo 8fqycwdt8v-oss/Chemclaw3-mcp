@@ -617,18 +617,20 @@ def _locked_versions() -> dict[str, str]:
 def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: Path) -> None:
     """An image's direct install of a locked package is pinned to the version the audit read.
 
-    **`make deps-audit` audits `uv.lock`, and no image consumes it** — none copies it, none passes
-    `--constraint`, none runs `uv sync`. Every image re-resolves with pip at build time, so the
-    audited closure and the shipped closure are two resolutions of the same declarations taken on
-    different days. That gap cannot be closed from here: closing it means the images installing
-    from the lock, which is a delivery change.
+    **The gap this was a partial answer to is closed**
+    (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`): every Containerfile now
+    copies `uv.lock` and installs the third-party closure `uv export --frozen` produces, which
+    `test_every_image_installs_the_closure_the_audit_read` holds. This docstring used to open with
+    "and no image consumes it", and keeping that sentence after the diff that falsified it is the
+    defect this repository writes ADRs about.
 
-    What *can* be held here is the sharpest instance of it, and it was open: `rxnlabel`'s
-    Containerfile installed `"rxnmapper>=0.4" "rxn-insight>=0.1.2"` straight from PyPI, so the one
-    install that names its packages explicitly agreed with the audited version only by luck — and
-    the audit's argued vulnerability suppressions, each written against a specific version, were
-    being applied to versions nobody had checked. A specifier written into an image is pinned, and
-    pinned to the lock, so `uv lock` moving it is what proposes the bump in a pull request.
+    What is left for *this* test is the one install that still names packages straight from the
+    index — `rxnlabel`'s `"rxnmapper==0.4.3" "rxn-insight==0.1.3"`, which goes through PyPI's CPU
+    torch index rather than through the lock. It agreed with the audited version only by luck
+    before it was pinned, and the audit's argued vulnerability suppressions, each written against a
+    specific version, were being applied to versions nobody had checked. A specifier written into
+    an image is pinned, and pinned to the lock, so `uv lock` moving it is what proposes the bump in
+    a pull request.
     """
     text = (server / "Containerfile").read_text(encoding="utf-8")
     locked = _locked_versions()
@@ -645,6 +647,62 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
             f"{server.name}/Containerfile pins {name}=={version} while uv.lock resolves "
             f"{expected}: the audited version and the shipped version have drifted apart"
         )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_image_installs_the_closure_the_audit_read(server: Path) -> None:
+    """A Containerfile that re-resolves ships something `make deps-audit` never looked at.
+
+    Measured on `props` — the lightest server in the fleet, so the least likely to drift — by
+    building both forms in this sandbox and running `pip freeze` in each against
+    `uv export --frozen --package chemclaw-mcp-props`:
+
+    | form | packages differing from the lock |
+    | --- | --- |
+    | the re-resolving one | **11 of 37**, `mcp` 1.29.0 -> 1.30.0 among them |
+    | this one | **0**, in both directions |
+
+    So the three things below are what make an image's closure the audited one, and each is
+    separately load-bearing rather than a spelling of one idea:
+
+    - **`uv.lock` in the build context.** Without the COPY there is nothing to export from, and the
+      `--frozen` below would resolve afresh instead of failing.
+    - **`--frozen`**, so a lock that has drifted from `pyproject.toml` fails the build rather than
+      silently re-resolving to fix itself.
+    - **`--require-hashes`**, which is what makes it a supply-chain control and not just a version
+      pin: a package whose artefact changed under a version that did not is exactly what a lock
+      without hashes cannot see.
+
+    The `--package` name is checked against the server's own `pyproject.toml` because a copy-paste
+    between two of these seven files is the realistic failure, and it is silent — the image would
+    build, install another server's closure, and pass every other test in this file.
+
+    This asserts what the Containerfile *declares*. What it does is a build, which is a measurement
+    in the record above rather than something this suite can run.
+    """
+    text = (server / "Containerfile").read_text(encoding="utf-8")
+    dist = re.search(
+        r'^name\s*=\s*"([^"]+)"', (server / "pyproject.toml").read_text(encoding="utf-8"), re.M
+    )
+    assert dist, f"{server.name}/pyproject.toml declares no distribution name"
+
+    assert "COPY pyproject.toml uv.lock /build/" in text, (
+        f"{server.name}/Containerfile does not copy uv.lock into its build context, so whatever it "
+        "installs was resolved at build time and `make deps-audit` audited a different closure"
+    )
+    export = re.search(r"uv export --frozen --package ([\w.-]+)", text)
+    assert export, (
+        f"{server.name}/Containerfile has no `uv export --frozen --package ...` step; the third-"
+        "party closure is therefore whatever pip resolves on the day of the build"
+    )
+    assert export.group(1) == dist.group(1), (
+        f"{server.name}/Containerfile exports the closure of {export.group(1)!r} while its own "
+        f"distribution is {dist.group(1)!r}: it would install another server's dependencies"
+    )
+    assert "--require-hashes -r /build/requirements.txt" in text, (
+        f"{server.name}/Containerfile does not install the exported closure with "
+        "`--require-hashes`, so a rewritten artefact under an unchanged version installs quietly"
+    )
 
 
 def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:

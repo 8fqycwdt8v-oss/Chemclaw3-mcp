@@ -38,6 +38,7 @@ dev = [
     # caller's trace instead of asserting that nothing raised. Deliberately paired with an
     # *in-memory* exporter there and with none here: nothing in this workspace may dial a collector.
     "opentelemetry-sdk>=1.25",
+    "pytest-cov>=5.0",
 ]
 
 [tool.uv.workspace]
@@ -58,7 +59,42 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# `S` is flake8-bandit, `ASYNC` is flake8-async, `BLE` is flake8-blind-except. The three were added
+# together in one measured pass (`D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for`)
+# and each earns its place differently:
+#
+# - **`BLE` is the one that pays.** Every `except Exception` in this fleet that answers anyway is
+#   supposed to classify through `mcp_server_kit.degradation`, and `CLAUDE.md` says so in the
+#   present tense. Nothing checked it, and `rxnpredict`'s cache did not. `BLE001` lands on exactly
+#   those lines, so a new blind handler is red until somebody writes the reason at the site — which
+#   is where a reader of the handler will look, rather than in a document beside it.
+# - **`S`** catches a credential or an `exec` reaching source. Most of what it finds here is a
+#   naming collision with this fleet's own vocabulary (`token_env` holds an environment variable's
+#   *name*), so the exemptions are per-site `noqa`s with the reason rather than a blanket ignore:
+#   the next literal that is a real secret has to be argued too.
+# - **`ASYNC`** finds a blocking call on an event loop. The five here are in test drivers talking
+#   to a uvicorn running in its own thread, which is why they are harmless and why saying so is
+#   worth one line each.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S", "ASYNC", "BLE"]
+# `S101` (`assert`) is off fleet-wide and the reason is that something stricter already holds it.
+# `tests/test_fleet.py::test_no_serving_module_enforces_an_invariant_with_assert` scans every
+# `packages/*/src` and `servers/*/src` and carries the argument for its two exemptions —
+# `mcp_server_kit`'s `testing.py` and `no_egress.py`, whose *product* is an assertion failure.
+# Turning `S101` on would mean transcribing that exemption list into a `per-file-ignores` block,
+# which is a second declaration of one rule with nothing reconciling the two: the defect this
+# repository deleted a port table over. The lint rule is also the weaker of the pair — it cannot
+# tell a serving module from a test helper that lives under `src/`.
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+# A test's fixtures are the subject, not a leak. `S105`/`S106` fire on every `TOKEN = "dev-token"`
+# a bearer-auth test needs in order to be a bearer-auth test; `S104` fires on the `0.0.0.0` literals
+# `test_egress.py` asserts the guard *refuses*; `S603`/`S607` fire on the `git` and `python`
+# subprocesses the fleet-level tests drive. None of the five says anything about a shipped image.
+"**/tests/**" = ["S104", "S105", "S106", "S603", "S607"]
+# Operational scripts, run by a person outside any serving image (`scripts/README.md`). The whole
+# point of `offline_check.py` is to start a subprocess in a stripped network namespace.
+"scripts/*.py" = ["S603", "S606", "S607"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -85,6 +121,74 @@ module = [
     "transformers.*",
 ]
 ignore_missing_imports = true
+
+# The advisories `make deps-audit` does not fail on, as data rather than as prose.
+#
+# **The argument for each is in the `Makefile`, beside the target that reads this.** What lives here
+# is the pair that makes an argument checkable: the package the argument is about, and the version
+# `uv.lock` resolved when it was written. `pip-audit`'s `--ignore-vuln` matches by *id*, so a fixed
+# dependency merely stops being reported and the suppression outlives its reason in silence — which
+# the Makefile said in as many words ("Nothing here goes red when a fix ships") and nothing
+# answered. `tests/test_deps_suppressions.py` is the answer: when the lock moves one of these
+# packages, the entry goes red and somebody re-derives it against the version that will actually
+# ship. An entry whose package the lock no longer resolves at all goes red too, because a
+# suppression for a dependency this fleet has dropped is a line nobody will ever delete otherwise.
+#
+# This is the only declaration of the ids. The Makefile builds its `--ignore-vuln` flags from it, so
+# the list cannot be in two places and disagree.
+[tool.chemclaw.deps-audit]
+suppressions = [
+    { id = "PYSEC-2026-2447", package = "diskcache", version = "5.6.3" },
+    { id = "PYSEC-2026-3447", package = "setuptools", version = "80.10.2" },
+    { id = "PYSEC-2025-217", package = "transformers", version = "4.57.6" },
+    { id = "PYSEC-2026-2288", package = "transformers", version = "4.57.6" },
+    { id = "PYSEC-2026-2289", package = "transformers", version = "4.57.6" },
+    { id = "PYSEC-2026-2290", package = "transformers", version = "4.57.6" },
+    # `aliases` is the same advisory under another database's id. It is here only so that
+    # `test_the_makefile_argues_exactly_the_suppressions_that_are_declared` can tell a second
+    # name for one advisory from a ninth suppression nobody declared; `--ignore-vuln` is
+    # built from `id` alone.
+    { id = "GHSA-xrqw-3rrv-vx5w", package = "transformers", version = "4.57.6", aliases = ["CVE-2026-9856"] },
+    { id = "CVE-2026-69112", package = "accelerate", version = "1.14.0" },
+]
+
+[tool.coverage.run]
+# The eight distributions this workspace ships. Named rather than discovered, because a `--cov=src`
+# over a `src/` layout measures whatever happens to be imported and quietly drops a package nobody
+# imported at all — which is the one case a floor exists to catch.
+source_pkgs = [
+    "mcp_server_kit",
+    "chemclaw_mcp_props",
+    "chemclaw_mcp_chem",
+    "chemclaw_mcp_safety",
+    "chemclaw_mcp_calc",
+    "chemclaw_mcp_pyexec",
+    "chemclaw_mcp_rxnlabel",
+    "chemclaw_mcp_rxnpredict",
+]
+
+[tool.coverage.report]
+# **88, and it is a measurement rather than a round number.** Measured on the whole suite at the
+# commit that added this: 7,220 statements, 811 uncovered, **88.77%**. 88 is the largest integer
+# below that, so the floor is roughly 0.8 points of headroom - one commit's churn, not a licence to
+# drop - and raising it is what a wave that improves coverage should do.
+#
+# **What it does not cover, stated because a floor reads as a guarantee.** Three things are outside
+# it and none is an oversight:
+#
+# - **The eleven optional predictor adapters in `rxnpredict` measure 40-57%**, because their extras
+#   are not installed in this workspace and each module's body stops at its import guard. Two of
+#   them (`reaction_t5`, `rxn_insight`) are what the *shipped image* installs, so the code with the
+#   least coverage here is code that runs in production. `servers/rxnpredict/README.md` says which.
+# - **`pyexec`'s `engine/runner.py` measures 22%** for a structural reason: it runs in a *subprocess*
+#   inside the jail, which this process cannot trace. Its behaviour is covered - by
+#   `servers/pyexec/tests/test_sandbox.py` driving the real jail - and none of that lands here.
+# - **This measures the source tree, never an image.** What an image installs is
+#   `tests/test_fleet.py::test_every_image_installs_the_closure_the_audit_read`'s subject, and what
+#   it *answers* is the Jenkins verify stage's.
+fail_under = 88
+show_missing = true
+skip_covered = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

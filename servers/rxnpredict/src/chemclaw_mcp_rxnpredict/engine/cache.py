@@ -17,9 +17,30 @@ discovering:
   and therefore has no state-changing surface at all. `clear()` stays for tests.
 
 The key is the same one upstream used — predictor, *canonical* reactants (and product), top_k — so
-two spellings of one reaction share a slot. Canonicalisation is best-effort: an input RDKit cannot
-parse is keyed by its raw text rather than raising, because a cache must never be the thing that
-fails a prediction.
+two spellings of one reaction share a slot.
+
+**An input this server will not canonicalise is not cached, and it used to be keyed by the caller's
+raw text.** That fallback was `except Exception: return smiles`, and it was wrong three ways, each
+measured on the shipped code before it was replaced:
+
+- **It was not a key.** `canonical_multi_smiles` sorts the components, raw text does not, so
+  `CCO.<garbage>` and `<garbage>.CCO` — one set of molecules, two spellings — minted two entries.
+  A key derived from text nothing validated is not an identity, and this repository's rule for that
+  case is `CLAUDE.md`'s: refuse rather than approximate. So the key derivation returns `None` and
+  the entry is simply not cached; `get` misses, `set` is a no-op, and the prediction runs. A cache
+  still never fails a prediction — it declines to claim it recognised one.
+- **It swallowed two deliberate refusals.** `mcp_server_kit.limits` exists because `MolToSmiles`
+  on a large enough molecule overflows the C stack and takes the pod down; `canonical_smiles`
+  raises *before* parsing for that reason. Both bounds arrived here as a `ValueError` and became a
+  cache row keyed by the 5,000-character string the bound exists to reject.
+- **It hid a broken component.** The bare `except Exception` caught `ImportError` (RDKit absent
+  from the image), `EgressForbidden` (the guard refusing a library's outbound call, which is an
+  `OSError` and so looks like nothing in particular) and `MemoryError` alike — measured, all three
+  returned raw text and moved no counter. `CLAUDE.md` claims every path in this fleet that catches
+  an exception and answers anyway classifies it through `mcp_server_kit.degradation`; this one did
+  not. It does now, and only for that arm: a `ValueError` is the caller's input being outside what
+  this server canonicalises, which is not a degradation of this pod and must not fire the metric
+  that says one component of it has gone missing.
 """
 
 from __future__ import annotations
@@ -27,13 +48,28 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any
 
-from chemclaw_mcp_rxnpredict.engine.preprocessing import canonical_multi_smiles, canonical_smiles
+from mcp_server_kit import degradation
+
+from chemclaw_mcp_rxnpredict.engine.predictors import SERVER
+from chemclaw_mcp_rxnpredict.engine.preprocessing import (
+    canonical_multi_smiles,
+    canonical_smiles,
+    truncate_echo,
+)
 
 logger = logging.getLogger(__name__)
 
 Payload = list[dict[str, Any]]
+
+# What a degraded answer from here is labelled. One name for both canonicalisers, because what the
+# scrape needs to say is "this pod cannot derive a cache identity", not which of the two calls hit
+# it. Declared through `register_components` at import, since `degradation.record` clamps an
+# unregistered component onto `<unknown>` rather than minting a series for it.
+COMPONENT = "prediction_cache"
+degradation.register_components(COMPONENT)
 
 
 def _hash_key(parts: list[str]) -> str:
@@ -41,20 +77,49 @@ def _hash_key(parts: list[str]) -> str:
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
 
-def _safe_canon_reactants(smiles: str) -> str:
-    """Canonical multi-component SMILES, falling back to the raw text if RDKit refuses it."""
-    try:
-        return canonical_multi_smiles(smiles)
-    except Exception:
-        return smiles
+def _canonical_or_none(canonicalise: Callable[[str], str], smiles: str) -> str | None:
+    """The canonical form of `smiles`, or `None` when this server will not derive one.
 
+    `None` is the whole fallback: the caller turns it into "do not cache this", because the
+    alternative — keying on unvalidated caller text — is an identity nobody checked. See the module
+    docstring for the three defects that produced.
 
-def _safe_canon_product(smiles: str) -> str:
-    """Canonical single-component SMILES, with the same fallback."""
+    The two arms are different events and are answered differently:
+
+    - **`ValueError`** is what `preprocessing` raises for an input outside what this server
+      canonicalises — an unparseable SMILES, or one over `mcp_server_kit.limits`' character or atom
+      bound. That is a fact about the caller's argument, not about this pod, so it is logged at
+      DEBUG (with the string truncated, since an over-length one is exactly the case that reaches
+      here) and moves no metric. Counting it would make `chemclaw_mcp_degraded_total` — the series
+      that means a component of this server has gone missing — fire on every typo.
+    - **Anything else** is this pod: RDKit absent from the image (`ImportError`), the egress guard
+      refusing a library's outbound call (`EgressForbidden`, an `OSError` that any coarse handler
+      buries), an allocation failing. Those are classified and counted, which is what makes them
+      visible from a scrape rather than from a log line nobody tails.
+
+    Args:
+        canonicalise: `canonical_multi_smiles` or `canonical_smiles`.
+        smiles: The caller's string, exactly as it arrived.
+
+    Returns:
+        The canonical form, or `None` if there is not one to be had.
+    """
     try:
-        return canonical_smiles(smiles)
-    except Exception:
-        return smiles
+        return canonicalise(smiles)
+    except ValueError as exc:
+        logger.debug("not caching %s: %s", truncate_echo(smiles), exc)
+        return None
+    # BLE001: blind on purpose and classified on the next line - see this function's docstring for
+    # why the `ValueError` arm above is separated out rather than folded in here.
+    except Exception as exc:  # noqa: BLE001
+        cause = degradation.classify(exc)
+        degradation.record(server=SERVER, component=COMPONENT, cause=cause)
+        logger.warning(
+            "the prediction cache cannot canonicalise a key [%s]: %r; this call is not cached",
+            cause,
+            exc,
+        )
+        return None
 
 
 class PredictionCache:
@@ -66,9 +131,9 @@ class PredictionCache:
         self._max_entries = max_entries
         self._entries: OrderedDict[str, Payload] = OrderedDict()
 
-    def _get(self, key: str) -> Payload | None:
-        """Fetch and mark as most-recently-used."""
-        if not self.enabled:
+    def _get(self, key: str | None) -> Payload | None:
+        """Fetch and mark as most-recently-used; a `None` key is uncacheable and always misses."""
+        if not self.enabled or key is None:
             return None
         found = self._entries.get(key)
         if found is None:
@@ -76,30 +141,34 @@ class PredictionCache:
         self._entries.move_to_end(key)
         return found
 
-    def _set(self, key: str, payload: Payload) -> None:
-        """Store, evicting the least-recently-used entry once the bound is passed."""
-        if not self.enabled:
+    def _set(self, key: str | None, payload: Payload) -> None:
+        """Store, evicting the least-recently-used entry once the bound is passed.
+
+        A `None` key is an uncacheable input and is dropped rather than stored under a guess.
+        """
+        if not self.enabled or key is None:
             return
         self._entries[key] = payload
         self._entries.move_to_end(key)
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
 
-    def _key_forward(self, model_name: str, reactants: str, top_k: int) -> str:
-        """Key for a forward prediction."""
-        return _hash_key(["fwd", model_name, _safe_canon_reactants(reactants), str(top_k)])
+    def _key_forward(self, model_name: str, reactants: str, top_k: int) -> str | None:
+        """Key for a forward prediction, or `None` when the reactants have no canonical form."""
+        canon = _canonical_or_none(canonical_multi_smiles, reactants)
+        if canon is None:
+            return None
+        return _hash_key(["fwd", model_name, canon, str(top_k)])
 
-    def _key_conditions(self, model_name: str, reactants: str, product: str, top_k: int) -> str:
-        """Key for a conditions prediction."""
-        return _hash_key(
-            [
-                "cond",
-                model_name,
-                _safe_canon_reactants(reactants),
-                _safe_canon_product(product),
-                str(top_k),
-            ]
-        )
+    def _key_conditions(
+        self, model_name: str, reactants: str, product: str, top_k: int
+    ) -> str | None:
+        """Key for a conditions prediction, or `None` if either side has no canonical form."""
+        canon_reactants = _canonical_or_none(canonical_multi_smiles, reactants)
+        canon_product = _canonical_or_none(canonical_smiles, product)
+        if canon_reactants is None or canon_product is None:
+            return None
+        return _hash_key(["cond", model_name, canon_reactants, canon_product, str(top_k)])
 
     def get_forward(self, model_name: str, reactants: str, top_k: int) -> Payload | None:
         """A cached forward result, or `None`."""

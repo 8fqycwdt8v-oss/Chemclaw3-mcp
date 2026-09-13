@@ -33,5 +33,8 @@ def _readiness() -> list[Dataset]:
 
 
 app: FastAPI = connector_app(
-    server, name="props", token_env="CHEMCLAW_PROPS_TOKEN", readiness=_readiness
+    server,
+    name="props",
+    token_env="CHEMCLAW_PROPS_TOKEN",  # noqa: S106 - an environment variable's *name*, never a credential
+    readiness=_readiness,
 )

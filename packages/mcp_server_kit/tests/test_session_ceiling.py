@@ -387,7 +387,9 @@ async def test_the_ceiling_reclaims_goodbyes_even_with_the_idle_reaper_turned_of
         opened = [_open_session(base) for _ in range(PROBE_CEILING)]
         assert _handshake(base).status_code == AT_CAPACITY_STATUS, "the pod was not full"
         for session_id in opened:
-            deleted = httpx.delete(
+            # ASYNC210: uvicorn runs in its own thread with its own loop (see `running_server`),
+            # so a blocking call here cannot stall the server being driven.
+            deleted = httpx.delete(  # noqa: ASYNC210
                 f"{base}/mcp",
                 headers={
                     "Authorization": f"Bearer {TOKEN}",

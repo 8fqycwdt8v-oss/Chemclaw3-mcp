@@ -179,7 +179,9 @@ def binary_version() -> str:
     path = binary_path()
     if path is None:
         return "absent"
-    output = subprocess.run(
+    # S603: the argv is this module's own, built from the configured binary path and files it
+    # wrote into a private tempdir. No caller string reaches it - `tools.py` takes SMILES.
+    output = subprocess.run(  # noqa: S603
         [path, "--version"], capture_output=True, text=True, timeout=60, check=False
     ).stdout
     for line in output.splitlines():

@@ -23,7 +23,7 @@ from chemclaw_mcp_safety.tools import server
 app: FastAPI = connector_app(
     server,
     name="safety",
-    token_env="CHEMCLAW_SAFETY_TOKEN",
+    token_env="CHEMCLAW_SAFETY_TOKEN",  # noqa: S106 - an environment variable's *name*, never a credential
     # Five tables, all loaded lazily, and an unready pod here answers "nothing matched" — which
     # reads as *safe*. See `engine/readiness.py` for why the check exercises the screens rather
     # than only hashing the files.

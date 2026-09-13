@@ -101,7 +101,11 @@ try:
     import rxn_insight  # noqa: F401
 
     register_conditions(RxnInsightConditions())
-except Exception as exc:
+# BLE001: a module-level guard around an optional predictor's imports and construction.
+# Blind is the point - `mark_unavailable` classifies `exc` through
+# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
+# egress and a broken checkpoint are three different causes and not one log line.
+except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         RxnInsightConditions.name,
         "conditions",

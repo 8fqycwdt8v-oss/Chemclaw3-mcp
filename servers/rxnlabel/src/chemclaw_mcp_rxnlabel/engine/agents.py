@@ -74,9 +74,16 @@ TRANSITION_METALS = frozenset(
 # another server's vendored data, reaching it would be an outbound call at request time (which this
 # fleet forbids), and copying it would make one file's checksum govern two servers' answers. This
 # list overlaps it and is not derived from it.
+#
+# **A hand-typed list is a list with a duplicate in it**, and this one shipped with one: the ester
+# row read `CCOC(C)=O CC(=O)OC COC(C)=O` — ethyl acetate, then methyl acetate written two ways,
+# 40 tokens for 39 molecules. A `frozenset` swallows that, which is why it survived, and the loss
+# is not the duplicate but whichever solvent the second slot was meant to hold. `_canonical_or_none`
+# swallows the neighbouring failure the same way — a token that does not parse is silently dropped
+# rather than raised on — so both are held by `tests/test_agent_tables.py` instead of by reading.
 _SOLVENT_SMILES = """
 O CO CCO CC(C)O CCCCO CC(C)(C)O
-CC#N CC(C)=O CCOC(C)=O CC(=O)OC COC(C)=O
+CC#N CC(C)=O CCOC(C)=O COC(C)=O
 C1CCOC1 CC1CCCO1 COCCOC C1COCCO1 CCOCC CC(C)OC(C)C
 CN(C)C=O CN(C)C(C)=O CS(C)=O CN1CCCC1=O
 ClCCl ClC(Cl)Cl ClCCCl ClC(Cl)(Cl)Cl
@@ -219,8 +226,16 @@ def _matches_any(smiles: str, patterns: tuple[str, ...]) -> bool:
 
     A pattern that does not compile is skipped rather than raised on: these are constants in this
     file, so a bad one is a bug to fix in review — but failing every classification in the corpus
-    because one pattern has a typo is a worse failure than silently narrowing the rules, and the
-    server's own tests assert each pattern individually.
+    because one pattern has a typo is a worse failure than silently narrowing the rules.
+
+    **That leniency is only safe because something else is strict, and for two waves nothing was.**
+    This docstring claimed "the server's own tests assert each pattern individually" and no test
+    touched `_LIGAND_SMARTS` or `_BASE_SMARTS` at all — `test_roles.py` compiles
+    `species.FUNCTIONAL_GROUPS` and stops there. The bicarbonate entry above is what that costs: a
+    pattern that matched no bicarbonate written any way, in a table where a dead rule and an absent
+    one are indistinguishable from the outside. `tests/test_agent_tables.py` is the claim made true
+    — every pattern compiles, and every reagent a comment here names is matched by the rule that
+    names it.
     """
     mol = read_molecule(smiles)
     if mol is None:

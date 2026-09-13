@@ -222,7 +222,9 @@ def run(code: str, data: dict[str, object] | None = None, limits: Limits | None 
         )
 
         with diagnostics.open("wb") as sink:
-            process = subprocess.Popen(
+            # S603: the argv is this interpreter plus this package's own runner module; the
+            # caller's code travels on stdin into the jail, never onto the command line.
+            process = subprocess.Popen(  # noqa: S603
                 # `-I` isolates: no `PYTHON*` environment, no user site-packages, and no script
                 # directory on `sys.path`. `-B` keeps the child from writing bytecode into an image
                 # whose filesystem is read-only anyway.

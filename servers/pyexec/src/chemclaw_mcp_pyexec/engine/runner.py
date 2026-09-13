@@ -595,8 +595,10 @@ def main(argv: list[str]) -> int:
     try:
         compiled = compile(payload["code"], ANALYSIS_FILENAME, "exec")
         with redirect_stdout(out), redirect_stderr(err):
-            exec(compiled, namespace)  # Running it is the whole capability.
-    except BaseException as failure:  # A program's own failure is data, `SystemExit` included.
+            exec(compiled, namespace)  # noqa: S102 - running it is the whole capability
+    # BLE001: a program's own failure is this tool's *result*, `SystemExit` included, so the catch
+    # is deliberately wider than `Exception` rather than narrower.
+    except BaseException as failure:  # noqa: BLE001
         error = _caller_traceback(failure)
     finally:
         # Reclaim every descriptor the analysis opened and never closed, before this runner spends

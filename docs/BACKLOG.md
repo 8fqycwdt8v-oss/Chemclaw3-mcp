@@ -254,6 +254,19 @@ decision leaves a record behind and the row goes.
 
 ## 4 — The gate itself
 
+- [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
+  `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on
+  `uv export --frozen ... --require-hashes`, and measured the result on `props`: 11 of 37 packages
+  differed before, 0 after. **`rxnlabel`'s runtime stage is the exception it names**: it installs
+  `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` straight from PyPI through the CPU-torch
+  `--extra-index-url`, so those two are version-pinned to the lock by
+  `tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read` and
+  their whole transitive closure — torch included — re-resolves on every build, with no hashes.
+  Folding them into the export means deciding which torch build ships (the lock resolves PyPI's, the
+  image deliberately takes the CPU index's), which is a measurement and an argument rather than a
+  line edit. Until then this is the one image whose closure `make deps-audit` does not describe.
+  **Anchors:** `servers/rxnlabel/Containerfile`, `tests/test_fleet.py`, `uv.lock`.
+
 - [ ] **`make type` does not check the test tree, and there is an error waiting in it.** `$(SRC)`
   lists eight `src/` roots and no test directory, so `mypy --strict` never reads the files that
   drive every ratchet in this repository. Measured on 2026-09-12: `mypy --strict

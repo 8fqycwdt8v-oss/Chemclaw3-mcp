@@ -120,7 +120,9 @@ def map_reaction(reaction_smiles: str) -> MapResult:
         return MapResult()
     try:
         results = mapper.get_attention_guided_atom_maps([reaction_smiles], canonicalize_rxns=False)
-    except Exception as exc:
+    # BLE001: blind on purpose and classified in the next line - this is one of the three call
+    # sites `degradation.py`'s docstring was written for.
+    except Exception as exc:  # noqa: BLE001
         cause = degradation.classify(exc)
         degradation.record(server=SERVER, component=COMPONENT, cause=cause)
         logger.warning(
@@ -155,7 +157,8 @@ def inference_threads() -> int:
         return 1
     try:
         import torch
-    except Exception:  # pragma: no cover - the mapper loaded, so torch is installed
+    # BLE001: an import guard whose only answer is a conservative cost of 1.
+    except Exception:  # noqa: BLE001  # pragma: no cover - the mapper loaded, so torch is installed
         return 1
     return max(1, int(torch.get_num_threads()))
 

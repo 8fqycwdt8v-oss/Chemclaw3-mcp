@@ -50,8 +50,15 @@ manifest-validate: ## Every connector.yaml parses, is classified, and matches it
 offline-run: ## Prove every server answers with the network taken away (needs unshare; Linux).
 	unshare --user --map-root-user --net -- $(UV) run python scripts/offline_check.py -q
 
+.PHONY: cov
+cov: ## The suite again, with coverage measured and the floor in `pyproject.toml` enforced.
+	@# One run, not two: `--cov` costs nothing measurable here (measured 176 s against 210 s for the
+	@# bare run, which is noise), so `check` calls this instead of `test` rather than paying for the
+	@# suite twice. `test` stays for a fast bare run while iterating.
+	$(UV) run pytest -q --cov --cov-report=term
+
 .PHONY: check
-check: lint type test deps-audit ## Everything CI runs bar `offline-run`, which needs `unshare`.
+check: lint type cov deps-audit ## Everything CI runs bar `offline-run`, which needs `unshare`.
 	@# `deps-audit` is last on purpose: a dependency finding is a real failure, but not one that
 	@# should mask a broken test, and it is the only step here whose fix lives in `uv.lock` rather
 	@# than in the diff under review. It is in this list at all because CI now runs it, and a local
@@ -71,12 +78,18 @@ AUDIT_FOUND := Found [0-9]+ known vulnerabilit
 AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Temporary failure in name resolution|Name or service not known|Network is unreachable
 
 # **The advisories this gate does not fail on, and the argument for each.** A suppression list is
-# itself a claim, so it is here, in the file that reads it, rather than in a prose document — and it
-# is deliberately short: everything on it turns on a **malicious artefact on disk** — an unpickled
-# cache, a crafted `config.json`, a checkpoint index — which is the one class this fleet's posture
-# already answers, and nothing on it is reachable from a request.
-# Re-derive it whenever a bump lands; an entry whose package no longer resolves to the version below
-# is an entry to delete rather than to keep for safety.
+# itself a claim, so the argument is here, in the file that reads it, rather than in a prose
+# document — and it is deliberately short: everything on it turns on a **malicious artefact on
+# disk** — an unpickled cache, a crafted `config.json`, a checkpoint index — which is the one class
+# this fleet's posture already answers, and nothing on it is reachable from a request.
+#
+# **The ids themselves are in `pyproject.toml`, and `AUDIT_IGNORE` below is derived from them.** Not
+# for tidiness: each row there carries the package the argument is about and the version `uv.lock`
+# resolved when it was written, and `tests/test_deps_suppressions.py` fails when the lock moves one.
+# `--ignore-vuln` matches by id, so before that a fixed dependency merely stopped being reported and
+# the suppression outlived its reason with nothing to say so — which the `accelerate` paragraph
+# below stated as a known hole
+# (`D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument`).
 #
 # Every entry below lives in the optional ML extras of two servers (`rxnlabel[models]`,
 # `rxnpredict[reaction_t5,rxn_insight]`) and none appears in the closure without them — measured:
@@ -153,20 +166,17 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     `test_an_image_that_installs_from_the_index_pins_what_the_audit_read` never
 #                     sees it). What retires this entry is a reader of the weekly `uv` bump
 #                     re-deriving the list — and what settles it is the byte-diff above, not the
-#                     audit's silence. The one trigger that does not depend on that reader is
-#                     outside this file: Dependabot alerts are enabled on this repository (a `git
-#                     push` says so) and are unaffected by `--ignore-vuln`, so a patched
-#                     `accelerate` becomes a security-update pull request here — but only once one
-#                     exists, which is the thing this entry is waiting on.
-AUDIT_IGNORE := \
-	--ignore-vuln PYSEC-2026-2447 \
-	--ignore-vuln PYSEC-2026-3447 \
-	--ignore-vuln PYSEC-2025-217 \
-	--ignore-vuln PYSEC-2026-2288 \
-	--ignore-vuln PYSEC-2026-2289 \
-	--ignore-vuln PYSEC-2026-2290 \
-	--ignore-vuln GHSA-xrqw-3rrv-vx5w \
-	--ignore-vuln CVE-2026-69112
+#                     audit's silence. **That paragraph described the hole this file now has a
+#                     mechanism for**: the row in `pyproject.toml` pins this argument to
+#                     `accelerate==1.14.0`, so the *next bump* — to 1.15.0 or past it — turns the
+#                     suppression red and brings a reader back to this text, whether or not the
+#                     advisory has moved. Dependabot alerts are the second trigger and are outside
+#                     this file: they are enabled on this repository and unaffected by
+#                     `--ignore-vuln`, so a patched `accelerate` also becomes a security-update pull
+#                     request here.
+# Derived, so the ids exist once. An extraction that fails yields an empty list, which makes the
+# audit *stricter* rather than laxer — the only direction a build-time failure may take a gate.
+AUDIT_IGNORE := $(shell python3 -c 'import tomllib; print(" ".join("--ignore-vuln " + r["id"] for r in tomllib.load(open("pyproject.toml", "rb"))["tool"]["chemclaw"]["deps-audit"]["suppressions"]))')
 
 .PHONY: deps-audit
 deps-audit: ## Check the locked dependency closure for known vulnerabilities (supply chain).

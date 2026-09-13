@@ -398,7 +398,11 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
             "credential whose variable is missing must refuse every request: a misconfigured "
             "deployment has to serve nothing, never everything."
         )
-        probe = httpx.get(f"{base_url.rstrip('/')}/healthz", timeout=15.0)
+        # ASYNC210: a blocking call in an async function. The server this drives is a uvicorn in
+        # its own thread with its own loop (see each server's `test_server.py`), so blocking this
+        # loop cannot stall the thing being probed - and `_tools_list` beside it is sync for the
+        # same reason. An in-process ASGI transport would make this a deadlock rather than a smell.
+        probe = httpx.get(f"{base_url.rstrip('/')}/healthz", timeout=15.0)  # noqa: ASYNC210
         assert probe.status_code != 401, (
             f"/healthz answered 401 with {token_env} unset. A kubelet probe and a Prometheus "
             "scrape carry no identity, so a credential problem must not also take the pod out of "

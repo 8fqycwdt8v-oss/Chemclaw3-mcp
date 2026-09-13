@@ -57,6 +57,12 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-12-an-assert-is-a-control-with-an-off-switch](D-2026-09-12-an-assert-is-a-control-with-an-off-switch.md) | An `assert` is a control with an off switch |
 | [D-2026-09-12-one-tool-call-is-not-one-thread](D-2026-09-12-one-tool-call-is-not-one-thread.md) | One tool call is not one thread |
 | [D-2026-09-12-whitespace-is-an-accident-on-the-side-that-provisions](D-2026-09-12-whitespace-is-an-accident-on-the-side-that-provisions.md) | Whitespace is an accident on the side that provisions |
+| [D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key](D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key.md) | A cache key derived from text nobody validated is not a key |
+| [D-2026-09-13-a-gate-in-another-system-is-not-a-gate-this-one-can-see](D-2026-09-13-a-gate-in-another-system-is-not-a-gate-this-one-can-see.md) | A gate in another system is not a gate this one can see |
+| [D-2026-09-13-a-hand-compiled-rule-table-is-a-table-with-a-typo-in-it](D-2026-09-13-a-hand-compiled-rule-table-is-a-table-with-a-typo-in-it.md) | A hand-compiled rule table is a table with a typo in it |
 | [D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe](D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe.md) | A probe that can kill the pod is not a readiness probe |
+| [D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument](D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument.md) | A suppression with no expiry outlives its argument |
+| [D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing](D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing.md) | An audit of a lockfile no image reads audits nothing |
+| [D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for](D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for.md) | The rule that would have caught it was not the one asked for |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

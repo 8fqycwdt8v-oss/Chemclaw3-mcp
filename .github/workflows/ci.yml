@@ -66,8 +66,12 @@ jobs:
       - name: Sync the workspace
         run: uv sync --frozen
 
+      # `make lint`, for the reason written under `Types` below and found a second time in the same
+      # file: this step spelled the two ruff commands inline, which is a second declaration of what
+      # the gate is. It had not drifted yet, and "had not drifted yet" is what the `Types` comment
+      # says about its own predecessor.
       - name: Lint
-        run: uv run ruff check . && uv run ruff format --check .
+        run: make lint
 
       # `make type` rather than a repeated path list: this step had already drifted — it named
       # three source trees while the Makefile named four, so `servers/safety/src` was type-checked
@@ -76,8 +80,11 @@ jobs:
       - name: Types
         run: make type
 
-      - name: Tests
-        run: uv run pytest -q
+      # `make cov` rather than a bare `pytest`: same suite, plus the coverage floor
+      # `pyproject.toml` declares. Measured at 176 s against 210 s for the bare run, so the floor
+      # costs nothing and running the suite twice to get it would cost everything.
+      - name: Tests and the coverage floor
+        run: make cov
 
   offline:
     # The strongest form of the no-egress claim, and the one that does not trust our own code: run
@@ -95,9 +102,9 @@ jobs:
       - name: Sync the workspace
         run: uv sync --frozen
 
-      # This job had never passed — red on every run including `main`, with `check` and `manifests`
-      # green throughout, so the strongest no-egress claim in the repository was the one that had
-      # never actually run.
+      # This job had never passed — red on every run including `main`, with `check` green
+      # throughout (and the `manifests` job that then existed), so the strongest no-egress claim
+      # in the repository was the one that had never actually run.
       #
       # **`unshare --net` alone needs `CAP_SYS_ADMIN`,** which the runner user does not have; it
       # only ever worked where someone ran it as root. Creating a *user* namespace first grants
@@ -122,24 +129,15 @@ jobs:
       - name: Run the suite with no network
         run: unshare --user --map-root-user --net -- uv run python scripts/offline_check.py -q
 
-  manifests:
-    # A manifest is a claim about a tool surface, and Chemclaw3's history is a list of claims that
-    # outlived the code they described. The per-server tests check each manifest against a running
-    # server; this job checks the fleet-level invariants a single server cannot see.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-
-      - name: Sync the workspace
-        run: uv sync --frozen
-
-      - name: Every manifest is registered, unique, and points at its own server
-        run: uv run pytest -q tests
+  # **There was a `manifests` job here and it has been deleted, which is a reduction in jobs and not
+  # in coverage.** It ran `uv run pytest -q tests` on its own runner, and `pyproject.toml` sets
+  # `testpaths = ["tests", "packages", "servers"]` — so every one of its 182 tests was already in
+  # the 2,034 the `check` job runs, on the same image, after the same `uv sync`. A job that cannot
+  # go red unless another job also goes red is a second light on one fault, which is the shape this
+  # repository deleted a port table over; it bought a runner's worth of minutes per push and a
+  # second place to read the same failure. The fleet-level invariants it named are not lost — they
+  # are `tests/`, and `check` runs them. Fast feedback on them, if it is ever wanted, is a step
+  # order inside `check` rather than a duplicate job.
 
   deps:
     # The supply-chain gate: `pip-audit` over the locked closure, blocking. It is a separate job
