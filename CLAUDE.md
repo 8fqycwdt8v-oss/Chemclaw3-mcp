@@ -153,10 +153,29 @@ that helper are non-obvious, and each is quiet when wrong:
   that checks a component *constructed*, or that a version string could be *derived*, passes a
   component that builds and then fails on every call — so a probe runs the thing, on a fixture, and
   a new one proves it by breaking a dependency and reading the status. The other half is what a
-  probe must **not** act on: readiness and liveness share this route in every Deployment here, so
-  an unready answer restarts the pod rather than shedding load, and only
-  `mcp_server_kit.degradation.PERMANENT_CAUSES` may cause one. A transient resource exhaustion is
-  counted and left alone.
+  probe must **not** act on: only `mcp_server_kit.degradation.PERMANENT_CAUSES` may produce an
+  unready answer, and a transient resource exhaustion is counted and left alone. **That rule is
+  `connector_app`'s, not each callable's** — stated per callable it was read in exactly two places
+  across seven servers, so every other raise went out as an unconditional 503
+  (`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe`). A probe failure whose
+  cause is transient answers **200** with `degraded` naming it.
+- **`/livez` is liveness, and it is a different route because the two answers differ.** A readiness
+  503 takes the pod out of its Service and is undone by the next passing probe; a liveness failure
+  kills the container. Every Deployment here pointed both at `/healthz` — `periodSeconds: 30`,
+  `failureThreshold: 3` — so a broken *optional* component was a kill after ~90 s: driven, one
+  missing checkpoint among eleven optional `rxnpredict` predictors answered 503, and since a restart
+  cannot recreate a missing file the pod that had served ten of eleven served none. `/livez` consults
+  nothing and proves only that the process still serves HTTP, which is the fault a restart fixes.
+  `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` holds every
+  Deployment to both paths and to their inequality.
+- **What makes a pod unready is a capability it cannot deliver, never the size of an optional set.**
+  A `rxnpredict` pod serving ten of eleven predictors is serving; it refuses only when a whole kind
+  of prediction is gone *and* something broke to take it, or when an `ENABLED_*_MODELS` allow-list
+  names a predictor that is not registered — somebody wrote the name down. The same rule makes
+  `calc` ready on an image with no `xtb` binary while `compute_atomic_descriptors` and
+  `compute_surface_potential` refuse by name, at the point of *asking* as well as of computing: a
+  well-formed key naming a program the pod lacks is worse than no key, and `calculation_key` was
+  minting one for 2 of 17 tools under the shipped default.
 - **Declare `auth: {mode: bearer, token_env: ...}` in every manifest, even on the loopback dev
   URL.** Chemclaw3's `HttpEndpoint` would accept `mode: none` for loopback and refuse it the moment
   a deployment moved the address — and a manifest whose auth mode changes with its address is one
@@ -202,11 +221,23 @@ independent layers because a rule that lives in one place rots:
    load-bearing rather than decorative**: `EgressForbidden` subclasses `OSError`, so what a refusal
    looks like from outside depends on who catches it — `calc` reports it as "could not resolve the
    xTB backend", and any library's own `except OSError: retry` swallows it whole. `rxnpredict` used
-   to gather it into a *silently* degraded ensemble and no longer does: every path in this fleet
-   that catches an exception and answers anyway now classifies it through
+   to gather it into a *silently* degraded ensemble and no longer does: every path that **answers
+   with a component's contribution missing** classifies the exception through
    `mcp_server_kit/degradation.py`, which tests `EgressForbidden` before anything else precisely
    because the inheritance would otherwise sort a refusal beside a connection reset, and counts it
-   on `chemclaw_mcp_degraded_total{server,component,cause}`.
+   on `chemclaw_mcp_degraded_total{server,component,cause}`. The call sites and their causes are
+   held by `packages/mcp_server_kit/tests/test_degradation.py::
+   test_every_call_site_derives_its_cause_rather_than_writing_one`, as a count, because a collected
+   list that must come back empty is satisfied by the calls being gone.
+   **This sentence used to say "every path in this fleet that catches an exception and answers
+   anyway", and that is a different and false claim**: two serving paths catch and answer with
+   something other than a missing contribution, and both are deliberate and documented where they
+   are. `rxnpredict/engine/cache.py` falls back to the *uncanonicalised* SMILES as a cache key when
+   RDKit refuses an input — the prediction is whole, the slot is merely a different one, "a cache
+   must never be the thing that fails a prediction" — and `rxnlabel/engine/mapping.py`'s
+   `inference_threads` charges the admission ceiling `1` when torch cannot be asked its width, which
+   under-charges rather than degrades. Neither is a component this fleet answered without, so
+   counting either on `chemclaw_mcp_degraded_total` would publish a series about nothing missing.
    `chemclaw_mcp_egress_guard_armed` is what makes a deployment that shipped `MCP_EGRESS_GUARD=off`
    visible from a scrape rather than from a docstring. This is the layer that catches what a
    static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.

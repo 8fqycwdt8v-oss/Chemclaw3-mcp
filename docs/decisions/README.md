@@ -57,5 +57,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-12-an-assert-is-a-control-with-an-off-switch](D-2026-09-12-an-assert-is-a-control-with-an-off-switch.md) | An `assert` is a control with an off switch |
 | [D-2026-09-12-one-tool-call-is-not-one-thread](D-2026-09-12-one-tool-call-is-not-one-thread.md) | One tool call is not one thread |
 | [D-2026-09-12-whitespace-is-an-accident-on-the-side-that-provisions](D-2026-09-12-whitespace-is-an-accident-on-the-side-that-provisions.md) | Whitespace is an accident on the side that provisions |
+| [D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe](D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe.md) | A probe that can kill the pod is not a readiness probe |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

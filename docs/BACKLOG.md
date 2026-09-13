@@ -218,17 +218,39 @@ decision leaves a record behind and the row goes.
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
   `packages/mcp_server_kit/src/mcp_server_kit/datasets.py`.
 
-- [ ] **`calc`'s probe now covers the xTB backend and says nothing about CREST.**
-  `D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check` closed the
-  `xtb-absent` key, which was dangerous because it wrote a *wrong record* into Chemclaw3's ledger.
-  `crest_cli.binary_version()` has the same `"absent"` shape, but a CREST call on a pod without the
-  binary raises `CliError` naming it — an honest failure rather than a corrupted key — so it was
-  left out rather than folded in. What is still true is that such a pod reports ready and cannot
-  serve `search_conformers` or `search_complex`. Decide whether a pod that can serve thirteen of
-  fifteen tools is ready, which is a question about partial capability that no other server in this
-  fleet has had to answer yet.
-  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/crest_cli.py::binary_version`,
-  `servers/calc/src/chemclaw_mcp_calc/app.py::_readiness`.
+- [ ] **An `ImportError` from a broken shared library reads as an extra nobody installed, and only
+  one of the two servers catches it.** `degradation.classify` sorts every `ImportError` as
+  `not_installed`, which is right for `ModuleNotFoundError` and wrong for
+  `ImportError("libcudart.so.11: cannot open shared object file")` — a distribution that *is*
+  installed and cannot load, which is a broken image. Distinguishing them from the exception is not
+  possible and matching the message is the control `degradation.py`'s docstring refuses to write, so
+  the only reliable test is the one `rxnlabel` already makes: `version._installed(distribution)`
+  against `available()`, where metadata saying the distribution is present and the predicate saying
+  it did not build is the fault. `rxnpredict` has no equivalent — a predictor class carries
+  `extras_install`, which is an extra's name rather than a distribution's, so the cross-check needs a
+  third declaration per predictor and that is the thing to design rather than bolt on.
+  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/degradation.py::classify`,
+  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/readiness.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/base.py`.
+
+- [ ] **A degraded `rxnlabel` row is stamped as though it were healthy, because the stamp Chemclaw3
+  writes is a deployment-level string read once per drain pass.** **Other repository:** `Chemclaw3`.
+  `D-2026-09-12-a-degradation-that-is-not-counted-is-a-degradation-nobody-sees` added a third stamp
+  word — `version.labeller_version(failed=...)` answering `mapper@failed` — and `tools.py` puts it on
+  the *per-row* `version` field, with `degraded` beside it. Driven against a full Chemclaw3 checkout
+  on 2026-09-13: neither field reaches that repository. `ingest/labels/labeller.ReactionRepresentation`
+  and `ReactionNaming` are `ConfigDict(extra="ignore")` and declare neither, and
+  `ingest/labels/enrich.label_stale` stamps every row with the `version` argument its planning
+  activity read once from the `labeller_version` *tool* — which is `labeller_version()` with no
+  `failed`, so a pod whose mapper raises on reaction 57 of 200 stamps all 200 as a healthy pod would.
+  The mechanism this fleet built is correct and unread; closing it is a change over there — the two
+  answer models gaining `version`, and `store_labels` stamping the row's own — and nothing here can
+  check it. (A reviewer read this the other way, as rows being *permanently stale* because
+  `store.stale()` accepts only `version` or `underived_stamp(version)`. That would require the
+  `failed` stamp to reach the column, and it does not.)
+  **Anchors (Chemclaw3):** `src/chemclaw/ingest/labels/labeller.py::ReactionRepresentation`,
+  `src/chemclaw/ingest/labels/enrich.py::label_stale`,
+  `src/chemclaw/science/labels/store.py::underived_stamp`.
 
 ## 4 — The gate itself
 
