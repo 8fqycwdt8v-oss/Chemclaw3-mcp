@@ -60,7 +60,10 @@ from mcp_server_kit.metrics import REQUESTS, UNAUTHENTICATED_REQUESTS
 
 logger = logging.getLogger(__name__)
 
-OPEN_PATHS = frozenset({"/healthz", "/metrics"})
+# The three routes a kubelet probe or a Prometheus scrape reaches, none of which has an identity to
+# present. `/livez` joined them when liveness stopped sharing `/healthz` — a liveness probe refused
+# with 401 kills the container, which is the loudest possible way to get this wrong.
+OPEN_PATHS = frozenset({"/healthz", "/livez", "/metrics"})
 
 # What a request's path is allowed to become as a metric label. Three routes and a sentinel,
 # because a path is caller-supplied: counting it verbatim would let anything that can reach the pod

@@ -92,6 +92,12 @@ from mcp_server_kit.auth import (
     RequestMetrics,
 )
 from mcp_server_kit.datasets import Dataset
+from mcp_server_kit.degradation import (
+    PERMANENT_CAUSES,
+    classify,
+    record,
+    register_components,
+)
 from mcp_server_kit.executor import install_default_executor
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
@@ -121,6 +127,12 @@ DEFAULT_MAX_REQUEST_BYTES = 1_000_000
 # a fleet of probes and scrapes against a *failing* pod cannot re-run the check per request. See
 # `connector_app`'s `/healthz`.
 READINESS_FAILURE_TTL_SECONDS = 5.0
+
+# The component name the readiness funnel books a transient probe failure under. One name for all
+# seven servers, because what failed is *the probe*; which component inside it is in the log and in
+# the counters the component itself moved on the way past.
+READINESS_COMPONENT = "readiness"
+register_components(READINESS_COMPONENT)
 
 # Set on a `FastMCP` the first time `connector_app` wraps it, so a second call is refused rather
 # than silently doubling every count. See `_claim_server`.
@@ -507,7 +519,10 @@ def connector_app(
     # Threads are created lazily, so a server with no `readiness` pays nothing for this.
     readiness_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{name}-readiness")
     readiness_lock = asyncio.Lock()
-    readiness_failure: tuple[float, str] | None = None
+    # (expiry, redacted reason, the cause `classify` gave). Holds a *transient* verdict as well as a
+    # permanent one: a probe that failed on an allocation must not be re-run per request either, and
+    # the cause is carried because it decides the status code rather than only the body.
+    readiness_failure: tuple[float, str, str] | None = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -561,10 +576,12 @@ def connector_app(
 
     @app.get("/healthz")
     async def healthz() -> Response:
-        """Liveness *and* readiness — and until `readiness` existed only the first was true.
+        """Readiness, and since `/livez` exists it is *only* readiness.
 
         This route answering is evidence the session manager is running, because uvicorn accepts
-        connections only once the lifespan above has completed. It was never evidence that the
+        connections only once the lifespan above has completed. That was the whole of what it said
+        for as long as it was a constant 200, and it is `/livez`'s job now — stated there, with the
+        measured cost of the two probes having shared this one route. It was never evidence that the
         server could answer anything, and the difference is not theoretical: datasets load lazily
         here, so a `chem` pod whose corpus fails its checksum returned 200, passed the kubelet
         probe, took traffic and failed every tool call — while `load_dataset`'s own docstring says
@@ -614,6 +631,12 @@ def connector_app(
         measured, with the return scrubbed and the memo holding `str(exc)`, the first probe's body
         was clean and every probe for the next five seconds leaked. The scrub therefore happens
         *once*, before the memo is written, and both bodies are the same string by construction.
+
+        **Not every raise is a 503**, and the funnel that decides is `verdict` below: a cause
+        outside `degradation.PERMANENT_CAUSES` answers **200** with `degraded` naming the cause and
+        no `datasets` key, counted on `chemclaw_mcp_degraded_total{component="readiness"}`. That
+        is the fleet rule stated in the record that introduced `PERMANENT_CAUSES`, enforced here
+        because enforcing it per callable left five of seven servers never enforcing it at all.
         """
         nonlocal readiness_failure
         payload: dict[str, object] = {
@@ -630,9 +653,33 @@ def connector_app(
             READY.labels(name).set(0)
             return JSONResponse({**payload, "status": "unready", "reason": reason}, status_code=503)
 
+        def degraded(reason: str, cause: str) -> Response:
+            """200, naming what the probe could not do — the answer a transient cause gets."""
+            READY.labels(name).set(1)
+            return JSONResponse({**payload, "degraded": cause, "reason": reason})
+
+        def verdict(reason: str, cause: str) -> Response:
+            """Which of the two a cause earns. The whole funnel, in one line.
+
+            `PERMANENT_CAUSES` is the rule
+            `D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`
+            stated for the fleet and two callables implemented for one branch each: `grep` found it
+            read in exactly two places in all of `src/`, and every *other* line of every readiness
+            callable raised straight through the `except` below into an unconditional 503. Driven on
+            `rxnlabel` with a `MemoryError` out of `RXNMapper()`: the counter booked
+            `resource_exhausted`, `resource_exhausted in PERMANENT_CAUSES` was False, and `/healthz`
+            answered **503** — which at the time also killed the pod, back into the same pressure.
+
+            Here rather than in each callable, because seven callables are seven places to forget
+            it and an eighth server would inherit nothing. A callable that wants to refuse a
+            *transient* cause cannot, and that is the intent: the two servers whose probes run real
+            models are exactly the ones whose probe is heavier than the traffic it gates.
+            """
+            return unready(reason) if cause in PERMANENT_CAUSES else degraded(reason, cause)
+
         async with readiness_lock:
             if readiness_failure is not None and time.monotonic() < readiness_failure[0]:
-                return unready(readiness_failure[1])
+                return verdict(readiness_failure[1], readiness_failure[2])
             try:
                 # Off the event loop: a readiness check reads and hashes a corpus, and on `calc` it
                 # can reach a subprocess. Blocking here would stall every in-flight SSE stream in
@@ -656,13 +703,51 @@ def connector_app(
                 # have reintroduced the leak on every cached 503 while the freshly computed one
                 # stayed clean, and nothing would have said the two disagreed.
                 reason = redact_secrets(str(exc))
-                readiness_failure = (time.monotonic() + READINESS_FAILURE_TTL_SECONDS, reason)
-                logger.exception("server %s is not ready: %s", name, exc)
-                return unready(reason)
+                cause = classify(exc)
+                readiness_failure = (
+                    time.monotonic() + READINESS_FAILURE_TTL_SECONDS,
+                    reason,
+                    cause,
+                )
+                if cause not in PERMANENT_CAUSES:
+                    # Counted, so a pod thrashing on memory is visible from a scrape rather than
+                    # only from this log line — which is the whole of what the rule offers in
+                    # exchange for leaving the pod in service.
+                    record(server=name, component=READINESS_COMPONENT, cause=cause)
+                logger.exception("server %s probe failed (%s): %s", name, cause, exc)
+                return verdict(reason, cause)
             readiness_failure = None
         READY.labels(name).set(1)
         payload["datasets"] = [f"{corpus.name}@{corpus.version}" for corpus in verified]
         return JSONResponse(payload)
+
+    @app.get("/livez")
+    async def livez() -> Response:
+        """Liveness, and *only* liveness: is this process still serving HTTP at all.
+
+        **A separate route because the two probes ask different questions and kubelet acts on the
+        answers differently.** A readiness failure removes the pod from its Service's endpoints and
+        is undone by the next passing probe; a liveness failure kills the container. Every
+        Deployment in this repository pointed both at `/healthz`, so for as long as that route has
+        meant anything at all, "my optional ensemble is incomplete" and "replace me" were one
+        answer —
+        `periodSeconds: 30`, `failureThreshold: 3`, so a 503 was a kill after ~90 s. Driven on
+        `rxnpredict`: one missing checkpoint among eleven optional predictors answered 503, and a
+        restart cannot recreate a missing file, so the pod that had been serving ten of eleven went
+        to `CrashLoopBackOff` and served none.
+
+        What this route proves is exactly what the old one proved *before* `readiness` existed, and
+        no more: uvicorn accepts connections only once the lifespan above has completed, so an
+        answer here is evidence that the MCP session manager is running and the event loop is not
+        wedged. That is the fault a restart actually fixes. It deliberately consults nothing else —
+        no corpus, no model, no backend, no lock — because anything it consulted would be a second
+        way to get the pod killed for a dependency.
+
+        No `reason`, no `datasets`, and nothing a caller could mistake for readiness:
+        `tests/test_deploy_shape.py` holds every Deployment's `livenessProbe` to this path and
+        `readinessProbe` to `/healthz`, in both directions, so the two cannot quietly re-converge.
+        """
+        return JSONResponse({"status": "alive", "server": name, "revision": server_revision()})
 
     @app.get("/metrics")
     async def metrics() -> Response:
@@ -684,7 +769,7 @@ def connector_app(
         """
         return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
-    # The same two routes under their trailing-slash spelling, because a probe written that way
+    # The same three routes under their trailing-slash spelling, because a probe written that way
     # otherwise reaches nothing at all. `auth._is_open` exempts `/healthz/` from the credential
     # check so a kubelet probe configured as `path: /healthz/` is not refused — and that on its own
     # left the probe getting **404** on every server in this fleet (measured under real uvicorn):
@@ -698,6 +783,7 @@ def connector_app(
     # `include_in_schema=False` so the alias does not double every probe route in the OpenAPI
     # document; it is a spelling of one route, not a second one.
     app.add_api_route("/healthz/", healthz, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/livez/", livez, methods=["GET"], include_in_schema=False)
     app.add_api_route("/metrics/", metrics, methods=["GET"], include_in_schema=False)
 
     # Mounted last: Starlette matches in definition order, so the routes above win and
