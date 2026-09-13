@@ -25,12 +25,15 @@ spends on its own uvicorn.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import httpx
 import pytest
 from chemclaw_mcp_rxnlabel import app as app_module
 from chemclaw_mcp_rxnlabel.engine import mapping, readiness
 from mcp_server_kit import degradation
+
+_DEPLOYMENT_PATH = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -221,24 +224,31 @@ async def test_a_transient_failure_of_the_labelling_path_keeps_the_pod_in_servic
     """The funnel, on the half of the probe that is not optional at all.
 
     `roles.assign`, `species.canonical_smiles` and `species.functional_groups` are the
-    never-optional
-    path, and they allocate: this probe runs a real RXNMapper forward pass plus RDKit
-    canonicalisation
-    on every cold probe, so it is itself a plausible place for an allocation to fail under pressure.
-    Every raise from them went through `connector_app`'s `except Exception` into an unconditional
-    503 — so the probe's answer to failing on memory was "restart me", which at the time it was.
+    never-optional path, and they allocate: this probe runs a real RXNMapper forward pass plus
+    RDKit canonicalisation on every cold probe, so it is itself a plausible place for an allocation
+    to fail under pressure. Every raise from them went through `connector_app`'s
+    `except Exception` into an unconditional 503 — so the probe's answer to failing on memory was
+    "restart me", which at the time it was.
+
+    The classification is `connector_app`'s and deliberately not this module's, so the component
+    label is `readiness` rather than a name per probe half: what failed is the probe, and which
+    component inside it is in the log beside the counter. `degraded` in the body is the half that
+    proves the funnel ran rather than the exception merely not being raised.
     """
     labels = {
         "server": "rxnlabel",
-        "component": "labelling_path",
+        "component": "readiness",
         "cause": degradation.CAUSE_RESOURCE_EXHAUSTED,
     }
     from prometheus_client import REGISTRY
 
     before = REGISTRY.get_sample_value("chemclaw_mcp_degraded_total", labels) or 0.0
 
+    calls: list[str] = []
+
     def out_of_memory(_smiles: str) -> list[str]:
         """Fail the way RDKit does when the pod is at its ceiling."""
+        calls.append("tried")
         raise MemoryError("Unable to allocate array")
 
     monkeypatch.setattr(readiness.species, "functional_groups", out_of_memory)
@@ -247,7 +257,19 @@ async def test_a_transient_failure_of_the_labelling_path_keeps_the_pod_in_servic
         "a transient failure of the labelling path must shed no traffic; the counter is what it "
         "gets instead"
     )
+    assert response.json()["degraded"] == degradation.CAUSE_RESOURCE_EXHAUSTED
+    assert "datasets" not in response.json(), "nothing was verified, so nothing may be claimed"
     assert REGISTRY.get_sample_value("chemclaw_mcp_degraded_total", labels) == before + 1.0
+
+    # And the raise is *cached*, which is the half that bounds the cost rather than the verdict.
+    # `connector_app`'s own memo is zeroed by the fixture above, so if `verify_labeller` let the
+    # exception escape its window the probe would re-run the whole fixture — including an unadmitted
+    # RXNMapper forward pass — on every kubelet probe for as long as the fault lasted.
+    assert (await _probe()).status_code == 200
+    assert calls == ["tried"], (
+        f"the failing probe ran {len(calls)} times for two /healthz calls; an exception outside "
+        "the verdict window is a transformer forward pass per probe interval, for ever"
+    )
 
 
 async def test_a_permanent_failure_of_the_labelling_path_sheds_traffic(
@@ -269,3 +291,40 @@ def test_the_app_wires_the_probe_in() -> None:
     """A readiness callable nothing passes to `connector_app` is a control that does not exist."""
     assert app_module._readiness is not None
     assert app_module._readiness() == []
+
+
+def test_the_verdict_window_is_bounded_by_the_probe_cadence_this_server_declares() -> None:
+    """The two tests above patch the window they then rely on, and that is not a bound.
+
+    Driven: raising `VERDICT_TTL_SECONDS` to 1e9 — `lru_cache`'s behaviour restored under another
+    spelling — left the whole `rxnlabel` suite green, because
+    `test_a_component_that_breaks_after_a_good_probe_stops_reporting_ready` sets the TTL to zero
+    itself. The expiry *mechanism* is what those tests prove; what the shipped *number* has to be is
+    this, and it is two-sided because both directions are real:
+
+    - below one probe period the fixture's unadmitted RXNMapper forward pass runs on nearly every
+      probe, which is the cost caching the verdict exists to avoid;
+    - above a dozen the component that broke keeps serving for minutes, which is the defect
+      expiring it exists to end.
+
+    The cadence is read out of this server's own `deployment.yaml` rather than transcribed, because
+    a kubelet reads that file and not this one — the same reason
+    `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` uses literals
+    for the paths.
+    """
+    import yaml
+
+    deployment = yaml.safe_load(_DEPLOYMENT_PATH.read_text(encoding="utf-8"))
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    period = int(container["readinessProbe"]["periodSeconds"])
+    assert period > 0, f"{_DEPLOYMENT_PATH} declares no readiness period"
+    assert period <= readiness.VERDICT_TTL_SECONDS <= 12 * period, (
+        f"VERDICT_TTL_SECONDS is {readiness.VERDICT_TTL_SECONDS} against a {period}s readiness "
+        f"period: below {period} the probe pays a transformer forward pass on every probe, above "
+        f"{12 * period} a component that broke mid-life keeps serving for minutes"
+    )
+    assert period <= mapping.CONSTRUCTION_RETRY_SECONDS <= 12 * period, (
+        f"CONSTRUCTION_RETRY_SECONDS is {mapping.CONSTRUCTION_RETRY_SECONDS}: below a probe period "
+        "the weights are re-read on every probe, above a dozen a pod that could build them stays "
+        "unready for minutes"
+    )

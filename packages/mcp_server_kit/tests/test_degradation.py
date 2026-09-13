@@ -29,11 +29,12 @@ from prometheus_client import REGISTRY
 ROOT = Path(__file__).resolve().parents[3]
 
 # How many `degradation.record` call sites this fleet has. A number rather than an emptiness check,
-# for the reason `test_every_call_site_derives_its_cause_rather_than_writing_one` gives. Five in
-# `rxnlabel` (`mapping.map_reaction`, `mapping._mapper`, `naming.name`, `naming._namer`, and
-# `readiness._probe`'s transient arm), two in `rxnpredict` (`predictors.mark_unavailable` at import,
-# `tools._survivors` at request time), and the readiness funnel in `mcp_server_kit.app`.
-RECORD_CALL_SITES = 8
+# for the reason `test_every_call_site_derives_its_cause_rather_than_writing_one` gives. Four in
+# `rxnlabel` (`mapping.map_reaction`, `mapping._mapper`, `naming.name`, `naming._namer`), two in
+# `rxnpredict` (`predictors.mark_unavailable` at import, `tools._survivors` at request time), and
+# the readiness funnel in `mcp_server_kit.app` — the only site that counts a *probe* failure,
+# because `rxnlabel`'s probe re-raises and lets that funnel classify rather than classifying twice.
+RECORD_CALL_SITES = 7
 
 
 def _refusal() -> BaseException:

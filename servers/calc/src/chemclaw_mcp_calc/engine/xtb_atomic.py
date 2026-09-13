@@ -115,6 +115,12 @@ class SurfacePotentialResult(Keyed):
 def require_binary() -> None:
     """Refuse, by name, when the `xtb` binary this module is entirely built on is not installed.
 
+    **The message names both of this module's calculations**, because it is raised for both and used
+    to name only one: `compute_surface_potential` answered a chemist a sentence about atomic
+    multipoles, which is not what they asked for. That was invisible while the refusal only reached
+    the compute path; `engine/identity.py` now raises it for `calculation_key` too, on a tool whose
+    caller is asking what a grid would be stored under.
+
     A `ValueError` on purpose: `mcp_server_kit.connector_app` lets that family reach the model
     verbatim and replaces everything else with a generic notice, and this message has to reach the
     chemist — it is the difference between "this deployment cannot answer that" and "this molecule
@@ -122,9 +128,9 @@ def require_binary() -> None:
     """
     if not xtb_cli.is_available():
         raise ValueError(
-            "atomic polarisabilities, dispersion coefficients and atomic multipoles require the "
-            "'xtb' binary, which is not installed in this deployment. Nothing here approximates "
-            "them: tblite exposes no atomic multipoles and no polarisability, so there is no "
+            "the per-atom panel and the surface potential require the 'xtb' binary, which is not "
+            "installed in this deployment. Nothing here approximates them: tblite exposes no "
+            "atomic multipoles, no polarisability and no potential grid, so there is no "
             "in-process fallback to fall back to. The partial charges, bond orders and Fukui "
             "indices from compute_electronic_properties and predict_site_reactivity do not need it."
         )

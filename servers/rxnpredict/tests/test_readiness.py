@@ -249,3 +249,46 @@ def test_a_kind_with_nothing_left_and_something_broken_is_unready(clean_registry
     with pytest.raises(RuntimeError) as unready:
         verify_predictors()
     assert "no forward predictor at all" in str(unready.value)
+
+
+def test_the_catch_all_files_a_broken_module_under_its_registry_name(
+    clean_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`discover_predictors`'s catch-all, driven — the one path the module map exists for.
+
+    Ten of eleven modules have a short name equal to their predictor's registry name, so the
+    disagreement is visible on exactly one: `forward/reaction_t5` registers `reaction_t5_v2`. The
+    catch-all used the short name, so a module that blew up *outside* its own guard landed in
+    `_UNAVAILABLE`, in the degraded counter and in this probe under a key that
+    `list_available_models` and `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS` do not use — so an
+    operator grepping `/metrics` for the advertised id found nothing.
+
+    `test_the_module_map_agrees_with_the_registry_names` cannot see this: in a checkout where every
+    module imports (the guards are *inside* them) the catch-all never fires, so the defect was green
+    there too. Driven: reverting the name to `modname.rsplit(".", 1)[-1]` left the whole
+    `rxnpredict` suite passing until this test existed.
+    """
+    import importlib
+
+    broken = "chemclaw_mcp_rxnpredict.engine.predictors.forward.reaction_t5"
+    real = importlib.import_module
+
+    def refuse(name: str, *args: object, **kwargs: object) -> object:
+        """Fail the way a module with a syntax error or a bad top-level import fails."""
+        if name == broken:
+            raise RuntimeError("a top-level import this module does not guard")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(registry.importlib, "import_module", refuse)
+    monkeypatch.setattr(registry, "_DISCOVERY_DONE", False)
+    registry._UNAVAILABLE.clear()
+    registry.discover_predictors()
+
+    assert "reaction_t5_v2" in registry.unavailable(), (
+        "the catch-all must file a broken module under the registry name the rest of this server "
+        "addresses it by"
+    )
+    assert "reaction_t5" not in registry.unavailable(), (
+        "and not under the module's short name, which is a second component label for one predictor"
+    )
+    assert registry.unavailable()["reaction_t5_v2"].cause == degradation.CAUSE_FAILED

@@ -43,7 +43,6 @@ instead, and a pod that breaks is out of rotation within the minute plus the
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from types import ModuleType
@@ -53,8 +52,6 @@ from mcp_server_kit import Dataset, degradation
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, roles, species, version
 
 __all__ = ["VERDICT_TTL_SECONDS", "forget_verdict", "verify_labeller"]
-
-logger = logging.getLogger(__name__)
 
 # An esterification written in the record form the tools take, with one species per slot: enough to
 # drive canonicalisation, the role assignment and the functional-group vocabulary, and small enough
@@ -68,12 +65,6 @@ _PROBE_SPECIES = ["CC(=O)O", "CCO", "CC(=O)OCC"]
 # rather than once a probe. Not a setting: a deployment has no information this number depends on.
 VERDICT_TTL_SECONDS = 60.0
 
-# The never-optional half, as a metric label: RDKit's canonicalisation, the scaffold, the
-# functional-group vocabulary and the role rules. A third component name beside the two optional
-# ones, because "the labelling path ran out of memory" is a different fact from "the mapper did" and
-# a pod kept in service on a transient cause owes a scrape which.
-_LABELLING_PATH = "labelling_path"
-degradation.register_components(_LABELLING_PATH)
 
 # Each optional component: the name to use in a refusal, the distribution whose presence says a
 # deployment asked for it, and the module that answers both `available()` and
@@ -92,9 +83,11 @@ _OPTIONAL: tuple[tuple[str, str, ModuleType], ...] = (
 )
 
 _LOCK = threading.Lock()
-# (expiry, the datasets verified) or (expiry, the refusal message). A string is the refusal, because
-# re-raising a cached exception loses nothing this route publishes and keeps the cache one shape.
-_VERDICT: tuple[float, tuple[Dataset, ...] | str] | None = None
+# (expiry, what the probe concluded): the datasets verified, the sentence a refusal should carry, or
+# the exception the labelling path raised. All three are cached, and the third is why: an exception
+# that escaped this cache would be re-derived on every probe, and deriving it costs the forward pass
+# this window exists to bound.
+_VERDICT: tuple[float, tuple[Dataset, ...] | str | BaseException] | None = None
 
 
 def forget_verdict() -> None:
@@ -114,19 +107,25 @@ def verify_labeller() -> tuple[Dataset, ...]:
         authenticated surface where a caller needs it to decide whether a stored label is stale.
 
     Raises:
-        RuntimeError: a component's distribution is installed and could not be constructed, or the
-            labelling path itself failed for a permanent cause. `connector_app` turns that into a
-            503 naming the reason, which is the point: a pod that cannot label must not be sent a
-            batch of five hundred reactions to label. A *transient* cause returns ready instead and
-            is counted — see `_probe`.
+        RuntimeError: a component's distribution is installed and could not be constructed, or a
+            component raised on the fixture for a permanent cause.
+        Exception: whatever the labelling path itself raised, re-raised unchanged so that
+            `connector_app`'s funnel classifies it — which is what decides between a 503 and a 200
+            carrying `degraded`. Classifying it *here* as well would be the same decision in two
+            places, and the two would drift.
     """
     global _VERDICT
     with _LOCK:
         cached = _VERDICT
         if cached is None or time.monotonic() >= cached[0]:
-            verdict = _probe()
+            try:
+                verdict: tuple[Dataset, ...] | str | BaseException = _probe()
+            except Exception as exc:
+                verdict = exc
             _VERDICT = (time.monotonic() + VERDICT_TTL_SECONDS, verdict)
             cached = _VERDICT
+    if isinstance(cached[1], BaseException):
+        raise cached[1]
     if isinstance(cached[1], str):
         raise RuntimeError(cached[1])
     return cached[1]
@@ -153,9 +152,14 @@ def _probe() -> tuple[Dataset, ...] | str:
     latched on the first attempt and the process never looked again, so 503 here was terminal and
     only a restart could clear it.
 
-    The labelling path's own failures are classified, and there the rule applies as written: RDKit
-    running out of memory canonicalising a three-species fixture is a property of the moment, and
-    the fixture is heavier than much of the traffic it gates.
+    **The labelling path's own raises are not caught here at all**, and that is the point rather
+    than an omission. `connector_app`'s `/healthz` classifies whatever a readiness callable raises
+    and decides between a 503 and a 200 carrying `degraded` — so catching, classifying and counting
+    the same exception here would be that decision written twice, in two places that drift. What
+    this module owns is the *cause*-shaped arms above, where there is no exception to classify: a
+    `MapResult.failure` and a `Naming.failure` are already causes, recorded by the module that
+    produced them. `verify_labeller` caches the exception so the fixture's forward pass is still
+    paid once per `VERDICT_TTL_SECONDS` rather than once per probe.
     """
     for component, distribution, module in _OPTIONAL:
         if module.available() or version._installed(distribution) == "absent":
@@ -167,38 +171,20 @@ def _probe() -> tuple[Dataset, ...] | str:
             f"labelled as though no {component} existed — indistinguishable from a deployment "
             "that chose not to install one. Check the checkpoint mount and the container logs."
         )
-    try:
-        attempt = mapping.map_reaction(_PROBE_REACTION)
-        permanent = _permanent("atom mapper", attempt.failure) or _permanent(
-            "reaction namer", naming.name(_PROBE_REACTION).failure
-        )
-        if permanent:
-            return permanent
-        roles.assign(_PROBE_REACTION, _PROBE_SPECIES, attempt.mapped)
-        for smiles in _PROBE_SPECIES:
-            if species.canonical_smiles(smiles) is None:
-                return (
-                    f"the labelling path could not canonicalise its own probe species ({smiles}); "
-                    "this pod cannot label anything"
-                )
-            species.functional_groups(smiles)
-    except Exception as exc:
-        # The funnel the rest of this module's rule depends on, and the gap it closes. Every line
-        # above this used to raise straight through `connector_app`'s `except Exception` into an
-        # unconditional 503 — driven with a `MemoryError` out of `species.functional_groups`, the
-        # probe that allocates under memory pressure answered "restart me". Classified here because
-        # the cause decides the verdict, counted because a pod kept in service owes a scrape the
-        # reason, and re-raised for a permanent cause so the 503 carries the real exception.
-        cause = degradation.classify(exc)
-        if cause in degradation.PERMANENT_CAUSES:
-            raise
-        degradation.record(server=mapping.SERVER, component=_LABELLING_PATH, cause=cause)
-        logger.warning(
-            "the labelling path failed its readiness fixture (%s); this pod stays in service "
-            "because the cause is transient, and the counter is where it shows: %r",
-            cause,
-            exc,
-        )
+    attempt = mapping.map_reaction(_PROBE_REACTION)
+    permanent = _permanent("atom mapper", attempt.failure) or _permanent(
+        "reaction namer", naming.name(_PROBE_REACTION).failure
+    )
+    if permanent:
+        return permanent
+    roles.assign(_PROBE_REACTION, _PROBE_SPECIES, attempt.mapped)
+    for smiles in _PROBE_SPECIES:
+        if species.canonical_smiles(smiles) is None:
+            return (
+                f"the labelling path could not canonicalise its own probe species ({smiles}); "
+                "this pod cannot label anything"
+            )
+        species.functional_groups(smiles)
     return ()
 
 
