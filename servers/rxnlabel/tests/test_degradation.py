@@ -19,7 +19,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
+import httpx
 import pytest
+from chemclaw_mcp_rxnlabel import app as app_module
 from chemclaw_mcp_rxnlabel import tools
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, readiness, version
 from mcp_server_kit import degradation
@@ -55,29 +57,49 @@ class _Exploding:
 @pytest.fixture
 def broken_mapper(request: pytest.FixtureRequest) -> Iterator[None]:
     """Fill `mapping`'s process-wide slot with a mapper that raises, and put it back after."""
-    saved = (mapping._MAPPER, mapping._TRIED)
+    saved = (mapping._MAPPER, mapping._TRIED, mapping._FAILURE)
     mapping._MAPPER = _Exploding(getattr(request, "param", RuntimeError("corrupt checkpoint")))
     mapping._TRIED = True
-    readiness.verify_labeller.cache_clear()
+    readiness.forget_verdict()
     try:
         yield
     finally:
-        mapping._MAPPER, mapping._TRIED = saved
-        readiness.verify_labeller.cache_clear()
+        mapping._MAPPER, mapping._TRIED, mapping._FAILURE = saved
+        readiness.forget_verdict()
 
 
 @pytest.fixture
 def broken_namer() -> Iterator[None]:
     """The same for `naming`."""
-    saved = (naming._NAMER, naming._TRIED)
+    saved = (naming._NAMER, naming._TRIED, naming._FAILURE)
     naming._NAMER = _Exploding(RuntimeError("corrupt SMIRKS table"))
     naming._TRIED = True
-    readiness.verify_labeller.cache_clear()
+    readiness.forget_verdict()
     try:
         yield
     finally:
-        naming._NAMER, naming._TRIED = saved
-        readiness.verify_labeller.cache_clear()
+        naming._NAMER, naming._TRIED, naming._FAILURE = saved
+        readiness.forget_verdict()
+
+
+async def _healthz() -> httpx.Response:
+    """GET `/healthz` on the real app over ASGI, without running its lifespan.
+
+    These tests called `readiness.verify_labeller()` directly, which is not what a kubelet
+    calls: it misses the status code, the redaction, the memo and the single-flight lock that
+    `connector_app` wraps the probe in. The readiness memo's TTL is zeroed by the fixture below, for
+    the reason `test_readiness.py` gives.
+    """
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_module.app), base_url="http://rxnlabel.test"
+    ) as client:
+        return await client.get("/healthz")
+
+
+@pytest.fixture(autouse=True)
+def no_readiness_memo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`connector_app` believes a failure for five seconds; these tests must not inherit one."""
+    monkeypatch.setattr("mcp_server_kit.app.READINESS_FAILURE_TTL_SECONDS", 0.0)
 
 
 def test_a_namer_that_raises_is_not_a_reaction_that_matched_nothing(broken_namer: None) -> None:
@@ -124,29 +146,38 @@ def test_a_refusal_by_the_egress_guard_is_counted_as_one(broken_namer: None) -> 
     assert _count(naming.COMPONENT, degradation.CAUSE_EGRESS_REFUSED) == before + 1.0
 
 
-def test_a_component_that_raises_on_the_probe_takes_the_pod_out_of_rotation(
+async def test_a_component_that_raises_on_the_probe_takes_the_pod_out_of_rotation(
     broken_namer: None,
 ) -> None:
     """Construction was the only thing checked, and it is the smaller half.
 
     A namer that imports and raises is a broken image; before this the probe passed it, because
-    `naming.available()` answers the import rather than the inference.
+    `naming.available()` answers the import rather than the inference. Driven through the served
+    route, so the 503 and its redacted body are what is asserted rather than the raise.
     """
     assert naming.available(), "the premise: a broken namer still reports as present"
-    with pytest.raises(RuntimeError) as unready:
-        readiness.verify_labeller()
-    assert "reaction namer" in str(unready.value)
+    response = await _healthz()
+    assert response.status_code == 503
+    assert "reaction namer" in response.json()["reason"]
 
 
 @pytest.mark.parametrize("broken_mapper", [MemoryError("CUDA out of memory")], indirect=True)
-def test_a_pod_that_ran_out_of_memory_is_counted_and_left_alone(broken_mapper: None) -> None:
-    """The restart-storm case: readiness and liveness share `/healthz` in every Deployment here.
+async def test_a_pod_that_ran_out_of_memory_is_counted_and_left_alone(broken_mapper: None) -> None:
+    """A memory spike is a property of the moment: counted, reported, and no traffic shed.
 
-    A memory spike is a property of the moment, so it is counted and reported in the answer and is
-    *not* a reason to take the pod out — which would restart it back into the same pressure.
+    The reason used to be that readiness and liveness shared `/healthz`, so shedding traffic
+    meant a restart back into the same pressure. They no longer do
+    (`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe`), and the rule survives
+    on the narrower argument: this probe runs a transformer forward pass, heavier than most of the
+    traffic it gates, so a failure here is evidence about the probe rather than about the calls.
+
+    Driven through `/healthz` rather than through the probe function, which is what makes the 200 an
+    assertion about what a kubelet is told.
     """
     before = _count(mapping.COMPONENT, degradation.CAUSE_RESOURCE_EXHAUSTED)
 
     assert mapping.map_reaction(_REACTION).failure == degradation.CAUSE_RESOURCE_EXHAUSTED
     assert _count(mapping.COMPONENT, degradation.CAUSE_RESOURCE_EXHAUSTED) == before + 1.0
-    assert readiness.verify_labeller() == (), "a transient fault must not restart the pod"
+    response = await _healthz()
+    assert response.status_code == 200, "a transient fault must not take the pod out of rotation"
+    assert response.json()["datasets"] == []

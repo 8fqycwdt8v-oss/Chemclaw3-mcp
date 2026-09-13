@@ -40,10 +40,18 @@ SERVER = "rxnlabel"
 
 # What this module is, as a metric label and in an answer — see `mapping.COMPONENT`.
 COMPONENT = "reaction_namer"
+degradation.register_components(COMPONENT)
 
 _LOCK = threading.Lock()
 _NAMER: Any | None = None
 _TRIED = False
+# The cause the last construction attempt failed with, read by `readiness._probe`. **Symmetric with
+# `mapping` deliberately**: this module caught only `ImportError` around the import, so a
+# distribution that is present and whose import raises anything else — a broken shared library, say
+# — propagated out of `available()` into whatever happened to call it, counted nowhere, while the
+# same failure one module over was classified and counted. Two components behind one probe cannot
+# report differently about the same kind of fault.
+_FAILURE: str | None = None
 
 # What Rxn-INSIGHT answers when no SMIRKS matched. Mapped to `None` rather than stored, because a
 # frequency table with "OtherReaction" at the top is a table whose largest row means "we do not
@@ -70,6 +78,11 @@ class Naming:
 def available() -> bool:
     """Whether a namer could be constructed in this process."""
     return _namer() is not None
+
+
+def construction_failure() -> str | None:
+    """The `degradation` cause the last construction attempt failed with, or `None`."""
+    return _FAILURE
 
 
 def name(reaction_smiles: str) -> Naming:
@@ -135,7 +148,7 @@ def _namer() -> Any | None:
     stable is that a `Reaction` exposes a dictionary of what it worked out. Pinning that one call
     here keeps the version drift in one function instead of in every caller.
     """
-    global _NAMER, _TRIED
+    global _NAMER, _TRIED, _FAILURE
     with _LOCK:
         if _TRIED:
             return _NAMER
@@ -147,6 +160,16 @@ def _namer() -> Any | None:
                 "rxn-insight is not installed; reactions will be labelled without a name, and "
                 "`labeller_version` records that so the rows re-label when it arrives"
             )
+            return None
+        except Exception as exc:
+            # Not reachable by an absent extra — that is the branch above — but by a distribution
+            # that *is* installed and whose import raises: a broken shared library, a version of a
+            # dependency it cannot use. `readiness` treats installed-and-unbuilt as a pod to
+            # take out of rotation, and it can only do that if this is recorded rather than
+            # propagated out of `available()` into whichever caller happened to ask first.
+            _FAILURE = degradation.classify(exc)
+            degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
+            logger.exception("rxn-insight is installed but could not be imported (%s)", _FAILURE)
             return None
 
         def call(reaction_smiles: str) -> dict[str, Any]:
