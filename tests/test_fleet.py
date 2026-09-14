@@ -603,6 +603,40 @@ def test_the_revision_reaches_the_handshake_and_the_probe() -> None:
 _PIP_SPECIFIER = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)(==|>=|<=|~=|>|<)([0-9][^"]*)"')
 
 
+def containerfile_instructions(text: str) -> list[str]:
+    """A Containerfile's instructions as logical lines — comments removed, continuations joined.
+
+    **A substring match against the whole file is satisfied by a comment**, and that is not a
+    hypothetical: driven against `f3f3c9c`, `servers/safety/Containerfile`'s real
+    `uv export --frozen ... && pip wheel --require-hashes ...` was replaced by an unpinned
+    `pip wheel chemclaw-mcp-safety` with the deleted phrases moved into a `#` line above it, and
+    the whole root suite stayed green at **207 passed**. The biggest claim of
+    `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` was revertible without
+    reddening anything, because the ratchet holding it read `Path.read_text()` as one string.
+
+    So a caller here reads what the builder reads. A line whose first non-blank character is `#`
+    is a comment and is dropped — including inside a continuation, which is what the builder does
+    — a trailing `\\` joins the next line, and runs of whitespace collapse so an assertion can
+    name a phrase without also pinning its indentation.
+    """
+    instructions: list[str] = []
+    current = ""
+    for raw in text.splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        line = raw.rstrip()
+        if line.endswith("\\"):
+            current += line[:-1] + " "
+            continue
+        current += line
+        if current.strip():
+            instructions.append(" ".join(current.split()))
+        current = ""
+    if current.strip():
+        instructions.append(" ".join(current.split()))
+    return instructions
+
+
 def _locked_versions() -> dict[str, str]:
     """Every distribution `uv.lock` resolves, name to version — the set `make deps-audit` reads."""
     import tomllib
@@ -632,7 +666,7 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
     an image is pinned, and pinned to the lock, so `uv lock` moving it is what proposes the bump in
     a pull request.
     """
-    text = (server / "Containerfile").read_text(encoding="utf-8")
+    text = "\n".join(containerfile_instructions((server / "Containerfile").read_text("utf-8")))
     locked = _locked_versions()
     for name, operator, version in _PIP_SPECIFIER.findall(text):
         if name.lower().replace("_", "-") not in locked:
@@ -679,30 +713,96 @@ def test_every_image_installs_the_closure_the_audit_read(server: Path) -> None:
 
     This asserts what the Containerfile *declares*. What it does is a build, which is a measurement
     in the record above rather than something this suite can run.
+
+    **What it reads is `containerfile_instructions`, not the file's text**, and the difference is
+    the whole control: this test shipped matching four literals against `read_text()`, which a
+    comment satisfies. Driven at `f3f3c9c`, every phrase below survived in a `#` line above an
+    unpinned `pip wheel chemclaw-mcp-safety` and the root suite stayed green. The export and the
+    `--require-hashes` install are now required in the **same `RUN`** as well, because two literals
+    in two unrelated instructions are not a pipeline — `RUN echo --require-hashes` would otherwise
+    do.
     """
     text = (server / "Containerfile").read_text(encoding="utf-8")
+    instructions = containerfile_instructions(text)
     dist = re.search(
         r'^name\s*=\s*"([^"]+)"', (server / "pyproject.toml").read_text(encoding="utf-8"), re.M
     )
     assert dist, f"{server.name}/pyproject.toml declares no distribution name"
 
-    assert "COPY pyproject.toml uv.lock /build/" in text, (
+    assert any(i == "COPY pyproject.toml uv.lock /build/" for i in instructions), (
         f"{server.name}/Containerfile does not copy uv.lock into its build context, so whatever it "
         "installs was resolved at build time and `make deps-audit` audited a different closure"
     )
-    export = re.search(r"uv export --frozen --package ([\w.-]+)", text)
-    assert export, (
-        f"{server.name}/Containerfile has no `uv export --frozen --package ...` step; the third-"
+    exporting = [
+        i for i in instructions if i.startswith("RUN ") and "uv export --frozen --package" in i
+    ]
+    assert exporting, (
+        f"{server.name}/Containerfile runs no `uv export --frozen --package ...`; the third-"
         "party closure is therefore whatever pip resolves on the day of the build"
     )
+    assert len(exporting) == 1, (
+        f"{server.name}/Containerfile exports the locked closure in {len(exporting)} separate RUN "
+        "instructions; this check reads one, so which one ships would be a coin toss"
+    )
+    block = exporting[0]
+    export = re.search(r"uv export --frozen --package ([\w.-]+)", block)
+    assert export is not None  # the substring above is what selected this instruction
     assert export.group(1) == dist.group(1), (
         f"{server.name}/Containerfile exports the closure of {export.group(1)!r} while its own "
         f"distribution is {dist.group(1)!r}: it would install another server's dependencies"
     )
-    assert "--require-hashes -r /build/requirements.txt" in text, (
+    assert "--require-hashes -r /build/requirements.txt" in block, (
         f"{server.name}/Containerfile does not install the exported closure with "
-        "`--require-hashes`, so a rewritten artefact under an unchanged version installs quietly"
+        "`--require-hashes` in the same RUN that exports it, so a rewritten artefact under an "
+        "unchanged version installs quietly"
     )
+
+
+def test_the_image_install_check_reads_instructions_and_not_the_text() -> None:
+    """The bite test for the check above: a comment saying it must not satisfy it.
+
+    Without this, `containerfile_instructions` could be quietly weakened back into
+    `read_text().splitlines()` — the form measured green with `servers/safety/Containerfile`'s real
+    lock-based install deleted — and every assertion above would go on passing, because the
+    shipped Containerfiles carry each phrase in prose *and* in the `RUN`. So this drives the
+    failing direction on a synthetic file rather than the passing one on seven real ones.
+
+    Three shapes, each a way the old check was satisfiable without the control:
+
+    - every phrase present, but only in comments;
+    - the export in one `RUN` and `--require-hashes` in another, which is two literals rather than
+      a pipeline;
+    - a `COPY` of the lock named only in prose.
+    """
+    comments_only = """FROM python:3.11-slim
+# COPY pyproject.toml uv.lock /build/
+# RUN uv export --frozen --package chemclaw-mcp-props \\
+#       && pip wheel --require-hashes -r /build/requirements.txt
+COPY pyproject.toml /build/
+RUN python -m pip wheel --wheel-dir /wheels chemclaw-mcp-props
+"""
+    assert containerfile_instructions(comments_only) == [
+        "FROM python:3.11-slim",
+        "COPY pyproject.toml /build/",
+        "RUN python -m pip wheel --wheel-dir /wheels chemclaw-mcp-props",
+    ], "a comment reached the instruction list, which is exactly how the old check was satisfied"
+
+    split_across_runs = """COPY pyproject.toml uv.lock /build/
+RUN uv export --frozen --package chemclaw-mcp-props --format requirements-txt \\
+      -o /build/requirements.txt
+RUN python -m pip wheel --require-hashes -r /build/requirements.txt
+"""
+    instructions = containerfile_instructions(split_across_runs)
+    exporting = [
+        i for i in instructions if i.startswith("RUN ") and "uv export --frozen --package" in i
+    ]
+    assert len(exporting) == 1
+    assert "--require-hashes -r /build/requirements.txt" not in exporting[0], (
+        "the two halves landed in one instruction, so the same-RUN assertion above proves nothing"
+    )
+
+    joined = containerfile_instructions("RUN a \\\n    && b \\\n    && c\n")
+    assert joined == ["RUN a && b && c"], "a continuation was not joined into one instruction"
 
 
 def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:
