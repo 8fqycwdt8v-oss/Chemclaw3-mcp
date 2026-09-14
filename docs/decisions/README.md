@@ -64,7 +64,9 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument](D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument.md) | A suppression with no expiry outlives its argument |
 | [D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing](D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing.md) | An audit of a lockfile no image reads audits nothing |
 | [D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for](D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for.md) | The rule that would have caught it was not the one asked for |
+| [D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one](D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one.md) | A child process is outside the guard, and `uv build` is one |
 | [D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance](D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance.md) | A citation a squash merge retires is not provenance |
+| [D-2026-09-14-a-citation-with-no-path-check-sends-the-reader-to-the-wrong-file](D-2026-09-14-a-citation-with-no-path-check-sends-the-reader-to-the-wrong-file.md) | A citation with no path check sends the reader to the wrong file |
 | [D-2026-09-14-a-degraded-answer-is-counted-once](D-2026-09-14-a-degraded-answer-is-counted-once.md) | A degraded answer is counted once |
 | [D-2026-09-14-a-depth-nobody-asserts-is-a-default-waiting-to-return](D-2026-09-14-a-depth-nobody-asserts-is-a-default-waiting-to-return.md) | A depth nobody asserts is a default waiting to return |
 | [D-2026-09-14-a-layer-nobody-reads-fleet-wide-is-a-convention](D-2026-09-14-a-layer-nobody-reads-fleet-wide-is-a-convention.md) | A layer nobody reads fleet-wide is a convention |
@@ -73,10 +75,13 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-14-a-ratchet-holds-the-set-it-enumerates](D-2026-09-14-a-ratchet-holds-the-set-it-enumerates.md) | A ratchet holds the set it enumerates |
 | [D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing](D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing.md) | A ratchet that matches a comment holds nothing |
 | [D-2026-09-14-a-row-that-cannot-occur-proves-the-other-branch](D-2026-09-14-a-row-that-cannot-occur-proves-the-other-branch.md) | A row that cannot occur proves the other branch |
+| [D-2026-09-14-a-spelling-list-is-not-a-derivation](D-2026-09-14-a-spelling-list-is-not-a-derivation.md) | A spelling list is not a derivation |
+| [D-2026-09-14-a-total-beside-a-mutation-needs-the-invocation-that-produced-it](D-2026-09-14-a-total-beside-a-mutation-needs-the-invocation-that-produced-it.md) | A total beside a mutation needs the invocation that produced it |
 | [D-2026-09-14-eight-assertions-of-one-clause-is-a-choice-not-an-accident](D-2026-09-14-eight-assertions-of-one-clause-is-a-choice-not-an-accident.md) | Eight assertions of one clause is a choice, not an accident |
 | [D-2026-09-14-how-many-stayed-green-is-a-claim-about-a-commit](D-2026-09-14-how-many-stayed-green-is-a-claim-about-a-commit.md) | "How many stayed green" is a claim about a commit |
 | [D-2026-09-14-one-question-gets-one-expression](D-2026-09-14-one-question-gets-one-expression.md) | One question gets one expression |
 | [D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in](D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in.md) | The gate that catches a change is the gate of the tree it is made in |
+| [D-2026-09-14-the-table-was-right-and-the-sentence-above-it-was-not](D-2026-09-14-the-table-was-right-and-the-sentence-above-it-was-not.md) | The table was right and the sentence above it was not |
 | [D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing](D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing.md) | `13 ignored` is duplication, not aliasing |
 | [D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts](D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md) | What this fleet enforces, bounds, measures and accepts |
 

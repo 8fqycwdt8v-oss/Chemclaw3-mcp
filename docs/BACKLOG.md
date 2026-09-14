@@ -88,6 +88,21 @@ decision leaves a record behind and the row goes.
   `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
   `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
+- [ ] **The build backend every wheel is built with is outside `uv.lock`, and therefore outside
+  `make deps-audit`.** `uv build` resolves `build-system.requires` per build, not from the locked
+  closure — `grep -n 'name = "hatchling"' uv.lock` answers nothing — so the supply-chain control
+  `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` built cannot see it.
+  `tests/test_fleet.py::test_every_server_builds_a_wheel_that_carries_its_data` now passes
+  `--offline`, which stops that build reaching an index
+  (`D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one`), and that is a no-egress
+  fix rather than an audit one: what it now builds with is whatever version the cache happens to
+  hold. The exposure is bounded — those wheels are never shipped, since an image installs the
+  exported closure with `--require-hashes` — so the open question is whether a build dependency is
+  worth pinning at all here, and if so whether the honest place is a `[tool.uv] constraint`
+  the export can carry rather than a second lock nothing reads.
+  **Anchors:** `uv.lock`, `pyproject.toml`, `tests/test_fleet.py::test_every_server_builds_a_wheel_that_carries_its_data`,
+  `Makefile`.
+
 ## 2 — The resource-bound ratchet, where it stops
 
 - [ ] **Neither ratchet can see a pod `env:` a cluster operator adds outside these files.** Both
