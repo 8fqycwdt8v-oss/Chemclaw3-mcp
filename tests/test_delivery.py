@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -210,7 +211,16 @@ _SUITE_COMMANDS = (
 )
 
 
-def _ci_jobs() -> dict[str, dict[str, object]]:
+def _ci_jobs() -> dict[str, dict[str, Any]]:
+    """Every job in the CI workflow, by name.
+
+    `Any` rather than `object` for the value: a job is a free-form YAML mapping, and the callers
+    below index into `steps` and `with`. Under `object` every one of those reads is an error, which
+    is how this function's callers came to carry `# type: ignore[union-attr]` comments naming a code
+    mypy does not emit here — it reports `attr-defined`, so the suppressions covered nothing and
+    added two `unused-ignore` errors of their own. `make type` reads `$(SRC)` and not the test tree,
+    so none of that was visible from the gate.
+    """
     workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict) and jobs, f"{CI_WORKFLOW.name} declares no jobs"
@@ -250,16 +260,14 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
         for name, job in _ci_jobs().items()
         if any(
             command in str(step.get("run", ""))
-            for step in job.get("steps", [])  # type: ignore[union-attr]
+            for step in job.get("steps", [])
             for command in _SUITE_COMMANDS
         )
     }
     assert running, f"no job in {CI_WORKFLOW.name} runs the suite — this test would assert nothing"
     for name, job in running.items():
         checkouts = [
-            step
-            for step in job.get("steps", [])  # type: ignore[union-attr]
-            if "actions/checkout" in str(step.get("uses", ""))
+            step for step in job.get("steps", []) if "actions/checkout" in str(step.get("uses", ""))
         ]
         assert checkouts, (
             f"job {name!r} runs the suite with no `actions/checkout` step; the commit-reachability "
