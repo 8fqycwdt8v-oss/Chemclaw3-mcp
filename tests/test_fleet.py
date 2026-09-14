@@ -2139,6 +2139,26 @@ def test_the_assert_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
     assert offences == [f"{(tmp_path / 'flagged.py').as_posix()}:2"], offences
 
 
+def _calls_from_collected_tests(module: Path) -> set[str]:
+    """Every function name called from inside a `test_*` body in one module.
+
+    **Scoped to collected tests, which is narrower than "somewhere in the file"** and is the
+    difference between a shape assertion and a decorative one. Walking every `ast.Call` in the
+    module was satisfied by a call in an uncollected helper, in a test unconditionally skipped, or
+    in dead code left behind by a refactor — three shapes that all read as a proof in review and
+    run never. `test_*` is the set pytest's own default `python_functions` collects.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    return {
+        _called_name(call)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.startswith("test_")
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+    }
+
+
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_every_server_proves_its_bearer_check_against_a_running_server(server: Path) -> None:
     """`assert_bearer_is_enforced` is called from every server's own `test_server.py`.
@@ -2152,27 +2172,66 @@ def test_every_server_proves_its_bearer_check_against_a_running_server(server: P
     *does* can only be seen by a request, which is what the call this looks for makes. Without it a
     server added next year ships with the fleet's tidiest-looking auth story and nothing driving
     it, which is how `servers/safety/src` once sat outside `make type` for a release.
-
-    **The call has to be inside a test pytest collects**, which is narrower than "somewhere in the
-    file" and is the difference between a shape assertion and a decorative one. Walking every
-    `ast.Call` in the module was satisfied by a call in an uncollected helper, in a test
-    unconditionally skipped, or in dead code left behind by a refactor — three shapes that all read
-    as a proof in review and run never. So the search is scoped to the bodies of `test_*`
-    functions, which is the set pytest's own default `python_functions` collects.
     """
     tests = server / "tests" / "test_server.py"
     assert tests.is_file(), f"{server.name} has no tests/test_server.py"
-    tree = ast.parse(tests.read_text(encoding="utf-8"), filename=str(tests))
-    called = {
-        _called_name(call)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-        and node.name.startswith("test_")
-        for call in ast.walk(node)
-        if isinstance(call, ast.Call)
-    }
-    assert "assert_bearer_is_enforced" in called, (
+    assert "assert_bearer_is_enforced" in _calls_from_collected_tests(tests), (
         f"{tests.relative_to(ROOT)} never calls assert_bearer_is_enforced from a collected test, "
         "so nothing drives this server's bearer check against a running listener. The helper is "
         "in `mcp_server_kit.testing`; see any other server's test_server.py."
+    )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_server_proves_its_manifest_against_a_running_server(server: Path) -> None:
+    """`assert_manifest_matches` is called from every server's own `test_server.py`, too.
+
+    Every server calls it today and nothing said so. That is the standing the bearer check had
+    before the test above: a convention every existing server follows, which an eighth server
+    inherits only by whoever writes it noticing. The consequences are not symmetric but they are
+    all quiet — an undeclared tool is reachable by anything that can open a socket to the pod while
+    looking, in review, like it does not exist; a declared tool nobody serves is a capability
+    Chemclaw3 advertises and fails at call time; and an unclassified one fails **open** at the plan
+    gate, because `read_only`/`state_changing` is what decides whether an unapproved plan may call
+    it.
+
+    Same shape and the same limit as the bearer assertion: this says the check is driven, not what
+    it found. What it found is `assert_manifest_matches`' own four assertions, against the `Tool`
+    objects a real `tools/list` returned.
+    """
+    tests = server / "tests" / "test_server.py"
+    assert tests.is_file(), f"{server.name} has no tests/test_server.py"
+    assert "assert_manifest_matches" in _calls_from_collected_tests(tests), (
+        f"{tests.relative_to(ROOT)} never calls assert_manifest_matches from a collected test, so "
+        "nothing compares this server's manifest with what it serves. An undeclared tool is served "
+        "while looking deleted, and an unclassified one fails open at Chemclaw3's plan gate."
+    )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> None:
+    """`/healthz` is readiness, so every server must give `connector_app` something to consult.
+
+    Without the keyword the route is a constant 200: the pod takes traffic with a corpus that
+    failed its checksum, a rule table that would not parse, or a backend it cannot reach, and fails
+    every call instead of being kept out of its Service. That is the defect
+    `D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check` recorded
+    for the probes that existed; a server with no probe at all is the same failure one step earlier.
+
+    **What this does not say is that the check is any good** — three of seven were measured passing
+    a component that builds and then fails on every call, and that is a property of each callable
+    rather than of its presence. The record that cites this test says so.
+    """
+    app = next((server / "src").glob("*/app.py"), None)
+    assert app is not None, f"{server.name} has no src/<package>/app.py"
+    tree = ast.parse(app.read_text(encoding="utf-8"), filename=str(app))
+    passed = {
+        keyword.arg
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _called_name(node) == "connector_app"
+        for keyword in node.keywords
+    }
+    assert "readiness" in passed, (
+        f"{app.relative_to(ROOT)} calls connector_app without `readiness=`, so /healthz is a "
+        "constant 200 and this pod takes traffic whatever state it is in."
     )

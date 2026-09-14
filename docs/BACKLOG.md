@@ -201,6 +201,21 @@ decision leaves a record behind and the row goes.
   `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
   `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
 
+- [ ] **Nothing derives which servers need an admission ceiling, so an eighth server without one
+  passes every test here.** Five of seven have one — `calc`, `chem`, `pyexec`, `rxnlabel`,
+  `rxnpredict`; `props` and `safety` do not, and that is a judgement rather than a derivation (a
+  dict lookup and a bisection; an RDKit screen under a component bound). It cannot be derived from
+  the manifest: `D-2026-09-12-one-tool-call-is-not-one-thread` measured that the
+  `read_only`/`state_changing` split does not carry, because `render_structure` is `read_only`,
+  correctly, and is the one `chem` tool that needs a ceiling. So the five that have one are held by
+  their own `test_admission` modules and the absence of a sixth is held by nobody. Decide the
+  smallest thing that works: a per-server declaration that a ceiling is present **or** argued
+  absent — which is checkable in both directions the way the blind-handler allowlist is — or accept
+  it as a review rule and say so where `docs/adding-a-server.md` asks for the bound.
+  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`,
+  `tests/test_fleet.py::test_every_server_hands_connector_app_a_readiness_check`,
+  `docs/adding-a-server.md`.
+
 ## 3 — Readiness, where it still stops
 
 - [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference
