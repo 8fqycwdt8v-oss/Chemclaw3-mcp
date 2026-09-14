@@ -67,27 +67,39 @@ would agree with itself.
   widening comes with `test_a_deployment_directory_holds_only_shapes_the_ratchets_can_read`:
   `_env_settings` dispatches on a `.yaml` suffix, so a `deployment.yml` would be parsed as a
   Containerfile, find no `ENV`, and be reported **clean** — which is worse than not reading it,
-  because it then looks covered.
+  because it then looks covered. This supersedes the file list in §4.8 of
+  `D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts`, which names the two globs;
+  that section's *subject* — an environment a cluster operator sets outside this tree — is
+  untouched and stays accepted.
 - **`inert_outcome` reads pytest's own counts.** At least one `passed`, and no `skipped`, `xfailed`,
   `xpassed` or `deselected` beside it. The rule is positive on purpose: a returncode of 0 is what
   pytest reports for a pass, a skip, an xfail, an xpass and an empty selection alike, so any rule
   phrased as "0 and the word X is absent" accepts three of those five.
 
-### A correction to a merged record
+### A fifth finding that did not reproduce, recorded because the near-miss is the lesson
 
-`D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts` §4.7 says
-`mypy --strict servers/*/tests` aborts with `Duplicate module named "test_no_egress"`. It aborts on
-`test_admission`:
+The review reported §4.7 of
+`D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts` as naming the wrong module: it
+says `mypy --strict` over the test roots aborts on `Duplicate module named "test_no_egress"`, and
+the review measured `test_admission`. Driven here, both are right about different commands:
 
 ```
-$ mypy --strict servers/*/tests
+$ mypy --strict servers/*/tests                              # the review's command
 servers/chem/tests/test_admission.py: error: Duplicate module named "test_admission"
   (also at "servers/calc/tests/test_admission.py")
-Found 1 error in 1 file (errors prevented further checking)
+
+$ mypy --strict tests packages/*/tests servers/*/tests       # the command §4.7 names
+servers/calc/tests/test_no_egress.py: error: Duplicate module named "test_no_egress"
+  (also at "packages/mcp_server_kit/tests/test_no_egress.py")
 ```
 
-Same cause, wrong module named — and because mypy stops at the first, the named one is whichever
-sorts first, which is a fact about the directory listing rather than about the duplication.
+§4.7 says "over the **test roots**", and `docs/BACKLOG.md` §4 spells that command out in full — the
+three-root form, which is the one a reader would run. **The record is correct and nothing is
+corrected here.** mypy stops at the first duplicate it resolves, so which module it names is a
+function of the roots it was handed; a single-root subset of the command names a different one. The
+first draft of this record "fixed" §4.7 against the narrower command and was itself wrong, which is
+this file's own subject arriving one level up: a measurement quoted without the invocation that
+produced it is not yet a measurement.
 
 ## What keeps it true
 

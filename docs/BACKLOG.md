@@ -91,10 +91,15 @@ decision leaves a record behind and the row goes.
 ## 2 — The resource-bound ratchet, where it stops
 
 - [ ] **Neither ratchet can see a pod `env:` a cluster operator adds outside these files.** Both
-  read the tree: `servers/*/deploy/*.yaml` and `servers/*/Containerfile`. A bound moved by a kustomize
-  overlay, a Helm value in a deploying repository, or an operator's `kubectl set env` is invisible
-  here and always will be — the shipped files are what this suite can read. What is not yet decided
-  is whether the serving side should *say* what it is running: an admission ceiling and an atom
+  read the tree, through `tests/test_fleet.py::shipped_deployment_files` — every file under
+  `servers/*/deploy/` and every `servers/*/Containerfile*`. (That sentence used to name two globs,
+  `servers/*/deploy/*.yaml` and `servers/*/Containerfile`, and it was describing a second hole
+  rather than this one: a `deploy/tuning.yml` or an overlay directory was invisible to both
+  ratchets. `D-2026-09-14-a-ratchet-holds-the-set-it-enumerates` closed that; what stays open is
+  the row's actual subject.) A bound moved by a kustomize overlay applied outside this tree, a Helm
+  value in a deploying repository, or an operator's `kubectl set env` is invisible here and always
+  will be — the shipped files are what this suite can read. What is not yet decided is whether the
+  serving side should *say* what it is running: an admission ceiling and an atom
   bound reported on `/healthz` beside the corpus versions would make the live value observable from
   a probe rather than inferred from an image. That is a readiness-payload change, not a ratchet
   change. (An `envFrom` block, a `valueFrom:` reference and a `command:` assignment are all refused
