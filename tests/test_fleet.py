@@ -94,6 +94,18 @@ def test_a_server_ships_the_whole_set(server: Path) -> None:
         "deploy/pdb.yaml",
         "tests/test_no_egress.py",
         "tests/test_server.py",
+        # The per-server half of layer 4. The fleet-wide half —
+        # `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload` —
+        # is what actually closes the hole this line was missing from: until it existed, a server
+        # could ship a NetworkPolicy permitting all outbound traffic and no `test_deploy.py`, and
+        # the whole suite stayed green. This entry is the *other* half and is not redundant with
+        # it: a server's own file is where its port, its ingress peers and the Service-to-
+        # ServiceMonitor port *name* are held, and those are numbers and strings belonging to one
+        # server that no fleet-wide reader can derive. Listed here for the same reason
+        # `deploy/deployment.yaml` and `deploy/hpa.yaml` are: the failure is a *new* server copying
+        # a directory that predates the file, whose own tests then cannot notice what it does not
+        # have.
+        "tests/test_deploy.py",
     ):
         assert (server / required).exists(), f"{server.name} is missing {required}"
 
