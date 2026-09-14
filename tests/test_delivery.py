@@ -11,6 +11,11 @@ asserting something absent. This repository adds servers regularly (seven now, f
 in `MODULES.md`), so a list written into a pipeline is a list that is wrong by the next merge, and
 wrong in the direction that fails open: a server nobody builds is a server nobody deploys, silently.
 
+**It is not only `Jenkinsfile` any more.** Since the `fetch-depth` assertion this file also reads
+every workflow under `.github/workflows/` — the jobs, not the file — for the same reason: that tree
+is checked by no compiler and no linter here either, and a suite job on a shallow checkout turns
+`test_every_commit_the_registers_cite_is_reachable_from_head` into a control that does not run.
+
 Deliberately not checked: whether any of it works against a registry. Nothing here can know that.
 """
 
