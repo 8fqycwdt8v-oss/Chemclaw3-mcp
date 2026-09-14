@@ -230,14 +230,23 @@ independent layers because a rule that lives in one place rots:
    test_every_call_site_derives_its_cause_rather_than_writing_one`, as a count, because a collected
    list that must come back empty is satisfied by the calls being gone.
    **This sentence used to say "every path in this fleet that catches an exception and answers
-   anyway", and that is a different and false claim**: two serving paths catch and answer with
-   something other than a missing contribution, and both are deliberate and documented where they
-   are. `rxnpredict/engine/cache.py` falls back to the *uncanonicalised* SMILES as a cache key when
-   RDKit refuses an input — the prediction is whole, the slot is merely a different one, "a cache
-   must never be the thing that fails a prediction" — and `rxnlabel/engine/mapping.py`'s
-   `inference_threads` charges the admission ceiling `1` when torch cannot be asked its width, which
-   under-charges rather than degrades. Neither is a component this fleet answered without, so
-   counting either on `chemclaw_mcp_degraded_total` would publish a series about nothing missing.
+   anyway", and that is a different and false claim**: a serving path can catch and answer with
+   something other than a missing contribution. `rxnlabel/engine/mapping.py`'s `inference_threads`
+   charges the admission ceiling `1` when torch cannot be asked its width, which under-charges
+   rather than degrades; nothing this fleet answered without is missing, so counting it on
+   `chemclaw_mcp_degraded_total` would publish a series about nothing.
+   **The second example this paragraph gave has been deleted and the paragraph outlived it**:
+   `rxnpredict/engine/cache.py` was said to fall back to the *uncanonicalised* SMILES as a cache
+   key, and `D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key` removed
+   exactly that fallback — `_canonical_or_none` returns `None` and the entry is not cached, the
+   `ValueError` arm is deliberately silent because a caller's typo is not this pod degrading, and
+   the blind arm classifies. A prose example naming a deleted branch reads as a live exemption
+   (`D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing`, on the same wave's other
+   sentences).
+   **What holds the claim rather than asserting it** is
+   `tests/test_fleet.py::test_every_blind_handler_that_answers_anyway_is_argued`, which is where an
+   exemption now has to be written for a reader to believe there is one
+   (`D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as`).
    `chemclaw_mcp_egress_guard_armed` is what makes a deployment that shipped `MCP_EGRESS_GUARD=off`
    visible from a scrape rather than from a docstring. This is the layer that catches what a
    static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
