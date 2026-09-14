@@ -306,8 +306,18 @@ def test_the_egress_policy_denies_and_selects_the_workload(server: Path) -> None
       because only the list says "deny all" where a reader can see it.
     - a `podSelector` that matches no pod this fleet runs. A policy is bound to workloads by label,
       so a one-character drift between the Deployment's pod label and the selector exempts the
-      workload entirely — deny-all against nothing. `props` holds that pair in its own file; here it
-      is held for every server, because a *new* server is exactly the one whose own tests would not.
+      workload entirely — deny-all against nothing.
+
+    **All three clauses are also asserted by every `servers/*/tests/test_deploy.py`, and the
+    redundancy is deliberate.** `grep -L` over the seven at `24b50ec` returns nothing: each already
+    carried `test_the_pod_label_matches_the_networkpolicy_selector`, `calc`'s calling it "the
+    highest-value check here", and driven, `calc`'s own file reds on the drift. So this test is not
+    supplying a clause the others lacked — **it is the one that binds a server that has no file
+    yet**, which is what `server_dirs()` buys and a copied-and-trimmed per-server file cannot. It
+    is therefore the gate for a new server; the seven stay because each is read beside that
+    server's own ports, ingress peers and scrape wiring, which is where a reviewer looks when
+    changing them, and because a fleet-wide failure names a parametrised id while a per-server one
+    names the file to open.
 
     Deliberately not here: ports, ingress peers and the scrape wiring. Those are per-server numbers,
     and `servers/*/tests/test_deploy.py` is where a number that belongs to one server is checked.

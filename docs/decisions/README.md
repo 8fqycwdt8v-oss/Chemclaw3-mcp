@@ -72,6 +72,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-14-a-ratchet-holds-the-set-it-enumerates](D-2026-09-14-a-ratchet-holds-the-set-it-enumerates.md) | A ratchet holds the set it enumerates |
 | [D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing](D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing.md) | A ratchet that matches a comment holds nothing |
 | [D-2026-09-14-a-row-that-cannot-occur-proves-the-other-branch](D-2026-09-14-a-row-that-cannot-occur-proves-the-other-branch.md) | A row that cannot occur proves the other branch |
+| [D-2026-09-14-eight-assertions-of-one-clause-is-a-choice-not-an-accident](D-2026-09-14-eight-assertions-of-one-clause-is-a-choice-not-an-accident.md) | Eight assertions of one clause is a choice, not an accident |
 | [D-2026-09-14-one-question-gets-one-expression](D-2026-09-14-one-question-gets-one-expression.md) | One question gets one expression |
 | [D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in](D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in.md) | The gate that catches a change is the gate of the tree it is made in |
 | [D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing](D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing.md) | `13 ignored` is duplication, not aliasing |
