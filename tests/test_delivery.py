@@ -193,7 +193,21 @@ def test_every_shell_block_in_the_pipeline_parses() -> None:
 # `tests/test_decision_log.py::test_every_commit_the_registers_cite_is_reachable_from_head`, which
 # needs ancestry: `git merge-base --is-ancestor` cannot decide reachability in a shallow clone, so
 # that test *warns and returns* instead of failing. `actions/checkout` defaults to depth 1.
-_SUITE_COMMANDS = ("make cov", "make test", "make check", "make offline-run", "offline_check.py")
+#
+# **`pytest` is in this tuple because the four `make` spellings are not the reach they read as.**
+# Every recorded drive of the assertion below used a spelling already listed, so none of them probed
+# a job that invokes the runner directly — and that is not a hypothetical shape: it is the exact
+# step the deleted `manifests` job ran, `run: uv run pytest -q tests`, quoted in this workflow's own
+# comment. Driven at HEAD, re-adding that job at `actions/checkout`'s default depth left this file
+# green. The bare runner name closes the shape a `make` target cannot reach around.
+_SUITE_COMMANDS = (
+    "make cov",
+    "make test",
+    "make check",
+    "make offline-run",
+    "offline_check.py",
+    "pytest",
+)
 
 
 def _ci_jobs() -> dict[str, dict[str, object]]:
@@ -222,8 +236,10 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
     which point CI is green and `main` is red for anyone with full history. That is the defect the
     record set out to end, recurring undetected.
 
-    Derived from the jobs rather than from a list of two: a fourth job that runs the suite is bound
-    the day it is added, which is what a list of names cannot do.
+    The *jobs* are derived from the workflow, so a new one is read the day it is added; what it
+    runs is still matched against `_SUITE_COMMANDS`, which is a list of spellings and therefore a
+    reach this test cannot prove. The list carries the bare runner name for that reason — see the
+    comment on the tuple, and the drive that made it necessary.
 
     What this cannot reach: `Jenkinsfile`'s `Gate` stage runs `make check` and `make offline-run` on
     the implicit declarative checkout, whose depth is controller configuration outside this tree.
