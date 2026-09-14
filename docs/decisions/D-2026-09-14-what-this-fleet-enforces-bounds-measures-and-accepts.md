@@ -403,7 +403,7 @@ did not do what its documentation said.
 | "a suppression is argued" | `--ignore-vuln` matches by id, so a fixed dependency stops being reported and the suppression outlives its argument | package + locked version declared once, red when the lock moves |
 | "every blind handler classifies" | one did not, and `BLE001` is silent on two shapes this fleet writes — while `RUF100` makes the prescribed `# noqa` an error where ruff did not fire | a lint rule *and* a test that reads the tree, with an allowlist held in both directions |
 | "the manifests agree across the repositories" | true, and checked only in the consumer's tree: a rename done completely here left `servers/safety/tests` (261) and all other fleet tests (212) green | checked from this side too |
-| "`MODULES.md` has a port table" and "Chemclaw3's connectors are 8810–8815" | the table published two taken ports as free; `bo` had sat on 8816 since it was written | one registry, checked; the clearance recorded as a dated observation |
+| a second port table in `CLAUDE.md`, and "Chemclaw3's connectors are 8810–8815" | that table listed five servers when seven were built and advertised two ports `rxnlabel` and `pyexec` already held as free; `bo` had sat on 8816 since it was written, outside the range published as that repository's | `MODULES.md` is the one registry and `test_ports_are_unique_and_inside_this_repository_s_block` checks it against every manifest in both directions, with `test_claude_md_holds_no_second_port_registry` keeping the deleted table deleted; the clearance from the rest of the family is a dated observation rather than a boundary, because it belongs to a checkout this suite cannot read |
 
 ---
 
