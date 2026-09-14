@@ -1070,6 +1070,57 @@ def _egress_offences(label: str, text: str) -> list[str]:
     return offences
 
 
+def shipped_deployment_files() -> list[Path]:
+    """Every file a deployment of this fleet ships — the set both deployment ratchets read.
+
+    **Both used to read two globs, `*/deploy/*.yaml` plus `*/Containerfile`, which is two spellings
+    rather than the set they are named for.** Driven at `24b50ec`: a copy of
+    `servers/calc/deploy/deployment.yaml` saved as `deploy/tuning.yml`, with
+    `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` set to 64, was invisible to the entire suite — and so
+    were `deploy/overlays/*.yaml`, `Containerfile.gpu` and `*.yaml.tpl`. A clause that reads "no
+    shipped deployment" while enumerating two filename patterns is the genre this fleet keeps
+    recording: the ratchet holds the set it enumerates, not the set it is named for.
+
+    So the deploy glob is recursive and suffix-blind, and the Containerfile glob takes every
+    spelling. What keeps the *parser* honest is the test below rather than this function:
+    `_env_settings` dispatches on a `.yaml` suffix, so an unnoticed `.yml` would be read as a
+    Containerfile and found to set nothing at all — which is worse than not reading it, because it
+    would then look covered.
+    """
+    files = [path for path in SERVERS.glob("*/deploy/**/*") if path.is_file()]
+    files += [path for path in SERVERS.glob("*/Containerfile*") if path.is_file()]
+    return sorted(files)
+
+
+def test_a_deployment_directory_holds_only_shapes_the_ratchets_can_read() -> None:
+    """`deploy/` is YAML and nothing else, because the readers of it dispatch on that suffix.
+
+    The two ratchets now glob every file under `deploy/`, which closes the "a third filename is
+    invisible" hole — but reading a file is not understanding it. `_env_settings` treats anything
+    not ending `.yaml` as a Containerfile, so a `deployment.yml`, a `kustomization.yaml.tpl` or a
+    JSON patch would be scanned for `ENV` instructions, find none, and be reported clean. This is
+    the half that stops a file arriving in a shape the parser answers wrongly rather than not at
+    all.
+    """
+    unreadable = sorted(
+        str(path.relative_to(ROOT))
+        for path in SERVERS.glob("*/deploy/**/*")
+        if path.is_file() and path.suffix != ".yaml"
+    )
+    assert not unreadable, (
+        f"{unreadable} sit under a server's deploy/ and are not `.yaml`. The egress and bound "
+        "ratchets read every file there, but `_env_settings` parses anything else as a "
+        "Containerfile — it would find no `ENV` and report the file clean. Rename it, or teach "
+        "`_env_settings` the shape in the same commit."
+    )
+    mislabelled = sorted(
+        str(path.relative_to(ROOT))
+        for path in SERVERS.glob("*/Containerfile*")
+        if path.is_file() and path.suffix == ".yaml"
+    )
+    assert not mislabelled, f"{mislabelled} would be parsed as YAML by its name; rename it"
+
+
 def test_no_shipped_deployment_widens_the_egress_allowlist() -> None:
     """`MCP_EGRESS_ALLOW` is empty in every shipped deployment — asserted, not asserted *about*.
 
@@ -1090,7 +1141,7 @@ def test_no_shipped_deployment_widens_the_egress_allowlist() -> None:
     adds outside these files. The first is flagged where it appears; the second is what
     `chemclaw_mcp_egress_allowed_hosts` exists to make visible from a scrape.
     """
-    shipped = sorted(SERVERS.glob("*/deploy/*.yaml")) + sorted(SERVERS.glob("*/Containerfile"))
+    shipped = shipped_deployment_files()
     assert shipped, "no deployment manifests found; has the layout changed?"
     offences = [
         offence
@@ -1575,7 +1626,7 @@ def test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment
         f"the bound scan lost {sorted(_BOUND_ANCHORS - set(bounds))!r}; a derivation that stops "
         "finding variables agrees with an empty tree forever"
     )
-    shipped = sorted(SERVERS.glob("*/deploy/*.yaml")) + sorted(SERVERS.glob("*/Containerfile"))
+    shipped = shipped_deployment_files()
     assert shipped, "no deployment manifests found; has the layout changed?"
     offences = [
         offence
@@ -2151,14 +2202,46 @@ def test_the_assert_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
     assert offences == [f"{(tmp_path / 'flagged.py').as_posix()}:2"], offences
 
 
+# Marks that make a `test_*` body no evidence about anything: it may not run, or it may run and be
+# allowed to fail. `xfail` is here for the second reason and is the least obvious — an xfailing test
+# is *collected*, executes, and reports success for the run whatever it asserts.
+_INERT_MARKS = frozenset({"skip", "skipif", "xfail"})
+
+
+def _is_inert(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether a decorator makes this test's body no proof — a skip, a skipif or an xfail.
+
+    Matched on the mark's bare name, so `@pytest.mark.skip`, `@mark.skipif(...)` and a bare
+    `@skip` all read the same, and a parametrisation carrying `pytest.param(..., marks=...)` is
+    deliberately *not* matched: that suppresses one case of a test that still runs for the others,
+    where these three suppress the whole function.
+    """
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+        if name in _INERT_MARKS:
+            return True
+    return False
+
+
 def _calls_from_collected_tests(module: Path) -> set[str]:
-    """Every function name called from inside a `test_*` body in one module.
+    """Every function name called from inside a `test_*` body that actually proves something.
 
     **Scoped to collected tests, which is narrower than "somewhere in the file"** and is the
     difference between a shape assertion and a decorative one. Walking every `ast.Call` in the
     module was satisfied by a call in an uncollected helper, in a test unconditionally skipped, or
     in dead code left behind by a refactor — three shapes that all read as a proof in review and
     run never. `test_*` is the set pytest's own default `python_functions` collects.
+
+    **The second of those three was in the docstring and not in the code**, for as long as this
+    helper filtered on the name alone. Driven at `24b50ec`: a `@pytest.mark.skip` on the `props`
+    test carrying `assert_manifest_matches` left both fleet ratchets green — `14 passed` — with that
+    server's manifest check *and* its bearer check dead. Nothing ships a skip today, so it was
+    latent; the realistic form is a `@pytest.mark.skipif(not shutil.which("xtb"), …)` on `calc`,
+    which would be invisible in CI and is precisely the shape somebody adds in good faith.
+
+    `xfail` is refused on the same grounds and is the harder one to see: such a test *is* collected
+    and *does* execute, so no skip count reports it, and it is allowed to fail.
     """
     tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
     return {
@@ -2166,9 +2249,42 @@ def _calls_from_collected_tests(module: Path) -> set[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         and node.name.startswith("test_")
+        and not _is_inert(node)
         for call in ast.walk(node)
         if isinstance(call, ast.Call)
     }
+
+
+def test_a_suppressed_test_is_not_a_proof(tmp_path: Path) -> None:
+    """The bite test for `_calls_from_collected_tests`: a marked-out body counts for nothing.
+
+    Written on a synthetic module rather than on a real server's, because no server here ships a
+    suppressed test — which is exactly why the gap was invisible, and why asserting it against the
+    tree would assert nothing. Four shapes in one file: the collected test is the only one whose
+    call may be seen.
+    """
+    module = tmp_path / "test_sample.py"
+    module.write_text(
+        "import pytest\n"
+        "def helper() -> None:\n"
+        "    uncollected_call()\n"
+        "def test_collected() -> None:\n"
+        "    real_call()\n"
+        "@pytest.mark.skip(reason='x')\n"
+        "def test_skipped() -> None:\n"
+        "    skipped_call()\n"
+        "@pytest.mark.skipif(True, reason='x')\n"
+        "def test_conditionally_skipped() -> None:\n"
+        "    skipif_call()\n"
+        "@pytest.mark.xfail\n"
+        "def test_expected_to_fail() -> None:\n"
+        "    xfail_call()\n",
+        encoding="utf-8",
+    )
+    found = _calls_from_collected_tests(module)
+    assert "real_call" in found
+    for suppressed in ("uncollected_call", "skipped_call", "skipif_call", "xfail_call"):
+        assert suppressed not in found, f"{suppressed} was read out of a body that proves nothing"
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -2233,12 +2349,21 @@ def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> Non
     **What this does not say is that the check is any good** — three of seven were measured passing
     a component that builds and then fails on every call, and that is a property of each callable
     rather than of its presence. The record that cites this test says so.
+
+    **It used to read the keyword *names* only, which `readiness=None` satisfies** — and
+    `mcp_server_kit/app.py`'s `if readiness is None:` arm is precisely the constant-200 path this
+    exists to refuse, so the ratchet passed the thing it forbids. Driven at `24b50ec`: deleting the
+    kwarg from `servers/props` reds it, `readiness=None` did not (`7 passed`). So the *value* is
+    read too, and any `None` anywhere inside it fails — which covers the realistic spelling,
+    `readiness=_readiness if X else None`, as well as the bare literal. A ratchet that reads a
+    spelling is still reading a spelling; what changes is that the one equivalent spelling meaning
+    "no check" is no longer among the ones it accepts.
     """
     app = next((server / "src").glob("*/app.py"), None)
     assert app is not None, f"{server.name} has no src/<package>/app.py"
     tree = ast.parse(app.read_text(encoding="utf-8"), filename=str(app))
     passed = {
-        keyword.arg
+        keyword.arg: keyword.value
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and _called_name(node) == "connector_app"
         for keyword in node.keywords
@@ -2246,4 +2371,14 @@ def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> Non
     assert "readiness" in passed, (
         f"{app.relative_to(ROOT)} calls connector_app without `readiness=`, so /healthz is a "
         "constant 200 and this pod takes traffic whatever state it is in."
+    )
+    nones = [
+        child
+        for child in ast.walk(passed["readiness"])
+        if isinstance(child, ast.Constant) and child.value is None
+    ]
+    assert not nones, (
+        f"{app.relative_to(ROOT)} can pass `readiness=None` to connector_app, which is the "
+        "constant-200 branch: /healthz then answers 200 with a corpus that failed its checksum. "
+        "Pass a callable unconditionally, or make the degraded case the callable's answer."
     )

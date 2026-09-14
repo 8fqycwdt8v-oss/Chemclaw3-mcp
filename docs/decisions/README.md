@@ -69,6 +69,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-14-a-layer-nobody-reads-fleet-wide-is-a-convention](D-2026-09-14-a-layer-nobody-reads-fleet-wide-is-a-convention.md) | A layer nobody reads fleet-wide is a convention |
 | [D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as](D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as.md) | A lint rule that does not fire is not the control it was read as |
 | [D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range](D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range.md) | A range check cannot see a swap inside the range |
+| [D-2026-09-14-a-ratchet-holds-the-set-it-enumerates](D-2026-09-14-a-ratchet-holds-the-set-it-enumerates.md) | A ratchet holds the set it enumerates |
 | [D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing](D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing.md) | A ratchet that matches a comment holds nothing |
 | [D-2026-09-14-one-question-gets-one-expression](D-2026-09-14-one-question-gets-one-expression.md) | One question gets one expression |
 | [D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in](D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in.md) | The gate that catches a change is the gate of the tree it is made in |

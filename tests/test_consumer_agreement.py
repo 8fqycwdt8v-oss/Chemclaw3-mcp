@@ -49,6 +49,7 @@ What the arrangement costs, stated rather than implied. Two things:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -113,6 +114,52 @@ def consumer_python() -> tuple[Path | None, str]:
     return interpreter, ""
 
 
+# The outcomes pytest reports with a returncode of 0 and which assert nothing about this tree.
+# `xfailed`/`xpassed` are the pair the substring check could not see: such a test is collected and
+# *runs*, so no skip count mentions it, and its body is allowed to fail.
+_INERT_OUTCOMES = ("skipped", "xfailed", "xpassed", "deselected")
+_OUTCOME_COUNT = re.compile(r"(\d+) (passed|skipped|xfailed|xpassed|deselected)\b")
+
+
+def inert_outcome(output: str) -> str | None:
+    """Why a green consumer run asserted nothing about this tree, or `None` if it did assert.
+
+    Read off pytest's own counts rather than off two substrings, because a returncode of 0 is what
+    pytest reports for a pass, a skip, an xfail, an xpass and an empty selection alike — so
+    "returncode 0 and the word `skipped` is absent" accepts three of those five. The rule is the
+    positive one: at least one test passed, and nothing inert ran beside it.
+    """
+    counts: dict[str, int] = {}
+    for number, outcome in _OUTCOME_COUNT.findall(output):
+        counts[outcome] = counts.get(outcome, 0) + int(number)
+    present = [f"{counts[name]} {name}" for name in _INERT_OUTCOMES if counts.get(name)]
+    if present:
+        return "reported " + ", ".join(present)
+    if not counts.get("passed"):
+        return "ran no test that passed"
+    return None
+
+
+def test_an_inert_consumer_run_is_not_agreement() -> None:
+    """The bite test for `inert_outcome`, on pytest's real summary lines.
+
+    A table rather than a synthetic checkout: what is under test is the reading of an outcome, and
+    building a second repository to produce one would test `subprocess` instead. The `1 xfailed`
+    row is the one that mattered — it is the output the shipped substring check read as agreement.
+    """
+    assert inert_outcome("2 passed in 0.31s") is None
+    assert inert_outcome("1 passed, 1 warning in 0.4s") is None
+    for green_but_empty in (
+        "1 xfailed in 0.31s",
+        "1 xpassed in 0.31s",
+        "1 passed, 1 skipped in 0.3s",
+        "2 deselected in 0.02s",
+        "no tests ran in 0.01s",
+        "",
+    ):
+        assert inert_outcome(green_but_empty) is not None, green_but_empty
+
+
 def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None:
     """Run `Chemclaw3`'s agreement suite against *this* checkout, and fail on its failure.
 
@@ -120,6 +167,13 @@ def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None
     what is under test is this working copy and not whichever fleet checkout happens to sit beside
     it. A **skip** over there is a failure here for the same reason: the checkout was supplied, so
     a skipped run means the module could not read what it was pointed at.
+
+    **A skip was the only inert outcome this refused, and it is not the only one.** Driven against a
+    synthetic consumer module at `24b50ec`: a `pytest.skip(...)` fails here correctly and a renamed
+    module fails here correctly, but a `@pytest.mark.xfail` test whose body is `assert False`
+    **passes** — returncode 0, output `1 xfailed`, and neither of the two substrings this looked
+    for. `inert_outcome` reads pytest's own counts instead, and requires at least one `passed` with
+    no skip, xfail, xpass or deselection beside it.
 
     Nothing is written into the consumer's tree — `-p no:cacheprovider` and
     `PYTHONDONTWRITEBYTECODE` between them leave no `.pytest_cache` and no `__pycache__`.
@@ -151,10 +205,11 @@ def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None
     assert completed.returncode == 0, (
         f"Chemclaw3 no longer agrees with the surface this tree declares.\n{output[-4000:]}"
     )
-    assert " skipped" not in output and "no tests ran" not in output, (
-        "the consumer's agreement suite made no assertion against this checkout, although "
-        f"CHEMCLAW_MCP_REPO named {ROOT}. A skip there is not a pass here — it means that module "
-        f"could not read what it was pointed at.\n{output[-4000:]}"
+    inert = inert_outcome(output)
+    assert inert is None, (
+        f"the consumer's agreement suite {inert} against this checkout, although CHEMCLAW_MCP_REPO "
+        f"named {ROOT}. A run that asserted nothing is not a pass here — a returncode of 0 is what "
+        f"pytest reports for a skip, an xfail and an empty selection alike.\n{output[-4000:]}"
     )
 
 
