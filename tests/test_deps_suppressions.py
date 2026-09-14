@@ -1,11 +1,19 @@
 """A vulnerability suppression must expire when the thing it excuses changes.
 
-`make deps-audit` passes `--ignore-vuln <id>` for eight advisories, each argued at length in the
-`Makefile` against a *specific version* of a specific package. `pip-audit` matches those flags by
-id alone, so a dependency that is fixed, replaced or dropped merely stops being reported: the flag
-stays, the argument behind it is now about a version nobody ships, and nothing anywhere goes red.
-The `Makefile` said so in as many words — "Nothing here goes red when a fix ships" — for as long as
-that was the whole mechanism.
+`make deps-audit` passes `--ignore-vuln <id>` for the advisories declared in `pyproject.toml`, each
+argued at length in the `Makefile` against a *specific version* of a specific package.
+
+**This paragraph used to say `pip-audit` matches those flags "by id alone", and that is false.** It
+matches an advisory by its id **or any of its aliases** — measured 2026-09-14 against this lock:
+with every row but `GHSA-xrqw-3rrv-vx5w` passed, `PYSEC-2026-3929` is reported, and with it passed
+that finding is silenced under a name the table did not then carry. Which is why the declarations
+silence 13 reported findings rather than one each, and why `aliases` is part of the row.
+
+The consequence the table exists for is untouched by that correction, because it is about a
+different event: a dependency that is fixed, replaced or dropped merely stops being reported, so
+the flag stays, the argument behind it is now about a version nobody ships, and nothing anywhere
+goes red. The `Makefile` said so in as many words — "Nothing here goes red when a fix ships" — for
+as long as that was the whole mechanism.
 
 So the ids live in `pyproject.toml`'s `[tool.chemclaw.deps-audit]` table with the package and
 version each argument was written against, and this file is what makes that pair a control rather

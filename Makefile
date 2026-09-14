@@ -86,7 +86,10 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 # **The ids themselves are in `pyproject.toml`, and `AUDIT_IGNORE` below is derived from them.** Not
 # for tidiness: each row there carries the package the argument is about and the version `uv.lock`
 # resolved when it was written, and `tests/test_deps_suppressions.py` fails when the lock moves one.
-# `--ignore-vuln` matches by id, so before that a fixed dependency merely stopped being reported and
+# `--ignore-vuln` matches an advisory by its id **or any alias**, which is why eight rows silence
+# the **13** findings this closure reports without them — measured 2026-09-14, and confirmed by
+# dropping one row and watching its PYSEC spelling reappear. What that matching cannot notice is a
+# dependency being *fixed*: before the table, a fixed dependency merely stopped being reported and
 # the suppression outlived its reason with nothing to say so — which the `accelerate` paragraph
 # below stated as a known hole
 # (`D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument`).
@@ -110,7 +113,8 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #   PYSEC-2026-2288   transformers, fixed in 5.0.0. `Trainer._load_rng_state` calls `torch.load`
 #   PYSEC-2026-2289   transformers, fixed in 5.3.0. A crafted `config.json` reaching a Hub repo
 #   PYSEC-2026-2290   transformers, no fix / 5.5.0. LightGlue loading honours a remote code path
-#   GHSA-xrqw-3rrv-vx5w  transformers, fixed in 5.10.0 (CVE-2026-9856). `save_pretrained` uses
+#   GHSA-xrqw-3rrv-vx5w  transformers, fixed in 5.10.0 (CVE-2026-9856, PYSEC-2026-3929 — the
+#                     spelling this closure's audit actually reports it under). `save_pretrained` uses
 #                     `chat_template` keys as filenames unvalidated, so a crafted
 #                     `tokenizer_config.json` escapes the save directory
 #                     — all four require the library to *fetch* an attacker-controlled repository.
@@ -128,7 +132,8 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     so it is a measured migration rather than a lockfile edit — the `uv` updater in
 #                     `.github/dependabot.yml` is what proposes it, and 5.10.0 is further out than
 #                     the 5.0 the three above already wait on rather than a new reason to move.
-#   CVE-2026-69112    accelerate 1.14.0, **no fix released — and 1.15.0 is not one**. Path traversal
+#   CVE-2026-69112    accelerate 1.14.0 (PYSEC-2026-3804 — again the spelling the audit reports),
+#                     **no fix released — and 1.15.0 is not one**. Path traversal
 #                     in `load_checkpoint_in_model` / `load_checkpoint_and_dispatch`: a sharded
 #                     checkpoint's `weight_map` values are joined onto the checkpoint folder and
 #                     never sanitised, so a `../` or absolute entry reads an arbitrary file and a

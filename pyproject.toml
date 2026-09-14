@@ -131,8 +131,11 @@ ignore_missing_imports = true
 #
 # **The argument for each is in the `Makefile`, beside the target that reads this.** What lives here
 # is the pair that makes an argument checkable: the package the argument is about, and the version
-# `uv.lock` resolved when it was written. `pip-audit`'s `--ignore-vuln` matches by *id*, so a fixed
-# dependency merely stops being reported and the suppression outlives its reason in silence — which
+# `uv.lock` resolved when it was written. `pip-audit`'s `--ignore-vuln` matches an advisory by its id **or
+# any of its aliases** — measured 2026-09-14: dropping the `GHSA-xrqw-3rrv-vx5w` row makes
+# `PYSEC-2026-3929` reappear, and the eight rows below cover the **13** findings the audit reports
+# without them. What that matching cannot notice is a dependency being *fixed*: the finding merely
+# stops being reported and the suppression outlives its reason in silence — which
 # the Makefile said in as many words ("Nothing here goes red when a fix ships") and nothing
 # answered. `tests/test_deps_suppressions.py` is the answer: when the lock moves one of these
 # packages, the entry goes red and somebody re-derives it against the version that will actually
@@ -153,8 +156,8 @@ suppressions = [
     # `test_the_makefile_argues_exactly_the_suppressions_that_are_declared` can tell a second
     # name for one advisory from a ninth suppression nobody declared; `--ignore-vuln` is
     # built from `id` alone.
-    { id = "GHSA-xrqw-3rrv-vx5w", package = "transformers", version = "4.57.6", aliases = ["CVE-2026-9856"] },
-    { id = "CVE-2026-69112", package = "accelerate", version = "1.14.0" },
+    { id = "GHSA-xrqw-3rrv-vx5w", package = "transformers", version = "4.57.6", aliases = ["CVE-2026-9856", "PYSEC-2026-3929"] },
+    { id = "CVE-2026-69112", package = "accelerate", version = "1.14.0", aliases = ["PYSEC-2026-3804"] },
 ]
 
 [tool.coverage.run]

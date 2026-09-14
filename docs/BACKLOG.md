@@ -201,6 +201,21 @@ decision leaves a record behind and the row goes.
   `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
   `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
 
+- [ ] **Nothing derives which servers need an admission ceiling, so an eighth server without one
+  passes every test here.** Five of seven have one — `calc`, `chem`, `pyexec`, `rxnlabel`,
+  `rxnpredict`; `props` and `safety` do not, and that is a judgement rather than a derivation (a
+  dict lookup and a bisection; an RDKit screen under a component bound). It cannot be derived from
+  the manifest: `D-2026-09-12-one-tool-call-is-not-one-thread` measured that the
+  `read_only`/`state_changing` split does not carry, because `render_structure` is `read_only`,
+  correctly, and is the one `chem` tool that needs a ceiling. So the five that have one are held by
+  their own `test_admission` modules and the absence of a sixth is held by nobody. Decide the
+  smallest thing that works: a per-server declaration that a ceiling is present **or** argued
+  absent — which is checkable in both directions the way the blind-handler allowlist is — or accept
+  it as a review rule and say so where `docs/adding-a-server.md` asks for the bound.
+  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`,
+  `tests/test_fleet.py::test_every_server_hands_connector_app_a_readiness_check`,
+  `docs/adding-a-server.md`.
+
 ## 3 — Readiness, where it still stops
 
 - [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference
@@ -280,6 +295,35 @@ decision leaves a record behind and the row goes.
   `--import-mode=importlib`; mypy's equivalent is `--explicit-package-bases` with `MYPYPATH`, or
   per-root invocations.
   **Anchors:** `Makefile`, `servers/calc/tests/test_admission.py`, `pyproject.toml`.
+
+- [ ] **The cross-repository agreement runs nowhere automated, on either side.**
+  `tests/test_consumer_agreement.py` closes the direction this tree was blind in — measured
+  2026-09-14, a rename of `ich_impurity_limit` carried out *completely* here (server, manifest,
+  `tool-surface.json`, README, `MODULES.md` and the server's own 261 tests) left
+  `servers/safety/tests` and all 212 other fleet tests green and was caught only by that file. But
+  it needs a `Chemclaw3` checkout **with a built `.venv`**, and CI here clones neither, so in CI it
+  skips. The consumer's side has the mirror-image problem. Decide whether one of the two CI lanes
+  clones the other repository shallowly and builds it, or whether the honest arrangement is the
+  skip plus the terminal notice `conftest.py::pytest_terminal_summary` now prints — which is what
+  ships today.
+  **Anchors:** `tests/test_consumer_agreement.py`, `conftest.py`, `.github/workflows/ci.yml`.
+
+- [ ] **Eight `calc` tools are hardcoded in a third module neither repository checks.**
+  **Other repository:** `Chemclaw3`. Its `tests/test_sibling_manifest_agreement.py` lists two
+  callers — `connectors/calc/compose.py` and `remote.py` — and finds 13 hardcoded call sites naming
+  10 tools. Running that file's own AST walker over `src/chemclaw/connectors/calc/server/tools.py`
+  on 2026-09-14 found **11 more sites naming 10 tools, 8 of them named by no checked module**:
+  `compute_atomic_descriptors`, `compute_electronic_properties`, `compute_surface_potential`,
+  `compute_xtb_energy`, `predict_pka`, `predict_solubility`, `predict_site_reactivity`,
+  `predict_developability_profile`. Every one is served and every argument declared, so the
+  contract is sound and **unwatched** — a rename in `servers/calc/` would reach all eight with no
+  test on either side. Checked and unchecked together name 18 of the 20 tools
+  `servers/calc/tool-surface.json` records; `optimize_geometry` and `predict_logd` are named by no
+  hardcoded dict-literal site in any of the three modules, which is worth confirming rather than
+  assuming when this is worked. The fix is that repository's `_CALLERS` tuple and nothing here can
+  make it; this row is what keeps it from being forgotten.
+  **Anchors (Chemclaw3):** `tests/test_sibling_manifest_agreement.py::_CALLERS`,
+  `src/chemclaw/connectors/calc/server/tools.py`.
 
 ## 5 — Corpora that are not yet licensed to exist
 
