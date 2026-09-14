@@ -19,6 +19,10 @@ What came over unchanged is the check most in this repository's idiom:
 about a server should be checked by a test in that server", and a rename retires such a citation in
 silence — the citation still reads as authoritative while pointing at nothing. The test corpus here
 is `tests/`, `packages/*/tests` and `servers/*/tests`, because that is where this fleet's tests are.
+It gained a second half here that the original does not have: that check resolves the function
+name and discards the path a record writes in front of it, so a second test
+(`test_a_record_names_the_file_its_test_lives_in`) reads the path. A citation pointing at the wrong
+file sends a reader somewhere the guard is not, and they conclude it is gone.
 
 One check has no counterpart there: `tests/test_fleet.py::test_the_map_and_the_tree_agree` gives
 every **top-level** directory a row-and-README guarantee, and `docs/` lists its own contents by
@@ -32,6 +36,7 @@ matter.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import re
 import subprocess
 import warnings
@@ -51,6 +56,11 @@ _FILENAME = re.compile(rf"^{_DATED}$")
 _HEADING = re.compile(rf"^# ({_DATED}) — ", re.MULTILINE)
 _INDEX_ROW = re.compile(rf"^\| \[({_DATED})\]\(([^)]+)\) \| ([^|]*)\|", re.MULTILINE)
 _TEST_CITATION = re.compile(r"`(?:[\w./*-]+::)?(test_[a-z0-9_]+)`")
+# The same citation with its path half kept. A record usually writes `<path>::<test>`, and that path
+# was read by nothing: `_TEST_CITATION` discards it, so a citation could name the right function in
+# the wrong file and resolve. `test_a_record_names_the_file_its_test_lives_in` is what reads it.
+# The path may be a glob (`servers/*/tests/test_deploy.py`): a per-server test is seven files.
+_PLACED_CITATION = re.compile(r"`([\w./*-]+)::(test_[a-z0-9_]+)`")
 # A commit a record cites. At least one digit, because an all-letter hex word ("defaced") is a real
 # English string and an abbreviated hash that happens to be all letters is rare enough to be worth
 # the trade: a false positive here fails a run confusingly, a false negative only skips a check.
@@ -365,12 +375,17 @@ def test_a_malformed_id_is_still_rejected() -> None:
         assert not _FILENAME.match(bad), f"{bad} should not be a valid record filename"
 
 
-def _defined_test_names() -> set[str]:
-    """Every `test_*` function this fleet defines, plus every `test_*.py` module stem.
+def _test_definitions() -> dict[str, set[str]]:
+    """Every `test_*` name this fleet defines, mapped to the repository-relative files defining it.
 
-    Both are legitimate things for a record to cite: a sentence naming `tests/test_fleet.py` as
-    `test_fleet` would otherwise read as a dangling function. Three test roots, because a server
-    tests itself and the kit tests itself — the fleet-level `tests/` is only a third of the suite.
+    A function name and a `test_*.py` module stem are both legitimate things for a record to cite: a
+    sentence naming `tests/test_fleet.py` as `test_fleet` would otherwise read as a dangling
+    function. Three test roots, because a server tests itself and the kit tests itself — the
+    fleet-level `tests/` is only a third of the suite.
+
+    The **set** of files is what makes the path half checkable, and it has to be a set rather than a
+    file: `test_the_pod_label_matches_the_networkpolicy_selector` is defined in all seven
+    `servers/*/tests/test_deploy.py`, and a record cites it by the glob.
     """
     roots = [
         ROOT / "tests",
@@ -378,15 +393,16 @@ def _defined_test_names() -> set[str]:
         *sorted(ROOT.glob("servers/*/tests")),
     ]
     assert len(roots) > 3, f"only {len(roots)} test roots found; has the layout changed?"
-    names: set[str] = set()
+    names: dict[str, set[str]] = {}
     for root in roots:
         for path in sorted(root.rglob("test_*.py")):
-            names.add(path.stem)
+            where = path.relative_to(ROOT).as_posix()
+            names.setdefault(path.stem, set()).add(where)
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
                 if isinstance(
                     node, ast.FunctionDef | ast.AsyncFunctionDef
                 ) and node.name.startswith("test_"):
-                    names.add(node.name)
+                    names.setdefault(node.name, set()).add(where)
     return names
 
 
@@ -418,8 +434,12 @@ def test_every_test_a_record_names_still_exists() -> None:
     A merged record is never edited, so when a rename genuinely retires a citation the fix is to
     rename the test back — or, if it is really gone, to add the allowlist this file deliberately
     does not carry yet, with the line saying what replaced it. There is nothing to exempt today.
+
+    **This half reads the function name only.** The file half is
+    `test_a_record_names_the_file_its_test_lives_in`, which is a separate test because the two fail
+    for different reasons and a reader fixing one should not be told about the other.
     """
-    defined = _defined_test_names()
+    defined = _test_definitions()
     dangling = sorted(
         {
             name
@@ -431,6 +451,40 @@ def test_every_test_a_record_names_still_exists() -> None:
     assert not dangling, (
         f"test name(s) cited in docs/decisions/ that resolve to nothing: {dangling}. Rename the "
         "test back, or correct the citation before the record is merged."
+    )
+
+
+def test_a_record_names_the_file_its_test_lives_in() -> None:
+    """A `path::test` citation names the file that actually defines that test.
+
+    The existence check above resolves the *function* name against every `test_*` in the three
+    roots, and `_TEST_CITATION` throws the path away — so a record could cite
+    `tests/test_fleet.py::test_the_pod_label_matches_the_networkpolicy_selector`, a test that lives
+    in `servers/*/tests/`, and pass. A path is the half a reader uses: it is what they open. A
+    citation with a wrong path is worse than one with none, because it sends the reader to a file
+    where the guard is not, and the reader concludes the guard is gone.
+
+    Measured before this test existed: all 213 path-qualified citations in `docs/decisions/` already
+    named a file that defines the test, so this closes a hole rather than papering over a mess.
+
+    The path may be a glob, and that is the reason `_test_definitions` maps a name to a *set*:
+    `test_the_pod_label_matches_the_networkpolicy_selector` is one name in seven files, and
+    `servers/*/tests/test_deploy.py` is the honest way to cite it. `fnmatch` rather than
+    `Path.match`, because the latter treats `*` as not crossing a separator inconsistently across
+    versions.
+    """
+    defined = _test_definitions()
+    misplaced = sorted(
+        {
+            (record.name, where, name)
+            for record in _records()
+            for where, name in _PLACED_CITATION.findall(record.read_text(encoding="utf-8"))
+            if name in defined and not any(fnmatch.fnmatch(real, where) for real in defined[name])
+        }
+    )
+    assert not misplaced, (
+        f"citation(s) in docs/decisions/ naming a file that does not define the test: {misplaced}. "
+        "The name resolves, so the existence check passes and a reader opens the wrong file."
     )
 
 
