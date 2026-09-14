@@ -86,9 +86,31 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 # **The ids themselves are in `pyproject.toml`, and `AUDIT_IGNORE` below is derived from them.** Not
 # for tidiness: each row there carries the package the argument is about and the version `uv.lock`
 # resolved when it was written, and `tests/test_deps_suppressions.py` fails when the lock moves one.
-# `--ignore-vuln` matches an advisory by its id **or any alias**, which is why eight rows silence
-# the **13** findings this closure reports without them — measured 2026-09-14, and confirmed by
-# dropping one row and watching its PYSEC spelling reappear. What that matching cannot notice is a
+# Eight rows, and the audit's own line says `13 ignored`. **That gap is duplication, not aliasing,
+# and this comment said the opposite for a wave.** Measured 2026-09-14 against this lock, with no
+# suppressions passed: 13 findings over **eight distinct advisory ids** — five of the eight are
+# returned *twice* (`PYSEC-2026-2447`, `-3447`, `-2288`, `-2289`, `-2290`), three once. The
+# duplication is the advisory service's rather than the export's: the export carries one
+# `diskcache==5.6.3` line, and a one-line requirements file holding only it
+# (`uvx pip-audit --no-deps --disable-pip -r one.txt`) returns that advisory twice. So an exact-id
+# row with no alias in play
+# already silences two — `--ignore-vuln PYSEC-2026-2447` alone reports `ignored 2`.
+#
+# **Alias matching is real and is a different fact about a different pair.** `--ignore-vuln` matches
+# by id *or any alias*, and two rows here name an id this closure does not report under
+# (`GHSA-xrqw-3rrv-vx5w` → `PYSEC-2026-3929`, `CVE-2026-69112` → `PYSEC-2026-3804`); passing just
+# those two reports `ignored 2`, one finding each. Aliasing therefore explains **2 of the 13** and
+# **none** of the 8→13 gap. The difference matters to whoever reads this before a deployment: the
+# old sentence taught that a suppression can quietly cover advisories nobody listed, where what
+# actually happens is duplicate records under ids this table does list.
+#
+# **`13` is a dated observation of a third-party service and nothing in the suite pins it** — the
+# suite runs with the egress guard armed, so the only thing that could ask is `make deps-audit`
+# itself, and the number will move on the advisory database's schedule rather than this repository's.
+# What is pinned is local and is the pair that matters: eight rows, each naming a package and the
+# version `uv.lock` still resolves.
+#
+# What id-or-alias matching cannot notice is a
 # dependency being *fixed*: before the table, a fixed dependency merely stopped being reported and
 # the suppression outlived its reason with nothing to say so — which the `accelerate` paragraph
 # below stated as a known hole

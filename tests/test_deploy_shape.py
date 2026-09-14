@@ -277,3 +277,57 @@ def test_liveness_and_readiness_do_not_share_a_route(server: Path) -> None:
         f"{server.name} points both probes at {readiness!r}, so shedding traffic and replacing the "
         "pod are one answer again"
     )
+
+
+def _network_policy(server: Path) -> dict[str, Any]:
+    """The parsed NetworkPolicy for one server."""
+    return _load(server / "deploy" / "networkpolicy.yaml")
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_egress_policy_denies_and_selects_the_workload(server: Path) -> None:
+    """Layer 4 of the no-egress posture, read fleet-wide rather than left to each server.
+
+    `CLAUDE.md` lists default-deny NetworkPolicies as one of the four independent layers, and until
+    this test the fleet held none of it: `test_a_server_ships_the_whole_set` required the *file*,
+    and every assertion about its *content* lived in `servers/*/tests/test_deploy.py` — seven copies
+    of one rule, none of them owed by an eighth server. Driven at `24b50ec`: dropping `- Egress`
+    from `servers/props/deploy/networkpolicy.yaml` reds that server's own `test_egress_is_denied`,
+    but **deleting that file** leaves the whole fleet suite green with the policy permitting all
+    outbound traffic. That is the standing the bearer check had before
+    `D-2026-09-12-a-shared-helper-is-not-a-proof-it-was-applied`, one layer over.
+
+    Three clauses, because "default-deny" has three independent ways to be false and each looks
+    unchanged in review:
+
+    - `Egress` absent from `policyTypes` — the direction is simply not governed, and the file still
+      reads as a network policy. This is the regression the per-server tests were written for.
+    - a non-empty `egress:` — the hole stated outright. Empty list rather than an absent key,
+      because only the list says "deny all" where a reader can see it.
+    - a `podSelector` that matches no pod this fleet runs. A policy is bound to workloads by label,
+      so a one-character drift between the Deployment's pod label and the selector exempts the
+      workload entirely — deny-all against nothing. `props` holds that pair in its own file; here it
+      is held for every server, because a *new* server is exactly the one whose own tests would not.
+
+    Deliberately not here: ports, ingress peers and the scrape wiring. Those are per-server numbers,
+    and `servers/*/tests/test_deploy.py` is where a number that belongs to one server is checked.
+    """
+    spec = _network_policy(server)["spec"]
+    assert isinstance(spec, dict)
+
+    assert "Egress" in spec["policyTypes"], (
+        f"{server.name}'s NetworkPolicy does not govern Egress, so outbound traffic is "
+        "unrestricted while the file still looks like a default-deny policy"
+    )
+    assert spec["egress"] == [], (
+        f"{server.name} may reach nothing at request time; its policy permits {spec['egress']!r}"
+    )
+
+    selector = spec["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
+    pod_label = _deployment(server)["spec"]["template"]["metadata"]["labels"][
+        "app.kubernetes.io/name"
+    ]
+    assert selector == pod_label, (
+        f"{server.name}'s NetworkPolicy selects {selector!r} and its Deployment labels the pod "
+        f"{pod_label!r}: the policy binds to no workload, which denies nothing"
+    )

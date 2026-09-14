@@ -6,8 +6,19 @@ argued at length in the `Makefile` against a *specific version* of a specific pa
 **This paragraph used to say `pip-audit` matches those flags "by id alone", and that is false.** It
 matches an advisory by its id **or any of its aliases** — measured 2026-09-14 against this lock:
 with every row but `GHSA-xrqw-3rrv-vx5w` passed, `PYSEC-2026-3929` is reported, and with it passed
-that finding is silenced under a name the table did not then carry. Which is why the declarations
-silence 13 reported findings rather than one each, and why `aliases` is part of the row.
+that finding is silenced under a name the table did not then carry. That is why `aliases` is part of
+the row.
+
+**It is not why eight declarations report `13 ignored`, and the sentence that stood here said it
+was.** Re-measured the same day: with no suppressions the audit returns 13 findings over eight
+distinct ids, because five of the eight are returned *twice* by the advisory service — an exact-id
+row with no alias in play (`--ignore-vuln PYSEC-2026-2447`) already reports `ignored 2`, and a
+one-line requirements file holding only `diskcache==5.6.3` reproduces the duplicate from a source
+with one line in it. Aliasing explains **2 of the 13** and none of the gap. The distinction is the
+whole point for a reader of this table: the old wording said a suppression can silently cover
+advisories nobody listed, where what happens is duplicate records under ids the table does list.
+Nothing here pins `13` — this file never runs `pip-audit`, deliberately, for the reason the last
+paragraph gives — so it is a dated reading of a third-party service, not an invariant.
 
 The consequence the table exists for is untouched by that correction, because it is about a
 different event: a dependency that is fixed, replaced or dropped merely stops being reported, so

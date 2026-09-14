@@ -56,7 +56,17 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # `fetch-depth: 0`, because `actions/checkout`'s default is depth 1 and ancestry cannot be
+      # decided on a shallow clone. `tests/test_decision_log.py::
+      # test_every_commit_the_registers_cite_is_reachable_from_head` asks `git merge-base
+      # --is-ancestor` whether a hash a record cites survives into `HEAD`, and on a shallow clone it
+      # warns and returns rather than guessing — so under the default that assertion had **never run
+      # in CI and could not**, while `main` sat red on it for anyone who cloned with full history.
+      # This is the only check in the repository that needs history at all; full history costs
+      # seconds on a tree this size, and the alternative is a ratchet that is a local courtesy.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -100,7 +110,11 @@ jobs:
     # an upstream fails here and nowhere else.
     runs-on: ubuntu-latest
     steps:
+      # Full history, for the reason given on `check`'s checkout: this job runs the same suite
+      # under `scripts/offline_check.py`, so it carries the same assertion.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -165,6 +179,8 @@ jobs:
     # network — the other three prove the opposite property about this fleet.
     runs-on: ubuntu-latest
     steps:
+      # No `fetch-depth:` here, deliberately: this job runs `make deps-audit` and no test, so it
+      # is the one checkout in this file with nothing to decide about ancestry.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv

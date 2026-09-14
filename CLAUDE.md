@@ -286,10 +286,17 @@ independent layers because a rule that lives in one place rots:
 3. **The whole suite runs with the guard armed** (root `conftest.py`). A test that only passes by
    reaching the internet fails instead, which is what makes a vendored dataset *proven* sufficient.
    `make offline-run` goes further and takes the network away entirely.
-4. **Default-deny egress at the deployment** (`servers/*/deploy/networkpolicy.yaml`), asserted by
-   each server's own `servers/*/tests/test_deploy.py` in both directions — `Egress` in
-   `policyTypes` *and* an empty `egress:`. The root `tests/` holds no `test_deploy.py` at all, and
-   the file there with the closest name, `tests/test_deploy_shape.py`, carries no egress assertion.
+4. **Default-deny egress at the deployment** (`servers/*/deploy/networkpolicy.yaml`), asserted
+   fleet-wide by `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload`
+   in **three** directions — `Egress` in `policyTypes`, an empty `egress:`, and a `podSelector` that
+   matches the Deployment's own pod label, since a policy bound to no workload denies nothing.
+   **That test is new, and this paragraph used to describe the gap without naming it as one**: it
+   said the assertion lived in each server's own `test_deploy.py`, which was true and was the whole
+   of it — seven copies of one rule, none of them owed by an eighth server. Driven, a server whose
+   policy permitted all outbound traffic and which shipped no `servers/*/tests/test_deploy.py`
+   passed the entire fleet suite. `tests/test_fleet.py::test_a_server_ships_the_whole_set` now
+   requires that file too, for what only it can hold — the server's port, its ingress peers, and
+   the Service-to-ServiceMonitor port *name*.
 
 Two consequences that decide what gets built:
 

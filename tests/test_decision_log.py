@@ -64,6 +64,17 @@ _KEEPS_IT_TRUE = "## What keeps it true"
 # exemption is checked in both directions below: if one of these ever becomes reachable, the row is
 # wrong and has to go.
 _QUOTED_AS_UNREACHABLE = frozenset({"68083a4", "39ba4a7", "362e764", "1161473"})
+# A branch commit a squash merge retired, mapped to the record that supplies the reachable citation
+# in its place. This is a *different* exemption from the one above and is deliberately not folded
+# into it: there the point of the citation is that it does not resolve, here the citation was
+# written as plain provenance and was true only on the branch it was written on. Wave 30's two
+# records both name `eb58363`, which PR #66 squashed into `24b50ec`. A merged record is never
+# edited, so the correction is a later record — and the exemption is valid only while that record
+# exists and itself cites a commit `HEAD` can reach, which is what stops this map becoming the
+# place a stale citation goes to be forgotten.
+_RETIRED_BY_A_SQUASH = {
+    "eb58363": "D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance",
+}
 
 
 def _records(directory: Path = _DECISIONS) -> list[Path]:
@@ -259,6 +270,19 @@ def test_every_commit_the_registers_cite_is_reachable_from_head() -> None:
     carries those four with the reason, and the exemption is asserted in both directions: a hash
     listed there that becomes reachable fails too, so the allowlist cannot outlive its argument.
 
+    **A second exemption, for the case the first cannot honestly cover**: a record written on a
+    branch cites that branch's commit as its provenance, and the squash merge retires it — which is
+    not "quoted as unreachable", it is a citation that was true where it was written. A merged
+    record is never edited, so the fix is a later record naming the merge commit, and
+    `_RETIRED_BY_A_SQUASH` maps the retired hash to it. That map is checked in *three* directions:
+    the hash must stay unreachable, the correcting record must exist, and it must itself cite a
+    commit `HEAD` reaches — so an exemption cannot outlive the correction that earns it.
+
+    The message names every record that cites a bad hash rather than one of them. `cited` was a
+    `{commit: record}` dict, so the two Wave-30 records that both cite `eb58363` collapsed onto one
+    key and the failure named the second file and hid the first — a reader fixing what the message
+    named would have left the run red and had no idea why.
+
     `docs/BACKLOG.md` is read here too, and for one reason rather than two: it cited the same
     unreachable `362e764` in a row about the static scan, and a second copy of this regex in
     `tests/test_backlog_register.py` would be the second declaration this repository keeps deleting.
@@ -270,11 +294,10 @@ def test_every_commit_the_registers_cite_is_reachable_from_head() -> None:
         text=True,
         check=False,
     )
-    cited = {
-        commit: path.name
-        for path in [*_records(), _BACKLOG]
-        for commit in _COMMIT.findall(path.read_text(encoding="utf-8"))
-    }
+    cited: dict[str, set[str]] = {}
+    for path in [*_records(), _BACKLOG]:
+        for commit in _COMMIT.findall(path.read_text(encoding="utf-8")):
+            cited.setdefault(commit, set()).add(path.name)
     if shallow.returncode != 0 or shallow.stdout.strip() != "false":
         warnings.warn(
             f"the commit citations in docs/ ({sorted(cited)}) were not checked: this is "
@@ -295,17 +318,35 @@ def test_every_commit_the_registers_cite_is_reachable_from_head() -> None:
             == 0
         )
 
-    stale_exemption = sorted(
-        commit for commit in _QUOTED_AS_UNREACHABLE & set(cited) if reachable(commit)
-    )
+    def corrects(stem: str) -> bool:
+        """Whether the record exempting a retired hash still names one `HEAD` can reach."""
+        record = _DECISIONS / f"{stem}.md"
+        if not record.is_file():
+            return False
+        return any(reachable(c) for c in _COMMIT.findall(record.read_text(encoding="utf-8")))
+
+    exempt = _QUOTED_AS_UNREACHABLE | set(_RETIRED_BY_A_SQUASH)
+    stale_exemption = sorted(commit for commit in exempt & set(cited) if reachable(commit))
     assert not stale_exemption, (
         f"{stale_exemption} is exempted as a hash `HEAD` cannot reach and `HEAD` reaches it; the "
-        "row in `_QUOTED_AS_UNREACHABLE` is no longer true and the record can cite it plainly"
+        "row in `_QUOTED_AS_UNREACHABLE` or `_RETIRED_BY_A_SQUASH` is no longer true and the "
+        "record can cite it plainly"
+    )
+    uncorrected = sorted(
+        f"{commit} is exempted by {stem}"
+        for commit, stem in _RETIRED_BY_A_SQUASH.items()
+        if not corrects(stem)
+    )
+    assert not uncorrected, (
+        f"{uncorrected}, which either does not exist or cites no commit `HEAD` reaches. A retired "
+        "hash is exempt because a later record supplies the reachable citation in its place; with "
+        "no such record the exemption is just a stale citation nobody has to fix."
     )
     unreachable = sorted(
         f"{record} cites {commit}"
-        for commit, record in cited.items()
-        if commit not in _QUOTED_AS_UNREACHABLE and not reachable(commit)
+        for commit, records in cited.items()
+        if commit not in exempt and not reachable(commit)
+        for record in records
     )
     assert not unreachable, (
         f"commit(s) cited in docs/ that `HEAD` does not contain: {unreachable}. A branch "

@@ -133,8 +133,12 @@ ignore_missing_imports = true
 # is the pair that makes an argument checkable: the package the argument is about, and the version
 # `uv.lock` resolved when it was written. `pip-audit`'s `--ignore-vuln` matches an advisory by its id **or
 # any of its aliases** — measured 2026-09-14: dropping the `GHSA-xrqw-3rrv-vx5w` row makes
-# `PYSEC-2026-3929` reappear, and the eight rows below cover the **13** findings the audit reports
-# without them. What that matching cannot notice is a dependency being *fixed*: the finding merely
+# `PYSEC-2026-3929` reappear. **What that does *not* explain is the eight-rows-to-`13 ignored` gap,
+# which this comment used to attribute to it.** The audit returns 13 findings over eight distinct
+# ids because five of the eight are returned *twice* by the advisory service; aliasing accounts for
+# exactly two of the thirteen, one for each of the two rows whose id this closure does not report
+# under. The arithmetic is in the `Makefile` beside the argument. What id-or-alias matching cannot
+# notice is a dependency being *fixed*: the finding merely
 # stops being reported and the suppression outlives its reason in silence — which
 # the Makefile said in as many words ("Nothing here goes red when a fix ships") and nothing
 # answered. `tests/test_deps_suppressions.py` is the answer: when the lock moves one of these
