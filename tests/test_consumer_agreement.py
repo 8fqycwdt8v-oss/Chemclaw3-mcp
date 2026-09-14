@@ -144,16 +144,23 @@ def test_an_inert_consumer_run_is_not_agreement() -> None:
     """The bite test for `inert_outcome`, on pytest's real summary lines.
 
     A table rather than a synthetic checkout: what is under test is the reading of an outcome, and
-    building a second repository to produce one would test `subprocess` instead. The `1 xfailed`
-    row is the one that mattered — it is the output the shipped substring check read as agreement.
+    building a second repository to produce one would test `subprocess` instead.
+
+    **Every row carries a `passed` count, and that is the whole point of the table.** A row with no
+    pass in it is decided by the `not counts.get("passed")` arm and never reaches `_INERT_OUTCOMES`
+    at all — so a table of lone-`xfailed`, lone-`xpassed` and lone-`deselected` rows proves the
+    weaker rule four times over and the widening not once. Driven: gutting `_INERT_OUTCOMES` back to
+    `("skipped",)`, which is exactly the blindness it exists to remove, left such a table green. The
+    shape that actually occurs has a pass beside the inert outcome, because the consumer module
+    being run has more than one test and an xfail is added to one of them.
     """
     assert inert_outcome("2 passed in 0.31s") is None
     assert inert_outcome("1 passed, 1 warning in 0.4s") is None
     for green_but_empty in (
-        "1 xfailed in 0.31s",
-        "1 xpassed in 0.31s",
+        "2 passed, 1 xfailed in 0.31s",
+        "2 passed, 1 xpassed in 0.31s",
         "1 passed, 1 skipped in 0.3s",
-        "2 deselected in 0.02s",
+        "2 passed, 2 deselected in 0.3s",
         "no tests ran in 0.01s",
         "",
     ):
