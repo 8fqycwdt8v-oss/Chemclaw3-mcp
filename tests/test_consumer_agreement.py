@@ -32,10 +32,18 @@ property of a commit. Without one this skips with the reason in the message, and
 pass. What it must never do is *quietly* shrink: a checkout that is present while the module it
 would run is not is a **failure**, because that is a rename this side has to hear about.
 
-What the arrangement costs, stated rather than implied: the consumer's suite is the authority on
-what is compared, so a check deleted there is silently deleted here, and this side would not know.
-That is a smaller risk than a divergent copy and it is not zero; the `docs/BACKLOG.md` row under
-"Consuming a server hosted elsewhere" names it.
+What the arrangement costs, stated rather than implied. Two things:
+
+- The consumer's suite is the authority on what is compared, so a check deleted there is silently
+  deleted here, and this side would not know. That is a smaller risk than a divergent copy and it
+  is not zero; `docs/BACKLOG.md` names it.
+- **It reads that checkout's working tree, not its `HEAD`.** Observed on 2026-09-14: the sibling
+  checkout on this machine carried an uncommitted rewrite of the very module this runs, and an
+  uncommitted mutation in the code that module reads — somebody else's mutation check, in flight.
+  So a failure here can be about a colleague's unstaged edit rather than about this tree, and the
+  first thing to do with one is `git -C <checkout> status`. Reading `HEAD` instead was considered
+  and is worse: it would check this tree against a revision nobody is running, and miss exactly the
+  pre-merge disagreement this file exists to catch.
 """
 
 from __future__ import annotations

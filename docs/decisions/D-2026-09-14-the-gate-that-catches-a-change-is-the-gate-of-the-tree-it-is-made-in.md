@@ -73,6 +73,14 @@ deleted here. That is a smaller risk than a divergent copy and it is not zero.
 
 Neither repository's CI clones the other, so in CI this skips on both sides. Queued.
 
+**And it reads that checkout's working tree rather than its `HEAD`**, which was not a hypothetical:
+observed the same day, the sibling checkout on this machine carried an uncommitted rewrite of the
+module this runs *and* an uncommitted mutation in the code that module reads — another session's
+mutation check, in flight. So a failure here can be about somebody's unstaged edit, and the first
+move on one is `git -C <checkout> status`. Reading `HEAD` would be worse rather than tidier: it
+would check this tree against a revision nobody is running, and miss the pre-merge disagreement
+this file exists to catch.
+
 And the seam is wider than the check: running the consumer's own AST walker over
 `src/chemclaw/connectors/calc/server/tools.py` — a third caller its `_CALLERS` tuple does not list —
 found **11 more hardcoded call sites naming 10 tools, 8 of them named by no checked module**. Every
