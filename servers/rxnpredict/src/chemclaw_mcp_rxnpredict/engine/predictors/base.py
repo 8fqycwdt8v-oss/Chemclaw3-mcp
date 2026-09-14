@@ -69,7 +69,11 @@ class BaseForwardPredictor(BasePredictor):
         from ..cache import get_cache  # local import to avoid early settings load
 
         cache = get_cache()
-        cached = cache.get_forward(self.name, reactants, top_k)
+        # One derivation per prediction. Asking the cache to derive it again on the way out
+        # canonicalises the same reaction twice, and counts one degraded answer twice when
+        # canonicalisation is the thing that is broken — see `cache`'s module docstring.
+        key = cache.key_forward(self.name, reactants, top_k)
+        cached = cache.get(key)
         if cached is not None:
             return [ForwardPrediction.model_validate(d) for d in cached]
 
@@ -80,7 +84,7 @@ class BaseForwardPredictor(BasePredictor):
         # soft failure (e.g. an LLM returning unparseable JSON), and caching it
         # would silently drop the predictor from the ensemble for the whole TTL.
         if result:
-            cache.set_forward(self.name, reactants, top_k, [p.model_dump() for p in result])
+            cache.set(key, [p.model_dump() for p in result])
         return result
 
 
@@ -96,7 +100,9 @@ class BaseConditionsPredictor(BasePredictor):
         from ..cache import get_cache
 
         cache = get_cache()
-        cached = cache.get_conditions(self.name, reactants, product, top_k)
+        # One derivation per prediction; see BaseForwardPredictor.predict.
+        key = cache.key_conditions(self.name, reactants, product, top_k)
+        cached = cache.get(key)
         if cached is not None:
             return [ConditionsPrediction.model_validate(d) for d in cached]
 
@@ -105,7 +111,5 @@ class BaseConditionsPredictor(BasePredictor):
 
         # See BaseForwardPredictor.predict: don't cache empty (likely-transient) results.
         if result:
-            cache.set_conditions(
-                self.name, reactants, product, top_k, [p.model_dump() for p in result]
-            )
+            cache.set(key, [p.model_dump() for p in result])
         return result

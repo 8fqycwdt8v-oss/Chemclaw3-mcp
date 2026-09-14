@@ -19,6 +19,19 @@ discovering:
 The key is the same one upstream used — predictor, *canonical* reactants (and product), top_k — so
 two spellings of one reaction share a slot.
 
+**A prediction derives its key once, and the surface here is shaped to make that the only way to
+use it.** The convenience pairs this class used to expose — `get_forward`/`set_forward` and their
+conditions siblings — each canonicalised, so one cache *miss* canonicalised the same reaction twice:
+wasted RDKit work on the hot path, and, when canonicalisation is what is broken, two counts of one
+degraded answer. Measured on the shipped `BaseForwardPredictor.predict` with the guard refusing
+inside the canonicaliser: `chemclaw_mcp_degraded_total` moved **2.0** for one prediction, **4.0**
+for a conditions prediction, with a WARNING line each — and `rxnpredict`'s consensus tools fan out
+over every enabled predictor (`D-2026-09-12-one-tool-call-is-not-one-thread` measures six at once),
+so one tool call on an image without RDKit published 12 to 24. A series documented as "answers
+returned with a component's contribution missing" was not a count of answers. So the caller asks for
+a key (`key_forward`, `key_conditions`) and passes it to `get` and `set`, and there is no second way
+in that could re-derive it.
+
 **An input this server will not canonicalise is not cached, and it used to be keyed by the caller's
 raw text.** That fallback was `except Exception: return smiles`, and it was wrong three ways, each
 measured on the shipped code before it was replaced:
@@ -131,7 +144,7 @@ class PredictionCache:
         self._max_entries = max_entries
         self._entries: OrderedDict[str, Payload] = OrderedDict()
 
-    def _get(self, key: str | None) -> Payload | None:
+    def get(self, key: str | None) -> Payload | None:
         """Fetch and mark as most-recently-used; a `None` key is uncacheable and always misses."""
         if not self.enabled or key is None:
             return None
@@ -141,7 +154,7 @@ class PredictionCache:
         self._entries.move_to_end(key)
         return found
 
-    def _set(self, key: str | None, payload: Payload) -> None:
+    def set(self, key: str | None, payload: Payload) -> None:
         """Store, evicting the least-recently-used entry once the bound is passed.
 
         A `None` key is an uncacheable input and is dropped rather than stored under a guess.
@@ -153,42 +166,31 @@ class PredictionCache:
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
 
-    def _key_forward(self, model_name: str, reactants: str, top_k: int) -> str | None:
+    def key_forward(self, model_name: str, reactants: str, top_k: int) -> str | None:
         """Key for a forward prediction, or `None` when the reactants have no canonical form."""
         canon = _canonical_or_none(canonical_multi_smiles, reactants)
         if canon is None:
             return None
         return _hash_key(["fwd", model_name, canon, str(top_k)])
 
-    def _key_conditions(
+    def key_conditions(
         self, model_name: str, reactants: str, product: str, top_k: int
     ) -> str | None:
-        """Key for a conditions prediction, or `None` if either side has no canonical form."""
+        """Key for a conditions prediction, or `None` if either side has no canonical form.
+
+        **The reactants short-circuit.** Both sides used to be canonicalised before either was
+        tested, so one broken RDKit produced *two* `chemclaw_mcp_degraded_total` increments from
+        one key — and the answer a caller receives is one answer, whichever half of it this pod
+        could not name. There is also nothing to learn from the second failure: `_canonical_or_none`
+        has already logged and classified the first.
+        """
         canon_reactants = _canonical_or_none(canonical_multi_smiles, reactants)
+        if canon_reactants is None:
+            return None
         canon_product = _canonical_or_none(canonical_smiles, product)
-        if canon_reactants is None or canon_product is None:
+        if canon_product is None:
             return None
         return _hash_key(["cond", model_name, canon_reactants, canon_product, str(top_k)])
-
-    def get_forward(self, model_name: str, reactants: str, top_k: int) -> Payload | None:
-        """A cached forward result, or `None`."""
-        return self._get(self._key_forward(model_name, reactants, top_k))
-
-    def set_forward(self, model_name: str, reactants: str, top_k: int, payload: Payload) -> None:
-        """Store a forward result."""
-        self._set(self._key_forward(model_name, reactants, top_k), payload)
-
-    def get_conditions(
-        self, model_name: str, reactants: str, product: str, top_k: int
-    ) -> Payload | None:
-        """A cached conditions result, or `None`."""
-        return self._get(self._key_conditions(model_name, reactants, product, top_k))
-
-    def set_conditions(
-        self, model_name: str, reactants: str, product: str, top_k: int, payload: Payload
-    ) -> None:
-        """Store a conditions result."""
-        self._set(self._key_conditions(model_name, reactants, product, top_k), payload)
 
     def clear(self) -> int:
         """Drop everything, returning how many entries went. For tests."""
