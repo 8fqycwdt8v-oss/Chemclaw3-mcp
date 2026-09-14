@@ -147,12 +147,20 @@ def test_an_inert_consumer_run_is_not_agreement() -> None:
     building a second repository to produce one would test `subprocess` instead.
 
     **Every row carries a `passed` count, and that is the whole point of the table.** A row with no
-    pass in it is decided by the `not counts.get("passed")` arm and never reaches `_INERT_OUTCOMES`
-    at all — so a table of lone-`xfailed`, lone-`xpassed` and lone-`deselected` rows proves the
-    weaker rule four times over and the widening not once. Driven: gutting `_INERT_OUTCOMES` back to
-    `("skipped",)`, which is exactly the blindness it exists to remove, left such a table green. The
-    shape that actually occurs has a pass beside the inert outcome, because the consumer module
-    being run has more than one test and an xfail is added to one of them.
+    pass in it returns non-`None` whatever `_INERT_OUTCOMES` holds, so it cannot tell a widened
+    implementation from the blind one it replaced — which is what a bite test is for. Driven against
+    the shipped function, `'1 xfailed in 0.31s'` is answered `'reported 1 xfailed'` by the
+    `_INERT_OUTCOMES` arm, which is consulted *first*; gutted back to `("skipped",)`, the same row
+    falls through and is answered `'ran no test that passed'` by the pass arm. Both are non-`None`,
+    so a table of lone-`xfailed`, lone-`xpassed` and lone-`deselected` rows proves the weaker rule
+    four times over and the widening not once — measured: that table stayed green against the gutted
+    tuple. The shape that actually occurs has a pass beside the inert outcome, because the consumer
+    module being run has more than one test and an xfail is added to one of them.
+
+    **This paragraph shipped saying such a row "never reaches `_INERT_OUTCOMES` at all"**, which is
+    false in the direction that makes the reasoning look tighter than it is: the two arms are in the
+    other order. The conclusion is unchanged and the route to it is not, which is why the route is
+    now written as the measurement rather than as the story.
     """
     assert inert_outcome("2 passed in 0.31s") is None
     assert inert_outcome("1 passed, 1 warning in 0.4s") is None
