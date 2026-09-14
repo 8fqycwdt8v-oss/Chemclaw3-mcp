@@ -107,7 +107,7 @@ def test_a_publishing_run_cannot_skip_the_gate() -> None:
       stage that proves nothing.
     """
     text = _pipeline()
-    guard = "if (!params.DRY_RUN && params.IMAGE_REGISTRY?.trim() && !params.RUN_GATE) {"
+    guard = "if (!params.DRY_RUN && env.IMAGE_REGISTRY && !params.RUN_GATE) {"
     assert guard in text, (
         "the Preflight stage does not refuse a publishing run with RUN_GATE off; an image can "
         "again be published from a revision this pipeline never gated"
@@ -119,6 +119,42 @@ def test_a_publishing_run_cannot_skip_the_gate() -> None:
     )
     assert "when { expression { params.RUN_GATE } }" in text and "sh 'make check'" in text, (
         "the refusal points operators at a `Gate` stage that no longer runs `make check`"
+    )
+
+
+def test_the_pipeline_has_one_answer_to_whether_there_is_a_registry() -> None:
+    """Two spellings of one predicate disagreed, and Groovy's truthiness is where they disagreed.
+
+    The Preflight refusal asked `params.IMAGE_REGISTRY?.trim()` and the publish branch asked
+    `!params.IMAGE_REGISTRY`. A whitespace-only string is **truthy** in Groovy while its `trim()` is
+    not, so `IMAGE_REGISTRY="  "` with `DRY_RUN=false` and `RUN_GATE=false` skipped the refusal and
+    took the publishing branch. The push then died on an image reference of `"  /chemclaw-mcp-…"`,
+    which makes it an inconsistency rather than a live bypass — and an inconsistency between two
+    spellings of one question is the thing to delete, not the accident that saves it. A third
+    spelling, `params.IMAGE_REGISTRY != ''`, gated the digest report.
+
+    So the pipeline trims once into `env.IMAGE_REGISTRY` and every later read is of that. This is
+    read as source because driving it needs a Jenkins; what it asserts is the property that made the
+    three spellings possible — that `params.IMAGE_REGISTRY` is read exactly once, where it is
+    normalised.
+    """
+    # The comment block above the assignment explains the defect and quotes both old spellings, so
+    # **every** assertion below reads the comment-stripped code. Driven while writing this: with the
+    # normalisation commented out and `env.IMAGE_REGISTRY = params.IMAGE_REGISTRY` in its place,
+    # a version of this test that matched the raw text passed
+    # (`D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing`, in the file that records it).
+    code = "\n".join(
+        line for line in _pipeline().splitlines() if not line.lstrip().startswith("//")
+    )
+    assert "env.IMAGE_REGISTRY = params.IMAGE_REGISTRY?.trim() ?: ''" in code, (
+        "the pipeline no longer normalises IMAGE_REGISTRY once in Preflight; every later read is "
+        "then free to disagree about whether a whitespace-only value is a registry"
+    )
+    reads = code.count("params.IMAGE_REGISTRY")
+    assert reads == 1, (
+        f"`params.IMAGE_REGISTRY` is read {reads} times in the pipeline's code; it may be read "
+        "only where it is trimmed into `env.IMAGE_REGISTRY`, so that one answer decides both the "
+        "Preflight refusal and the publish branch"
     )
 
 

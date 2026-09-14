@@ -64,5 +64,10 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument](D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument.md) | A suppression with no expiry outlives its argument |
 | [D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing](D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing.md) | An audit of a lockfile no image reads audits nothing |
 | [D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for](D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for.md) | The rule that would have caught it was not the one asked for |
+| [D-2026-09-14-a-degraded-answer-is-counted-once](D-2026-09-14-a-degraded-answer-is-counted-once.md) | A degraded answer is counted once |
+| [D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as](D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as.md) | A lint rule that does not fire is not the control it was read as |
+| [D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range](D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range.md) | A range check cannot see a swap inside the range |
+| [D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing](D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing.md) | A ratchet that matches a comment holds nothing |
+| [D-2026-09-14-one-question-gets-one-expression](D-2026-09-14-one-question-gets-one-expression.md) | One question gets one expression |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

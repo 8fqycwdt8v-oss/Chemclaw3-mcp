@@ -230,14 +230,23 @@ independent layers because a rule that lives in one place rots:
    test_every_call_site_derives_its_cause_rather_than_writing_one`, as a count, because a collected
    list that must come back empty is satisfied by the calls being gone.
    **This sentence used to say "every path in this fleet that catches an exception and answers
-   anyway", and that is a different and false claim**: two serving paths catch and answer with
-   something other than a missing contribution, and both are deliberate and documented where they
-   are. `rxnpredict/engine/cache.py` falls back to the *uncanonicalised* SMILES as a cache key when
-   RDKit refuses an input — the prediction is whole, the slot is merely a different one, "a cache
-   must never be the thing that fails a prediction" — and `rxnlabel/engine/mapping.py`'s
-   `inference_threads` charges the admission ceiling `1` when torch cannot be asked its width, which
-   under-charges rather than degrades. Neither is a component this fleet answered without, so
-   counting either on `chemclaw_mcp_degraded_total` would publish a series about nothing missing.
+   anyway", and that is a different and false claim**: a serving path can catch and answer with
+   something other than a missing contribution. `rxnlabel/engine/mapping.py`'s `inference_threads`
+   charges the admission ceiling `1` when torch cannot be asked its width, which under-charges
+   rather than degrades; nothing this fleet answered without is missing, so counting it on
+   `chemclaw_mcp_degraded_total` would publish a series about nothing.
+   **The second example this paragraph gave has been deleted and the paragraph outlived it**:
+   `rxnpredict/engine/cache.py` was said to fall back to the *uncanonicalised* SMILES as a cache
+   key, and `D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key` removed
+   exactly that fallback — `_canonical_or_none` returns `None` and the entry is not cached, the
+   `ValueError` arm is deliberately silent because a caller's typo is not this pod degrading, and
+   the blind arm classifies. A prose example naming a deleted branch reads as a live exemption
+   (`D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing`, on the same wave's other
+   sentences).
+   **What holds the claim rather than asserting it** is
+   `tests/test_fleet.py::test_every_blind_handler_that_answers_anyway_is_argued`, which is where an
+   exemption now has to be written for a reader to believe there is one
+   (`D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as`).
    `chemclaw_mcp_egress_guard_armed` is what makes a deployment that shipped `MCP_EGRESS_GUARD=off`
    visible from a scrape rather than from a docstring. This is the layer that catches what a
    static scan cannot: a library fetching model weights, usage telemetry, a DNS-based licence check.
@@ -537,9 +546,18 @@ make run-calc        # the heaviest one — a call here can be minutes or hours,
 - **Ruff selects `S`, `ASYNC` and `BLE` beyond the obvious set, and `BLE` is the one that pays**
   (`D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for`). The claim two
   sections up — that every path here which catches an exception and answers anyway classifies it —
-  had nothing behind it and one path did not; `BLE001` lands on exactly those lines, so each carries
-  a `# noqa: BLE001` and its reason *at the site*, and a new blind handler is red until somebody
-  writes one. `S101` is deliberately **off**: `tests/test_fleet.py` already holds the no-`assert`
+  had nothing behind it and one path did not; `BLE001` lands on most of those lines, so each carries
+  a `# noqa: BLE001` and its reason *at the site*.
+  **It does not land on all of them, and this sentence used to say it did**
+  (`D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as`): measured,
+  `BLE001` is silent on a blind handler that logs with `logging.exception` and returns, and on one
+  that re-raises conditionally — two shapes this fleet writes, `rxnlabel`'s mapper and namer among
+  them. Worse, the stated remedy is unavailable there: `RUF100` is selected, so a `# noqa: BLE001`
+  on a line ruff did not flag is itself an error. So the control is a pair.
+  `tests/test_fleet.py::test_every_blind_handler_that_answers_anyway_is_argued` is the half ruff
+  cannot reach — a blind handler that answers without re-raising classifies through
+  `mcp_server_kit.degradation`, carries the `noqa` ruff did ask for, or is argued in an allowlist
+  beside the test, which a second test holds against the tree in both directions. `S101` is deliberately **off**: `tests/test_fleet.py` already holds the no-`assert`
   rule over serving code and carries the argument for its two exemptions, and a `per-file-ignores`
   list would be a second copy of that list with nothing reconciling the two.
 - **An image installs what `uv.lock` resolves, not what pip resolves on the day of the build**

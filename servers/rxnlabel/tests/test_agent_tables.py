@@ -28,6 +28,9 @@ re-typing of the table's own text.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 from chemclaw_mcp_rxnlabel.engine import agents
 from rdkit import Chem
@@ -165,15 +168,95 @@ def test_a_solvent_is_recognised_however_it_is_spelled(name: str, smiles: str) -
 
 @pytest.mark.parametrize("symbol", sorted(agents.TRANSITION_METALS))
 def test_every_transition_metal_symbol_is_a_d_block_element(symbol: str) -> None:
-    """Derived from RDKit's periodic table, not from a second copy of the set.
+    """Nothing here leaves the d block. Derived from RDKit's periodic table, not from a second copy.
 
-    This is the check that catches a transposition between two *real* element symbols — `Rb` for
-    `Rh`, `Ru` for `Cu` — which a spell-check of the list against itself cannot see. Groups 3-12 are
-    the three d-block runs by atomic number.
+    **This catches a symbol that leaves the block, and its docstring used to claim more than that**
+    (`D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range`): it said it was "the check
+    that catches a transposition between two *real* element symbols — `Rb` for `Rh`, `Ru` for
+    `Cu`". Driven, `"Cu"` replaced by `"Ru"` in `TRANSITION_METALS` left this file at **133
+    passed**. A predicate over a range can only see a member leaving the range; `Rb`(37) does,
+    `Ru`(44) for `Cu`(29) does not, and copper disappearing from the catalyst table is the failure
+    this file exists for. What sees that is
+    `test_the_metal_table_is_the_d_block_minus_the_one_argued_out` below, and it subsumes this
+    check. This one stays because a merged record names it and because a per-symbol failure says
+    *which* symbol.
+
+    The third run is **72-80**, not 57-80: `57 <= number` calls `La`-`Lu` d-block, which they are
+    not, so the old bound would have accepted a lanthanide.
     """
     number = Chem.GetPeriodicTable().GetAtomicNumber(symbol)
-    d_block = 21 <= number <= 30 or 39 <= number <= 48 or 57 <= number <= 80
+    d_block = 21 <= number <= 30 or 39 <= number <= 48 or 72 <= number <= 80
     assert d_block, f"{symbol} (Z={number}) is not a d-block element"
+
+
+# The d block by atomic number: groups 3-12 of periods 4, 5 and 6. The third run starts at Hf(72)
+# rather than La(57) because 57-71 is the lanthanide series.
+D_BLOCK_RUNS = ((21, 30), (39, 48), (72, 80))
+
+
+def test_the_metal_table_is_the_d_block_minus_the_one_argued_out() -> None:
+    """Membership, both ways, against the periodic table — because a range test has a blind spot.
+
+    A transposition between two symbols *inside* the block is two events at once: one metal
+    duplicated and another **gone**. The range check sees neither. What sees the second is asking
+    whether every d-block element is either in the table or deliberately out of it, which makes the
+    absence the failure rather than the presence.
+
+    The one argued exclusion is `Zn`. Its reason is in the comment beside the set — an
+    organometallic zinc partner is a reagent, not a catalyst, and calling it one puts every
+    Reformatsky at the top of a "catalysts used" table. `Cd` and `Hg` are group 12 as well and are
+    *in*; `D-2026-09-13-a-hand-compiled-rule-table-is-a-table-with-a-typo-in-it` records that
+    asymmetry as observed rather than acted on, and this test holds the table as it stands rather
+    than re-deciding it.
+
+    `DELIBERATELY_NOT_METALS` is where that exclusion is written down, so the two cannot drift: the
+    other four symbols there are not d-block and could never have been in this comparison.
+    """
+    table = Chem.GetPeriodicTable()
+    d_block = {
+        table.GetElementSymbol(number)
+        for low, high in D_BLOCK_RUNS
+        for number in range(low, high + 1)
+    }
+    argued_out = d_block & set(DELIBERATELY_NOT_METALS)
+    assert argued_out == {"Zn"}, (
+        f"the d-block symbols excluded on purpose are now {sorted(argued_out)}; if that is "
+        "intended, the comment beside TRANSITION_METALS is what has to argue it"
+    )
+    assert d_block - argued_out == agents.TRANSITION_METALS, (
+        "TRANSITION_METALS is no longer the d block minus its argued exclusion. Missing: "
+        f"{sorted(d_block - argued_out - agents.TRANSITION_METALS)}; unexpected: "
+        f"{sorted(agents.TRANSITION_METALS - d_block)}"
+    )
+
+
+def test_the_metal_set_literal_holds_no_symbol_twice() -> None:
+    """A `frozenset` swallows a duplicate, which is how the ester row survived one table over.
+
+    `{"Ru", ..., "Ru"}` is one element by the time anything can read it, so the count has to come
+    from the *source*. Read as a tree rather than as text, for the reason the whole file is: a
+    symbol in a comment beside the set reads identically to one in it.
+    """
+    source = Path(agents.__file__).read_text(encoding="utf-8")
+    literals = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "TRANSITION_METALS"
+            for target in node.targets
+        )
+    ]
+    assert len(literals) == 1, "TRANSITION_METALS is assigned more than once"
+    written = [
+        element.value
+        for element in ast.walk(literals[0])
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    ]
+    assert len(written) == len(agents.TRANSITION_METALS), (
+        f"{len(written)} symbols are written into TRANSITION_METALS and it holds "
+        f"{len(agents.TRANSITION_METALS)}; a duplicate is being swallowed"
+    )
 
 
 @pytest.mark.parametrize("symbol", DELIBERATELY_NOT_METALS)

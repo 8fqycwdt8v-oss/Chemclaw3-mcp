@@ -138,7 +138,8 @@ async def test_a_repeated_call_is_served_from_the_cache(fake_predictors: None) -
     from chemclaw_mcp_rxnpredict.engine.cache import get_cache
 
     await tools.predict_forward_reaction("CC(=O)Cl.Nc1ccccc1", top_k=2)
-    cached = get_cache().get_forward("fake_a", "CC(=O)Cl.Nc1ccccc1", 2)
+    cache = get_cache()
+    cached = cache.get(cache.key_forward("fake_a", "CC(=O)Cl.Nc1ccccc1", 2))
     assert cached is not None
     assert cached[0]["product_smiles"] == "CC(=O)Nc1ccccc1"
 

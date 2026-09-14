@@ -603,6 +603,40 @@ def test_the_revision_reaches_the_handshake_and_the_probe() -> None:
 _PIP_SPECIFIER = re.compile(r'"([A-Za-z0-9][A-Za-z0-9._-]*)(==|>=|<=|~=|>|<)([0-9][^"]*)"')
 
 
+def containerfile_instructions(text: str) -> list[str]:
+    """A Containerfile's instructions as logical lines — comments removed, continuations joined.
+
+    **A substring match against the whole file is satisfied by a comment**, and that is not a
+    hypothetical: driven against `f3f3c9c`, `servers/safety/Containerfile`'s real
+    `uv export --frozen ... && pip wheel --require-hashes ...` was replaced by an unpinned
+    `pip wheel chemclaw-mcp-safety` with the deleted phrases moved into a `#` line above it, and
+    the whole root suite stayed green at **207 passed**. The biggest claim of
+    `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` was revertible without
+    reddening anything, because the ratchet holding it read `Path.read_text()` as one string.
+
+    So a caller here reads what the builder reads. A line whose first non-blank character is `#`
+    is a comment and is dropped — including inside a continuation, which is what the builder does
+    — a trailing `\\` joins the next line, and runs of whitespace collapse so an assertion can
+    name a phrase without also pinning its indentation.
+    """
+    instructions: list[str] = []
+    current = ""
+    for raw in text.splitlines():
+        if raw.lstrip().startswith("#"):
+            continue
+        line = raw.rstrip()
+        if line.endswith("\\"):
+            current += line[:-1] + " "
+            continue
+        current += line
+        if current.strip():
+            instructions.append(" ".join(current.split()))
+        current = ""
+    if current.strip():
+        instructions.append(" ".join(current.split()))
+    return instructions
+
+
 def _locked_versions() -> dict[str, str]:
     """Every distribution `uv.lock` resolves, name to version — the set `make deps-audit` reads."""
     import tomllib
@@ -632,7 +666,7 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
     an image is pinned, and pinned to the lock, so `uv lock` moving it is what proposes the bump in
     a pull request.
     """
-    text = (server / "Containerfile").read_text(encoding="utf-8")
+    text = "\n".join(containerfile_instructions((server / "Containerfile").read_text("utf-8")))
     locked = _locked_versions()
     for name, operator, version in _PIP_SPECIFIER.findall(text):
         if name.lower().replace("_", "-") not in locked:
@@ -679,30 +713,96 @@ def test_every_image_installs_the_closure_the_audit_read(server: Path) -> None:
 
     This asserts what the Containerfile *declares*. What it does is a build, which is a measurement
     in the record above rather than something this suite can run.
+
+    **What it reads is `containerfile_instructions`, not the file's text**, and the difference is
+    the whole control: this test shipped matching four literals against `read_text()`, which a
+    comment satisfies. Driven at `f3f3c9c`, every phrase below survived in a `#` line above an
+    unpinned `pip wheel chemclaw-mcp-safety` and the root suite stayed green. The export and the
+    `--require-hashes` install are now required in the **same `RUN`** as well, because two literals
+    in two unrelated instructions are not a pipeline — `RUN echo --require-hashes` would otherwise
+    do.
     """
     text = (server / "Containerfile").read_text(encoding="utf-8")
+    instructions = containerfile_instructions(text)
     dist = re.search(
         r'^name\s*=\s*"([^"]+)"', (server / "pyproject.toml").read_text(encoding="utf-8"), re.M
     )
     assert dist, f"{server.name}/pyproject.toml declares no distribution name"
 
-    assert "COPY pyproject.toml uv.lock /build/" in text, (
+    assert any(i == "COPY pyproject.toml uv.lock /build/" for i in instructions), (
         f"{server.name}/Containerfile does not copy uv.lock into its build context, so whatever it "
         "installs was resolved at build time and `make deps-audit` audited a different closure"
     )
-    export = re.search(r"uv export --frozen --package ([\w.-]+)", text)
-    assert export, (
-        f"{server.name}/Containerfile has no `uv export --frozen --package ...` step; the third-"
+    exporting = [
+        i for i in instructions if i.startswith("RUN ") and "uv export --frozen --package" in i
+    ]
+    assert exporting, (
+        f"{server.name}/Containerfile runs no `uv export --frozen --package ...`; the third-"
         "party closure is therefore whatever pip resolves on the day of the build"
     )
+    assert len(exporting) == 1, (
+        f"{server.name}/Containerfile exports the locked closure in {len(exporting)} separate RUN "
+        "instructions; this check reads one, so which one ships would be a coin toss"
+    )
+    block = exporting[0]
+    export = re.search(r"uv export --frozen --package ([\w.-]+)", block)
+    assert export is not None  # the substring above is what selected this instruction
     assert export.group(1) == dist.group(1), (
         f"{server.name}/Containerfile exports the closure of {export.group(1)!r} while its own "
         f"distribution is {dist.group(1)!r}: it would install another server's dependencies"
     )
-    assert "--require-hashes -r /build/requirements.txt" in text, (
+    assert "--require-hashes -r /build/requirements.txt" in block, (
         f"{server.name}/Containerfile does not install the exported closure with "
-        "`--require-hashes`, so a rewritten artefact under an unchanged version installs quietly"
+        "`--require-hashes` in the same RUN that exports it, so a rewritten artefact under an "
+        "unchanged version installs quietly"
     )
+
+
+def test_the_image_install_check_reads_instructions_and_not_the_text() -> None:
+    """The bite test for the check above: a comment saying it must not satisfy it.
+
+    Without this, `containerfile_instructions` could be quietly weakened back into
+    `read_text().splitlines()` — the form measured green with `servers/safety/Containerfile`'s real
+    lock-based install deleted — and every assertion above would go on passing, because the
+    shipped Containerfiles carry each phrase in prose *and* in the `RUN`. So this drives the
+    failing direction on a synthetic file rather than the passing one on seven real ones.
+
+    Three shapes, each a way the old check was satisfiable without the control:
+
+    - every phrase present, but only in comments;
+    - the export in one `RUN` and `--require-hashes` in another, which is two literals rather than
+      a pipeline;
+    - a `COPY` of the lock named only in prose.
+    """
+    comments_only = """FROM python:3.11-slim
+# COPY pyproject.toml uv.lock /build/
+# RUN uv export --frozen --package chemclaw-mcp-props \\
+#       && pip wheel --require-hashes -r /build/requirements.txt
+COPY pyproject.toml /build/
+RUN python -m pip wheel --wheel-dir /wheels chemclaw-mcp-props
+"""
+    assert containerfile_instructions(comments_only) == [
+        "FROM python:3.11-slim",
+        "COPY pyproject.toml /build/",
+        "RUN python -m pip wheel --wheel-dir /wheels chemclaw-mcp-props",
+    ], "a comment reached the instruction list, which is exactly how the old check was satisfied"
+
+    split_across_runs = """COPY pyproject.toml uv.lock /build/
+RUN uv export --frozen --package chemclaw-mcp-props --format requirements-txt \\
+      -o /build/requirements.txt
+RUN python -m pip wheel --require-hashes -r /build/requirements.txt
+"""
+    instructions = containerfile_instructions(split_across_runs)
+    exporting = [
+        i for i in instructions if i.startswith("RUN ") and "uv export --frozen --package" in i
+    ]
+    assert len(exporting) == 1
+    assert "--require-hashes -r /build/requirements.txt" not in exporting[0], (
+        "the two halves landed in one instruction, so the same-RUN assertion above proves nothing"
+    )
+
+    joined = containerfile_instructions("RUN a \\\n    && b \\\n    && c\n")
+    assert joined == ["RUN a && b && c"], "a continuation was not joined into one instruction"
 
 
 def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:
@@ -1899,6 +1999,123 @@ def test_no_serving_module_enforces_an_invariant_with_assert() -> None:
         + "\n  ".join(offences)
         + "\nUse `if not ...: raise` — a ValueError where the caller can act on it, otherwise a "
         "RuntimeError that `connector_app` sanitises."
+    )
+
+
+# The blind handlers that answer without classifying, each argued here because ruff cannot be made
+# to ask for the argument at the site: see `test_every_blind_handler_that_answers_anyway_is_argued`.
+#
+# `auth.py`'s body-cap guard discards the downstream app's exception **only when this middleware has
+# already refused the request** — the app raised because the guard cut its receive channel, which is
+# this code's own doing rather than a component going missing. A `record()` there would publish a
+# degradation every time a caller sent an oversized body.
+BLIND_ANSWER_IS_ARGUED = {
+    "packages/mcp_server_kit/src/mcp_server_kit/auth.py:432",
+}
+
+_BLIND = {"Exception", "BaseException"}
+
+
+def _blind_handlers_that_answer(roots: list[Path]) -> list[str]:
+    """Every blind `except` under `roots` that can return without re-raising and says nothing.
+
+    "Says nothing" is the whole predicate, and it has three escapes, each meaning a reason exists
+    somewhere a reader will find it:
+
+    - the handler's last statement is a `raise`, so it does not answer at all;
+    - it carries a `# noqa: BLE001`, which means **ruff flagged it** and the fleet's convention put
+      the reason on that line;
+    - it calls `classify` or `record`, which is `mcp_server_kit.degradation` and therefore the
+      counter the claim is about.
+    """
+    offences: list[str] = []
+    for root in roots:
+        for source in sorted(root.rglob("*.py")):
+            relative = source.relative_to(ROOT).as_posix()
+            text = source.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            for node in ast.walk(ast.parse(text, filename=str(source))):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                caught = (
+                    node.type.elts
+                    if isinstance(node.type, ast.Tuple)
+                    else ([] if node.type is None else [node.type])
+                )
+                blind = node.type is None or any(
+                    isinstance(one, ast.Name) and one.id in _BLIND for one in caught
+                )
+                if not blind or isinstance(node.body[-1], ast.Raise):
+                    continue
+                if "BLE001" in lines[node.lineno - 1]:
+                    continue
+                if any(
+                    isinstance(call.func, ast.Attribute | ast.Name)
+                    and (call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id)
+                    in {"classify", "record"}
+                    for call in ast.walk(node)
+                    if isinstance(call, ast.Call)
+                ):
+                    continue
+                offences.append(f"{relative}:{node.lineno}")
+    return sorted(offences)
+
+
+def test_every_blind_handler_that_answers_anyway_is_argued() -> None:
+    """`BLE001` does not fire on the two shapes this fleet's own handlers are written in.
+
+    `CLAUDE.md` and `pyproject.toml` both said that `BLE001` "lands on exactly those lines, so a new
+    blind handler is red until somebody writes the reason at the site". Measured with
+    `ruff check --isolated --select BLE,RUF`:
+
+    | handler | `BLE001` |
+    | --- | --- |
+    | `except Exception as exc: logger.warning(...)` | flagged |
+    | `except Exception as exc: logger.exception(...); return None` | **not flagged** |
+    | `except Exception: if cond: raise` | **not flagged** |
+
+    Two shipped handlers are the second shape —
+    `servers/rxnlabel/.../engine/naming.py` and `.../engine/mapping.py`, each a library that is
+    installed and will not import or construct. Both classify correctly today, so nothing was
+    broken; what did not exist was the control that keeps them that way.
+
+    **And the stated remedy is unavailable to exactly those lines.** `RUF100` is selected, so a
+    `# noqa: BLE001` on a handler ruff does not flag is itself an error — driven, both shapes above
+    report `RUF100 Unused noqa directive (unused: BLE001)`. So "write the reason at the site" cannot
+    be the rule for the handlers ruff misses, and a first-party scan is what is left.
+
+    The rule here is therefore about the claim rather than about the lint: a blind handler that can
+    **answer anyway** classifies through `mcp_server_kit.degradation`, carries the `noqa` reason
+    ruff did ask for, or is argued in `BLIND_ANSWER_IS_ARGUED` above. Ruff stays selected — it is
+    the faster half and it catches the commonest shape — and this is the half it cannot reach.
+    """
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    assert len(roots) > 1, "no source trees found; has the workspace layout changed?"
+    offences = [
+        one for one in _blind_handlers_that_answer(roots) if one not in BLIND_ANSWER_IS_ARGUED
+    ]
+    assert not offences, (
+        "these blind handlers answer without re-raising and neither classify through "
+        "`mcp_server_kit.degradation` nor carry a `# noqa: BLE001` reason:\n  "
+        + "\n  ".join(offences)
+        + "\nClassify it, or add it to BLIND_ANSWER_IS_ARGUED with the argument for why the "
+        "answer it returns is whole."
+    )
+
+
+def test_the_argued_blind_handlers_are_still_there() -> None:
+    """An allowlist entry that no longer names a handler is an argument about nothing.
+
+    The same two-directions rule the rest of this file is built on: without it, moving `auth.py`'s
+    body-cap guard would leave a line here asserting a property of a handler that had gone, and the
+    next one added in its place would inherit the exemption.
+    """
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    found = set(_blind_handlers_that_answer(roots))
+    stale = sorted(BLIND_ANSWER_IS_ARGUED - found)
+    assert not stale, (
+        f"BLIND_ANSWER_IS_ARGUED names handlers that are no longer there: {stale}. Delete the "
+        "entry and its argument in the commit that moved them."
     )
 
 

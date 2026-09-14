@@ -77,13 +77,21 @@ jobs:
       # three source trees while the Makefile named four, so `servers/safety/src` was type-checked
       # locally and not in CI. One list, in the Makefile, is what stops that recurring as servers
       # are added.
+      # `if: !cancelled()` on this step and the next, because the job that used to report the
+      # fleet invariants independently is gone (see the note below the `offline` job). Steps in one
+      # job are sequential, so without this a ruff finding aborts `check` before mypy or the suite
+      # runs, and a push with one formatting slip reports nothing about the other two gates — which
+      # the deleted `manifests` job, on its own runner, did report. Every gate still blocks; what
+      # changes is that a red one no longer hides the others.
       - name: Types
+        if: ${{ !cancelled() }}
         run: make type
 
       # `make cov` rather than a bare `pytest`: same suite, plus the coverage floor
       # `pyproject.toml` declares. Measured at 176 s against 210 s for the bare run, so the floor
       # costs nothing and running the suite twice to get it would cost everything.
       - name: Tests and the coverage floor
+        if: ${{ !cancelled() }}
         run: make cov
 
   offline:
@@ -131,13 +139,24 @@ jobs:
 
   # **There was a `manifests` job here and it has been deleted, which is a reduction in jobs and not
   # in coverage.** It ran `uv run pytest -q tests` on its own runner, and `pyproject.toml` sets
-  # `testpaths = ["tests", "packages", "servers"]` — so every one of its 182 tests was already in
-  # the 2,034 the `check` job runs, on the same image, after the same `uv sync`. A job that cannot
-  # go red unless another job also goes red is a second light on one fault, which is the shape this
-  # repository deleted a port table over; it bought a runner's worth of minutes per push and a
-  # second place to read the same failure. The fleet-level invariants it named are not lost — they
-  # are `tests/`, and `check` runs them. Fast feedback on them, if it is ever wanted, is a step
-  # order inside `check` rather than a duplicate job.
+  # `testpaths = ["tests", "packages", "servers"]` — so every test it ran was already in the set the
+  # `check` job runs, on the same image, after the same `uv sync`. A job that cannot go red unless
+  # another job also goes red is a second light on one fault, which is the shape this repository
+  # deleted a port table over; it bought a runner's worth of minutes per push and a second place to
+  # read the same failure. The fleet-level invariants it named are not lost — they are `tests/`, and
+  # `check` runs them.
+  #
+  # **This paragraph used to state both counts and both were wrong**, which is the rule one document
+  # over (`CLAUDE.md`: "a number in prose is a claim about its author's afternoon") being broken by
+  # the argument for a deletion. "182" was the `tests/` count at the *parent* commit and 207 at the
+  # one that wrote it; "2,034" matched neither commit. `pytest -q tests --collect-only` answers, and
+  # the subset relation is what the argument rests on — that is a property of `testpaths`, not of
+  # any number.
+  #
+  # **And one behaviour was lost that the paragraph did not mention.** `check`'s steps are
+  # sequential, so a ruff failure aborted the job before mypy or the suite ran, where the separate
+  # runner had reported the fleet invariants anyway. `if: !cancelled()` on the `Types` and `Tests`
+  # steps is what restores that, inside one job.
 
   deps:
     # The supply-chain gate: `pip-audit` over the locked closure, blocking. It is a separate job

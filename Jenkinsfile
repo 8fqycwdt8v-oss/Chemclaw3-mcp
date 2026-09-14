@@ -54,7 +54,16 @@ pipeline {
           // One shape for an image reference, resolved once. The verify stage needs the same
           // references the build stage produced, and carrying them between stages as a map keyed by
           // server name was the fragile way to do it — this is the same string in both places.
-          env.IMAGE_PREFIX = params.IMAGE_REGISTRY ? "${params.IMAGE_REGISTRY}/" : ''
+          //
+          // **And one answer to "is there a registry", for the same reason.** The Preflight guard
+          // below asked `params.IMAGE_REGISTRY?.trim()` while the publish branch asked
+          // `!params.IMAGE_REGISTRY`, and in Groovy a whitespace-only string is truthy while its
+          // `trim()` is not — so `IMAGE_REGISTRY="  "` skipped the refusal *and* took the
+          // publishing branch. The push then died on `"  /chemclaw-mcp-…"`, which is an
+          // inconsistency rather than a bypass, and an inconsistency between two spellings of one
+          // predicate is the thing to remove rather than the failure to rely on.
+          env.IMAGE_REGISTRY = params.IMAGE_REGISTRY?.trim() ?: ''
+          env.IMAGE_PREFIX = env.IMAGE_REGISTRY ? "${env.IMAGE_REGISTRY}/" : ''
           env.IMAGE_TAG = env.REVISION.take(12)
           echo "revision ${env.REVISION}\nservers  ${env.SERVER_LIST}"
 
@@ -72,9 +81,9 @@ pipeline {
           // an incident. What is decidable *here* is the local gate, so publishing requires it. A
           // dry run still does not: a build that ships nothing is allowed to be fast, which is what
           // the parameter was for.
-          if (!params.DRY_RUN && params.IMAGE_REGISTRY?.trim() && !params.RUN_GATE) {
+          if (!params.DRY_RUN && env.IMAGE_REGISTRY && !params.RUN_GATE) {
             error(
-              "RUN_GATE is off and this run would publish to ${params.IMAGE_REGISTRY}. Nothing in " +
+              "RUN_GATE is off and this run would publish to ${env.IMAGE_REGISTRY}. Nothing in " +
               "this pipeline can see whether GitHub Actions was green for ${env.REVISION}, so an " +
               "image published from here would carry no evidence that the gate ever ran against " +
               "it. Either set RUN_GATE=true, or leave DRY_RUN=true and publish from a run that did."
@@ -110,7 +119,7 @@ pipeline {
             def digests = [:]
             for (name in env.SERVER_LIST.split(' ')) {
               def ref = "${env.IMAGE_PREFIX}chemclaw-mcp-${name}:${env.IMAGE_TAG}"
-              if (params.DRY_RUN || !params.IMAGE_REGISTRY) {
+              if (params.DRY_RUN || !env.IMAGE_REGISTRY) {
                 sh """
                   set -euo pipefail
                   . .jenkins-lib/deploy/jenkins/lib/image.sh
@@ -126,7 +135,7 @@ pipeline {
                   set -euo pipefail
                   . .jenkins-lib/deploy/jenkins/lib/registry-login.sh
                   . .jenkins-lib/deploy/jenkins/lib/image.sh
-                  registry_login '${params.IMAGE_REGISTRY}'
+                  registry_login '${env.IMAGE_REGISTRY}'
                   build_and_push servers/${name}/Containerfile . '${ref}' \
                     --build-arg CHEMCLAW_REVISION=${env.REVISION}
                 """).trim()
@@ -185,7 +194,7 @@ pipeline {
     }
 
     stage('Report the digests') {
-      when { expression { !params.DRY_RUN && params.IMAGE_REGISTRY != '' } }
+      when { expression { !params.DRY_RUN && env.IMAGE_REGISTRY != '' } }
       steps {
         script {
           writeFile file: 'mcp-digests.txt', text: env.DIGEST_LINES + '\n'
