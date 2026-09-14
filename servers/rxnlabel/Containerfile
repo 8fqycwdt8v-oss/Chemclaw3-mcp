@@ -55,11 +55,14 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
 # ~2 GB of image for a GPU no pod in this fleet has.
 #
 # **Pinned to the versions `make deps-audit` reads**, not to this server's `pyproject.toml` bounds.
-# Nothing here consumes `uv.lock` — every image re-resolves with pip at build time — so an open
-# `>=` on the one install that names its packages directly meant the audited version and the
-# shipped version agreed only by luck, and the audit's six argued suppressions were being applied
-# to versions nobody had checked. `tests/test_fleet.py` keeps these two literals equal to the lock;
-# `uv lock` moving them is what proposes the bump, in a pull request a person reads.
+# This is the one install in the fleet that is *outside* the lock: the build stage above exports
+# `uv.lock` and installs it `--require-hashes`, and these two come from PyPI's CPU-torch index,
+# which the lock does not carry. (This comment said "nothing here consumes `uv.lock`" for a wave,
+# thirty-eight lines below the `COPY pyproject.toml uv.lock /build/` that does.) An open `>=` here
+# meant the audited version and the shipped version agreed only by luck, and the audit's argued
+# suppressions were being applied to versions nobody had checked. `tests/test_fleet.py` keeps these
+# two literals equal to the lock; `uv lock` moving them is what proposes the bump, in a pull request
+# a person reads. Their transitive closure still re-resolves — `docs/BACKLOG.md` carries the row.
 RUN python -m pip install --no-cache-dir \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         "rxnmapper==0.4.3" "rxn-insight==0.1.3"

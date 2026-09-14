@@ -184,19 +184,21 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# here and in CI, not whatever a developer's venv has drifted to. `--no-deps` because the
 	@# export is already the fully-resolved set — re-resolving would audit a different closure.
 	@#
-	@# **It is not the closure an image installs, and the sentence that stood here said it was.** No
-	@# Containerfile in this repository reads `uv.lock`: none copies it, none passes `--constraint`,
-	@# none runs `uv sync`. All seven re-resolve independently with pip at build time from the open
-	@# lower bounds in each server's `pyproject.toml`, so the lock moves only when somebody runs
-	@# `uv lock` while an image re-resolves on every build. Measured 2026-08-28, resolving exactly
-	@# what the rxnpredict image installs and diffing it against this export: 11 of 100 packages
-	@# differ, `pandas` by a major version. So this is a *proxy* for the images — a close one, since
-	@# they install the same packages from the same declarations — and image drift is **unaudited**.
-	@# Closing that gap means the images installing from the lock (an exported requirements file
-	@# installed `--require-hashes`, or `uv sync --frozen`), which is a delivery change rather than
-	@# a comment. What is held today is narrower and is a test: an image that installs a package
-	@# straight from the index pins it to the version this audit read
-	@# (`tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read`).
+	@# **It is the closure an image installs, and for one wave this comment went on saying it was
+	@# not.** Every Containerfile copies `uv.lock` and installs what `uv export --frozen` produces,
+	@# with `--require-hashes`
+	@# (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`) — so the paragraph that
+	@# stood here, describing seven images re-resolving with pip and calling image drift
+	@# **unaudited**, was falsified by the same commit that wrote the fix, and was the operator-
+	@# facing copy of it. Its "11 of 100, `pandas` by a major version" was a 2026-08-28 measurement
+	@# of a build form that no longer exists. Rebuilt and re-measured at that commit: 0 version
+	@# differences against this export, in both directions, on every server whose image was built.
+	@#
+	@# What is *not* covered is named rather than implied: `servers/rxnlabel/Containerfile` installs
+	@# `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` straight from PyPI's CPU-torch index, which the
+	@# lock does not carry. That pair is held to the lock by version rather than by hash
+	@# (`tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read`),
+	@# their transitive closure re-resolves, and `docs/BACKLOG.md` carries the row.
 	@#
 	@# **`--all-packages --all-extras` is what makes this cover anything at all, and that is a
 	@# property of this workspace rather than a preference.** The root package declares
