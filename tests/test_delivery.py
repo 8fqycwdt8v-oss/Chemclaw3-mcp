@@ -20,8 +20,11 @@ import re
 import subprocess
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 JENKINSFILE = ROOT / "Jenkinsfile"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 SERVERS = ROOT / "servers"
 
 
@@ -184,3 +187,73 @@ def test_every_shell_block_in_the_pipeline_parses() -> None:
         script = _shell_as_the_shell_receives_it(block)
         result = subprocess.run(["bash", "-n"], input=script, capture_output=True, text=True)
         assert result.returncode == 0, f"a shell block does not parse: {result.stderr.strip()}"
+
+
+# The commands that run this repository's suite. A job that runs one of these runs
+# `tests/test_decision_log.py::test_every_commit_the_registers_cite_is_reachable_from_head`, which
+# needs ancestry: `git merge-base --is-ancestor` cannot decide reachability in a shallow clone, so
+# that test *warns and returns* instead of failing. `actions/checkout` defaults to depth 1.
+_SUITE_COMMANDS = ("make cov", "make test", "make check", "make offline-run", "offline_check.py")
+
+
+def _ci_jobs() -> dict[str, dict[str, object]]:
+    workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict) and jobs, f"{CI_WORKFLOW.name} declares no jobs"
+    return jobs
+
+
+def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
+    """`fetch-depth: 0` is a control, and a control this repository does not read is not one.
+
+    The reachability check above degrades to a `warnings.warn` on a shallow clone, so under
+    `actions/checkout`'s default depth of 1 it does not fail — it does not *run*. That is the exact
+    shape the assertion exists to refuse, one level up: green because nothing was checked.
+
+    The record that added the depth declined to assert it, on the ground that "a test asserting the
+    content of the file that runs it is a control reading its own configuration". This repository
+    had already settled that question the other way: `test_a_publishing_run_cannot_skip_the_gate`
+    and the seven assertions beside it read `Jenkinsfile`, for the reason that file's own docstring
+    gives — it is checked by no compiler and no linter here. Neither is `.github/workflows/ci.yml`.
+
+    And the fallback offered instead — "removing the depth silently turns a red gate green" — only
+    holds while a citation is *already* stale. In steady state the assertion passes either way, so
+    removing the depth produces no signal at all until the next squash merge strands a hash, at
+    which point CI is green and `main` is red for anyone with full history. That is the defect the
+    record set out to end, recurring undetected.
+
+    Derived from the jobs rather than from a list of two: a fourth job that runs the suite is bound
+    the day it is added, which is what a list of names cannot do.
+
+    What this cannot reach: `Jenkinsfile`'s `Gate` stage runs `make check` and `make offline-run` on
+    the implicit declarative checkout, whose depth is controller configuration outside this tree.
+    GitHub Actions is the only place the reachability assertion is known to run.
+    """
+    running = {
+        name: job
+        for name, job in _ci_jobs().items()
+        if any(
+            command in str(step.get("run", ""))
+            for step in job.get("steps", [])  # type: ignore[union-attr]
+            for command in _SUITE_COMMANDS
+        )
+    }
+    assert running, f"no job in {CI_WORKFLOW.name} runs the suite — this test would assert nothing"
+    for name, job in running.items():
+        checkouts = [
+            step
+            for step in job.get("steps", [])  # type: ignore[union-attr]
+            if "actions/checkout" in str(step.get("uses", ""))
+        ]
+        assert checkouts, (
+            f"job {name!r} runs the suite with no `actions/checkout` step; the commit-reachability "
+            "assertion cannot read ancestry it was never given"
+        )
+        for step in checkouts:
+            depth = (step.get("with") or {}).get("fetch-depth")
+            assert depth == 0, (
+                f"job {name!r} checks out with fetch-depth={depth!r}; `actions/checkout` defaults "
+                "to depth 1, where test_every_commit_the_registers_cite_is_reachable_from_head "
+                "warns and returns instead of failing — so the citations go unchecked in CI while "
+                "the run stays green"
+            )

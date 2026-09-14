@@ -313,6 +313,25 @@ decision leaves a record behind and the row goes.
   ships today.
   **Anchors:** `tests/test_consumer_agreement.py`, `conftest.py`, `.github/workflows/ci.yml`.
 
+- [ ] **The consumer-side guard cannot tell the agreement module from any file with that name and
+  a green test.** `test_the_consumer_still_agrees_with_the_surface_this_tree_declares` runs whatever
+  module sits at the path `AGREEMENT_MODULE` names in the consumer checkout, and reads its
+  outcome; `inert_outcome` now refuses a skip, an xfail, an xpass, an empty selection and a run with
+  no pass in it, which closes every way that module can be *inert*. It does not close a module that
+  genuinely passes and asserts nothing about this tree. Driven 2026-09-14 at `e8cf74a`: a synthetic
+  checkout whose whole agreement module is one `test_*` with `assert True`, beside a symlinked
+  `.venv`, gives `3 passed in 1.32s` here — the real module's three checks replaced by nothing, with
+  the guard green. `D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts` §4.6 names
+  the *deletion* case only, which is one instance of this. It is inherent to running the consumer's
+  module rather than reproducing it, so the row is a decision rather than a fix: whether this side
+  should also require the module to report a **minimum number of passes** it derives from the
+  consumer's own file (which couples the two trees' test counts), whether it should name the tests
+  it expects by `--collect-only`, or whether the honest arrangement is to say in the record that the
+  consumer's file is trusted and name that as the trust boundary.
+  **Anchors:** `tests/test_consumer_agreement.py::inert_outcome`,
+  `tests/test_consumer_agreement.py::test_the_consumer_still_agrees_with_the_surface_this_tree_declares`,
+  `docs/decisions/D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md`.
+
 - [ ] **Eight `calc` tools are hardcoded in a third module neither repository checks.**
   **Other repository:** `Chemclaw3`. Its `tests/test_sibling_manifest_agreement.py` lists two
   callers — `connectors/calc/compose.py` and `remote.py` — and finds 13 hardcoded call sites naming
