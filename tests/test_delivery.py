@@ -25,7 +25,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 JENKINSFILE = ROOT / "Jenkinsfile"
-CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOWS = ROOT / ".github" / "workflows"
 SERVERS = ROOT / "servers"
 
 
@@ -212,7 +212,17 @@ _SUITE_COMMANDS = (
 
 
 def _ci_jobs() -> dict[str, dict[str, Any]]:
-    """Every job in the CI workflow, by name.
+    """Every job in every GitHub Actions workflow, keyed `<file>:<job>`.
+
+    **Every workflow file, not `ci.yml`.** A second file is the cheapest way to add a job — a
+    nightly, a release lane, a scheduled re-run — and it would have been outside anything here.
+    Driven at HEAD: a `.github/workflows/nightly.yml` whose one job runs `make cov` on
+    `actions/checkout`'s default depth left this file green at `9 passed`. That is the same defect
+    as `_SUITE_COMMANDS` being a spelling list, one level out: the set a check enumerates is the
+    only set it holds.
+
+    The key carries the filename because the failure message has to say which file to open, and two
+    workflows may both call a job `check`.
 
     `Any` rather than `object` for the value: a job is a free-form YAML mapping, and the callers
     below index into `steps` and `with`. Under `object` every one of those reads is an error, which
@@ -221,9 +231,13 @@ def _ci_jobs() -> dict[str, dict[str, Any]]:
     added two `unused-ignore` errors of their own. `make type` reads `$(SRC)` and not the test tree,
     so none of that was visible from the gate.
     """
-    workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
-    jobs = workflow["jobs"]
-    assert isinstance(jobs, dict) and jobs, f"{CI_WORKFLOW.name} declares no jobs"
+    files = sorted(path for path in WORKFLOWS.glob("*.y*ml") if path.suffix in {".yml", ".yaml"})
+    assert files, f"no workflow files under {WORKFLOWS}; this parse would assert nothing"
+    jobs: dict[str, dict[str, Any]] = {}
+    for path in files:
+        declared = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]
+        assert isinstance(declared, dict) and declared, f"{path.name} declares no jobs"
+        jobs.update({f"{path.name}:{name}": job for name, job in declared.items()})
     return jobs
 
 
@@ -238,7 +252,8 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
     content of the file that runs it is a control reading its own configuration". This repository
     had already settled that question the other way: `test_a_publishing_run_cannot_skip_the_gate`
     and the seven assertions beside it read `Jenkinsfile`, for the reason that file's own docstring
-    gives — it is checked by no compiler and no linter here. Neither is `.github/workflows/ci.yml`.
+    gives — it is checked by no compiler and no linter here. Neither is anything under
+    `.github/workflows/`.
 
     And the fallback offered instead — "removing the depth silently turns a red gate green" — only
     holds while a citation is *already* stale. In steady state the assertion passes either way, so
@@ -246,10 +261,10 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
     which point CI is green and `main` is red for anyone with full history. That is the defect the
     record set out to end, recurring undetected.
 
-    The *jobs* are derived from the workflow, so a new one is read the day it is added; what it
-    runs is still matched against `_SUITE_COMMANDS`, which is a list of spellings and therefore a
-    reach this test cannot prove. The list carries the bare runner name for that reason — see the
-    comment on the tuple, and the drive that made it necessary.
+    The *jobs* are derived from every workflow file, so a new job — or a whole new workflow — is
+    read the day it is added; what a job runs is still matched against `_SUITE_COMMANDS`, which is a
+    list of spellings and therefore a reach this test cannot prove. The list carries the bare runner
+    name for that reason — see the comment on the tuple, and the drive that made it necessary.
 
     What this cannot reach: `Jenkinsfile`'s `Gate` stage runs `make check` and `make offline-run` on
     the implicit declarative checkout, whose depth is controller configuration outside this tree.
@@ -264,7 +279,7 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
             for command in _SUITE_COMMANDS
         )
     }
-    assert running, f"no job in {CI_WORKFLOW.name} runs the suite — this test would assert nothing"
+    assert running, f"no job under {WORKFLOWS} runs the suite — this test would assert nothing"
     for name, job in running.items():
         checkouts = [
             step for step in job.get("steps", []) if "actions/checkout" in str(step.get("uses", ""))
