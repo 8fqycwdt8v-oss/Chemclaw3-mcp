@@ -64,6 +64,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument](D-2026-09-13-a-suppression-with-no-expiry-outlives-its-argument.md) | A suppression with no expiry outlives its argument |
 | [D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing](D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing.md) | An audit of a lockfile no image reads audits nothing |
 | [D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for](D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for.md) | The rule that would have caught it was not the one asked for |
+| [D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one](D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one.md) | A child process is outside the guard, and `uv build` is one |
 | [D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance](D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance.md) | A citation a squash merge retires is not provenance |
 | [D-2026-09-14-a-degraded-answer-is-counted-once](D-2026-09-14-a-degraded-answer-is-counted-once.md) | A degraded answer is counted once |
 | [D-2026-09-14-a-depth-nobody-asserts-is-a-default-waiting-to-return](D-2026-09-14-a-depth-nobody-asserts-is-a-default-waiting-to-return.md) | A depth nobody asserts is a default waiting to return |

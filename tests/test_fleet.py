@@ -515,6 +515,19 @@ def test_every_server_builds_a_wheel_that_carries_its_data() -> None:
     screen with no `rules.yaml` answers "no rule matched" for every molecule, which reads as *safe*.
     So this counts the corpus files inside the built wheel rather than trusting that the packaging
     change was equivalent.
+
+    **`--offline` is load-bearing, and it is this file's own no-egress posture rather than a
+    convenience.** `uv build` resolves `build-system.requires` — `hatchling` — and without the flag
+    it resolves it from PyPI: a **child process**, the first of the four channels `CLAUDE.md` names
+    as outside `mcp_server_kit.egress`'s reach by construction, so layer 1 cannot see it and layer 2
+    reads source rather than argv. Driven under `scripts/offline_check.py` with the cache emptied,
+    this test failed on `Failed to fetch: https://pypi.org/simple/hatchling/`; driven with the cache
+    warmed by an earlier `make check`, it passed. That is `make offline-run` reporting green about a
+    run that had already reached the internet in the other lane — the one claim
+    ("a test that only passes by reaching the internet fails instead") the offline lane exists to
+    make. With the flag the build reads the cache or fails, in both lanes and identically, and the
+    cache is warm by then because `uv sync` installs all eight workspace members editable and so
+    fetches the same backend.
     """
     import subprocess
     import tempfile
@@ -524,7 +537,7 @@ def test_every_server_builds_a_wheel_that_carries_its_data() -> None:
         data_dir = next(iter((server / "src").glob("*/data")), None)
         with tempfile.TemporaryDirectory() as out:
             built = subprocess.run(
-                ["uv", "build", "--wheel", "--out-dir", out, str(server)],
+                ["uv", "build", "--wheel", "--offline", "--out-dir", out, str(server)],
                 capture_output=True,
                 text=True,
                 cwd=ROOT,
