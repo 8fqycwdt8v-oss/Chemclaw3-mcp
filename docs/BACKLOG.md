@@ -281,6 +281,35 @@ decision leaves a record behind and the row goes.
   per-root invocations.
   **Anchors:** `Makefile`, `servers/calc/tests/test_admission.py`, `pyproject.toml`.
 
+- [ ] **The cross-repository agreement runs nowhere automated, on either side.**
+  `tests/test_consumer_agreement.py` closes the direction this tree was blind in — measured
+  2026-09-14, a rename of `ich_impurity_limit` carried out *completely* here (server, manifest,
+  `tool-surface.json`, README, `MODULES.md` and the server's own 261 tests) left
+  `servers/safety/tests` and all 212 other fleet tests green and was caught only by that file. But
+  it needs a `Chemclaw3` checkout **with a built `.venv`**, and CI here clones neither, so in CI it
+  skips. The consumer's side has the mirror-image problem. Decide whether one of the two CI lanes
+  clones the other repository shallowly and builds it, or whether the honest arrangement is the
+  skip plus the terminal notice `conftest.py::pytest_terminal_summary` now prints — which is what
+  ships today.
+  **Anchors:** `tests/test_consumer_agreement.py`, `conftest.py`, `.github/workflows/ci.yml`.
+
+- [ ] **Eight `calc` tools are hardcoded in a third module neither repository checks.**
+  **Other repository:** `Chemclaw3`. Its `tests/test_sibling_manifest_agreement.py` lists two
+  callers — `connectors/calc/compose.py` and `remote.py` — and finds 13 hardcoded call sites naming
+  10 tools. Running that file's own AST walker over `src/chemclaw/connectors/calc/server/tools.py`
+  on 2026-09-14 found **11 more sites naming 10 tools, 8 of them named by no checked module**:
+  `compute_atomic_descriptors`, `compute_electronic_properties`, `compute_surface_potential`,
+  `compute_xtb_energy`, `predict_pka`, `predict_solubility`, `predict_site_reactivity`,
+  `predict_developability_profile`. Every one is served and every argument declared, so the
+  contract is sound and **unwatched** — a rename in `servers/calc/` would reach all eight with no
+  test on either side. Checked and unchecked together name 18 of the 20 tools
+  `servers/calc/tool-surface.json` records; `optimize_geometry` and `predict_logd` are named by no
+  hardcoded dict-literal site in any of the three modules, which is worth confirming rather than
+  assuming when this is worked. The fix is that repository's `_CALLERS` tuple and nothing here can
+  make it; this row is what keeps it from being forgotten.
+  **Anchors (Chemclaw3):** `tests/test_sibling_manifest_agreement.py::_CALLERS`,
+  `src/chemclaw/connectors/calc/server/tools.py`.
+
 ## 5 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA and `chembl` cannot be built until somebody has read what that obliges.**
