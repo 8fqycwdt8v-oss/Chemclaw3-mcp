@@ -282,12 +282,18 @@ above.
 
 ### 4.1 Two of the four egress channels are covered only by a target `make check` does not run
 
-A child process and a `ctypes` call are outside layer 1 by construction and off layer 2's list on
-purpose. What covers them is `make offline-run`, which takes the network namespace away — and it
-needs `unshare`, so CI runs it as its own step and a local `make check` is green without it.
-**Accepted:** a local gate does not exercise the two channels a determined dependency would use.
-Queued in `docs/BACKLOG.md` §1 with the decision to take (fold it in on detection, or make
-`make check` say which layer it did not run).
+The two are outside layer 2 for *different* reasons, and saying "both are off its list" would be the
+kind of compression this record exists to avoid: a **child process** is not an import at all, so no
+static reader can see it — and `subprocess` is how `pyexec` and `calc` do their work; a **`ctypes`**
+call *is* an import and is off the list deliberately, because `pyexec`'s sandbox needs it for
+`prctl(PR_SET_DUMPABLE, 0)`.
+
+What covers both is `make offline-run`, which takes the network namespace away rather than asking
+Python nicely. It needs `unshare`, so it runs as its own job in GitHub Actions
+(`.github/workflows/ci.yml`'s `offline`) and its own stage in `Jenkinsfile`, and **a local
+`make check` is green without it**. **Accepted:** a local gate does not exercise the two channels a
+determined dependency would use. Queued in `docs/BACKLOG.md` §1 with the decision to take (fold it
+in on detection, or make `make check` say which layer it did not run).
 
 ### 4.2 A dynamic import of a computed name is outside the static scan, and always will be
 
