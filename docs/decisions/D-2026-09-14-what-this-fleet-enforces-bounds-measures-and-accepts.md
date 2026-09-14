@@ -318,7 +318,12 @@ nobody. Queued in `docs/BACKLOG.md` §2 with the smallest thing that would close
 
 `make deps-audit` does not fail on eight advisories, declared once in `pyproject.toml` with the
 package and the version `uv.lock` resolved when the argument was written, and argued in the
-`Makefile` beside the target that reads them. Every one turns on a **malicious artefact on disk** —
+`Makefile` beside the target that reads them. **Eight declarations, and the audit's own output says
+`13 ignored`** — measured 2026-09-14 — because `--ignore-vuln` matches an advisory by its id *or
+any alias*, and this closure reports two of them under PYSEC spellings the register did not name
+until that was measured (`PYSEC-2026-3929` for `GHSA-xrqw-3rrv-vx5w`, `PYSEC-2026-3804` for
+`CVE-2026-69112`); confirmed by passing every row but one and watching its other spelling reappear.
+A reader who runs the command now gets a number the register explains. Every one turns on a **malicious artefact on disk** —
 an unpickled cache, a crafted `config.json`, a checkpoint conversion — which is the class this
 fleet's posture already answers, and none is reachable from a request. All eight live in the
 optional ML extras of two servers and none appears in the closure without them.
