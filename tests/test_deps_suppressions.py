@@ -49,10 +49,26 @@ def _suppressions() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _locked() -> dict[str, str]:
-    """Every distribution `uv.lock` resolves, name to version."""
+def _locked() -> dict[str, set[str]]:
+    """Every distribution `uv.lock` resolves, name to the set of versions it resolves it at.
+
+    **A set rather than one version, because a resolution forks.** `uv.lock` carries one `package`
+    entry per resolved version, and a package whose requirement differs between two environment
+    markers or two extras appears twice — measured at `f3f3c9c`, four do: `numpy`,
+    `numpy-typing-compat`, `optype` and `scipy-stubs`. Read into a `dict[str, str]`, as this was,
+    the later entry silently wins and the check below then compares the suppression's argued
+    version against whichever fork `tomllib` happened to yield last. None of the four is suppressed
+    today, so this has no live consequence; it is the sort that acquires one on somebody else's
+    dependency bump, invisibly, which is the reason to close it while it is still free.
+
+    Held as a set so a fork makes the expiry check *stricter*: the argued version has to be one the
+    lock actually resolves, and the failure message can name the others.
+    """
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
-    return {str(entry["name"]): str(entry["version"]) for entry in lock["package"]}
+    versions: dict[str, set[str]] = {}
+    for entry in lock["package"]:
+        versions.setdefault(str(entry["name"]), set()).add(str(entry["version"]))
+    return versions
 
 
 @pytest.mark.parametrize("row", _suppressions(), ids=lambda row: str(row["id"]))
@@ -72,10 +88,12 @@ def test_a_suppression_expires_when_its_package_moves(row: dict[str, Any]) -> No
     did not — would ship under a suppression argued against the version it replaced.
     """
     actual = _locked()[row["package"]]
-    assert actual == row["version"], (
+    assert actual == {row["version"]}, (
         f"{row['id']} is argued in the Makefile against {row['package']}=={row['version']} and "
-        f"uv.lock now resolves {actual}. Re-derive the argument against the version that will "
-        "ship, then update this row — or delete both if the advisory no longer applies"
+        f"uv.lock now resolves {sorted(actual)}. Re-derive the argument against the version(s) "
+        "that will ship, then update this row — or delete both if the advisory no longer applies. "
+        "More than one version means the resolution forked, and a suppression argued against one "
+        "of them says nothing about the other"
     )
 
 
