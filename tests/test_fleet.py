@@ -2002,6 +2002,123 @@ def test_no_serving_module_enforces_an_invariant_with_assert() -> None:
     )
 
 
+# The blind handlers that answer without classifying, each argued here because ruff cannot be made
+# to ask for the argument at the site: see `test_every_blind_handler_that_answers_anyway_is_argued`.
+#
+# `auth.py`'s body-cap guard discards the downstream app's exception **only when this middleware has
+# already refused the request** — the app raised because the guard cut its receive channel, which is
+# this code's own doing rather than a component going missing. A `record()` there would publish a
+# degradation every time a caller sent an oversized body.
+BLIND_ANSWER_IS_ARGUED = {
+    "packages/mcp_server_kit/src/mcp_server_kit/auth.py:432",
+}
+
+_BLIND = {"Exception", "BaseException"}
+
+
+def _blind_handlers_that_answer(roots: list[Path]) -> list[str]:
+    """Every blind `except` under `roots` that can return without re-raising and says nothing.
+
+    "Says nothing" is the whole predicate, and it has three escapes, each meaning a reason exists
+    somewhere a reader will find it:
+
+    - the handler's last statement is a `raise`, so it does not answer at all;
+    - it carries a `# noqa: BLE001`, which means **ruff flagged it** and the fleet's convention put
+      the reason on that line;
+    - it calls `classify` or `record`, which is `mcp_server_kit.degradation` and therefore the
+      counter the claim is about.
+    """
+    offences: list[str] = []
+    for root in roots:
+        for source in sorted(root.rglob("*.py")):
+            relative = source.relative_to(ROOT).as_posix()
+            text = source.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            for node in ast.walk(ast.parse(text, filename=str(source))):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                caught = (
+                    node.type.elts
+                    if isinstance(node.type, ast.Tuple)
+                    else ([] if node.type is None else [node.type])
+                )
+                blind = node.type is None or any(
+                    isinstance(one, ast.Name) and one.id in _BLIND for one in caught
+                )
+                if not blind or isinstance(node.body[-1], ast.Raise):
+                    continue
+                if "BLE001" in lines[node.lineno - 1]:
+                    continue
+                if any(
+                    isinstance(call.func, ast.Attribute | ast.Name)
+                    and (call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id)
+                    in {"classify", "record"}
+                    for call in ast.walk(node)
+                    if isinstance(call, ast.Call)
+                ):
+                    continue
+                offences.append(f"{relative}:{node.lineno}")
+    return sorted(offences)
+
+
+def test_every_blind_handler_that_answers_anyway_is_argued() -> None:
+    """`BLE001` does not fire on the two shapes this fleet's own handlers are written in.
+
+    `CLAUDE.md` and `pyproject.toml` both said that `BLE001` "lands on exactly those lines, so a new
+    blind handler is red until somebody writes the reason at the site". Measured with
+    `ruff check --isolated --select BLE,RUF`:
+
+    | handler | `BLE001` |
+    | --- | --- |
+    | `except Exception as exc: logger.warning(...)` | flagged |
+    | `except Exception as exc: logger.exception(...); return None` | **not flagged** |
+    | `except Exception: if cond: raise` | **not flagged** |
+
+    Two shipped handlers are the second shape —
+    `servers/rxnlabel/.../engine/naming.py` and `.../engine/mapping.py`, each a library that is
+    installed and will not import or construct. Both classify correctly today, so nothing was
+    broken; what did not exist was the control that keeps them that way.
+
+    **And the stated remedy is unavailable to exactly those lines.** `RUF100` is selected, so a
+    `# noqa: BLE001` on a handler ruff does not flag is itself an error — driven, both shapes above
+    report `RUF100 Unused noqa directive (unused: BLE001)`. So "write the reason at the site" cannot
+    be the rule for the handlers ruff misses, and a first-party scan is what is left.
+
+    The rule here is therefore about the claim rather than about the lint: a blind handler that can
+    **answer anyway** classifies through `mcp_server_kit.degradation`, carries the `noqa` reason
+    ruff did ask for, or is argued in `BLIND_ANSWER_IS_ARGUED` above. Ruff stays selected — it is
+    the faster half and it catches the commonest shape — and this is the half it cannot reach.
+    """
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    assert len(roots) > 1, "no source trees found; has the workspace layout changed?"
+    offences = [
+        one for one in _blind_handlers_that_answer(roots) if one not in BLIND_ANSWER_IS_ARGUED
+    ]
+    assert not offences, (
+        "these blind handlers answer without re-raising and neither classify through "
+        "`mcp_server_kit.degradation` nor carry a `# noqa: BLE001` reason:\n  "
+        + "\n  ".join(offences)
+        + "\nClassify it, or add it to BLIND_ANSWER_IS_ARGUED with the argument for why the "
+        "answer it returns is whole."
+    )
+
+
+def test_the_argued_blind_handlers_are_still_there() -> None:
+    """An allowlist entry that no longer names a handler is an argument about nothing.
+
+    The same two-directions rule the rest of this file is built on: without it, moving `auth.py`'s
+    body-cap guard would leave a line here asserting a property of a handler that had gone, and the
+    next one added in its place would inherit the exemption.
+    """
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    found = set(_blind_handlers_that_answer(roots))
+    stale = sorted(BLIND_ANSWER_IS_ARGUED - found)
+    assert not stale, (
+        f"BLIND_ANSWER_IS_ARGUED names handlers that are no longer there: {stale}. Delete the "
+        "entry and its argument in the commit that moved them."
+    )
+
+
 def test_the_assert_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
     """The bite test: an `assert` in serving code is flagged, one in prose is not.
 

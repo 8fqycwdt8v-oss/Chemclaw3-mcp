@@ -63,11 +63,16 @@ target-version = "py311"
 # together in one measured pass (`D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for`)
 # and each earns its place differently:
 #
-# - **`BLE` is the one that pays.** Every `except Exception` in this fleet that answers anyway is
-#   supposed to classify through `mcp_server_kit.degradation`, and `CLAUDE.md` says so in the
-#   present tense. Nothing checked it, and `rxnpredict`'s cache did not. `BLE001` lands on exactly
-#   those lines, so a new blind handler is red until somebody writes the reason at the site — which
-#   is where a reader of the handler will look, rather than in a document beside it.
+# - **`BLE` is the one that pays, and it is half of the control rather than the whole of it.**
+#   Every `except Exception` in this fleet that answers anyway is supposed to classify through
+#   `mcp_server_kit.degradation`. Nothing checked it, and `rxnpredict`'s cache did not. `BLE001`
+#   lands on most of those lines, so a new blind handler is red until somebody writes the reason at
+#   the site — which is where a reader of the handler will look, rather than in a document beside
+#   it. **What it does not land on** is a handler that logs with `logging.exception` and returns, or
+#   one that re-raises conditionally, and `RUF100` (selected below) rejects a `# noqa: BLE001` on
+#   those lines as unused, so the reason cannot even be written there. That half is
+#   `tests/test_fleet.py::test_every_blind_handler_that_answers_anyway_is_argued`
+#   (`D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as`).
 # - **`S`** catches a credential or an `exec` reaching source. Most of what it finds here is a
 #   naming collision with this fleet's own vocabulary (`token_env` holds an environment variable's
 #   *name*), so the exemptions are per-site `noqa`s with the reason rather than a blanket ignore:

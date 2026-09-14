@@ -537,9 +537,18 @@ make run-calc        # the heaviest one — a call here can be minutes or hours,
 - **Ruff selects `S`, `ASYNC` and `BLE` beyond the obvious set, and `BLE` is the one that pays**
   (`D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for`). The claim two
   sections up — that every path here which catches an exception and answers anyway classifies it —
-  had nothing behind it and one path did not; `BLE001` lands on exactly those lines, so each carries
-  a `# noqa: BLE001` and its reason *at the site*, and a new blind handler is red until somebody
-  writes one. `S101` is deliberately **off**: `tests/test_fleet.py` already holds the no-`assert`
+  had nothing behind it and one path did not; `BLE001` lands on most of those lines, so each carries
+  a `# noqa: BLE001` and its reason *at the site*.
+  **It does not land on all of them, and this sentence used to say it did**
+  (`D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as`): measured,
+  `BLE001` is silent on a blind handler that logs with `logging.exception` and returns, and on one
+  that re-raises conditionally — two shapes this fleet writes, `rxnlabel`'s mapper and namer among
+  them. Worse, the stated remedy is unavailable there: `RUF100` is selected, so a `# noqa: BLE001`
+  on a line ruff did not flag is itself an error. So the control is a pair.
+  `tests/test_fleet.py::test_every_blind_handler_that_answers_anyway_is_argued` is the half ruff
+  cannot reach — a blind handler that answers without re-raising classifies through
+  `mcp_server_kit.degradation`, carries the `noqa` ruff did ask for, or is argued in an allowlist
+  beside the test, which a second test holds against the tree in both directions. `S101` is deliberately **off**: `tests/test_fleet.py` already holds the no-`assert`
   rule over serving code and carries the argument for its two exemptions, and a `per-file-ignores`
   list would be a second copy of that list with nothing reconciling the two.
 - **An image installs what `uv.lock` resolves, not what pip resolves on the day of the build**
