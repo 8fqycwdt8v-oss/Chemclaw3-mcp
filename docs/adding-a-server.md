@@ -69,6 +69,15 @@ variance between servers should be in what they compute, not in how they are sha
      name the ungated exceptions, so a heavy tool added next year is gated or its `test_admission.py`
      says so.
 
+     **Deciding you need no ceiling is an answer this checklist now collects**, because it used to
+     be one nobody asked for: five of seven servers shipped `engine/admission.py` and the other two
+     were exempt by judgement in prose, so an eighth arrived with that same shape and passed every
+     test here. `tests/test_fleet.py::test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not`
+     is what asks; the exemption goes in `CEILING_IS_ARGUED_ABSENT` beside it, carrying the
+     measurement rather than the adjective, and a second test deletes it the day the server grows a
+     ceiling after all. See
+     `D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted`.
+
 5. **You do not write a ceiling on sessions.** `mcp_server_kit` bounds those for every server at
    `MCP_MAX_SESSIONS`, because a session is the transport's object rather than a capability's: it
    costs the same measured 56.6 kB whatever the server serves, and no tool body can see it. Nothing

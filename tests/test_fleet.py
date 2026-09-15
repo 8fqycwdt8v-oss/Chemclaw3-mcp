@@ -2395,3 +2395,100 @@ def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> Non
         "constant-200 branch: /healthz then answers 200 with a corpus that failed its checksum. "
         "Pass a callable unconditionally, or make the degraded case the callable's answer."
     )
+
+
+# Which servers answer for their own concurrency, and which are argued not to need to.
+#
+# **A ceiling is `engine/admission.py`** — five servers ship one (`calc`, `chem`, `pyexec`,
+# `rxnlabel`, `rxnpredict`) and each is held by its own module. The absence of a sixth was held by
+# nobody, which `docs/BACKLOG.md` recorded as "an eighth server without one passes every test here"
+# — and then an eighth server arrived (`thermalsafety`) with exactly that shape: an argued absence
+# in a README that no test reads.
+#
+# It cannot be derived from the manifest. `D-2026-09-12-one-tool-call-is-not-one-thread` measured
+# that the `read_only`/`state_changing` split does not carry, because `render_structure` is
+# `read_only`, correctly, and is the one `chem` tool that needs a ceiling. So the rule is the same
+# shape as `BLIND_ANSWER_IS_ARGUED`: present, or argued here, and checked in both directions.
+#
+# Each argument below is a measurement rather than an adjective, because "it is fast" is what every
+# server's author believes on the day they write it.
+# Every figure below is **engine CPU per call** — `time.process_time` around the engine function,
+# warmed so the lazy dataset load is not in the average. One basis for all three deliberately: the
+# first draft of this table mixed 11.7 ms for `props` (a whole MCP round trip) with 63.7 µs for
+# `thermalsafety` (the engine alone) and read as though one were 200x the other, when the two
+# numbers were measuring different things. What a ceiling protects is the pod's CPU, so that is
+# what is measured; the transport each call also pays is the same for every server in this fleet
+# and is what the millisecond figures were mostly made of.
+CEILING_IS_ARGUED_ABSENT = {
+    # A dict lookup and a bisection over a 44-row vendored table: 0.7 µs for the lookup, 1.8 µs for
+    # `vapour_pressure`, and 10.3 µs for a Hansen sweep across the whole table — which is the
+    # largest single call `MAX_COMPARED_SOLVENTS` permits, since that bound *is* the table's size.
+    # It was set after 100 000 x "dcm" was measured at 14.83 s holding the event loop with a
+    # `/healthz` probe stuck behind it, which is the input bound rather than a concurrency one.
+    "props": "a table lookup and a bisection, with its one unbounded input bounded",
+    # An RDKit screen against fixed alert tables, already under a component bound: 321 µs to screen
+    # a 37-heavy-atom drug structure (imatinib), 339 µs for the genotoxic alert pass. RDKit holds
+    # the GIL, which is why `chem` needs a ceiling and this does not: `render_structure` generates
+    # 2D coordinates and draws, tens of milliseconds, two orders of magnitude above a substructure
+    # match against a fixed table.
+    "safety": "a bounded screen over fixed tables, with no depiction and no subprocess",
+    # Closed-form arithmetic over the standard library: 0.25 µs for `adiabatic_temperature_rise`,
+    # 63.7 µs for `tmr_ad` (a fixed 200-step bisection, the slowest of the seven) and 4.5 µs for
+    # `oxygen_balance_screen`. No subprocess, no pinned thread, and `MAX_FORMULA_CHARACTERS` bounds
+    # the one input whose length was unbounded.
+    "thermalsafety": "closed-form arithmetic, transport-bound, with its one input bounded",
+}
+
+
+def _servers_with_a_ceiling() -> set[str]:
+    """Every server shipping an `engine/admission.py`, by directory name."""
+    return {
+        server.name
+        for server in server_dirs()
+        if next((server / "src").glob("*/engine/admission.py"), None) is not None
+    }
+
+
+def test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not() -> None:
+    """A ninth server owes the same answer, which is the whole point of deriving it.
+
+    `docs/adding-a-server.md` asks for "a ceiling on how many of it may run at once" and nothing
+    checked that it was given or refused. Five servers had one and three did not, and the three were
+    a judgement in prose — which is exactly the shape this repository records as "a README is not a
+    gate". The eighth server was added with an argued absence in its README and passed every test
+    here, which is the case `docs/BACKLOG.md` predicted before it happened.
+
+    Not derivable from the manifest, so this is a declaration: present, or named below with the
+    measurement behind it.
+    """
+    declared = {server.name for server in server_dirs()}
+    assert declared, "no servers found; has the workspace layout changed?"
+    unaccounted = sorted(declared - _servers_with_a_ceiling() - set(CEILING_IS_ARGUED_ABSENT))
+    assert not unaccounted, (
+        f"{unaccounted} bound nothing about how many of their tools may run at once, and no "
+        "argument says why they need not. Add an `engine/admission.py` (see "
+        "`servers/calc/src/chemclaw_mcp_calc/engine/admission.py`), or an entry in "
+        "CEILING_IS_ARGUED_ABSENT with the measurement — not the adjective — behind it."
+    )
+
+
+def test_no_server_is_argued_out_of_a_ceiling_it_actually_has() -> None:
+    """The other direction, and the one that makes the first mean something over time.
+
+    A server that grows real work adds a ceiling; if its exemption stays, the next reader finds an
+    argument for "this one is arithmetic" beside a module bounding its concurrency, and cannot tell
+    which is true. The same rule `test_the_argued_blind_handlers_are_still_there` states for the
+    allowlist above, and the same rule `DEFERRED.md` states for a closed row: delete it in the
+    commit that closes it.
+    """
+    declared = {server.name for server in server_dirs()}
+    contradicted = sorted(set(CEILING_IS_ARGUED_ABSENT) & _servers_with_a_ceiling())
+    assert not contradicted, (
+        f"{contradicted} ship an `engine/admission.py` and are also argued not to need one. "
+        "Delete the CEILING_IS_ARGUED_ABSENT entry in the commit that added the ceiling."
+    )
+    gone = sorted(set(CEILING_IS_ARGUED_ABSENT) - declared)
+    assert not gone, (
+        f"CEILING_IS_ARGUED_ABSENT names servers that are not here: {gone}. Delete the entry with "
+        "the server."
+    )
