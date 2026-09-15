@@ -287,18 +287,37 @@ decision leaves a record behind and the row goes.
   line edit. Until then this is the one image whose closure `make deps-audit` does not describe.
   **Anchors:** `servers/rxnlabel/Containerfile`, `tests/test_fleet.py`, `uv.lock`.
 
-- [ ] **`make type` does not check the test tree, and there is an error waiting in it.** `$(SRC)`
-  lists eight `src/` roots and no test directory, so `mypy --strict` never reads the files that
-  drive every ratchet in this repository. Measured on 2026-09-12: `mypy --strict
-  servers/calc/tests/test_admission.py` reports `Item "None" of "Tool | None" has no attribute "fn"`
-  at line 292 — pre-existing, present on `origin/main` too. Chemclaw3 by contrast types `src`,
-  `examples` and `tests`. Closing this is two steps, and the second is the reason it is a row rather
-  than a one-liner: fix that error, and then find the invocation that can read the tree at all —
-  `mypy --strict tests packages/*/tests servers/*/tests` aborts before checking anything with
-  `Duplicate module named "test_no_egress"`, because every server ships a file of that name and
-  mypy keys modules by basename. The suite already solves the same collision with pytest's
-  `--import-mode=importlib`; mypy's equivalent is `--explicit-package-bases` with `MYPYPATH`, or
-  per-root invocations.
+- [ ] **`make type` does not check the test tree, and 146 errors are waiting in it.** `$(SRC)`
+  lists the `src/` roots and no test directory, so `mypy --strict` never reads the files that drive
+  every ratchet in this repository. Chemclaw3 by contrast types `src`, `examples` and `tests`.
+
+  **The hard half is solved and the estimate was wrong, both measured 2026-09-15.** The invocation
+  that reads the tree is `MYPYPATH=. mypy --strict --explicit-package-bases --namespace-packages
+  tests packages/*/tests servers/*/tests`: keying modules by path rather than basename is what gets
+  past `Duplicate module named "test_no_egress"`, which ten servers now trigger. Run that way, the
+  tree reports **146 errors in 31 files**, not the one this row used to claim — the figure was one
+  because that was all anybody had checked, on the single file they could invoke mypy on without
+  hitting the collision.
+
+  **The yield looks low, which is why this is still a row rather than a commit.** 38 of the 146 are
+  `no-untyped-def` on test helpers and 58 are `attr-defined`, mostly RDKit's unstubbed module
+  surface and `object` returned by untyped fixtures. Twenty-two were read individually and **none
+  was a live defect**: the two that looked like one are a loop variable rebound to a different type
+  later in the same scope (`tests/test_consumer_agreement.py` at line 276, which runs correctly and
+  types inconsistently) and an `int | None` compared with `>` that is never `None` for that input
+  (`servers/chem/tests/test_species.py` at line 146, which would raise `TypeError` rather than
+  fail its assertion if a regression made it `None`).
+
+  So the decision this row now needs is whether 146 fixes with a measured-low defect yield is worth
+  the gate, or whether a narrower strictness for tests is — and the second is the one to be careful
+  about, since dropping `--disallow-untyped-defs` alone removes 38 of the errors without removing
+  any of the risk.
+
+  **What it did find, on the three servers added since:** nine `# type: ignore[arg-type]` comments
+  in `servers/thermalsafety/tests/test_semenov.py` that suppressed nothing — the same "claim a
+  control exists" shape this repository keeps deleting, one layer down. Those are gone, and
+  `servers/kinetics`, `servers/suitability` and `servers/thermalsafety` are clean under the
+  invocation above, so the 146 is entirely older code.
   **Anchors:** `Makefile`, `servers/calc/tests/test_admission.py`, `pyproject.toml`.
 
 - [ ] **The cross-repository agreement runs nowhere automated, on either side.**

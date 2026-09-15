@@ -70,7 +70,7 @@ def test_a_zero_or_negative_mass_or_heat_capacity_is_refused_by_name() -> None:
         }
         base.update(kwargs)
         with pytest.raises(ThermalInputError, match=expected):
-            adiabatic_temperature_rise(**base)  # type: ignore[arg-type]
+            adiabatic_temperature_rise(**base)
 
 
 def test_mtsr_is_the_process_temperature_plus_the_accumulated_share() -> None:

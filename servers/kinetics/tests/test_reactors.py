@@ -14,14 +14,37 @@ from chemclaw_mcp_kinetics.engine import reactors
 from chemclaw_mcp_kinetics.engine.arrhenius import KineticsInputError
 
 #: The worked semi-batch case used throughout: an acid chloride dosed into an amine over two hours.
-DOSE = {
-    "rate_constant": 0.02,
-    "dose_time_seconds": 7200.0,
-    "initial_volume": 50.0,
-    "dosed_moles": 40.0,
-    "dosed_volume": 8.0,
-    "initial_coreagent_concentration": 0.9,
-}
+#:
+#: Passed through `_dose` with explicit keywords rather than splatted. A `**{**DOSE, ...}` splat is
+#: a float-valued mapping, so a type checker must assume it could supply *any* parameter — including
+#: `steps`, the one `int` in that signature — and reports every such call as mis-typed. That is true
+#: of the type and false of every call here, and annotating the dict does not fix it because the
+#: mapping is still float-valued. Naming the arguments is what makes the fixture and the signature
+#: agree, and it is what a reader gets to see at each call site anyway.
+_RATE_CONSTANT = 0.02
+_DOSE_TIME_SECONDS = 7200.0
+_INITIAL_VOLUME = 50.0
+_DOSED_MOLES = 40.0
+_DOSED_VOLUME = 8.0
+_COREAGENT_CONCENTRATION = 0.9
+
+
+def _dose(
+    *,
+    rate_constant: float = _RATE_CONSTANT,
+    dose_time_seconds: float = _DOSE_TIME_SECONDS,
+    steps: int = reactors.DEFAULT_INTEGRATION_STEPS,
+) -> reactors.SemiBatchProfile:
+    """The worked case, with the parameters these tests vary."""
+    return reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=dose_time_seconds,
+        initial_volume=_INITIAL_VOLUME,
+        dosed_moles=_DOSED_MOLES,
+        dosed_volume=_DOSED_VOLUME,
+        initial_coreagent_concentration=_COREAGENT_CONCENTRATION,
+        steps=steps,
+    )
 
 
 def test_a_cstr_needs_three_point_nine_times_a_pfr_at_ninety_percent_first_order() -> None:
@@ -141,7 +164,7 @@ def _peak(steps: int) -> float:
     original = reactors.MAX_INTEGRATION_STEPS
     reactors.MAX_INTEGRATION_STEPS = max(original, steps)
     try:
-        return reactors.semibatch_accumulation(steps=steps, **DOSE).peak_accumulation_fraction
+        return _dose(steps=steps).peak_accumulation_fraction
     finally:
         reactors.MAX_INTEGRATION_STEPS = original
 
@@ -152,19 +175,17 @@ def test_an_instant_reaction_accumulates_nothing_and_an_inert_one_accumulates_ev
     A reaction fast enough to consume the feed as it arrives leaves nothing to accumulate; one slow
     enough to be inert leaves the whole dose. Anything outside that range is a sign error.
     """
-    instant = reactors.semibatch_accumulation(**{**DOSE, "rate_constant": 50.0})
+    instant = _dose(rate_constant=50.0)
     assert instant.peak_accumulation_fraction == pytest.approx(0.0, abs=1e-6)
 
-    inert = reactors.semibatch_accumulation(**{**DOSE, "rate_constant": 1e-9})
+    inert = _dose(rate_constant=1e-9)
     assert inert.peak_accumulation_fraction == pytest.approx(1.0, abs=1e-3)
 
 
 def test_a_slower_dose_accumulates_less_which_is_the_whole_reason_to_dose_slowly() -> None:
     """The monotonicity a dose-time decision rests on, asserted rather than assumed."""
     peaks = [
-        reactors.semibatch_accumulation(
-            **{**DOSE, "dose_time_seconds": seconds}
-        ).peak_accumulation_fraction
+        _dose(dose_time_seconds=seconds).peak_accumulation_fraction
         for seconds in (900.0, 3600.0, 7200.0, 21600.0)
     ]
     assert peaks == sorted(peaks, reverse=True), peaks
@@ -172,7 +193,7 @@ def test_a_slower_dose_accumulates_less_which_is_the_whole_reason_to_dose_slowly
 
 def test_the_profile_reports_the_peak_it_actually_found() -> None:
     """The summary fields must agree with the points they summarise, or the summary is fiction."""
-    profile = reactors.semibatch_accumulation(**DOSE)
+    profile = _dose()
     highest = max(point.accumulated_fraction for point in profile.points)
     assert profile.peak_accumulation_fraction == highest
     at_peak = next(point for point in profile.points if point.accumulated_fraction == highest)
