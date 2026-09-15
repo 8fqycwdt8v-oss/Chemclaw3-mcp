@@ -1,0 +1,132 @@
+{
+  "activation_energy_from_two_rates": {
+    "lower_rate_constant": {
+      "required": true,
+      "type": "number"
+    },
+    "lower_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "upper_rate_constant": {
+      "required": true,
+      "type": "number"
+    },
+    "upper_temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "batch_conversion_after": {
+    "initial_concentration": {
+      "required": true,
+      "type": "number"
+    },
+    "order": {
+      "default": 1.0,
+      "required": false,
+      "type": "number"
+    },
+    "rate_constant": {
+      "required": true,
+      "type": "number"
+    },
+    "time_seconds": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "batch_time_to_reach": {
+    "conversion": {
+      "required": true,
+      "type": "number"
+    },
+    "initial_concentration": {
+      "required": true,
+      "type": "number"
+    },
+    "order": {
+      "default": 1.0,
+      "required": false,
+      "type": "number"
+    },
+    "rate_constant": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "continuous_reactor_conversion": {
+    "inlet_concentration": {
+      "required": true,
+      "type": "number"
+    },
+    "order": {
+      "default": 1.0,
+      "required": false,
+      "type": "number"
+    },
+    "rate_constant": {
+      "required": true,
+      "type": "number"
+    },
+    "residence_time_seconds": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "rate_constant_at_temperature": {
+    "activation_energy_kj_per_mol": {
+      "required": true,
+      "type": "number"
+    },
+    "reference_rate_constant": {
+      "required": true,
+      "type": "number"
+    },
+    "reference_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "target_temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "semibatch_accumulation_profile": {
+    "dose_time_seconds": {
+      "required": true,
+      "type": "number"
+    },
+    "dosed_moles": {
+      "required": true,
+      "type": "number"
+    },
+    "dosed_volume": {
+      "default": 0.0,
+      "required": false,
+      "type": "number"
+    },
+    "initial_coreagent_concentration": {
+      "required": true,
+      "type": "number"
+    },
+    "initial_volume": {
+      "required": true,
+      "type": "number"
+    },
+    "order_in_coreagent": {
+      "default": 1.0,
+      "required": false,
+      "type": "number"
+    },
+    "order_in_dosed": {
+      "default": 1.0,
+      "required": false,
+      "type": "number"
+    },
+    "rate_constant": {
+      "required": true,
+      "type": "number"
+    }
+  }
+}

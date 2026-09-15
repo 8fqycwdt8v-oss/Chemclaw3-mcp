@@ -10,7 +10,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/suitability/src servers/thermalsafety/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src
 
 .PHONY: help
 help: ## Show this help.
@@ -271,6 +271,11 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 run-props: ## Run the props server on its dev port with a dev token.
 	CHEMCLAW_PROPS_TOKEN=$${CHEMCLAW_PROPS_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_props.app:app --host 127.0.0.1 --port 8850
+
+.PHONY: run-kinetics
+run-kinetics: ## Run the kinetics server on its dev port with a dev token.
+	CHEMCLAW_KINETICS_TOKEN=$${CHEMCLAW_KINETICS_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_kinetics.app:app --host 127.0.0.1 --port 8852
 
 .PHONY: run-suitability
 run-suitability: ## Run the suitability server on its dev port with a dev token.

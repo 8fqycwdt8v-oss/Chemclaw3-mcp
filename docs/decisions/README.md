@@ -85,6 +85,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing](D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing.md) | `13 ignored` is duplication, not aliasing |
 | [D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts](D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md) | What this fleet enforces, bounds, measures and accepts |
 | [D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify](D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify.md) | A server with nothing to load still has something to verify |
+| [D-2026-09-15-the-dependency-a-catalogue-proposed-was-the-one-tool-it-could-not-carry](D-2026-09-15-the-dependency-a-catalogue-proposed-was-the-one-tool-it-could-not-carry.md) | The dependency a catalogue proposed was the one tool it could not carry |
 | [D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted](D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted.md) | The eighth server arrived with the shape the backlog predicted |
 | [D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer](D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer.md) | Two formulas for one quantity make the convention part of the answer |
 

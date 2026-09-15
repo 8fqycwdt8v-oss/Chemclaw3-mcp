@@ -414,14 +414,40 @@ The tool is named for the model it implements; its docstring, its `basis` string
 `servers/thermalsafety/README.md` all say what it is an estimate *for* (deciding which test to book,
 and at what temperature to start it). See `servers/thermalsafety/README.md` § "What it is not".
 
-### `kinetics` — rate laws and reactor simulation · port 8852 · proposed
+### `kinetics` — isothermal rate and ideal-reactor arithmetic · port 8852 · **built**
 
-Fit a rate law to time-course data, simulate a batch/CSTR/PFR, extrapolate an Arrhenius fit, and
-produce the heat-release profile `thermalsafety` consumes.
+Carry a rate constant to another temperature along Arrhenius, determine an activation energy
+exactly from two measured points, get conversion or time for an ideal batch reactor at any order,
+compare an ideal PFR against an ideal CSTR at one residence time, and integrate a constant-rate
+semi-batch addition for the accumulation profile a dose time is chosen against.
 
-*Proposed tools:* `fit_rate_law`, `simulate_batch_reactor`, `simulate_cstr_pfr`,
-`arrhenius_extrapolate`, `heat_release_profile`.
-*Offline:* Cantera (BSD-3) + SciPy, both installed at build time.
+*Tools:* `rate_constant_at_temperature`, `activation_energy_from_two_rates`,
+`batch_conversion_after`, `batch_time_to_reach`, `continuous_reactor_conversion`,
+`semibatch_accumulation_profile`.
+*Offline:* first-party formulas; no corpus.
+
+**This entry previously proposed `fit_rate_law` and named Cantera + SciPy as the offline source.
+It ships with neither, and the split is the decision rather than a shortfall.** Fitting a rate law
+to time-course data is a regression; everything else on the list is closed-form algebra or a
+fixed-step RK4 over two state variables. `thermalsafety` hand-rolled a 200-step bisection rather
+than import `scipy.optimize`, citing `props` for the same choice, and only `calc` (behind a QM
+binary) and `pyexec` (which *is* a sandbox toolbox) carry numpy or scipy at all — neither reason
+transfers here. Cantera is a gas-phase mechanism package and was never right for liquid-phase
+process chemistry. What would reopen `fit_rate_law` is real time-course data arriving through an
+attachment or an ELN record, which nothing in this family delivers yet; see
+`servers/kinetics/README.md`.
+
+**It also produces no heat-release profile, and the coupling this row used to assert is deleted.**
+`thermalsafety` takes calorimetry a person measured; a heat-release profile computed from assumed
+kinetics and fed to a thermal-safety calculation would put an estimate where a measurement is
+required. The one honest bridge is that `semibatch_accumulation_profile`'s peak is an *input* to a
+thermal question — how much unreacted reagent is present — not an answer to one.
+
+**Deliberately disjoint from `thermalsafety`'s Arrhenius.** That server extrapolates `q`, a
+decomposition's specific heat-release rate, inside a TMR_ad inversion, returning a temperature.
+This one extrapolates `k`, the rate constant of the reaction being run, and returns a rate
+constant. Nothing here returns a TMR, a T_D24 or a criticality class, and a test asserts the module
+exports no such name.
 
 ### `unitops` — scale-up and unit-operation sizing · port 8853 · proposed
 
