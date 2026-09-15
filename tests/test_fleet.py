@@ -2420,6 +2420,17 @@ def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> Non
 # what is measured; the transport each call also pays is the same for every server in this fleet
 # and is what the millisecond figures were mostly made of.
 CEILING_IS_ARGUED_ABSENT = {
+    # Five closed-form tools at 1.4 µs to 31.7 µs (the widest being a second-order CSTR's 200-step
+    # bisection), and one integrator at **836 µs** — the heaviest tool argued out of a ceiling in
+    # this table, and the one that had to earn it. At its first default of 2,000 RK4 steps it cost
+    # 8.1 ms, which is `chem`'s `render_structure` band, the one tool in that server gated for
+    # exactly this reason. That default was set while a feed-term discontinuity held the integrator
+    # to first-order convergence, where 2,000 steps really were needed. With the discontinuity gone
+    # the scheme converges at fourth order and 200 steps agrees with a hundredfold finer grid to
+    # 6.4e-08 — eight significant figures on a number reported to four. So a defect fixed made the
+    # control unnecessary, rather than a control covering for a defect. `MAX_INTEGRATION_STEPS`
+    # caps what a caller may ask for, so the cost cannot run away unpriced.
+    "kinetics": "closed-form algebra plus one bounded integrator, measured at 836 µs at its widest",
     # A dict lookup and a bisection over a 44-row vendored table: 0.7 µs for the lookup, 1.8 µs for
     # `vapour_pressure`, and 10.3 µs for a Hansen sweep across the whole table — which is the
     # largest single call `MAX_COMPARED_SOLVENTS` permits, since that bound *is* the table's size.

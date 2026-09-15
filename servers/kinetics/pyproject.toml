@@ -1,0 +1,34 @@
+[project]
+name = "chemclaw-mcp-kinetics"
+version = "0.1.0"
+description = "MCP server: USP <621> chromatographic system-kinetics arithmetic."
+requires-python = ">=3.11"
+# **`MODULES.md` proposed this server as "Cantera (BSD-3) + SciPy, both installed at build time",
+# and it ships with neither.** That line was written before `thermalsafety`, which hand-rolled a
+# 200-step bisection precisely to keep its closure at the MCP transport and cited `props` for the
+# same choice. Only two servers in this fleet carry numpy or scipy — `calc`, behind a QM binary,
+# and `pyexec`, which *is* a sandbox toolbox — and neither reason transfers to closed-form reactor
+# algebra and a fixed-step RK4 over two state variables.
+#
+# What the heavier closure would have bought is the one tool deliberately not built: `fit_rate_law`,
+# a regression over time-course data. Splitting it out is what let this server stay at `math`. See
+# `README.md` for the argument and what would reopen it. Cantera is a gas-phase mechanism package
+# and was never the right dependency for liquid-phase process chemistry at all.
+dependencies = [
+    "mcp-server-kit",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_kinetics"]
+
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

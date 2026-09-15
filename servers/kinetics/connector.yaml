@@ -1,0 +1,56 @@
+# The `kinetics` bundle, as Chemclaw3 reads it.
+#
+# A connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): there is no
+# `server/` half in the Chemclaw3 tree, only this manifest and an address. Drop this directory onto
+# `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.kinetics.url` in the Helm chart.
+name: kinetics
+description: >-
+  Isothermal rate and ideal-reactor arithmetic, from kinetic parameters the chemist already has:
+  carry a rate constant to another temperature along Arrhenius, determine an activation energy
+  exactly from two measured points, get conversion or time for an ideal batch reactor at any
+  order, compare an ideal plug-flow reactor against an ideal stirred tank at the same residence
+  time, and integrate a constant-rate semi-batch addition for the accumulation profile a dose time
+  is chosen against. **Nothing here fits anything** — there is no regression, no time-course data
+  and no goodness of fit, so a question of the form "here is my concentration-against-time data,
+  what is the rate law" is one this server refuses. Every reactor is ideal and isothermal: perfect
+  mixing, no dispersion, no mass-transfer limitation, no energy balance. It returns no TMR, no
+  T_D24 and no criticality class — a cooling-failure question is `thermalsafety`'s, whose Arrhenius
+  extrapolation is of a decomposition's heat-release rate rather than of a reaction's rate
+  constant. Pure and synchronous — no store, no durable state, no corpus, and no network call at
+  any point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8852/mcp
+  health_url: http://127.0.0.1:8852/healthz
+  # Five of the six tools are microseconds of closed-form algebra. The sixth integrates, at a fixed
+  # step count that bounds its cost. The timeout exists to stop a mute connector hanging a turn.
+  request_timeout: 15
+  # Bearer even though the shipped URL is loopback, for the reason `servers/props/connector.yaml`
+  # states: a manifest whose auth mode changes with its address is one whose serving side gets it
+  # wrong. The token env var is the same name on both sides.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_KINETICS_TOKEN
+  tools:
+    - rate_constant_at_temperature
+    - activation_energy_from_two_rates
+    - batch_conversion_after
+    - batch_time_to_reach
+    - continuous_reactor_conversion
+    - semibatch_accumulation_profile
+
+  # Every tool is read-only: each takes numbers, computes, and returns. Nothing here writes, stores
+  # or reserves anything, so there is no state a plan gate would need to approve. Classifying by
+  # omission fails *open* (D-167), which is why all six are listed rather than left to a default.
+  read_only:
+    - rate_constant_at_temperature
+    - activation_energy_from_two_rates
+    - batch_conversion_after
+    - batch_time_to_reach
+    - continuous_reactor_conversion
+    - semibatch_accumulation_profile
