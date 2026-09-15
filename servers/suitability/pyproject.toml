@@ -1,0 +1,31 @@
+[project]
+name = "chemclaw-mcp-suitability"
+version = "0.1.0"
+description = "MCP server: USP <621> chromatographic system-suitability arithmetic."
+requires-python = ">=3.11"
+# As short a closure as `thermalsafety`'s, and for the same reason: every number here is
+# closed-form arithmetic over the standard library's `math`. No corpus, no cheminformatics
+# toolkit, no scientific stack — in particular no numpy or scipy, which a regression or a
+# statistical test would pull in and which nothing here needs, because USP <621> is means,
+# standard deviations and ratios. That boundary is also what keeps ICH Q2 validation statistics
+# out of this server: they are a different question, and the first one that would want a
+# t-distribution belongs in its own image. Adding a dependency here is a decision to be argued in
+# the pull request.
+dependencies = [
+    "mcp-server-kit",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "pyyaml>=6.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_mcp_suitability"]
+
+
+[tool.uv.sources]
+mcp-server-kit = { workspace = true }

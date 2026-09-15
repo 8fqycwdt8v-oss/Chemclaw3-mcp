@@ -1,4 +1,4 @@
-# The Deployment for the `thermalsafety` server, and the file that carries its pod hardening.
+# The Deployment for the `suitability` server, and the file that carries its pod hardening.
 #
 # `deploy/` shipped a NetworkPolicy, a Service and a ServiceMonitor but **no workload**, so nothing
 # in-cluster set `runAsNonRoot`, dropped Linux capabilities, applied a seccomp profile, or bounded
@@ -13,9 +13,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: chemclaw-mcp-thermalsafety
+  name: chemclaw-mcp-suitability
   labels:
-    app.kubernetes.io/name: chemclaw-mcp-thermalsafety
+    app.kubernetes.io/name: chemclaw-mcp-suitability
     app.kubernetes.io/part-of: chemclaw3
 spec:
   # **The HPA's `minReplicas` floor, and it is a floor rather than a count.** `replicas: 1` made
@@ -26,11 +26,11 @@ spec:
   replicas: 2
   selector:
     matchLabels:
-      app.kubernetes.io/name: chemclaw-mcp-thermalsafety
+      app.kubernetes.io/name: chemclaw-mcp-suitability
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: chemclaw-mcp-thermalsafety
+        app.kubernetes.io/name: chemclaw-mcp-suitability
         app.kubernetes.io/part-of: chemclaw3
     spec:
       # No API access: this server never talks to the Kubernetes API, so it is handed no token to
@@ -46,7 +46,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: chemclaw-mcp-thermalsafety
+              app.kubernetes.io/name: chemclaw-mcp-suitability
       # **Derived from `connector.yaml`'s `request_timeout` (15 s) plus 30 s of drain**, not
       # written as a number: the manifest states the longest a caller waits for this server, so it
       # states the longest an in-flight call can still be worth finishing. Left at Kubernetes'
@@ -66,11 +66,11 @@ spec:
         - name: server
           # Replaced at deploy time with the registry path for this build; the tag is pinned by the
           # release pipeline, not left at a floating `latest` in production.
-          image: chemclaw3/chemclaw-mcp-thermalsafety:latest
+          image: chemclaw3/chemclaw-mcp-suitability:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8851
+              containerPort: 8892
           # The container-level context is what a Pod Security "restricted" admitter reads. Every
           # field here is deny-by-default: no privilege escalation, every Linux capability dropped,
           # the runtime's seccomp profile, and a non-root UID.
@@ -84,10 +84,12 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           # **This server is transport-bound, and the request is sized for the transport.**
-          # Measured over a real MCP session on loopback: 6.5 ms for `adiabatic_temperature_rise`,
-          # 7.8 ms for `tmr_ad`, 7.6 ms for `oxygen_balance_screen`. The arithmetic inside those is
-          # 0.25 µs, 63.7 µs and 4.5 µs respectively — so under 1% of a call is this server's own
-          # work and the rest is the streamable-HTTP round trip every server in the fleet pays.
+          # The arithmetic is 1.9 µs to 4.9 µs for the six single-peak tools and 29.8 µs for
+          # `system_suitability_report` over a three-peak table with two six-injection series —
+          # and most of even those figures is pydantic building the result model rather than any
+          # chromatography. A whole call over a real MCP session is milliseconds, so well under 1%
+          # of it is this server's own work and the rest is the streamable-HTTP round trip every
+          # server in the fleet pays.
           #
           # That is why the numbers below match `props` rather than being scaled down for a server
           # that does no real computation: scaling them to the arithmetic would size the pod for
@@ -102,19 +104,17 @@ spec:
               cpu: "1"
               memory: 512Mi
           readinessProbe:
-            # **`/healthz` here recomputes published values rather than loading a corpus**, which
-            # is what a server with nothing to load still owes
-            # (`D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify`). This
-            # comment used to say the opposite — that the route is a constant 200 and `app.py`
-            # passes no `readiness=` callable — which was this server's *first* argument and was
-            # refused by the fleet invariant before it shipped. The callable has been there since;
-            # the comment outlived the argument it was describing, which is the defect the record
-            # above is named for, happening to that record's own server.
+            # **`/healthz` here recomputes the constants against each other rather than loading a
+            # corpus**, which is what a server with nothing to load still owes
+            # (`D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify`).
             #
-            # What it verifies: `engine/selftest.py` puts known cases through the real public
-            # functions and compares against values published independently of this code, because
-            # the atomic-weight table and the screening bands are a vendored corpus that happens to
-            # live in Python source, and a transposed digit in one is invisible.
+            # The check is unusually strong on this server because USP's own constants
+            # over-determine each other: the two plate-count forms (16 and 5.54) and the two
+            # resolution forms (2 and 1.18) must agree on a Gaussian peak, since the second of each
+            # pair was derived from the first. A transposed digit breaks that agreement at once,
+            # where a probe that merely called each function and found a number would pass it. The
+            # transcribed <621> allowance table cannot be checked that way — a regulatory limit is
+            # not derivable from anything — so it is digested instead. See `engine/selftest.py`.
             httpGet:
               path: /healthz
               port: http

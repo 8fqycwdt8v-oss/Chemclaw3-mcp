@@ -21,6 +21,7 @@ dev = [
     "chemclaw-mcp-safety",
     "chemclaw-mcp-calc",
     "chemclaw-mcp-pyexec",
+    "chemclaw-mcp-suitability",
     "chemclaw-mcp-thermalsafety",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -54,6 +55,7 @@ chemclaw-mcp-chem = { workspace = true }
 chemclaw-mcp-safety = { workspace = true }
 chemclaw-mcp-calc = { workspace = true }
 chemclaw-mcp-pyexec = { workspace = true }
+chemclaw-mcp-suitability = { workspace = true }
 chemclaw-mcp-thermalsafety = { workspace = true }
 
 [tool.ruff]
@@ -108,7 +110,7 @@ python_version = "3.11"
 strict = true
 # Every package ships its own `src/` layout; point mypy at the sources rather than the installed
 # copies so a type error is reported against the file a person edits.
-mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/rxnlabel/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src:servers/thermalsafety/src"
+mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/rxnlabel/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src:servers/suitability/src:servers/thermalsafety/src"
 
 [[tool.mypy.overrides]]
 module = [
