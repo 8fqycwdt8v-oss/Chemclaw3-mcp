@@ -2432,6 +2432,12 @@ CEILING_IS_ARGUED_ABSENT = {
     # 2D coordinates and draws, tens of milliseconds, two orders of magnitude above a substructure
     # match against a fixed table.
     "safety": "a bounded screen over fixed tables, with no depiction and no subprocess",
+    # Closed-form arithmetic over `math`: 1.9 µs to 4.9 µs for the six single-peak tools and
+    # 29.8 µs for `system_suitability_report` over a three-peak table with two six-injection
+    # series — most of even those being pydantic building the result model rather than any
+    # chromatography. No subprocess, no pinned thread, and both list inputs are bounded
+    # (`MAX_INJECTIONS`, `MAX_PEAKS`) so the cost cannot run away unpriced.
+    "suitability": "closed-form arithmetic, transport-bound, with both list inputs bounded",
     # Closed-form arithmetic over the standard library: 0.25 µs for `adiabatic_temperature_rise`,
     # 63.7 µs for `tmr_ad` (a fixed 200-step bisection, the slowest of the seven) and 4.5 µs for
     # `oxygen_balance_screen`. No subprocess, no pinned thread, and `MAX_FORMULA_CHARACTERS` bounds

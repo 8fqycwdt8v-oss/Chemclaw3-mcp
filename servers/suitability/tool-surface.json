@@ -1,0 +1,141 @@
+{
+  "peak_resolution": {
+    "convention": {
+      "required": true,
+      "type": "string"
+    },
+    "first_retention_min": {
+      "required": true,
+      "type": "number"
+    },
+    "first_width_min": {
+      "required": true,
+      "type": "number"
+    },
+    "second_retention_min": {
+      "required": true,
+      "type": "number"
+    },
+    "second_width_min": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "peak_symmetry": {
+    "leading_half_width_min": {
+      "required": true,
+      "type": "number"
+    },
+    "width_at_5_percent_min": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "permitted_method_adjustment": {
+    "is_gradient": {
+      "default": false,
+      "required": false,
+      "type": "boolean"
+    },
+    "original": {
+      "required": true,
+      "type": "number"
+    },
+    "parameter": {
+      "required": true,
+      "type": "string"
+    },
+    "proposed": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "plate_count": {
+    "column_length_mm": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "convention": {
+      "required": true,
+      "type": "string"
+    },
+    "retention_time_min": {
+      "required": true,
+      "type": "number"
+    },
+    "width_min": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "replicate_precision": {
+    "limit_percent": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "values": {
+      "required": true,
+      "type": "array"
+    }
+  },
+  "retention_factor": {
+    "retention_time_min": {
+      "required": true,
+      "type": "number"
+    },
+    "second_retention_time_min": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "void_time_min": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "system_suitability_report": {
+    "area_rsd_limit_percent": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "convention": {
+      "required": true,
+      "type": "string"
+    },
+    "maximum_tailing_factor": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "minimum_plates": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "minimum_resolution": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "peak_table": {
+      "required": true,
+      "type": "array"
+    },
+    "replicate_areas": {
+      "required": false,
+      "type": "array"
+    },
+    "replicate_retention_times_min": {
+      "required": false,
+      "type": "array"
+    },
+    "retention_rsd_limit_percent": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    }
+  }
+}

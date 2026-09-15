@@ -575,7 +575,37 @@ and adapted to this fleet's standards. The entry in tranche 1 is authoritative.
 | Server | Port | Status | Tools (proposed) | Offline source |
 | --- | --- | --- | --- | --- |
 | `spectra` | 8890 | proposed | `predict_nmr_shifts`, `match_ms_spectrum`, `fragment_formula`, `impurity_mass_id` | nmrshiftdb2 (open) + MassBank (CC-BY) snapshots. Feeds Chemclaw3's `computed-spectra-comparison` skill. |
-| `chromatography` | 8891 | proposed | `predict_log_k`, `gradient_scouting_plan`, `method_transfer_scale` | First-party retention models. |
+| `chromatography` | 8891 | proposed | `predict_log_k`, `gradient_scouting_plan`, `method_transfer_scale` | First-party retention models. **Not `suitability`** — see below. |
+| `suitability` | 8892 | **built** | `replicate_precision`, `plate_count`, `peak_symmetry`, `peak_resolution`, `retention_factor`, `permitted_method_adjustment`, `system_suitability_report` | First-party USP <621> formulas; no corpus. |
+
+### `suitability` — USP <621> system suitability · port 8892 · **built**
+
+The acceptance arithmetic a chemist runs on an injection sequence: replicate-injection RSD with the
+compendial rule for how many injections a limit of that size needs, theoretical plate count and
+resolution under **both** width conventions USP defines, the tailing factor at 5% height, retention
+and separation factors, and whether a proposed change to an isocratic method stays inside what the
+general chapter permits without revalidation.
+
+Every input is a number a chromatogram already reported. Nothing here integrates a chromatogram,
+finds a peak, assigns a baseline or opens an instrument file.
+
+**Deliberate overlap, argued:** `chromatography` (8891, proposed) and this server both concern HPLC,
+and they answer opposite questions. That one *predicts* — a retention model, a gradient scouting
+plan — and needs a fitted model and a training set. This one *checks*, from numbers a run already
+produced, with no model at all. Merging them would put a predictive model's dependency closure into
+a server that is currently `math` and a dict, which is the "one tool family = one server" rule
+biting exactly where it is meant to.
+
+**What it deliberately does not serve:** ICH Q2 method validation — linearity, accuracy, LOD/LOQ,
+intermediate precision. Suitability asks "did the system perform today"; validation asks "is this
+method fit for purpose", over separate preparations and a different data shape. It is a different
+family and, if built, a different server; the first tool that wants a t-distribution wants a
+dependency this image does not carry.
+
+No corpus. The USP formulas and the adjustment allowances are first-party constants, verified on
+every readiness probe by their own mutual consistency on a Gaussian peak — 5.54 was derived from 16
+and 1.18 from 2, so a transposed digit breaks an agreement that must hold to 0.09%. See
+`servers/suitability/README.md`.
 
 ---
 
