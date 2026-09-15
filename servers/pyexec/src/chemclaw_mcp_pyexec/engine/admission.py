@@ -43,7 +43,7 @@ imports another, and the wording has to name this server's own tool and knob.
 
 from __future__ import annotations
 
-import threading
+from mcp_server_kit.limits import Admission as KitAdmission
 
 __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_RUNS", "Admission"]
 
@@ -63,32 +63,15 @@ ADMISSION_MARKER = "__admission_gated__"
 DEFAULT_MAX_CONCURRENT_RUNS = 2
 
 
-class Admission:
+class Admission(KitAdmission):
     """A count of sandboxed runs allowed at once, refused rather than queued past it.
 
-    Guarded by a lock rather than an `asyncio.Semaphore`: a slot is taken on the event loop and
-    given back from whichever thread or callback finishes the work, and nothing ever waits — a full
-    gate is an immediate refusal, so nothing here ever suspends.
+    The counter, the clamp and the lock are `mcp_server_kit.limits.Admission`'s; what stays here is
+    the sentence, because the levers it names are this server's. See that class for why nothing
+    waits and why the refusal is not shared.
     """
 
-    def __init__(self, limit: int) -> None:
-        """Args: limit: the most runs that may execute at once. Must be at least one."""
-        if limit < 1:
-            raise ValueError(f"an admission ceiling of {limit} would refuse every run")
-        self._limit = limit
-        self._lock = threading.Lock()
-        self._in_flight = 0
-
-    @property
-    def limit(self) -> int:
-        """The configured ceiling."""
-        return self._limit
-
-    @property
-    def in_flight(self) -> int:
-        """How many runs hold a slot right now."""
-        with self._lock:
-            return self._in_flight
+    unit = "run"
 
     def acquire(self, what: str) -> None:
         """Take a slot, or refuse in terms the caller can act on.
@@ -100,20 +83,13 @@ class Admission:
             ValueError: the ceiling is already reached. Worded for whoever receives it — an agent
                 reading a tool error, which can retry or send a smaller analysis.
         """
-        with self._lock:
-            if self._in_flight >= self._limit:
-                raise ValueError(
-                    f"this server is already running {self._limit} analyses, which is its "
-                    f"configured ceiling, so {what} was refused rather than queued: each run is a "
-                    "whole core for up to its wall-clock limit, and a queued one would spend that "
-                    "limit waiting and then be killed for exceeding it. Retry once one finishes, "
-                    "or raise CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS on a pod with more cores and "
-                    "more memory — the per-run address-space bound is the pod's memory divided by "
-                    "this number."
-                )
-            self._in_flight += 1
-
-    def release(self) -> None:
-        """Give a slot back. Never below zero, so one double release cannot open the gate."""
-        with self._lock:
-            self._in_flight = max(0, self._in_flight - 1)
+        if self.take().charged is None:
+            raise ValueError(
+                f"this server is already running {self.limit} analyses, which is its "
+                f"configured ceiling, so {what} was refused rather than queued: each run is a "
+                "whole core for up to its wall-clock limit, and a queued one would spend that "
+                "limit waiting and then be killed for exceeding it. Retry once one finishes, "
+                "or raise CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS on a pod with more cores and "
+                "more memory — the per-run address-space bound is the pod's memory divided by "
+                "this number."
+            )

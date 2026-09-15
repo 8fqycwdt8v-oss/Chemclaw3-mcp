@@ -48,7 +48,7 @@ imports another, and the refusal has to name this server's own tool and knob.
 
 from __future__ import annotations
 
-import threading
+from mcp_server_kit.limits import Admission as KitAdmission
 
 __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_BATCHES", "Admission"]
 
@@ -76,35 +76,15 @@ DEFAULT_MAX_CONCURRENT_BATCHES = 2
 DEFAULT_MAX_BATCH = 500
 
 
-class Admission:
+class Admission(KitAdmission):
     """A budget of concurrent labelling slots, refused rather than queued past it.
 
-    Guarded by a lock rather than an `asyncio.Semaphore`: slots are taken on the event loop and
-    given back from whichever thread or callback finishes the work, and nothing ever waits — a full
-    gate is an immediate refusal, so nothing here ever suspends.
-
-    A slot is one core's worth of work: one for the RDKit path, which is GIL-bound and measured
-    serial, and whatever the mapper's transformer is configured to spend where one is installed.
+    The counter, the clamp and the lock are `mcp_server_kit.limits.Admission`'s; what stays here is
+    the sentence, because the levers it names are this server's. See that class for why nothing
+    waits, why the cost is clamped, and why the refusal is not shared.
     """
 
-    def __init__(self, limit: int) -> None:
-        """Args: limit: the most slots that may be held at once. Must be at least one."""
-        if limit < 1:
-            raise ValueError(f"an admission ceiling of {limit} would refuse every batch")
-        self._limit = limit
-        self._lock = threading.Lock()
-        self._in_flight = 0
-
-    @property
-    def limit(self) -> int:
-        """The configured ceiling, in slots."""
-        return self._limit
-
-    @property
-    def in_flight(self) -> int:
-        """How many slots are held right now."""
-        with self._lock:
-            return self._in_flight
+    unit = "batch"
 
     def acquire(self, what: str, cost: int = 1) -> int:
         """Take `cost` slots, or refuse in terms the caller can act on.
@@ -113,9 +93,8 @@ class Admission:
             what: The tool being asked for, named in the refusal — the caller's levers are which
                 tool it called, how large a batch it sent, and when, so the message has to say
                 which one was turned away.
-            cost: How many slots this call occupies. Clamped into `1..limit`: a cost of zero would
-                make a tool uncounted, and a cost above the ceiling would make it permanently
-                unadmittable, so the expensive one takes the pod exclusively instead.
+            cost: How many slots this call occupies. Clamped into `1..limit` by the base class, so
+                a maximal batch takes the pod exclusively rather than becoming unadmittable.
 
         Returns:
             The slots actually taken, which is what `release` must be given back — the clamp means
@@ -126,24 +105,16 @@ class Admission:
                 labelling drain, which can back off and re-send the identical batch, or an agent
                 reading a tool error.
         """
-        charge = max(1, min(cost, self._limit))
-        with self._lock:
-            if self._in_flight + charge > self._limit:
-                free = self._limit - self._in_flight
-                raise ValueError(
-                    f"this server has {free} of its {self._limit} labelling slots free and "
-                    f"{what} needs {charge}, so it was refused rather than queued: a slot is one "
-                    "core, a maximal batch is seconds to minutes of CPU, and a queued one would "
-                    "come back after the caller had stopped waiting for it. Re-send the identical "
-                    "batch once one finishes, or send a smaller one; raise "
-                    "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES only on a pod with more cores, "
-                    "because labelling is CPU-bound and a wider ceiling on the same pod makes "
-                    "every batch slower without labelling one extra reaction"
-                )
-            self._in_flight += charge
-        return charge
-
-    def release(self, cost: int = 1) -> None:
-        """Give `cost` slots back. Never below zero, so one double release cannot open the gate."""
-        with self._lock:
-            self._in_flight = max(0, self._in_flight - cost)
+        taken = self.take(cost)
+        if taken.charged is None:
+            raise ValueError(
+                f"this server has {taken.free} of its {self.limit} labelling slots free and "
+                f"{what} needs {min(max(cost, 1), self.limit)}, so it was refused rather than "
+                "queued: a slot is one core, a maximal batch is seconds to minutes of CPU, and a "
+                "queued one would come back after the caller had stopped waiting for it. Re-send "
+                "the identical batch once one finishes, or send a smaller one; raise "
+                "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES only on a pod with more cores, "
+                "because labelling is CPU-bound and a wider ceiling on the same pod makes "
+                "every batch slower without labelling one extra reaction"
+            )
+        return taken.charged

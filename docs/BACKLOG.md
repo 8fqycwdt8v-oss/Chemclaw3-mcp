@@ -176,20 +176,6 @@ decision leaves a record behind and the row goes.
   `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/preprocessing.py`.
 
-- [ ] **`Admission` is copied into five servers, and "one server never imports another" is not the
-  only reason it could be.** `calc`, `chem`, `pyexec`, `rxnlabel` and `rxnpredict` each carry a
-  ~40-line lock-and-counter class whose bodies are near-identical; what genuinely differs is the
-  *refusal wording* (`chem`'s names a replica because raising its ceiling cannot help, `calc`'s
-  names a knob and carries `AT_CAPACITY_MARKER`) and, in three of them, the cost model. The stated
-  reason for copying is that one server never imports another — which is true and does not apply to
-  `mcp_server_kit`, the package every one of them already imports. Decide whether the counter and
-  the clamp belong there with each server keeping its own message, or whether five copies is the
-  right price for five independent dependency closures. Re-derive the list with
-  `grep -rln "class Admission" servers` before working it, because a sixth may have arrived.
-  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/admission.py`,
-  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`.
-
 - [ ] **Neither heavy server pins its inference thread width, so a slot is a core only by
   accident.** `torch.get_num_threads()` is sized from the machine's physical cores rather than from
   the container's cgroup, and neither `servers/rxnpredict/Containerfile` nor
