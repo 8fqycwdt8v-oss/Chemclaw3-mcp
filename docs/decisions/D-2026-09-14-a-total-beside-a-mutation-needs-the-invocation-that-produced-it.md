@@ -1,7 +1,7 @@
 # D-2026-09-14-a-total-beside-a-mutation-needs-the-invocation-that-produced-it — A total beside a mutation needs the invocation that produced it
 
 **Status:** accepted · **Date:** 2026-09-14 · **Commit:** fix pass over the adversarial review of
-`811d3de`. Corrects the two figures in
+`1c1c2d6` (#70). Corrects the two figures in
 `D-2026-09-14-eight-assertions-of-one-clause-is-a-choice-not-an-accident`, which is merged and
 therefore not edited. Both records' decisions stand in full.
 

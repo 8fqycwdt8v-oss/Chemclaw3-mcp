@@ -1,7 +1,7 @@
 # D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one — A child process is outside the guard, and `uv build` is one
 
 **Status:** accepted · **Date:** 2026-09-14 · **Commit:** fix pass over the adversarial review of
-`811d3de`. No hash is written for the fix commits themselves, for the reason
+`1c1c2d6` (#70). No hash is written for the fix commits themselves, for the reason
 `D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed` §5 gives.
 
 ## Context

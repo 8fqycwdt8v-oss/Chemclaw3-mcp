@@ -1,7 +1,7 @@
 # D-2026-09-14-a-spelling-list-is-not-a-derivation — A spelling list is not a derivation
 
 **Status:** accepted · **Date:** 2026-09-14 · **Commit:** fix pass over the adversarial review of
-`811d3de`. Supersedes nothing; it corrects one claim in
+`1c1c2d6` (#70). Supersedes nothing; it corrects one claim in
 `D-2026-09-14-a-depth-nobody-asserts-is-a-default-waiting-to-return`, which is merged and therefore
 not edited.
 

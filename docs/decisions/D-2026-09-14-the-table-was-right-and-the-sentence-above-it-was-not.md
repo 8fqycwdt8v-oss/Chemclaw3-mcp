@@ -1,7 +1,7 @@
 # D-2026-09-14-the-table-was-right-and-the-sentence-above-it-was-not — The table was right and the sentence above it was not
 
 **Status:** accepted · **Date:** 2026-09-14 · **Commit:** fix pass over the adversarial review of
-`811d3de`. Corrects one sentence in `D-2026-09-14-a-row-that-cannot-occur-proves-the-other-branch`,
+`1c1c2d6` (#70). Corrects one sentence in `D-2026-09-14-a-row-that-cannot-occur-proves-the-other-branch`,
 which is merged and therefore not edited. That record's **decision stands in full**.
 
 ## Context

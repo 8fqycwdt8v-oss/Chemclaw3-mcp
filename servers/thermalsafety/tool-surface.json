@@ -1,0 +1,134 @@
+{
+  "adiabatic_temperature_rise": {
+    "heat_of_reaction_kj_per_mol": {
+      "required": true,
+      "type": "number"
+    },
+    "mass_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "moles": {
+      "required": true,
+      "type": "number"
+    },
+    "specific_heat_kj_per_kg_k": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "heat_removal_capacity": {
+    "heat_exchange_area_m2": {
+      "required": true,
+      "type": "number"
+    },
+    "heat_transfer_coefficient_w_per_m2_k": {
+      "required": true,
+      "type": "number"
+    },
+    "jacket_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "mass_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "reactor_temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "mtsr": {
+    "accumulation_fraction": {
+      "required": true,
+      "type": "number"
+    },
+    "adiabatic_temperature_rise_k": {
+      "required": true,
+      "type": "number"
+    },
+    "process_temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "oxygen_balance_screen": {
+    "molecular_formula": {
+      "required": true,
+      "type": "string"
+    }
+  },
+  "semenov_critical_ambient": {
+    "activation_energy_kj_per_mol": {
+      "required": true,
+      "type": "number"
+    },
+    "heat_release_rate_w_per_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "heat_transfer_coefficient_w_per_m2_k": {
+      "required": true,
+      "type": "number"
+    },
+    "mass_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "reference_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "surface_area_m2": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "stoessel_criticality_class": {
+    "decomposition_t_d24_c": {
+      "required": true,
+      "type": "number"
+    },
+    "max_technical_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "mtsr_c": {
+      "required": true,
+      "type": "number"
+    },
+    "process_temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "tmr_ad": {
+    "activation_energy_kj_per_mol": {
+      "required": true,
+      "type": "number"
+    },
+    "heat_release_rate_w_per_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "reference_temperature_c": {
+      "default": 0.0,
+      "required": false,
+      "type": "number"
+    },
+    "specific_heat_kj_per_kg_k": {
+      "required": true,
+      "type": "number"
+    },
+    "target_hours": {
+      "default": 24.0,
+      "required": false,
+      "type": "number"
+    },
+    "temperature_c": {
+      "required": true,
+      "type": "number"
+    }
+  }
+}

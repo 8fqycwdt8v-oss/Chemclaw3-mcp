@@ -1,0 +1,53 @@
+# The `thermalsafety` bundle, as Chemclaw3 reads it.
+#
+# A connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run): there is no
+# `server/` half in the Chemclaw3 tree, only this manifest and an address. Drop this directory onto
+# `CHEMCLAW_CONNECTORS_DIR` and the capability appears with no core edit.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.thermalsafety.url` in the Helm chart.
+name: thermalsafety
+description: >-
+  Runaway and thermal-hazard arithmetic for scale-up, from calorimetry numbers the chemist supplies:
+  adiabatic temperature rise, MTSR, TMR_ad and the temperature at which it reaches a target (T_D24),
+  the Stoessel criticality class from the ordering of T_p / MTSR / MTT / T_D24, jacket heat-removal
+  capacity, a Semenov critical-ambient estimate for a stored package, and a stoichiometric
+  oxygen-balance screen from a molecular formula. Every input is a DSC, ARC or RC1 number a person
+  measured; nothing here measures, predicts or fits anything, and no default is supplied for a
+  number that carries the safety argument. Pure and synchronous — no store, no durable state, no
+  corpus, and no network call at any point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8851/mcp
+  health_url: http://127.0.0.1:8851/healthz
+  # Every tool here is microseconds of closed-form arithmetic. The bound exists to stop a mute
+  # connector hanging a turn, not to police a fast one.
+  request_timeout: 15
+  # Bearer even though the shipped URL is loopback, for the reason `servers/props/connector.yaml`
+  # states: a manifest whose auth mode changes with its address is one whose serving side gets it
+  # wrong. The token env var is the same name on both sides.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_THERMALSAFETY_TOKEN
+  tools:
+    - adiabatic_temperature_rise
+    - mtsr
+    - tmr_ad
+    - stoessel_criticality_class
+    - heat_removal_capacity
+    - semenov_critical_ambient
+    - oxygen_balance_screen
+
+  # Every tool is read-only: each takes numbers, computes, and returns. Nothing here writes, stores
+  # or reserves anything, so there is no state a plan gate would need to approve. Classifying by
+  # omission fails *open* (D-167), which is why all seven are listed rather than left to a default.
+  read_only:
+    - adiabatic_temperature_rise
+    - mtsr
+    - tmr_ad
+    - stoessel_criticality_class
+    - heat_removal_capacity
+    - semenov_critical_ambient
+    - oxygen_balance_screen

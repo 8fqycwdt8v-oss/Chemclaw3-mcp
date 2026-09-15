@@ -391,19 +391,28 @@ division is the design.
 
 ## Tranche 1, continued
 
-### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **next**
+### `thermalsafety` — runaway and thermal-hazard arithmetic · port 8851 · **built**
 
 The calculations behind a safe scale-up, from calorimetry numbers the chemist supplies: adiabatic
-temperature rise, MTSR, TMR_ad, SADT, the Stoessel criticality class, heat-removal capacity, and an
-oxygen-balance screen for energetic functionality.
+temperature rise, MTSR, TMR_ad and the temperature at which it reaches a target (T_D24), the Stoessel
+criticality class, heat-removal capacity, a Semenov critical-ambient estimate for a stored package,
+and an oxygen-balance screen for energetic functionality.
 
-*Proposed tools:* `adiabatic_temperature_rise`, `mtsr`, `tmr_ad`, `sadt`,
-`stoessel_criticality_class`, `heat_removal_capacity`, `oxygen_balance_screen`.
-*Offline:* first-party formulas; no corpus needed.
+*Tools:* `adiabatic_temperature_rise`, `mtsr`, `tmr_ad`, `stoessel_criticality_class`,
+`heat_removal_capacity`, `semenov_critical_ambient`, `oxygen_balance_screen`.
+*Offline:* first-party formulas; no corpus needed — the only server here with no `data/` directory.
 *Note:* complements the `safety` server above, which screens *structures* for hazard alerts. This one
 takes DSC/RC1/ARC numbers and answers "what happens if the cooling fails". The two belong apart:
 `safety` answers from cited tables and needs RDKit, this one is arithmetic over numbers the chemist
 supplies and needs nothing.
+
+**The proposed `sadt` ships as `semenov_critical_ambient`, and the rename is the decision rather
+than a spelling.** SADT is *defined* by UN Test Series H on a specific package in a specific size,
+so a tool computing it from a heat balance would be shipping a regulatory determination as
+arithmetic — and a model reading `sadt` in a tool list has every reason to quote the answer as one.
+The tool is named for the model it implements; its docstring, its `basis` string and
+`servers/thermalsafety/README.md` all say what it is an estimate *for* (deciding which test to book,
+and at what temperature to start it). See `servers/thermalsafety/README.md` § "What it is not".
 
 ### `kinetics` — rate laws and reactor simulation · port 8852 · proposed
 
