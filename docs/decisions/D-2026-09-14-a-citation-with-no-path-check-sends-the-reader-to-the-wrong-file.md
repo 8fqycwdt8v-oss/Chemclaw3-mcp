@@ -1,7 +1,7 @@
 # D-2026-09-14-a-citation-with-no-path-check-sends-the-reader-to-the-wrong-file — A citation with no path check sends the reader to the wrong file
 
 **Status:** accepted · **Date:** 2026-09-14 · **Commit:** fix pass over the adversarial review of
-`811d3de`.
+`1c1c2d6` (#70).
 
 ## Context
 
