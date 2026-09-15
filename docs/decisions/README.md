@@ -84,5 +84,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-14-the-table-was-right-and-the-sentence-above-it-was-not](D-2026-09-14-the-table-was-right-and-the-sentence-above-it-was-not.md) | The table was right and the sentence above it was not |
 | [D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing](D-2026-09-14-thirteen-ignored-is-duplication-not-aliasing.md) | `13 ignored` is duplication, not aliasing |
 | [D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts](D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md) | What this fleet enforces, bounds, measures and accepts |
+| [D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify](D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify.md) | A server with nothing to load still has something to verify |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3
