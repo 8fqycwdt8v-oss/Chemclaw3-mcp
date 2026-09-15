@@ -41,7 +41,7 @@ def test_the_answer_satisfies_both_equations_that_define_the_crossover() -> None
     which is how a test ends up pinning an implementation detail instead of a property. Measured
     before this line was written: the identity holds to 1.8e-6, comfortably inside its own bound.
     """
-    balance = semenov_criticality(**DRUM)  # type: ignore[arg-type]
+    balance = semenov_criticality(**DRUM)
     conductance = DRUM["heat_transfer_coefficient_w_per_m2_k"] * DRUM["surface_area_m2"]
 
     assert balance.heat_generation_at_criticality_w == pytest.approx(
@@ -72,14 +72,14 @@ def test_the_self_heating_is_exactly_r_t_squared_over_ea() -> None:
     Asserted because it is the non-obvious consequence people get backwards: a *higher* activation
     energy shrinks the tolerable self-heat, so the package sits closer to its own crossover.
     """
-    balance = semenov_criticality(**DRUM)  # type: ignore[arg-type]
+    balance = semenov_criticality(**DRUM)
     contents_k = balance.critical_contents_c + 273.15
     assert balance.self_heating_at_criticality_k == pytest.approx(
         8.314462618 * contents_k**2 / (DRUM["activation_energy_kj_per_mol"] * 1000.0), rel=1e-9
     )
     assert balance.critical_ambient_c < balance.critical_contents_c
 
-    hotter = semenov_criticality(**{**DRUM, "activation_energy_kj_per_mol": 200.0})  # type: ignore[arg-type]
+    hotter = semenov_criticality(**{**DRUM, "activation_energy_kj_per_mol": 200.0})
     assert hotter.self_heating_at_criticality_k < balance.self_heating_at_criticality_k
 
 
@@ -90,13 +90,11 @@ def test_better_cooling_raises_the_critical_ambient_and_more_material_lowers_it(
     insulation is worse" — so getting one backwards is a defect nobody would catch from a single
     spot value, and both are checked against the same reference case.
     """
-    reference = semenov_criticality(**DRUM)  # type: ignore[arg-type]
-    better_cooled = semenov_criticality(
-        **{**DRUM, "heat_transfer_coefficient_w_per_m2_k": 20.0}  # type: ignore[arg-type]
-    )
+    reference = semenov_criticality(**DRUM)
+    better_cooled = semenov_criticality(**{**DRUM, "heat_transfer_coefficient_w_per_m2_k": 20.0})
     assert better_cooled.critical_ambient_c > reference.critical_ambient_c
 
-    bigger = semenov_criticality(**{**DRUM, "mass_kg": 200.0})  # type: ignore[arg-type]
+    bigger = semenov_criticality(**{**DRUM, "mass_kg": 200.0})
     assert bigger.critical_ambient_c < reference.critical_ambient_c
 
 
@@ -114,10 +112,10 @@ def test_a_package_with_no_crossover_in_range_is_told_which_end_it_ran_off() -> 
     # number, it is a number attached to the wrong temperature.
     with pytest.raises(ThermalInputError, match="no stable ambient"):
         semenov_criticality(
-            **{**DRUM, "heat_release_rate_w_per_kg": 1e6, "reference_temperature_c": -40.0}  # type: ignore[arg-type]
+            **{**DRUM, "heat_release_rate_w_per_kg": 1e6, "reference_temperature_c": -40.0}
         )
     with pytest.raises(ThermalInputError, match="no crossover exists"):
-        semenov_criticality(**{**DRUM, "heat_release_rate_w_per_kg": 1e-12})  # type: ignore[arg-type]
+        semenov_criticality(**{**DRUM, "heat_release_rate_w_per_kg": 1e-12})
 
 
 def test_heat_generation_extrapolates_along_arrhenius_in_both_directions() -> None:
@@ -169,4 +167,4 @@ def test_a_non_positive_input_is_refused_by_name_before_any_search_runs() -> Non
     """A zero area or a negative rate would make the bracket meaningless rather than wrong."""
     for field in ("mass_kg", "heat_release_rate_w_per_kg", "surface_area_m2"):
         with pytest.raises(ThermalInputError, match=field):
-            semenov_criticality(**{**DRUM, field: 0.0})  # type: ignore[arg-type]
+            semenov_criticality(**{**DRUM, field: 0.0})
