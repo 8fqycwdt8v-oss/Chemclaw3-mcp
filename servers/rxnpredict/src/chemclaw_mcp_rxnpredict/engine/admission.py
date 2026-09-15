@@ -59,7 +59,7 @@ imports another, and the refusal has to name this server's own tool and knob.
 
 from __future__ import annotations
 
-import threading
+from mcp_server_kit.limits import Admission as KitAdmission
 
 __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_PREDICTIONS", "Admission"]
 
@@ -79,35 +79,15 @@ ADMISSION_MARKER = "__admission_gated__"
 DEFAULT_MAX_CONCURRENT_PREDICTIONS = 2
 
 
-class Admission:
+class Admission(KitAdmission):
     """A budget of concurrent inference slots, refused rather than queued past it.
 
-    Guarded by a lock rather than an `asyncio.Semaphore`: slots are taken on the event loop and
-    given back from whichever thread or callback finishes the work, and nothing ever waits — a full
-    gate is an immediate refusal, so nothing here ever suspends.
-
-    A slot is one core's worth of work. What a call costs is the module docstring's argument: the
-    fan-out width times the configured intra-op thread width, never a call count.
+    The counter, the clamp and the lock are `mcp_server_kit.limits.Admission`'s; what stays here is
+    the sentence, because the levers it names are this server's. See that class for why nothing
+    waits, why the cost is clamped, and why the refusal is not shared.
     """
 
-    def __init__(self, limit: int) -> None:
-        """Args: limit: the most slots that may be held at once. Must be at least one."""
-        if limit < 1:
-            raise ValueError(f"an admission ceiling of {limit} would refuse every prediction")
-        self._limit = limit
-        self._lock = threading.Lock()
-        self._in_flight = 0
-
-    @property
-    def limit(self) -> int:
-        """The configured ceiling, in slots."""
-        return self._limit
-
-    @property
-    def in_flight(self) -> int:
-        """How many slots are held right now."""
-        with self._lock:
-            return self._in_flight
+    unit = "prediction"
 
     def acquire(self, what: str, cost: int = 1) -> int:
         """Take `cost` slots, or refuse in terms the caller can act on.
@@ -115,9 +95,8 @@ class Admission:
         Args:
             what: The tool being asked for, named in the refusal — the caller's levers are which
                 tool it called and when, so the message has to say which one was turned away.
-            cost: How many slots this call occupies. Clamped into `1..limit`: a cost of zero would
-                make a tool uncounted, and a cost above the ceiling would make it permanently
-                unadmittable, so a wide ensemble takes the pod exclusively instead.
+            cost: How many slots this call occupies. Clamped into `1..limit` by the base class, so
+                a wide ensemble takes the pod exclusively rather than becoming unadmittable.
 
         Returns:
             The slots actually taken, which is what `release` must be given back — the clamp means
@@ -127,24 +106,16 @@ class Admission:
             ValueError: the budget does not have room. Worded for whoever receives it — an agent
                 reading a tool error, or Chemclaw3 backing off.
         """
-        charge = max(1, min(cost, self._limit))
-        with self._lock:
-            if self._in_flight + charge > self._limit:
-                free = self._limit - self._in_flight
-                raise ValueError(
-                    f"this server has {free} of its {self._limit} inference slots free and "
-                    f"{what} needs {charge}, so it was refused rather than queued: a slot is one "
-                    "core, an ensemble runs every enabled predictor at once, and a queued "
-                    "prediction would come back after the caller had stopped waiting for it. "
-                    "Retry once one finishes, or ask a single model with "
-                    "predict_forward_single_model / predict_conditions_single_model, which costs "
-                    "this pod less. Raising CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS only "
-                    "helps on a pod with more cores"
-                )
-            self._in_flight += charge
-        return charge
-
-    def release(self, cost: int = 1) -> None:
-        """Give `cost` slots back. Never below zero, so one double release cannot open the gate."""
-        with self._lock:
-            self._in_flight = max(0, self._in_flight - cost)
+        taken = self.take(cost)
+        if taken.charged is None:
+            raise ValueError(
+                f"this server has {taken.free} of its {self.limit} inference slots free and "
+                f"{what} needs {min(max(cost, 1), self.limit)}, so it was refused rather than "
+                "queued: a slot is one core, an ensemble runs every enabled predictor at once, "
+                "and a queued prediction would come back after the caller had stopped waiting "
+                "for it. Retry once one finishes, or ask a single model with "
+                "predict_forward_single_model / predict_conditions_single_model, which costs "
+                "this pod less. Raising CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS only "
+                "helps on a pod with more cores"
+            )
+        return taken.charged

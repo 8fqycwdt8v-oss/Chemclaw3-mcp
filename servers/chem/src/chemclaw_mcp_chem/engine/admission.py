@@ -100,7 +100,7 @@ design — refuse, do not queue — not the wording: this server's refusal names
 
 from __future__ import annotations
 
-import threading
+from mcp_server_kit.limits import Admission as KitAdmission
 
 __all__ = [
     "ADMISSION_MARKER",
@@ -147,32 +147,15 @@ DEFAULT_MAX_CONCURRENT_RENDERS = 8
 POD_THREAD_POOL_WIDTH = 5
 
 
-class Admission:
+class Admission(KitAdmission):
     """A count of depictions allowed in flight at once, refused rather than queued past it.
 
-    Guarded by a lock rather than an `asyncio.Semaphore`: a slot is taken on the event loop and
-    given back from whichever thread or callback finishes the work, and nothing ever waits — a full
-    gate is an immediate refusal, so nothing here ever suspends.
+    The counter, the clamp and the lock are `mcp_server_kit.limits.Admission`'s; what stays here is
+    the sentence, because the levers it names are this server's. See that class for why nothing
+    waits and why the refusal is not shared.
     """
 
-    def __init__(self, limit: int) -> None:
-        """Args: limit: the most depictions that may be in flight at once. At least one."""
-        if limit < 1:
-            raise ValueError(f"an admission ceiling of {limit} would refuse every depiction")
-        self._limit = limit
-        self._lock = threading.Lock()
-        self._in_flight = 0
-
-    @property
-    def limit(self) -> int:
-        """The configured ceiling."""
-        return self._limit
-
-    @property
-    def in_flight(self) -> int:
-        """How many depictions hold a slot right now."""
-        with self._lock:
-            return self._in_flight
+    unit = "depiction"
 
     def acquire(self, what: str) -> None:
         """Take a slot, or refuse in terms the caller can act on.
@@ -184,20 +167,13 @@ class Admission:
             ValueError: the ceiling is already reached. Worded for whoever receives it — an agent
                 reading a tool error, or Chemclaw3 backing off.
         """
-        with self._lock:
-            if self._in_flight >= self._limit:
-                raise ValueError(
-                    f"this server is already rendering {self._limit} structures, which is its "
-                    f"configured ceiling, so {what} was refused rather than queued: RDKit holds "
-                    "the GIL through a depiction, so admitted renders run one at a time and a "
-                    "queued one would come back after the caller had stopped waiting for it. "
-                    "Retry once one finishes. Raising CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS will "
-                    "not help — it admits more renders onto the same serialised interpreter, "
-                    "making every one of them slower; this server scales by replicas."
-                )
-            self._in_flight += 1
-
-    def release(self) -> None:
-        """Give a slot back. Never below zero, so one double release cannot open the gate."""
-        with self._lock:
-            self._in_flight = max(0, self._in_flight - 1)
+        if self.take().charged is None:
+            raise ValueError(
+                f"this server is already rendering {self.limit} structures, which is its "
+                f"configured ceiling, so {what} was refused rather than queued: RDKit holds "
+                "the GIL through a depiction, so admitted renders run one at a time and a "
+                "queued one would come back after the caller had stopped waiting for it. "
+                "Retry once one finishes. Raising CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS will "
+                "not help — it admits more renders onto the same serialised interpreter, "
+                "making every one of them slower; this server scales by replicas."
+            )
