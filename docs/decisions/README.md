@@ -90,5 +90,5 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted](D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted.md) | The eighth server arrived with the shape the backlog predicted |
 | [D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer](D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer.md) | Two formulas for one quantity make the convention part of the answer |
 | [D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place](D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place.md) | A bound with no "off" refuses at import, in one place |
-
+| [D-2026-09-16-a-server-that-holds-no-data-is-a-server-that-refuses-defaults](D-2026-09-16-a-server-that-holds-no-data-is-a-server-that-refuses-defaults.md) | A server that holds no data is a server that refuses defaults |
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

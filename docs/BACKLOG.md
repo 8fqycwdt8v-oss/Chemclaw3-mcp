@@ -32,7 +32,7 @@ worked example — and `test_nowhere_in_the_file_states_a_live_row_count` keeps 
 
 **4 · A row about another repository is marked `**Other repository:**` and names that repo's
 anchor**, because no test here can open it. This repository has been burned by exactly that: the
-`Ports` section published Chemclaw3's connector range as 8810–8815 while its `bo` connector sat on
+`Ports` section published Chemclaw3's connector range as 8810-8815 while its `bo` connector sat on
 8816, a number belonging to a checkout this suite cannot read. That section now records the
 clearance as a dated observation rather than a boundary, and a row here gets the same treatment —
 the anchor check skips it, and says out loud that it did.
@@ -404,3 +404,35 @@ decision leaves a record behind and the row goes.
   saying `retrosynthesis_multi_step` is a Chemclaw3 durable job rather than a synchronous tool —
   the first entry in the catalogue that needs one.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
+
+## 7 — The coverage floor, and what it is a floor over
+
+- [ ] **`[tool.coverage.run] source_pkgs` names eight distributions and this workspace ships
+  twelve.** `kinetics`, `suitability`, `thermalsafety` and `unitops` are all absent from it, so the
+  88% floor is measured over a basis that excludes four built servers outright — and the comment
+  above the list still opens "The eight distributions this workspace ships", which was true when it
+  was written and is a claim about a commit rather than about `HEAD`. That comment also states the
+  exact failure this causes: a package nobody imported "is the one case a floor exists to catch",
+  and four of them are now invisible to it by name rather than by import. **This is not something
+  `unitops` introduced** — it arrived with the three servers before it, and the row is filed with
+  `unitops` because that is the commit that noticed. Changing the basis changes the percentage, so
+  it is a measurement before it is an edit: add the four, run `make cov`, and either the floor holds
+  and the list is simply corrected, or it moves and the number is re-derived in the same commit the
+  way 88 was. What must not happen is one server being added to the list and the prose still saying
+  eight.
+  **Anchors:** `pyproject.toml`, `Makefile`.
+
+## 8 — Correlations that need data nobody here has
+
+- [ ] **`unitops` models an incompressible cake, and real organic cakes compress.** A filtration
+  time from `filtration_time` takes a single specific cake resistance and assumes it is independent
+  of pressure, so it overstates what pushing harder buys — and it does so in the optimistic
+  direction, which is the one that gets a filter under-sized. The compressible form is
+  `alpha = alpha₀·ΔPˢ`, and `s` is fitted over filtration tests at **several** pressures: a regression over
+  data that exists in nobody's checkout here, and a default `s` would be this server inventing a
+  compressibility. The tool's docstring says what the assumption costs and in which direction, which
+  is the honest interim. What reopens it is filtration-test data arriving through an ELN — the same
+  trigger `servers/kinetics`'s absent `fit_rate_law` waits on — at which point the shape is one tool
+  taking `alpha₀` and `s` rather than a default anywhere.
+  **Anchors:** `servers/unitops/src/chemclaw_mcp_unitops/engine/filtration.py`,
+  `servers/unitops/README.md`.

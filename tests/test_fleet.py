@@ -2656,6 +2656,14 @@ CEILING_IS_ARGUED_ABSENT = {
     # `oxygen_balance_screen`. No subprocess, no pinned thread, and `MAX_FORMULA_CHARACTERS` bounds
     # the one input whose length was unbounded.
     "thermalsafety": "closed-form arithmetic, transport-bound, with its one input bounded",
+    # Closed-form correlations over `math`: 1.4 µs for `crystallisation_yield`, 12.2 µs for
+    # `shortcut_distillation` (a fixed 200-step bisection for Underwood's root, the widest thing
+    # this server does) and 1.6-7.2 µs for the other five. No subprocess, no pinned thread, and no
+    # list input — every argument is one scalar, so there is no input whose length could run the
+    # cost away and nothing for a ceiling to bound. For scale: one whole call over a real MCP
+    # session on loopback is 8.49 ms, so the arithmetic is ~0.1% of what the pod spends serving it.
+    "unitops": "closed-form correlations with one fixed-step solver, measured at 12.2 µs at its "
+    "widest",
 }
 
 
