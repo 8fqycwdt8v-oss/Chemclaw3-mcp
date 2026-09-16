@@ -92,8 +92,10 @@ scipy and the unit conversions are identical and the optimizer is the only diffe
 | aspirin | **refused** | -39.63184461 | — | — | 29 |
 
 Every energy that both optimizers reached agrees to better than **0.002 kcal/mol**, which is two
-orders of magnitude below the calibration residual of anything built on these geometries, and
-geomeTRIC reaches the marginally lower value in three of the four. The cycle counts are lower on the
+orders of magnitude below the calibration residual of anything built on these geometries. geomeTRIC
+reaches the marginally lower value on **two** of the four — water and ethanol — and the marginally
+higher one on acetic acid and benzene, by 5e-5 and 1e-5 kcal/mol; at that size the sign is which
+side of the same minimum each stopped on rather than a ranking. The cycle counts are lower on the
 two molecules with internal degrees of freedom to speak of and equal on the two that are nearly at
 their minimum already.
 
