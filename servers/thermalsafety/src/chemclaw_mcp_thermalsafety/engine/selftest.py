@@ -35,7 +35,10 @@ from chemclaw_mcp_thermalsafety.engine import oxygen_balance, runaway, semenov
 #: changes a weight, a band boundary or a formula, so an operator reading `/healthz` can tell two
 #: pods apart without a shell on either. It is not derived from the file's digest, because a digest
 #: answers "are these the same" and a version answers "which one is newer".
-CONSTANTS_VERSION = "1.0.0"
+# 1.1.0: the atomic weights stopped being transcribed and are read from `molmass` instead.
+# Every one of them moved in its last decimals, which is a different table serving the same
+# answers and is exactly what this string exists to let an operator tell apart.
+CONSTANTS_VERSION = "1.1.0"
 
 #: `(formula, published OB%)`. Every value is from the explosives literature and was written down
 #: independently of this code — which is what makes agreement evidence about the table rather than

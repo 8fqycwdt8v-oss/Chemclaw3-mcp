@@ -88,7 +88,7 @@ target-version = "py311"
 # - **`ASYNC`** finds a blocking call on an event loop. The five here are in test drivers talking
 #   to a uvicorn running in its own thread, which is why they are harmless and why saying so is
 #   worth one line each.
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S", "ASYNC", "BLE"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S", "ASYNC", "BLE", "TID253"]
 # `S101` (`assert`) is off fleet-wide and the reason is that something stricter already holds it.
 # `tests/test_fleet.py::test_no_serving_module_enforces_an_invariant_with_assert` scans every
 # `packages/*/src` and `servers/*/src` and carries the argument for its two exemptions —
@@ -104,10 +104,55 @@ ignore = ["S101"]
 # a bearer-auth test needs in order to be a bearer-auth test; `S104` fires on the `0.0.0.0` literals
 # `test_egress.py` asserts the guard *refuses*; `S603`/`S607` fire on the `git` and `python`
 # subprocesses the fleet-level tests drive. None of the five says anything about a shipped image.
-"**/tests/**" = ["S104", "S105", "S106", "S603", "S607"]
+# `TID253` joins them for the same reason the four above it are here: the subject is the test, not
+# a shipped image. Every `test_server.py` in this fleet drives a real uvicorn over loopback with
+# `httpx` and takes a free port with `socket`, and `mcp_server_kit.no_egress` does not read a test
+# tree either — `assert_no_egress_sources` is pointed at a server's `src/<package>`. So this
+# exemption is the same boundary the control it belts already draws, not a wider one.
+"**/tests/**" = ["S104", "S105", "S106", "S603", "S607", "TID253"]
 # Operational scripts, run by a person outside any serving image (`scripts/README.md`). The whole
 # point of `offline_check.py` is to start a subprocess in a stripped network namespace.
-"scripts/*.py" = ["S603", "S606", "S607"]
+"scripts/*.py" = ["S603", "S606", "S607", "TID253"]
+
+# **A second belt, and deliberately not a second rule.**
+# `mcp_server_kit.no_egress.network_imports` is layer 2 of the no-egress posture and stays exactly
+# as it was. `D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for` refused
+# precisely this trade for `S101` — two declarations of one rule with nothing reconciling them is
+# worse than one — so the condition for adding it here is that something reconciles them:
+# `tests/test_fleet.py::test_the_lint_ban_and_the_static_scan_name_the_same_modules` reads this list
+# against `FORBIDDEN_MODULES` in both directions, and a module added to either alone is red.
+#
+# What each half sees that the other does not, measured rather than assumed:
+#
+# - The scan alone resolves `__import__("gr" + "pc")` through `_dynamic_import_target`, scans for
+#   host literals, and carries the per-server `exempt` mechanism `servers/pyexec` needs. Ruff sees
+#   none of that, which is why the scan is the control and this is the belt.
+# - Ruff alone reads the *whole tree* on every `make lint`, where the scan runs per server inside a
+#   test. A new top-level package, or a `packages/*/src` module no server's `test_no_egress.py`
+#   points at, is covered here the day it is written.
+#
+# `banned-module-level-imports` rather than `banned-api`: a *function-level* import is how this
+# fleet writes an optional dependency, and `mcp_server_kit.tracing` does exactly that. The scan
+# takes the same line.
+[tool.ruff.lint.flake8-tidy-imports]
+banned-module-level-imports = [
+    "_socket",
+    "aiohttp",
+    "boto3",
+    "ftplib",
+    "grpc",
+    "http.client",
+    "httpcore",
+    "httplib2",
+    "httpx",
+    "requests",
+    "smtplib",
+    "socket",
+    "telnetlib",
+    "urllib.request",
+    "urllib3",
+    "websockets",
+]
 
 [tool.mypy]
 python_version = "3.11"
@@ -123,6 +168,12 @@ module = [
     # with no `py.typed`, so `Calculator` and its result object are untyped at the boundary
     # `engine/xtb_engine.py` deliberately keeps to one module.
     "tblite.*",
+    # geomeTRIC, the geometry optimizer (`servers/calc`). No `py.typed`, and the boundary is kept to
+    # one module for the same reason as tblite's: `engine/xtb_opt.py` holds the engine adapter, the
+    # coordinate-system builder and the parameter block, and nothing else in this tree imports it.
+    # Its `Engine` base class arrives as `Any`, so the subclass carries one `type: ignore[misc]`
+    # against `--strict`'s `disallow_subclassing_any` rather than the whole module losing a check.
+    "geometric.*",
     # Predictor dependencies, each behind its own extra and none installed here.
     "dgl.*",
     "onmt.*",

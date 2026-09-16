@@ -84,18 +84,73 @@ __all__ = [
 ]
 
 CALC_TYPE = "pka"
-# Heavy atoms whose O-H/S-H protons we treat as acidic sites.
-_ACIDIC_HEAVY = (8, 16)  # O, S
-# Nitrogen valence at which there is no lone pair left to protonate.
-_SATURATED_NITROGEN = 4
-# Sigma bonds at which an *aromatic* nitrogen's lone pair has gone into the ring's pi system instead
-# of staying in an in-plane orbital: pyrrole-type rather than pyridine-type.
-_PYRROLE_TYPE_SIGMA_BONDS = 3
-# Atoms that drain an adjacent nitrogen's lone pair when they carry a double bond to a chalcogen:
-# carbon (amide, carbamate, urea) and sulfur (sulfonamide, sulfinamide).
-_ELECTRON_WITHDRAWING = (6, 16)  # C, S
-# The chalcogen on the far end of that double bond.
-_CHALCOGEN = (8, 16)  # O, S
+
+# ---------------------------------------------------------------------------------------------
+# Site perception, as a SMARTS table.
+#
+# **This is a transcription of the imperative rules that stood here, not a redesign of them**, and
+# the distinction is the whole reason the table is worth reading carefully. `calc_version()`'s
+# linear calibration was fitted over *this* enumeration: a broader site set would pick a different
+# most-stable protomer on some molecules, and the calibration ledger on Chemclaw3's side matches
+# `calc_version` exactly with no version pooling — so a site rule that is "better" and different is
+# a silent recalibration of every stored residual. Proven equal to the fifty lines of `GetBonds()`
+# walking it replaced over a **216-molecule** probe corpus (the `props` solvent table, the `chem`
+# reagent table, and ~100 hand-written cases chosen to hit every arm: thioamides, phosphoramides,
+# N-oxides, azo and imine nitrogen, quaternary ammonium, isocyanates, hydrazides, peroxides,
+# fused azoles): **zero** disagreements on the acidic set, the basic set and the aryl
+# classification.
+#
+# `dimorphite-dl` was considered for this and declined for the same reason: it perceives a broader
+# set, which is exactly what must not change.
+# ---------------------------------------------------------------------------------------------
+
+#: Every O-H/S-H proton, on an explicit-hydrogen molecule (`parse_molecule`'s output). The match is
+#: `(hydrogen, heavy atom)` in that order, which is the pair `_conjugate_bases` deprotonates.
+#: `X1` on the hydrogen is the old `GetDegree() == 1`; it excludes nothing real and is kept because
+#: a bridging hydride would otherwise read as an acidic proton.
+_ACIDIC_PROTON = Chem.MolFromSmarts("[#1X1][#8,#16]")
+
+#: A nitrogen that can actually accept a proton in water. Neutral, with a free valence, minus the
+#: three classes whose lone pair is not available — each of which was a paragraph of bond walking
+#: and is now one recursive SMARTS:
+#:
+#: - `!$([#7]#*)` — **nitrile** (and any other sp nitrogen). pKaH ~ -10; there is no aqueous pH at
+#:   which any of it is protonated.
+#: - `!$([nX3])` — **pyrrole-type aromatic nitrogen**: three connections on an aromatic nitrogen, so
+#:   its lone pair is the ring's aromatic sextet rather than an in-plane orbital. Pyrrole's pKaH is
+#:   ~ -4 and protonating it costs the ring its aromaticity. The **pyridine-type** nitrogen beside
+#: it
+#:   has two connections and *is* basic — imidazole's two nitrogens are one of each. On an
+#:   explicit-hydrogen molecule `X` is the old `GetDegree() + GetTotalNumHs()`.
+#: - `!$([#7]-[#6,#16]=[#8,#16])` — **amide, carbamate, urea, sulfonamide, sulfinamide, and their
+#:   thio analogues**: a nitrogen *singly* bonded to a carbon or sulfur that carries a double bond
+#: to
+#:   O or S. The lone pair is conjugated into that C=O/S=O, and the consequence is not a shifted pKa
+#:   but a different molecule — protonated acetamide has pKaH ~ -0.5 **and protonates on the
+#:   oxygen**, so the nitrogen this enumeration would otherwise offer is not the site even in the
+#:   strongest acid. The explicit single bond is what keeps aniline out of it: aniline's bond to the
+#:   ring is aromatic, and aniline is a genuine weak base (pKaH 4.6) the calibration covers.
+#:
+#: **Known limit, unchanged by the transcription.** An amide-like nitrogen *inside* an aromatic ring
+#: — caffeine's N1/N3 — is caught by the pyrrole-type arm rather than the amide one, because RDKit
+#: gives its bonds aromatic rather than single order. Same answer by a different route.
+#:
+#: **What it does not exclude, also unchanged.** A nitrogen on phosphorus (`N-P=O`, a phosphoramide)
+#: is not in the electron-withdrawing arm, which names carbon and sulfur only. That was true of the
+#: bond-walking version and is true here; the probe corpus contains the case so that a future
+#: widening
+#: is a visible diff rather than a silent one.
+_BASIC_NITROGEN = Chem.MolFromSmarts(
+    "[#7+0;X1,X2,X3;!$([#7]#*);!$([nX3]);!$([#7]-[#6,#16]=[#8,#16])]"
+)
+
+#: Aromatic, or attached to an aromatic system — the boundary the *base* calibration is fitted on,
+#: and a real one rather than a convenience: aryl and aromatic nitrogen delocalize into the ring, so
+#: their basicity is dominated by that electronic effect, which GFN2 with a continuum captures well
+#: (Spearman 1.000 over seven references). An aliphatic amine's aqueous basicity is set by how its
+#: ammonium ion hydrogen bonds to water, which the same model cannot see at all (Spearman -0.17),
+#: and is refused rather than reported.
+_ARYL_NITROGEN = Chem.MolFromSmarts("[$([n]),$([#7]~a)]")
 
 
 class PkaInput(BaseModel):
@@ -133,14 +188,13 @@ def _acidic_protons(mol: Chem.Mol) -> list[tuple[int, int]]:
     The module's one definition of "acidic site": `_conjugate_bases` deprotonates exactly these and
     `ionisable_sites` counts exactly these, so a caller asking *how many* sites a molecule has
     cannot disagree with the enumeration that produced the pKa.
+
+    Sorted by hydrogen index, which is the order the atom walk this replaced produced. It decides
+    nothing about the answer — the most stable anion wins on energy — but it decides which of two
+    exactly degenerate sites is reported, and a reordering there would be a diff in a stored result
+    with no physics behind it.
     """
-    return [
-        (atom.GetIdx(), atom.GetNeighbors()[0].GetIdx())
-        for atom in mol.GetAtoms()
-        if atom.GetAtomicNum() == 1
-        and atom.GetDegree() == 1
-        and atom.GetNeighbors()[0].GetAtomicNum() in _ACIDIC_HEAVY
-    ]
+    return sorted(mol.GetSubstructMatches(_ACIDIC_PROTON))
 
 
 def _conjugate_bases(mol: Chem.Mol) -> list[Chem.Mol]:
@@ -163,73 +217,15 @@ def _conjugate_bases(mol: Chem.Mol) -> list[Chem.Mol]:
     return anions
 
 
-def _lone_pair_is_available(atom: Chem.Atom) -> bool:
-    """Whether this nitrogen's lone pair can actually accept a proton in water.
-
-    Free valence says a lone pair *exists*; it does not say the pair is available, and three common
-    classes have one that is not. They are excluded here rather than left for a downstream caller to
-    second-guess, because `_predict_base_pka` will otherwise compute and report a conjugate-acid pKa
-    for a molecule that has no basic centre at all — a confident number on exactly the class where
-    it is most wrong.
-
-    - **Amide, carbamate, urea, sulfonamide** — a nitrogen single-bonded to a carbon or sulfur that
-      carries a double bond to O or S. The lone pair is conjugated into that C=O/S=O, and the
-      consequence is not a shifted pKa but a different molecule: protonated acetamide has pKaH ~
-      -0.5 **and protonates on the oxygen**, so the nitrogen this enumeration would offer is not the
-      site even in the strongest acid.
-    - **Nitrile** — an sp nitrogen (a triple bond). pKaH ~ -10; there is no aqueous pH at which any
-      of it is protonated.
-    - **Pyrrole-type aromatic nitrogen** — an aromatic nitrogen with three sigma bonds, so its lone
-      pair is the ring's aromatic sextet rather than an in-plane orbital. Pyrrole's pKaH is ~ -4,
-      and protonating it costs the ring its aromaticity. The **pyridine-type** nitrogen beside it in
-      the same ring has two sigma bonds and an in-plane lone pair, and *is* basic — imidazole's two
-      nitrogens are one of each.
-
-    Only a **single** bond from the nitrogen counts for the amide rule, which is what keeps aniline
-    out of it: aniline's bond to the ring is aromatic, not the C=O single bond this looks for, and
-    aniline is genuinely a weak base (pKaH 4.6) the calibration covers.
-
-    **Known limit.** An amide-like nitrogen *inside* an aromatic ring — caffeine's N1/N3 — is caught
-    by the pyrrole-type rule (three sigma bonds) rather than the amide one, because RDKit gives its
-    bonds aromatic rather than single order. Same answer by a different route.
-    """
-    if any(bond.GetBondType() == Chem.BondType.TRIPLE for bond in atom.GetBonds()):
-        return False
-    if (
-        atom.GetIsAromatic()
-        and atom.GetDegree() + atom.GetTotalNumHs() >= _PYRROLE_TYPE_SIGMA_BONDS
-    ):
-        return False
-    for bond in atom.GetBonds():
-        if bond.GetBondType() != Chem.BondType.SINGLE:
-            continue
-        neighbor = bond.GetOtherAtom(atom)
-        if neighbor.GetAtomicNum() not in _ELECTRON_WITHDRAWING:
-            continue
-        if any(
-            other.GetBondType() == Chem.BondType.DOUBLE
-            and other.GetOtherAtom(neighbor).GetAtomicNum() in _CHALCOGEN
-            for other in neighbor.GetBonds()
-        ):
-            return False
-    return True
-
-
 def _basic_nitrogens(mol: Chem.Mol) -> list[int]:
-    """Indices of nitrogens that can be protonated: free valence *and* an available lone pair.
+    """Indices of nitrogens that can be protonated — free valence *and* an available lone pair.
 
     The valence test alone was the whole rule until it was measured against what the base branch
     then did with the result. It counts an amide nitrogen — paracetamol's, acetamide's — and
     `predict_pka` would go on to report a basic pKa for a molecule whose only nitrogen is not basic.
+    Both halves are now one pattern; `_BASIC_NITROGEN` is where the argument for each exclusion is.
     """
-    return [
-        atom.GetIdx()
-        for atom in mol.GetAtoms()
-        if atom.GetAtomicNum() == 7
-        and atom.GetFormalCharge() == 0
-        and atom.GetTotalNumHs() + atom.GetDegree() < _SATURATED_NITROGEN
-        and _lone_pair_is_available(atom)
-    ]
+    return sorted(match[0] for match in mol.GetSubstructMatches(_BASIC_NITROGEN))
 
 
 class IonisableSites(NamedTuple):
@@ -263,16 +259,14 @@ def ionisable_sites(smiles: str) -> IonisableSites:
     return IonisableSites(acidic=len(_acidic_protons(mol)), basic=len(_basic_nitrogens(mol)))
 
 
-def _is_aryl_nitrogen(atom: Chem.Atom) -> bool:
-    """Whether a nitrogen is aromatic or attached to an aromatic system.
+def _aryl_nitrogens(mol: Chem.Mol) -> set[int]:
+    """Indices of the nitrogens `_ARYL_NITROGEN` matches — the class the base calibration covers.
 
-    The class boundary the calibration is fitted on, and it is a real one rather than a convenience:
-    aryl and aromatic nitrogen delocalize into the ring, so their basicity is dominated by that
-    electronic effect — which GFN2 with a continuum captures well. An aliphatic amine's aqueous
-    basicity is dominated by how its ammonium ion hydrogen bonds to water, which the same model
-    cannot see at all.
+    Computed once per molecule and passed down rather than asked per atom, because a recursive
+    SMARTS is matched against the whole molecule either way and `_protonated_forms` would otherwise
+    re-run it per site.
     """
-    return atom.GetIsAromatic() or any(n.GetIsAromatic() for n in atom.GetNeighbors())
+    return {match[0] for match in mol.GetSubstructMatches(_ARYL_NITROGEN)}
 
 
 def _protonated_forms(mol: Chem.Mol, sites: list[int]) -> list[tuple[Chem.Mol, bool]]:
@@ -282,10 +276,11 @@ def _protonated_forms(mol: Chem.Mol, sites: list[int]) -> list[tuple[Chem.Mol, b
     defines the conjugate acid — and know which calibration that site is in.
     """
     forms: list[tuple[Chem.Mol, bool]] = []
+    aryl_sites = _aryl_nitrogens(mol)
     for index in sites:
         editable = Chem.RWMol(mol)
         nitrogen = editable.GetAtomWithIdx(index)
-        aryl = _is_aryl_nitrogen(nitrogen)
+        aryl = index in aryl_sites
         nitrogen.SetFormalCharge(1)
         nitrogen.SetNumExplicitHs(nitrogen.GetNumExplicitHs() + 1)
         nitrogen.SetNoImplicit(True)

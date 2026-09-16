@@ -98,6 +98,67 @@ def test_a_manifest_with_a_null_tools_key_is_named(tmp_path: Path) -> None:
     from mcp_server_kit.testing import assert_manifest_matches
 
     manifest = tmp_path / "connector.yaml"
-    manifest.write_text("name: probe\nendpoint:\n  tools:\n", encoding="utf-8")
+    manifest.write_text(
+        "name: probe\ndescription: a probe\nendpoint:\n"
+        "  url: http://127.0.0.1:8850/mcp\n"
+        "  auth:\n    mode: bearer\n    token_env: PROBE_TOKEN\n"
+        "  tools:\n",
+        encoding="utf-8",
+    )
     with pytest.raises(AssertionError, match="declares \\[\\]"):
         assert_manifest_matches(manifest, ["a_tool"])
+
+
+def test_a_misspelled_key_is_named_beside_the_field_it_makes_look_absent(tmp_path: Path) -> None:
+    """The defect `extra="forbid"` exists for, on the one file whose purpose is to be auditable.
+
+    Before the manifest was a model, a `dataset.json` written with `"license"` parsed clean and the
+    loader then reported **`licence`** as missing — an error naming a field the author *had*
+    written, under a spelling they had not. A reviewer reading that message looks at the file, sees
+    a licence, and concludes the loader is broken.
+
+    Both halves must be in the message, because either one alone sends the reader to the wrong
+    conclusion: the unrecognised key says what was written, and the absent field says what it
+    should have been written as.
+    """
+    manifest = dict(MANIFEST)
+    manifest["license"] = manifest.pop("licence")
+    directory = _write(tmp_path)
+    manifest["sha256"] = json.loads((directory / "dataset.json").read_text())["sha256"]
+    (directory / "dataset.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(directory)
+    message = str(raised.value)
+    assert "license" in message, "the key that was actually written is not in the message"
+    assert "licence" in message, "the key it should have been is not in the message"
+
+
+def test_a_key_nothing_reads_is_refused_rather_than_ignored(tmp_path: Path) -> None:
+    """A manifest key with no reader is a claim, and this loader used to accept every one of them.
+
+    Measured when the model was introduced: three shipped manifests — `chem`'s reagent table,
+    `safety`'s copy of it and `props`' solvent sheet — carried `text_column` and `smiles_column`,
+    read by nothing in either repository. They were invisible precisely because the loader took the
+    six keys it knew and said nothing about the rest, so a reviewer seeing them had every reason to
+    think something consumed them.
+    """
+    with pytest.raises(DatasetError, match="unrecognised key"):
+        load_dataset(_write(tmp_path, text_column="name"))
+
+
+def test_no_shipped_manifest_carries_a_key_the_loader_does_not_read(tmp_path: Path) -> None:
+    """Every `dataset.json` in this fleet, against the model — the direction the unit tests cannot.
+
+    `load_dataset` is called at import or at first use by each server, so a manifest with a stray
+    key already fails that server's own suite. This says so in one place and in one line, which is
+    what makes the deletion above a fleet fact rather than three servers that happened to be fixed.
+    """
+    root = Path(__file__).resolve().parents[3]
+    manifests = sorted(root.glob("servers/*/src/*/data/**/dataset.json"))
+    assert manifests, "no shipped dataset manifests found — the glob is wrong, not the fleet"
+    for path in manifests:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        assert set(parsed) == set(datasets._REQUIRED), (
+            f"{path} declares {sorted(set(parsed) - set(datasets._REQUIRED))} beyond the six "
+            "provenance fields; nothing reads them"
+        )

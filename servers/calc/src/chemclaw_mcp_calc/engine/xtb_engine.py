@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from scipy import constants
 from tblite.interface import Calculator
 
 from chemclaw_mcp_calc.engine.solvents import SUGGESTED_SOLVENTS
@@ -43,20 +44,40 @@ __all__ = [
     "run_singlepoint",
 ]
 
-# tblite works in atomic units; everything above this module is in Angstrom. CODATA 2018, to
-# full double precision, by the same rule as the two conversions below: one value, no copies.
-ANGSTROM_TO_BOHR = 1.8897261246
+# ---------------------------------------------------------------------------------------------
+# Unit conversions, **derived** from `scipy.constants` rather than transcribed.
+#
+# The four literals these replace carried the comment "CODATA 2018, to full double precision", and
+# that was false of the first of them: CODATA-2018's Bohr radius gives 1.8897261246257702 and the
+# literal stopped at 1.8897261246 — eleven significant digits where a float64 holds about
+# seventeen, 1.4e-11 relative. Deriving removes the transcription step entirely; scipy is already a
+# declared dependency of this server for L-BFGS-B and the vibrational projection.
+#
+# **What deriving costs is that the numbers now track the installed CODATA table, and that is why
+# `engine_version()` names scipy.** Measured at the commit that made the change: scipy 1.17.1 ships
+# CODATA **2022**, not 2018 — a0 = 5.29177210544e-11 against 2018's 5.29177210903e-11 — so the
+# derived values differ from the literals by 6.9e-10 relative on the length conversion, 6.0e-10 on
+# the dipole one, and 3e-13 / 2.6e-13 on the two energy ones. Those are far below anything an SCF
+# resolves, and they are still a *change*: a geometry in bohr moves in its ninth decimal. A future
+# scipy that ships CODATA 2026 would move them again, silently, which is exactly the failure
+# `engine/key.py` exists to prevent — so the scipy distribution version is part of
+# `engine_version()` and therefore part of every `calc_version` this server emits.
+# ---------------------------------------------------------------------------------------------
 
-# CODATA Hartree-to-kcal/mol, to full double precision. Every calculator here that reports a
-# relative or interaction energy in kcal/mol converts through this single value, so a truncated copy
-# cannot drift from the rest.
-HARTREE_TO_KCAL = 627.5094740631
+# tblite works in atomic units; everything above this module is in Angstrom. One value, no copies.
+ANGSTROM_TO_BOHR = 1e-10 / constants.value("Bohr radius")
 
-# CODATA atomic-unit-to-Debye, for the same reason and by the same rule as the line above: every
-# module that reports a dipole or a dipole derivative in Debye converts through this one value. It
-# was three literals in three modules in Chemclaw3, one of which sat inside the module that does the
-# unit arithmetic and waited to be applied a second time to numbers already converted.
-AU_TO_DEBYE = 2.5417464730
+# Hartree to kcal/mol. Every calculator here that reports a relative or interaction energy in
+# kcal/mol converts through this single value, so a truncated copy cannot drift from the rest.
+# `4184` is the thermochemical calorie's definition, which is exact rather than measured.
+HARTREE_TO_KCAL = constants.value("Hartree energy") * constants.Avogadro / 4184.0
+
+# Atomic units to Debye, for the same reason and by the same rule as the line above: every module
+# that reports a dipole or a dipole derivative in Debye converts through this one value. It was
+# three literals in three modules in Chemclaw3, one of which sat inside the module that does the
+# unit arithmetic and waited to be applied a second time to numbers already converted. The debye
+# itself is exactly 1e-21/c coulomb-metres, so only the numerator is measured.
+AU_TO_DEBYE = constants.value("atomic unit of electric dipole mom.") * constants.c / 1e-21
 
 # The tblite result properties any calculator here reads. Named explicitly rather than taking the
 # whole result: it also carries the density matrix and orbital coefficients, which nothing consumes
@@ -81,17 +102,28 @@ _CONSUMED_PROPERTIES = (
 # It appears verbatim in every `calc_version` string this server emits; the rows keyed by those
 # strings live over there. Bumping it here is a deliberate invalidation of that history, exactly as
 # it was when the two lived in one repository.
-_HAMILTONIAN_REVISION = "h2"
+# h3: the four unit conversions stopped being transcribed literals and are derived from
+# `scipy.constants`, which ships CODATA 2022 where the literals claimed 2018 — every energy and
+# every geometry this engine produces moves in its far decimals, which is small and is not nothing.
+_HAMILTONIAN_REVISION = "h3"
 
 
 def engine_version() -> str:
     """The installed tblite and RDKit builds, for embedding in calculation versions.
 
     Every `calc_version` of a calculator that runs this engine (xTB energy, properties, Fukui,
-    optimization, Hessian, pKa) must include both so an upgrade of either — tblite shifts energies,
-    RDKit shifts the seeded ETKDG embedding and MMFF geometries — is a cache miss on the Chemclaw3
+    optimization, Hessian, pKa) must include all three so an upgrade of any one — tblite shifts
+    energies, RDKit shifts the seeded ETKDG embedding and MMFF geometries, **scipy ships the CODATA
+    table this module's unit conversions are derived from** — is a cache miss on the Chemclaw3
     side, not a silent stale hit. Widening the version string invalidates existing entries; that is
-    correct, as those did not record the geometry stack that produced them.
+    correct, as those did not record the stack that produced them.
+
+    **scipy is the newest of the three and the least obvious.** It was a dependency long before it
+    was in this string, and it became part of the *answer* the moment `ANGSTROM_TO_BOHR` and its
+    three siblings stopped being literals: scipy 1.17.1 ships CODATA 2022 where the literals said
+    2018, and a later release shipping CODATA 2026 would move every geometry again with nothing to
+    show for it in a version string. That is the failure `engine/key.py` is written against, so the
+    fix is the one this function already implements for the other two.
 
     **This is the value a Chemclaw3 pod cannot compute.** Neither distribution is installed there
     after the split, so `version('tblite')` raises `PackageNotFoundError` rather than returning
@@ -99,7 +131,10 @@ def engine_version() -> str:
     returns `"absent"` instead of raising. Either way, the derivation belongs where the programs
     are.
     """
-    return f"tblite-{version('tblite')}/rdkit-{version('rdkit')}/{_HAMILTONIAN_REVISION}"
+    return (
+        f"tblite-{version('tblite')}/rdkit-{version('rdkit')}"
+        f"/scipy-{version('scipy')}/{_HAMILTONIAN_REVISION}"
+    )
 
 
 def parse_molecule(smiles: str) -> Chem.Mol:

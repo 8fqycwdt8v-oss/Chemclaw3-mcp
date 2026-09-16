@@ -106,7 +106,7 @@ class CalcSettings(BaseSettings):
     # single bond is ~1.0) and drops the long-range tail.
     #
     # **The default of `PropertiesSpec.bond_order_threshold`, and keyed there**, for the reason
-    # `xtb_anc_curvature_floor` gives below and one degree worse: it does not merely move the
+    # `xtb_opt_trust_radius` gives below and one degree worse: it does not merely move the
     # answer, it *filters* it. `_bond_orders` read this out of `settings` inside
     # `compute_properties`, outside every spec, so `params_hash` could not see it — measured on
     # acetic acid with a real tblite SCF, 0.5 reported 7 bonds and 0.05 reported 9 under one
@@ -119,20 +119,11 @@ class CalcSettings(BaseSettings):
     # because the finite-difference Hessian is only as clean as the stationary point under it.
     xtb_opt_gradient_tolerance: float = 5e-4
     xtb_opt_max_steps: int = 1500
-    # Trust radius (Angstrom): the furthest one Cartesian coordinate may move in a single bounded
-    # L-BFGS-B leg. Without it the optimizer's first step on a strained geometry is large enough to
-    # collapse a bond and leave the SCF unconvergeable.
+    # Trust radius (Angstrom): the ceiling on how far one optimizer step may move an atom —
+    # geomeTRIC's `tmax`, above an adaptive radius that opens at its own 0.1. Without a ceiling the
+    # first step on a strained geometry is large enough to collapse a bond and leave the SCF
+    # unconvergeable.
     xtb_opt_trust_radius: float = 0.35
-    # Curvature (Hartree/Angstrom^2) assumed for the directions the ANC preconditioner's pairwise
-    # model cannot see — bends and torsions, which on ibuprofen is 37% of them. Not a safety floor:
-    # it is the stand-in for the missing terms, and the true Hessian's median curvature is ~0.4.
-    # Swept against measured step counts, it optimizes near 1.0 and turns over by 1.5.
-    #
-    # The default of `OptSpec.curvature_floor`, and keyed there because it **moves the answer**:
-    # measured on ethanol, 1.0 and 0.005 relax to different geometries and different energies, and a
-    # geometry is what every downstream key is derived from. It was read from `settings` inside the
-    # optimizer loop, which put it in no key at all.
-    xtb_anc_curvature_floor: float = 1.0
     # Central-difference step for the Hessian, in Angstrom. Small enough that the harmonic
     # approximation holds, large enough that the gradient difference is well above the SCF's own
     # numerical noise.
@@ -149,11 +140,17 @@ class CalcSettings(BaseSettings):
     #
     # Not a promise that 500 atoms is affordable — `xtb_inline_timeout_seconds` is what prices the
     # work. This refuses the inputs whose *allocation* alone takes the process down before any clock
-    # could run: a JSON body under the 1 MB cap holds ~42,000 atoms, at which the ANC
-    # preconditioner's dense (3N, 3N) model Hessian asks for 127 GB. Measured here, that matrix and
-    # its eigendecomposition — rebuilt once per optimization leg — cost 3.6 s at 120 atoms, 11.6 s
-    # at 240, and 32.9 s at 510 for 18.7 MB, so 500 is where one leg's preconditioner alone is still
-    # under a minute.
+    # could run: a JSON body under the 1 MB cap holds ~42,000 atoms, and the optimizer builds a
+    # dense matrix over 3N coordinates, so the allocation is quadratic in the atom count while the
+    # body cap is linear in it.
+    #
+    # **The number is unchanged and the measurement behind it is retired**, which is worth saying
+    # rather than leaving a figure that now describes deleted code. It was derived from the ANC
+    # preconditioner's (3N, 3N) model Hessian — 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and
+    # 18.7 MB at 510, and a 127 GB allocation at 42,000 — and that preconditioner left with
+    # geomeTRIC's arrival. geomeTRIC's coordinate system is dense over 3N too, so the *shape* of the
+    # argument carries and the constants do not. Re-deriving them against the optimizer that now
+    # runs is a `docs/BACKLOG.md` row rather than a number transcribed here from the old one.
     xtb_max_atoms: int = 500
     # Wall-clock ceiling (seconds) on one in-process calculation — the optimizer's leg loop and the
     # finite-difference Hessian, which is what the shipped image runs for every `opt` and `hess`

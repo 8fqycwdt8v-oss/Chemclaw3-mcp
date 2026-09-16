@@ -7,8 +7,14 @@ internal-consistency arguments strong enough to catch that:
 
 - **CAS check digits.** A CAS number carries its own checksum, so a mistyped one is detectable
   without consulting anything.
-- **Formula against molecular weight.** The two are written independently in the row and must agree
-  to within a rounding error, so a wrong MW or a wrong formula fails.
+- **Formula against molecular weight — and it is no longer here.** The two columns are written
+  independently in the row and must agree, but checking that needs a periodic table, and the
+  seventeen-element one this file used to carry a sixth of was a third copy of a number the fleet
+  already holds twice. It moved to `tests/test_fleet.py`, to
+  `test_the_three_answers_to_molecular_mass_agree`, which weighs each row's formula with
+  `servers/thermalsafety`'s table *and* its SMILES with
+  RDKit — a stronger check than this file could make, because it reconciles three servers rather
+  than one column against a local constant.
 - **Antoine constants against the boiling point.** The constants and the boiling point are also
   written independently; if the fit does not reproduce 1 atm at the tabulated bp, one of them is
   wrong. This is what makes it safe to carry Antoine constants for only some rows: a bad set fails
@@ -24,36 +30,9 @@ import math
 import pytest
 from chemclaw_mcp_props.engine import correlations, records
 
-ATOMIC_WEIGHTS = {
-    "H": 1.008,
-    "C": 12.011,
-    "N": 14.007,
-    "O": 15.999,
-    "S": 32.06,
-    "Cl": 35.45,
-}
-
 BANDS = {"recommended", "problematic", "hazardous", "highly_hazardous"}
 MISCIBILITIES = {"miscible", "partial", "immiscible"}
 ICH_CLASSES = {"1", "2", "3", "not_listed"}
-
-
-def _formula_weight(formula: str) -> float:
-    """Molecular weight from a plain `ElementCount` formula — enough for this table's 44 rows."""
-    total = 0.0
-    index = 0
-    while index < len(formula):
-        symbol = formula[index]
-        index += 1
-        if index < len(formula) and formula[index].islower():
-            symbol += formula[index]
-            index += 1
-        digits = ""
-        while index < len(formula) and formula[index].isdigit():
-            digits += formula[index]
-            index += 1
-        total += ATOMIC_WEIGHTS[symbol] * (int(digits) if digits else 1)
-    return total
 
 
 def _cas_check_digit_valid(cas: str) -> bool:
@@ -76,16 +55,6 @@ def test_every_row_has_a_valid_cas_number() -> None:
     """A CAS number carries its own check digit; a typo cannot survive it."""
     bad = [s.name for s in records.all_solvents() if not _cas_check_digit_valid(s.cas)]
     assert not bad, f"invalid CAS check digit for: {bad}"
-
-
-def test_molecular_weight_agrees_with_formula() -> None:
-    """MW and formula are written independently in the row, so disagreement is a typo in one."""
-    for solvent in records.all_solvents():
-        expected = _formula_weight(solvent.formula)
-        assert abs(expected - solvent.mw) < 0.05, (
-            f"{solvent.name}: formula {solvent.formula} weighs {expected:.3f} "
-            f"but the table says {solvent.mw}"
-        )
 
 
 def test_antoine_constants_reproduce_the_tabulated_boiling_point() -> None:

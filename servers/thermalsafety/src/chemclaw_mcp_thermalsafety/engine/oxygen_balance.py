@@ -13,41 +13,75 @@ is favourable for a violent one", never "this is an explosive", and a very negat
 clearance. The screen's only correct use is to decide whether the *structural* alerts and the
 calorimetry are worth pursuing, which is why the tool returns them together with the number.
 
-**No RDKit.** This server's dependency closure is the MCP transport and nothing else, for the
-reason `servers/props/pyproject.toml` gives, and OB% needs element counts rather than a molecular
-graph — so the input is a molecular *formula* and this module parses one. That is a real narrowing
-and the tool says so: a SMILES is not accepted, because accepting one would mean either a silent
-wrong answer or a 500 MB image for a division.
+**No RDKit.** OB% needs element counts rather than a molecular graph — so the input is a molecular
+*formula* and this module parses one. That is a real narrowing and the tool says so: a SMILES is not
+accepted, because accepting one would mean either a silent wrong answer or a 500 MB image for a
+division.
+
+**The weights and the tokenizer are `molmass`'s; the refusals are this module's, and that split is
+the whole design.** `molmass` is BSD-3 with **zero** required dependencies — the only reason it is
+admissible in the shortest closure in this fleet — and it carries the standard atomic weights and a
+formula grammar that were previously seventeen hand-transcribed floats and a regex here. What it is
+*not* allowed to decide is what this server will answer about: it parses `Ca(NO3)2` and
+`CuSO4.5H2O` happily, and it reads `2H2O` as **deuterium oxide** rather than as two waters
+(measured against molmass 2026.1.8). Each of those is a notation a chemist writes and this screen
+would get silently wrong — `Ca(NO3)2` read token-wise is wrong by a factor of two on the element
+that decides the whole number — so every refusal `parse_formula` made before still runs, and it
+runs **in front of** the library rather than being delegated to it. The seventeen-element allowlist
+stays for the same reason: it is a "refuse rather than approximate" policy about what this screen
+has been reviewed for, not a limit on what a parser could manage.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
-#: Standard atomic weights (IUPAC 2021 conventional values), g/mol, for the elements a process
-#: chemist's energetic candidates are actually built from. Deliberately *not* a full periodic table:
-#: an element outside this set is refused by name rather than approximated, which is this fleet's
-#: "refuse rather than approximate" rule applied to a table. Adding one is a one-line change in a
-#: reviewed commit, which is the right cost for a number that goes into a hazard screen.
+from molmass import ELEMENTS, Formula
+from molmass import FormulaError as MolmassFormulaError
+
+#: The elements a process chemist's energetic candidates are actually built from. Deliberately
+#: *not* a full periodic table: an element outside this set is refused by name rather than
+#: approximated, which is this fleet's "refuse rather than approximate" rule applied to a screen's
+#: reviewed domain. It is a policy and not an implementation limit — `molmass` knows all 109 — so
+#: adding one is a one-line change in a reviewed commit, which is the right cost for an element
+#: whose oxygen demand nobody here has decided a convention for.
+ALLOWED_ELEMENTS: frozenset[str] = frozenset(
+    {
+        "H",
+        "B",
+        "C",
+        "N",
+        "O",
+        "F",
+        "Na",
+        "Mg",
+        "Al",
+        "Si",
+        "P",
+        "S",
+        "Cl",
+        "K",
+        "Ca",
+        "Br",
+        "I",
+    }
+)
+
+#: Standard atomic weights, g/mol, for exactly those elements — read from `molmass` rather than
+#: transcribed. It stays a module-level `dict` because it is this server's vendored corpus and
+#: `engine/selftest.py` is the checksum it does not otherwise have: the readiness probe breaks an
+#: entry and reads the status, which is what proves the probe runs the arithmetic rather than
+#: importing it.
+#:
+#: Replacing the transcription moved every weight a little and no answer measurably. Measured over
+#: the 22 formulas in `tests/test_oxygen_balance.py` and this module's own published cases, the
+#: largest molar-mass change is **+0.0084 g/mol** (NCl3, from chlorine's 35.45 → 35.4529) and the
+#: largest OB% change is **-0.0123 percentage points** (methane). No compound crossed a band floor;
+#: the closest any came to one was several points away. Both figures are dated measurements of the
+#: commit that made the change, which is why they are here and not in a test — the test that keeps
+#: it true is the published-value comparison, at a tolerance forty times the shift.
 ATOMIC_WEIGHTS: dict[str, float] = {
-    "H": 1.008,
-    "B": 10.81,
-    "C": 12.011,
-    "N": 14.007,
-    "O": 15.999,
-    "F": 18.998403162,
-    "Na": 22.98976928,
-    "Mg": 24.305,
-    "Al": 26.9815384,
-    "Si": 28.085,
-    "P": 30.973761998,
-    "S": 32.06,
-    "Cl": 35.45,
-    "K": 39.0983,
-    "Ca": 40.078,
-    "Br": 79.904,
-    "I": 126.90447,
+    symbol: float(ELEMENTS[symbol].mass) for symbol in sorted(ALLOWED_ELEMENTS)
 }
 
 #: The classification bands. Sub-ranges of OB% and what each one licenses a reader to conclude —
@@ -87,9 +121,6 @@ _VERY_DEFICIENT = (
     "alert or a known-unstable functional group overrides it entirely.",
 )
 
-#: A formula token: an element symbol (one capital, optional lowercase) and an optional count.
-_TOKEN = re.compile(r"([A-Z][a-z]?)(\d*)")
-
 
 class FormulaError(ValueError):
     """A molecular formula this module will not guess at.
@@ -120,16 +151,24 @@ class OxygenBalance:
 def parse_formula(formula: str) -> dict[str, float]:
     """Element counts from a plain molecular formula such as `C6H5NO2` or `C3H5N3O9`.
 
-    Deliberately narrow: no nesting, no parentheses, no hydrates, no charges. Each of those is a
-    thing a chemist writes and this parser would get *silently* wrong if it tried — `Ca(NO3)2`
-    read token-wise is calcium, nitrogen and three oxygens, an answer that is wrong by a factor
-    of two on the element that decides the whole number. So each is refused by name instead, and
-    the message says what to write instead.
+    Deliberately narrow: no nesting, no parentheses, no hydrates, no charges, no isotopes, no
+    leading multiplier. Each of those is a thing a chemist writes, `molmass` parses, and this screen
+    would report a wrong number for — `Ca(NO3)2` expanded correctly is one calcium, two nitrogens
+    and **six** oxygens, so a caller who meant the salt and a parser that read three oxygens
+    disagree by a factor of two on the element that decides the whole answer. Delegating the
+    notation to the library would be exactly that: `molmass` answers `Ca(NO3)2`, and it answers
+    `2H2O` as deuterium oxide. So each notation is refused by name, before the library sees the
+    string, and the message says what to write instead.
+
+    The tokenizing and the weights are the library's; the domain is this module's. An element
+    outside `ALLOWED_ELEMENTS` — including an isotope symbol such as `2H`, which is how `molmass`
+    reports a `D` — is named in the refusal rather than dropped, because a silently ignored element
+    returns a molar mass that is too low and therefore an OB% that is too *favourable*.
 
     Raises:
         FormulaError: the string is empty, holds a character no formula contains, names an element
-            outside `ATOMIC_WEIGHTS`, carries no carbon-free interpretation, or uses a notation
-            (parentheses, a hydrate dot, a charge) this parser refuses rather than guesses at.
+            outside `ALLOWED_ELEMENTS`, or uses a notation (parentheses, a hydrate dot, a charge, a
+            leading multiplier) this parser refuses rather than guesses at.
     """
     text = formula.strip()
     if not text:
@@ -137,6 +176,8 @@ def parse_formula(formula: str) -> dict[str, float]:
     for character, what, instead in (
         ("(", "parentheses", "expand the group, e.g. Ca(NO3)2 as CaN2O6"),
         (")", "parentheses", "expand the group, e.g. Ca(NO3)2 as CaN2O6"),
+        ("[", "isotope or group brackets", "write the natural-abundance composition, e.g. H2O"),
+        ("]", "isotope or group brackets", "write the natural-abundance composition, e.g. H2O"),
         (".", "a hydrate or salt dot", "write the whole composition, e.g. CuSO4.5H2O as CuSH10O9"),
         ("·", "a hydrate or salt dot", "write the whole composition, e.g. CuSO4·5H2O as CuSH10O9"),
         ("+", "a charge", "oxygen balance is defined for a neutral composition"),
@@ -147,24 +188,36 @@ def parse_formula(formula: str) -> dict[str, float]:
                 f"{formula!r} uses {what}, which this parser refuses rather than guesses at — "
                 f"{instead}"
             )
+    if text[0].isdigit():
+        # Measured against molmass 2026.1.8: `2H2O` is parsed as deuterium oxide, not as two
+        # waters. A chemist writing a stoichiometric coefficient means the second.
+        raise FormulaError(
+            f"{formula!r} starts with a count, which this parser refuses rather than guesses at — "
+            "a leading number reads as an isotope mass number rather than as a multiplier; write "
+            "the whole composition, e.g. 2H2O as H4O2"
+        )
+
+    try:
+        composition = Formula(text).composition()
+    except MolmassFormulaError as error:
+        # `molmass` reports the offending character with a caret on its own lines; the first line
+        # is the sentence, and the rest is a pointer at a string the caller already has.
+        reason = str(error).splitlines()[0]
+        raise FormulaError(
+            f"{formula!r} is not a molecular formula ({reason}); expected element symbols and "
+            "counts such as C7H5N3O6"
+        ) from error
 
     counts: dict[str, float] = {}
-    position = 0
-    while position < len(text):
-        match = _TOKEN.match(text, position)
-        if match is None:
-            raise FormulaError(
-                f"{formula!r} is not a molecular formula at position {position} "
-                f"({text[position]!r}); expected an element symbol such as C, H, N or Cl"
-            )
-        symbol, digits = match.group(1), match.group(2)
-        if symbol not in ATOMIC_WEIGHTS:
+    for symbol in composition:
+        if symbol not in ALLOWED_ELEMENTS:
             raise FormulaError(
                 f"{formula!r} names element {symbol!r}, which is not in this server's "
-                f"atomic-weight table; it holds {', '.join(sorted(ATOMIC_WEIGHTS))}"
+                f"atomic-weight table; it holds {', '.join(sorted(ALLOWED_ELEMENTS))}"
             )
-        counts[symbol] = counts.get(symbol, 0.0) + (float(digits) if digits else 1.0)
-        position = match.end()
+        counts[symbol] = float(composition[symbol].count)
+    if not counts:
+        raise FormulaError(f"{formula!r} names no elements")
     return counts
 
 

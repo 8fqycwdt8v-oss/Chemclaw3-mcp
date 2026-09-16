@@ -7,9 +7,12 @@ the paths its shipped image actually runs, and the two gaps compound:
 - **No atom bound.** `compute_hessian` refused above `xtb_hessian_max_atoms`; nothing else did. A
   `Structure` was validated for internal consistency and never for size, so a ~40,000-atom
   `relax_structure` (well inside the 1 MB body cap) reached `make_calculator` with no refusal.
-  Measured here: the ANC preconditioner is a dense `(3N, 3N)` eigendecomposition rebuilt **per leg**
-  — 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510 — and at 40,000 atoms it asks for
-  a 127 GB array, which takes the whole uvicorn process down and with it every other connected turn.
+  Measured on the optimizer of the day — an ANC preconditioner, a dense `(3N, 3N)`
+  eigendecomposition rebuilt per leg: 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510,
+  and at 40,000 atoms a 127 GB array that takes the whole uvicorn process down and with it every
+  other connected turn. That preconditioner is gone (geomeTRIC), so those constants are history
+  rather than a current claim; the *shape* is unchanged, because geomeTRIC's coordinate system is
+  dense over 3N as well and the body cap is linear in the atom count.
 - **No wall clock.** `xtb_cli_timeout_seconds` and `crest_timeout_seconds` bound a *subprocess*, and
   `Containerfile` pins `CHEMCLAW_XTB_ENGINE=tblite`, so the shipped image takes the in-process path
   for every `opt` and `hess` and neither timeout applies. `max_steps` bounds iterations, and one
@@ -88,8 +91,8 @@ def test_the_optimizer_stops_when_the_inline_budget_is_spent(
 ) -> None:
     """A wall clock on the in-process optimisation, checked where the cost is: per gradient.
 
-    Per SCF rather than per leg, because a single L-BFGS leg is itself unbounded in seconds — the
-    step count bounds iterations, not time. Water with a microsecond of budget is the cheapest
+    Per SCF rather than per optimizer cycle, because a single cycle is itself unbounded in seconds
+    — the step count bounds cycles, not time. Water with a microsecond of budget is the cheapest
     possible proof that the clock is consulted at all; the real budget is
     `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS`, which defaults to the manifest's `request_timeout`
     less the caller margin — see
@@ -188,7 +191,7 @@ def test_the_budget_does_not_reach_the_key(monkeypatch: pytest.MonkeyPatch) -> N
     """A refusal is not a result, so the clock is a setting rather than a spec field.
 
     The distinction is the whole of `test_key_covers_every_knob.py` read in the other direction:
-    `xtb_anc_curvature_floor` changes the number that comes back and therefore belongs in the key,
+    `xtb_opt_trust_radius` changes the number that comes back and therefore belongs in the key,
     while a budget only decides whether one comes back at all. Keying on it would fork the cache
     every time a deployment gave itself more time.
     """

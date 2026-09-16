@@ -285,30 +285,38 @@ def test_the_unkeyed_allowlist_names_only_real_settings() -> None:
 def test_the_probe_answers_in_both_directions(monkeypatch: pytest.MonkeyPatch) -> None:
     """The control: a detector that only ever said "keyed" would pass the guard above forever.
 
-    Two settings whose answers are settled by the directional tests below — the ANC curvature floor
-    reaches every optimisation's key, and the inline budget reaches nothing — so this asserts the
-    measurement can produce both answers rather than one.
+    Two settings whose answers are settled by the directional tests below — the optimizer's trust
+    radius reaches every optimisation's key, and the inline budget reaches nothing — so this asserts
+    the measurement can produce both answers rather than one.
+
+    It used to name `xtb_anc_curvature_floor` here, which was the right choice while there was an
+    ANC preconditioner to have a curvature floor. geomeTRIC builds real internal coordinates and has
+    no analogue, so the setting and the `OptSpec` field are gone; `xtb_opt_trust_radius` is the
+    surviving optimizer knob that moves the answer, and it always did.
     """
     fields = CalcSettings.model_fields
-    assert _moves_a_key("xtb_anc_curvature_floor", fields["xtb_anc_curvature_floor"], monkeypatch)
+    assert _moves_a_key("xtb_opt_trust_radius", fields["xtb_opt_trust_radius"], monkeypatch)
     assert not _moves_a_key(
         "xtb_inline_timeout_seconds", fields["xtb_inline_timeout_seconds"], monkeypatch
     )
 
 
-def test_the_anc_curvature_floor_moves_the_optimisation_key(
+def test_the_trust_radius_moves_the_optimisation_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The floor is the stand-in for the terms the pairwise model cannot see — it moves the answer.
+    """The ceiling on one step decides which stationary point is reached, so it is in the key.
 
-    `anc.basis` used to read it from `settings` inside the optimizer loop, which put it in no key at
-    all. Measured on ethanol, 1.0 and 0.005 relax to different geometries and different energies,
-    so it is exactly the case `OptSpec.trust_radius`'s own comment describes: "it moves the answer
-    and a setting that moves the answer belongs in the key".
+    Measured on ethanol, 0.35 and 0.05 relax to different geometries and different energies — and a
+    `structure_id` is a hash of the coordinates, so every downstream key is derived from the answer
+    this setting moves.
+
+    **This test replaced one about `xtb_anc_curvature_floor`**, which made the same argument about
+    the ANC preconditioner's floor. That preconditioner is gone with geomeTRIC's arrival and the
+    setting with it; the argument is unchanged and now rests on the knob that survived.
     """
-    monkeypatch.setattr(settings, "xtb_anc_curvature_floor", 1.0)
+    monkeypatch.setattr(settings, "xtb_opt_trust_radius", 0.35)
     default = OptSpec(engine="tblite").cache_key(WATER)
-    monkeypatch.setattr(settings, "xtb_anc_curvature_floor", 0.005)
+    monkeypatch.setattr(settings, "xtb_opt_trust_radius", 0.05)
     tuned = OptSpec(engine="tblite").cache_key(WATER)
     assert default.params_hash != tuned.params_hash
 

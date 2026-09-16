@@ -7,12 +7,19 @@ requires-python = ">=3.11"
 #
 # - `tblite` is the GFN semiempirical Hamiltonian, in-process. It ships manylinux wheels and needs no
 #   Fortran toolchain at install time, which is what makes this server buildable at all — and its
-#   *distribution version* is half of every `calc_version` this server emits.
+#   *distribution version* is part of every `calc_version` this server emits.
 # - `rdkit` parses, canonicalizes, embeds the 3D geometry and computes the Crippen/QED descriptors.
-#   Its version is the other half of `calc_version`, for the good reason that a new RDKit shifts the
+#   Its version is in `calc_version` too, for the good reason that a new RDKit shifts the
 #   seeded ETKDG embedding and therefore every energy computed on it.
-# - `scipy` is L-BFGS-B (over tblite's analytic gradient) and the null-space projection that
-#   separates a molecule's vibrations from its translations and rotations.
+# - `scipy` is the null-space projection that separates a molecule's vibrations from its
+#   translations and rotations, **and the CODATA table every unit conversion in `xtb_engine.py` is
+#   derived from** — which is why its distribution version is part of `engine_version()`.
+# - `geometric` (geomeTRIC) is the geometry optimizer: delocalised internal coordinates over
+#   tblite's analytic gradient, replacing ~330 lines of `scipy.optimize.minimize(L-BFGS-B)` driven
+#   with both of its own stopping tests disabled over a hand-built trust region and a Lindh pairwise
+#   model Hessian. BSD-3; measured, it adds exactly `networkx` to this closure, since numpy
+#   and scipy are already here. Its distribution version is in `engine_version()` for the same
+#   reason tblite's is: it decides which stationary point is reached.
 # - `numpy` is declared rather than inherited: three engine modules index and reshape arrays
 #   directly, and >=2.0 is what tblite's and scipy's wheels resolve to here.
 #
@@ -27,6 +34,7 @@ dependencies = [
     "prometheus-client>=0.20",
     "numpy>=2.0",
     "rdkit>=2024.3.1",
+    "geometric>=1.1",
     "scipy>=1.11",
     "tblite>=0.7.0",
     "uvicorn[standard]>=0.32",

@@ -90,5 +90,12 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted](D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted.md) | The eighth server arrived with the shape the backlog predicted |
 | [D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer](D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer.md) | Two formulas for one quantity make the convention part of the answer |
 | [D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place](D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place.md) | A bound with no "off" refuses at import, in one place |
+| [D-2026-09-16-a-derivable-number-the-fleet-held-four-times](D-2026-09-16-a-derivable-number-the-fleet-held-four-times.md) | A derivable number the fleet held four times |
+| [D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about](D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about.md) | A hand-rolled model cannot see a key it was not told about |
+| [D-2026-09-16-a-second-belt-is-only-honest-with-something-reconciling-it](D-2026-09-16-a-second-belt-is-only-honest-with-something-reconciling-it.md) | A second belt is only honest with something reconciling it |
 | [D-2026-09-16-a-server-that-holds-no-data-is-a-server-that-refuses-defaults](D-2026-09-16-a-server-that-holds-no-data-is-a-server-that-refuses-defaults.md) | A server that holds no data is a server that refuses defaults |
+| [D-2026-09-16-a-transcription-is-proven-equal-not-argued-better](D-2026-09-16-a-transcription-is-proven-equal-not-argued-better.md) | A transcription is proven equal, not argued better |
+| [D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not](D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not.md) | The driver is a command-line program, the optimizer is not |
+| [D-2026-09-16-the-refusals-belong-in-front-of-the-library](D-2026-09-16-the-refusals-belong-in-front-of-the-library.md) | The refusals belong in front of the library |
+
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

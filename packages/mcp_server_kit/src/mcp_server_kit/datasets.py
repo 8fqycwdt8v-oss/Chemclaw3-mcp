@@ -13,6 +13,16 @@ nothing can fetch it** — the egress guard would refuse if it tried.
 The checksum is verified on load, not on build. A dataset that was truncated by a bad COPY or
 swapped in a rebuild fails at startup with the two hashes in the message, rather than answering
 chemistry questions from a file nobody approved.
+
+**The manifest is a pydantic model with `extra="forbid"`, and the forbidding is the point.** This
+package already ships pydantic, so the hand-rolled version of it — a `_REQUIRED` tuple, a `missing`
+comprehension, an `isinstance` check and six `str(...)` coercions — was a model written twice. What
+it could not do is notice a key it did not recognise, and the consequence was a message that
+actively misled on the one file whose whole purpose is that a reviewer can audit it: a manifest
+written with `"license"` parsed clean and then reported `licence` as *missing*, so the error named a
+field the author had written rather than the spelling they had written it under. Forbidding extras
+reports both halves. It also found three manifests carrying `text_column`/`smiles_column`, which
+nothing in either repository has ever read.
 """
 
 from __future__ import annotations
@@ -24,13 +34,89 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-__all__ = ["Dataset", "DatasetError", "load_dataset", "read_records"]
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-_REQUIRED = ("name", "version", "licence", "retrieved_from", "description", "sha256")
+__all__ = ["Dataset", "DatasetError", "DatasetManifest", "load_dataset", "read_records"]
 
 
 class DatasetError(RuntimeError):
     """A vendored dataset is missing, malformed, or is not the file that was approved."""
+
+
+class DatasetManifest(BaseModel):
+    """What a `dataset.json` must be: six provenance strings and nothing else.
+
+    Every field is required and non-blank, and each for a reason that has already cost somebody
+    something — the module docstring has them. `extra="forbid"` is the half a hand-rolled check
+    cannot have: a required-field loop reads the keys it knows and is silent about the ones it does
+    not, so a manifest with a misspelled key fails by naming the *correct* spelling as absent.
+
+    `frozen=True` because a manifest is what a reviewer approved; nothing downstream may edit it
+    after the checksum has been verified against it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    version: str
+    licence: str
+    retrieved_from: str
+    description: str
+    sha256: str
+
+    @field_validator("*")
+    @classmethod
+    def _is_not_blank(cls, value: str) -> str:
+        """Reject a field that is present and empty, which is what a template leaves behind.
+
+        Presence was never the property worth checking. A `dataset.json` generated from a skeleton
+        carries every key with an empty string, and a corpus with `"licence": ""` is exactly as
+        unreviewable as one with no licence key at all.
+        """
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+
+#: The provenance fields, derived from the model rather than restated beside it. Read by
+#: `packages/mcp_server_kit/tests/test_datasets.py`, which parametrizes over it so that a seventh
+#: field is covered by the enforcement test the day it is added — the reason it is derived and not
+#: a tuple literal is that the literal it replaced was short by one.
+_REQUIRED: tuple[str, ...] = tuple(DatasetManifest.model_fields)
+
+
+def _explain(manifest_path: Path, error: ValidationError) -> str:
+    """Turn a `ValidationError` into the sentence a reviewer of a `dataset.json` needs.
+
+    Three shapes, because each sends the reader somewhere different: a file that is not an object at
+    all, a key nobody recognises, and a field that is absent or blank. The second and third arrive
+    *together* for the case this model exists to catch — one misspelling produces both — so they are
+    reported together rather than whichever pydantic happened to list first.
+    """
+    problems = error.errors()
+    # An empty `loc` is an error about the whole document rather than about a field — a JSON array
+    # or a bare string where an object belongs. It is checked first because there are no field
+    # names to report for it, and because it sends the reader to a different fix entirely.
+    if any(not item["loc"] for item in problems):
+        found = type(json.loads(manifest_path.read_text(encoding="utf-8"))).__name__
+        return f"{manifest_path} must contain a JSON object, got {found}"
+    unexpected = sorted(
+        str(item["loc"][-1]) for item in problems if item["type"] == "extra_forbidden"
+    )
+    absent = sorted(str(item["loc"][-1]) for item in problems if item["type"] != "extra_forbidden")
+    parts = []
+    if absent:
+        parts.append(
+            f"missing required field(s) {', '.join(absent)}; a dataset with no recorded licence "
+            "or checksum is one nobody can review"
+        )
+    if unexpected:
+        blamed = ", ".join(absent) or "a required field"
+        parts.append(
+            f"unrecognised key(s) {', '.join(unexpected)}; a key nothing reads is one a reviewer "
+            f"believes is doing something, and a misspelled one is why {blamed} reads as absent"
+        )
+    return f"{manifest_path} is not a dataset manifest: {' — and '.join(parts)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,8 +161,9 @@ def load_dataset(directory: Path, *, records_file: str = "records.csv") -> Datas
         The verified `Dataset`.
 
     Raises:
-        DatasetError: The manifest or records file is missing, a required field is absent, or the
-            file on disk is not the one the manifest's `sha256` names.
+        DatasetError: The manifest or records file is missing, the manifest is not a JSON object,
+            a required field is absent or blank, a key is not one of the six, or the file on disk
+            is not the one the manifest's `sha256` names.
     """
     manifest_path = directory / "dataset.json"
     records_path = directory / records_file
@@ -85,29 +172,22 @@ def load_dataset(directory: Path, *, records_file: str = "records.csv") -> Datas
     if not records_path.is_file():
         raise DatasetError(f"no records file at {records_path}")
     parsed: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(parsed, dict):
-        raise DatasetError(
-            f"{manifest_path} must contain a JSON object, got {type(parsed).__name__}"
-        )
-    manifest: dict[str, Any] = parsed
-    missing = [field for field in _REQUIRED if not str(manifest.get(field, "")).strip()]
-    if missing:
-        raise DatasetError(
-            f"{manifest_path} is missing required field(s) {', '.join(missing)}; a dataset with no "
-            "recorded licence or checksum is one nobody can review"
-        )
+    try:
+        manifest = DatasetManifest.model_validate(parsed)
+    except ValidationError as error:
+        raise DatasetError(_explain(manifest_path, error)) from error
     found = _digest(records_path)
-    if not _matches(found, str(manifest["sha256"])):
+    if not _matches(found, manifest.sha256):
         raise DatasetError(
             f"{records_path} does not match the approved checksum: manifest says "
-            f"{manifest['sha256']}, file is {found}"
+            f"{manifest.sha256}, file is {found}"
         )
     return Dataset(
-        name=str(manifest["name"]),
-        version=str(manifest["version"]),
-        licence=str(manifest["licence"]),
-        retrieved_from=str(manifest["retrieved_from"]),
-        description=str(manifest["description"]),
+        name=manifest.name,
+        version=manifest.version,
+        licence=manifest.licence,
+        retrieved_from=manifest.retrieved_from,
+        description=manifest.description,
         sha256=found,
         records_path=records_path,
     )

@@ -16,7 +16,7 @@ there.**
 - `xtb_cli` — the optional `xtb` binary backend: installed in the shipped image, inactive there
   because `CHEMCLAW_XTB_ENGINE` is pinned to `tblite`.
 - `xtb_spec` — where a version string and a `CalculationKey` are actually assembled.
-- `anc` · `xtb_opt` · `xtb_hessian` · `xtb_thermo` — geometry, second derivatives, RRHO.
+- `xtb_opt` · `xtb_hessian` · `xtb_thermo` — geometry (geomeTRIC), second derivatives, RRHO.
 - `xtb` · `xtb_props` · `pka` · `solubility` · `logd` · `descriptors` — the nine tools' calculators.
 - `identity` — the key of a calculation *before* it runs, which is what makes a remote cache
   lookup possible at all. It reads the same `*_inputs` and `cache_key` definitions the calculators

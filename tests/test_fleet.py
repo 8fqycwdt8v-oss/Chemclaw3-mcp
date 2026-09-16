@@ -469,6 +469,139 @@ def test_the_two_tables_that_both_hold_densities_agree() -> None:
     assert compared >= 20, f"only {compared} solvents overlap — did a table lose its densities?"
 
 
+def test_the_lint_ban_and_the_static_scan_name_the_same_modules() -> None:
+    """Two declarations of one rule, with this as the thing that reconciles them.
+
+    `D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for` refused exactly this
+    trade for `S101`: turning a fleet test into a `per-file-ignores` block would have been "a second
+    declaration of one rule with nothing reconciling the two — the defect this repository deleted a
+    port table over". The ban added in `pyproject.toml` is the same trade with the missing half
+    supplied. Neither list may gain a module without the other, in both directions, so the two
+    cannot drift into "banned by ruff" and "scanned for" being different sets.
+
+    **The scan stays the control and this stays the belt**, and the asymmetry is why both exist.
+    `no_egress.network_imports` folds `__import__("gr" + "pc")` to `grpc`, reads `host_literals`,
+    and carries the per-server `exempt` mechanism `servers/pyexec/engine/runner.py` needs — ruff can
+    do none of that. What ruff does that the scan does not is read the **whole tree** on every
+    `make lint`, where the scan runs per server from inside a test: a `packages/*/src` module no
+    server's `test_no_egress.py` points at is covered by the ban the day it is written, and by the
+    scan never.
+    """
+    import tomllib
+
+    from mcp_server_kit.no_egress import FORBIDDEN_MODULES
+
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    banned = set(
+        config["tool"]["ruff"]["lint"]["flake8-tidy-imports"]["banned-module-level-imports"]
+    )
+    assert banned == set(FORBIDDEN_MODULES), (
+        "the ruff ban and the static scan name different modules — banned but unscanned: "
+        f"{sorted(banned - set(FORBIDDEN_MODULES))}; scanned but unbanned: "
+        f"{sorted(set(FORBIDDEN_MODULES) - banned)}. One rule, two declarations, and this test is "
+        "the only thing that makes the second one honest."
+    )
+
+
+def test_the_lint_ban_names_its_exemptions_and_they_are_the_scan_s_own_boundary() -> None:
+    """A second belt is only worth having while its exemption list stays readable.
+
+    Measured when the ban was added: **43** module-level imports in this tree trip it, and 41 are in
+    a `tests/` directory or in `scripts/`. Those are exactly the places
+    `mcp_server_kit.no_egress.assert_no_egress_sources` never reads — it is pointed at a server's
+    `src/<package>` — so exempting them draws the boundary the control already draws rather than a
+    wider one, and the plan that proposed this ban was going to drop it if the list grew past
+    readable.
+
+    **Two files in `src/` trip it and each carries its reason at the site**, which is the shape
+    `D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for` settled on for
+    `BLE001`: a reader of the import finds the argument beside it rather than in a table two
+    directories away. Those two are asserted here by name, so a third arriving is a decision
+    somebody has to make rather than a line somebody adds. (The plan predicted four —
+    `no_egress.py` and `sessions.py` as well — and measured they hold no module-level network
+    import at all.)
+    """
+    import tomllib
+
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    ignores = config["tool"]["ruff"]["lint"]["per-file-ignores"]
+    exempted = {where for where, codes in ignores.items() if "TID253" in codes}
+    assert exempted == {"**/tests/**", "scripts/*.py"}, (
+        f"the TID253 exemptions are {sorted(exempted)}; a third one is a decision about where the "
+        "no-egress boundary is, not a lint adjustment"
+    )
+    kit = ROOT / "packages" / "mcp_server_kit" / "src" / "mcp_server_kit"
+    suppressed = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "packages").rglob("src/**/*.py")
+        if "# noqa: TID253" in path.read_text(encoding="utf-8")
+    ) + sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "servers").rglob("src/**/*.py")
+        if "# noqa: TID253" in path.read_text(encoding="utf-8")
+    )
+    assert suppressed == [
+        (kit / "egress.py").relative_to(ROOT).as_posix(),
+        (kit / "testing.py").relative_to(ROOT).as_posix(),
+    ], (
+        f"a module-level network import is suppressed in {suppressed}; two are argued, "
+        "a third is not"
+    )
+
+
+def test_the_three_answers_to_molecular_mass_agree() -> None:
+    """Three servers derive a molecular mass by three independent routes. They must not disagree.
+
+    The density check below is about two *tables*. This one is about two tables and a *computation*,
+    which is the harder case and the one nothing covered: mass is derivable, so the fleet holds it
+    four times over and none of the four could see another.
+
+    - `props` vendors an `mw` column, hand-compiled with the rest of the solvent sheet.
+    - `props` also vendors a `formula` column, written independently of that `mw`.
+    - `chem` computes RDKit's `Descriptors.MolWt` from a SMILES — a fourth independent statement of
+      the same molecule, since the SMILES column was compiled beside the formula rather than from
+      it.
+    - `thermalsafety` derives a molar mass from a formula with no cheminformatics toolkit at all,
+      and that number divides into every oxygen balance it reports.
+
+    So this is a four-way agreement written as three comparisons against the vendored `mw`, and it
+    is what makes the `props` corpus's formula column checkable now that
+    `servers/props/tests/test_dataset.py` no longer carries a sixth-of-a-periodic-table copy of the
+    weights to check it against. A transposed digit in either column fails here.
+
+    **The tolerance is 0.05 g/mol absolute, and it is the one `props`' own check used.** It is not a
+    round number chosen to pass: measured over all 44 rows at the commit that added this test, the
+    largest spread between the three answers for one solvent was **0.011 g/mol** (chloroform:
+    119.38 tabulated, 119.378 from RDKit, 119.369 from `thermalsafety`), and the largest *relative*
+    spread was 2.8e-4 (water, whose `mw` is rounded to 18.02). The three disagree at all because
+    each rounds the standard atomic weights differently — RDKit carries `Cl` at 35.453 where
+    `thermalsafety` carries the IUPAC 2021 conventional 35.45 — and that is a difference no
+    reconciliation should try to remove. 0.05 leaves roughly four times the observed spread and is
+    still an order of magnitude below the ~1 g/mol a single transposed digit or a missing hydrogen
+    moves a mass by, which is the failure the check exists for.
+    """
+    from chemclaw_mcp_chem.engine.chem import molecular_weight
+    from chemclaw_mcp_props.engine import records
+    from chemclaw_mcp_thermalsafety.engine.oxygen_balance import molar_mass, parse_formula
+
+    tolerance = 0.05
+    compared = 0
+    for solvent in records.all_solvents():
+        compared += 1
+        derived = {
+            "rdkit MolWt from the SMILES column": molecular_weight(solvent.smiles),
+            "thermalsafety molar_mass from the formula column": molar_mass(
+                parse_formula(solvent.formula)
+            ),
+        }
+        for how, value in derived.items():
+            assert abs(value - solvent.mw) < tolerance, (
+                f"{solvent.name}: props tabulates mw={solvent.mw} g/mol, {how} gives {value} "
+                f"({solvent.formula}, {solvent.smiles}) — one molecule, two masses"
+            )
+    assert compared >= 40, f"only {compared} solvents carried a mass — did the table lose a column?"
+
+
 def test_the_reagent_table_two_servers_carry_is_one_file() -> None:
     """`chem` and `safety` both ship the bench-reagent corpus. It must be the *same* corpus.
 
