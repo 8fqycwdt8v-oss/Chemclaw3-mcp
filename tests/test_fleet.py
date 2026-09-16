@@ -2719,3 +2719,49 @@ def test_no_server_is_argued_out_of_a_ceiling_it_actually_has() -> None:
         f"CEILING_IS_ARGUED_ABSENT names servers that are not here: {gone}. Delete the entry with "
         "the server."
     )
+
+
+def test_the_coverage_basis_is_every_distribution_this_workspace_ships() -> None:
+    """A floor that silently narrows is worse than a lower floor.
+
+    `[tool.coverage.run] source_pkgs` names the packages the floor is measured over, deliberately
+    rather than discovering them — a `--cov=src` over a `src/` layout measures whatever happens to
+    be imported and drops a package nobody imported at all, which is the one case a floor exists to
+    catch. That choice is right and it has a failure mode: a list maintained by hand goes stale
+    silently, and a *floor* going stale is invisible by construction, because the number it prints
+    stays green.
+
+    It did. The list read "the eight distributions this workspace ships" while twelve shipped:
+    `kinetics`, `suitability` and `thermalsafety` each arrived with their own tests and their own
+    server directory and none was added here, so every coverage figure reported afterwards excluded
+    them. Nothing caught it because they measure *better* than the average — adding all four moved
+    the total from 88.69% to 90.11%, so the floor was never in danger and the gap never announced
+    itself.
+
+    So the set is derived from the tree here and compared, rather than counted in a comment beside
+    itself.
+    """
+    import tomllib
+
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    measured = set(config["tool"]["coverage"]["run"]["source_pkgs"])
+
+    shipped = {f"chemclaw_mcp_{server.name}" for server in server_dirs()}
+    shipped |= {
+        package.name
+        for package in (ROOT / "packages").iterdir()
+        if (package / "pyproject.toml").is_file()
+    }
+
+    missing = sorted(shipped - measured)
+    assert not missing, (
+        f"{missing} ship in this workspace and are outside the coverage floor, so their "
+        "statements are not counted and a package with no tests at all would not move the number. "
+        "Add them to `[tool.coverage.run] source_pkgs` and re-measure the floor — the percentage "
+        "changes when the basis does, so this is a measurement before it is an edit."
+    )
+    stale = sorted(measured - shipped)
+    assert not stale, (
+        f"{stale} are named in the coverage basis and ship nowhere in this workspace. Coverage "
+        "over a package that does not exist is silently zero-weighted, which flatters the total."
+    )
