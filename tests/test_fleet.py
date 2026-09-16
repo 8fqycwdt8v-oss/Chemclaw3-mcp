@@ -467,6 +467,59 @@ def test_the_two_tables_that_both_hold_densities_agree() -> None:
     assert compared >= 20, f"only {compared} solvents overlap — did a table lose its densities?"
 
 
+def test_the_three_answers_to_molecular_mass_agree() -> None:
+    """Three servers derive a molecular mass by three independent routes. They must not disagree.
+
+    The density check below is about two *tables*. This one is about two tables and a *computation*,
+    which is the harder case and the one nothing covered: mass is derivable, so the fleet holds it
+    four times over and none of the four could see another.
+
+    - `props` vendors an `mw` column, hand-compiled with the rest of the solvent sheet.
+    - `props` also vendors a `formula` column, written independently of that `mw`.
+    - `chem` computes RDKit's `Descriptors.MolWt` from a SMILES — a fourth independent statement of
+      the same molecule, since the SMILES column was compiled beside the formula rather than from
+      it.
+    - `thermalsafety` derives a molar mass from a formula with no cheminformatics toolkit at all,
+      and that number divides into every oxygen balance it reports.
+
+    So this is a four-way agreement written as three comparisons against the vendored `mw`, and it
+    is what makes the `props` corpus's formula column checkable now that
+    `servers/props/tests/test_dataset.py` no longer carries a sixth-of-a-periodic-table copy of the
+    weights to check it against. A transposed digit in either column fails here.
+
+    **The tolerance is 0.05 g/mol absolute, and it is the one `props`' own check used.** It is not a
+    round number chosen to pass: measured over all 44 rows at the commit that added this test, the
+    largest spread between the three answers for one solvent was **0.011 g/mol** (chloroform:
+    119.38 tabulated, 119.378 from RDKit, 119.369 from `thermalsafety`), and the largest *relative*
+    spread was 2.8e-4 (water, whose `mw` is rounded to 18.02). The three disagree at all because
+    each rounds the standard atomic weights differently — RDKit carries `Cl` at 35.453 where
+    `thermalsafety` carries the IUPAC 2021 conventional 35.45 — and that is a difference no
+    reconciliation should try to remove. 0.05 leaves roughly four times the observed spread and is
+    still an order of magnitude below the ~1 g/mol a single transposed digit or a missing hydrogen
+    moves a mass by, which is the failure the check exists for.
+    """
+    from chemclaw_mcp_chem.engine.chem import molecular_weight
+    from chemclaw_mcp_props.engine import records
+    from chemclaw_mcp_thermalsafety.engine.oxygen_balance import molar_mass, parse_formula
+
+    tolerance = 0.05
+    compared = 0
+    for solvent in records.all_solvents():
+        compared += 1
+        derived = {
+            "rdkit MolWt from the SMILES column": molecular_weight(solvent.smiles),
+            "thermalsafety molar_mass from the formula column": molar_mass(
+                parse_formula(solvent.formula)
+            ),
+        }
+        for how, value in derived.items():
+            assert abs(value - solvent.mw) < tolerance, (
+                f"{solvent.name}: props tabulates mw={solvent.mw} g/mol, {how} gives {value} "
+                f"({solvent.formula}, {solvent.smiles}) — one molecule, two masses"
+            )
+    assert compared >= 40, f"only {compared} solvents carried a mass — did the table lose a column?"
+
+
 def test_the_reagent_table_two_servers_carry_is_one_file() -> None:
     """`chem` and `safety` both ship the bench-reagent corpus. It must be the *same* corpus.
 

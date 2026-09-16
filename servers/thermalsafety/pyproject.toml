@@ -10,6 +10,15 @@ requires-python = ">=3.11"
 # sake of a division. Adding a dependency here is a decision to be argued in the pull request.
 dependencies = [
     "mcp-server-kit",
+    # **The one dependency argued past the paragraph above**, and it is admissible for exactly one
+    # reason: `molmass` is BSD-3 and has **zero** required dependencies — its optional `Flask` and
+    # `pandas` extras are not installed. It replaces seventeen hand-transcribed atomic weights and a
+    # formula regex in `engine/oxygen_balance.py` with a maintained table and grammar. `chemicals`
+    # would answer the same question and was refused here: it drags numpy, scipy, pandas and fluids
+    # into the shortest closure in this fleet, which is the closure this file exists to keep short.
+    # What is *not* delegated is the domain — see `parse_formula`, which refuses the notations
+    # molmass would happily guess at, in front of the library rather than behind it.
+    "molmass>=2026.1.8",
     "uvicorn[standard]>=0.32",
 ]
 

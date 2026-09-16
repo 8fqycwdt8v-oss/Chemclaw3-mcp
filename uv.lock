@@ -784,6 +784,8 @@ version = "0.1.0"
 source = { editable = "servers/thermalsafety" }
 dependencies = [
     { name = "mcp-server-kit" },
+    { name = "molmass", version = "2026.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "molmass", version = "2026.8.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -799,6 +801,7 @@ dev = [
 requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
+    { name = "molmass", specifier = ">=2026.1.8" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
@@ -2177,6 +2180,35 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.38" },
 ]
 provides-extras = ["testing", "otel"]
+
+[[package]]
+name = "molmass"
+version = "2026.1.8"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.12'",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/50/b6/a9adb3a4f142d52295aed0194161ffa0b1ee5d5bc986be608c328245e075/molmass-2026.1.8.tar.gz", hash = "sha256:6f677940148f876a6690149956598841f068111cb8ff3c63cf831833e88a5247", size = 83094, upload-time = "2026-01-08T17:13:39.699Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/03/12/b6f548ac321f0239c3523b32bd629ccf8025ff59fbf8dbada22b0de96ce2/molmass-2026.1.8-py3-none-any.whl", hash = "sha256:d7ad83bd542c5bf132a8eca28630ad774c10f0890d9cf51625774838d03d5f8b", size = 73797, upload-time = "2026-01-08T17:13:38.643Z" },
+]
+
+[[package]]
+name = "molmass"
+version = "2026.8.15"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.14.*'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten'",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/1f/39de7a8bb3fc765533b88ef2586ca85774f55160b9f659167dfa3d27d073/molmass-2026.8.15.tar.gz", hash = "sha256:ec862c06b3138f669f89c00338dd99da64f41cec4111c644681f6b496523f1f1", size = 90321, upload-time = "2026-08-15T18:48:58.594Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/8d/83d097524c4011f39bf898f66a161c2c86e2d29937528a0de6f547c82267/molmass-2026.8.15-py3-none-any.whl", hash = "sha256:2f0ff7d8047b142037bcf094219388daba5beac04c4f316de29abc682f3a22e6", size = 77221, upload-time = "2026-08-15T18:48:57.556Z" },
+]
 
 [[package]]
 name = "mpmath"

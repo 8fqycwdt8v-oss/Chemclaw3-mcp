@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import pytest
 from chemclaw_mcp_thermalsafety.engine.oxygen_balance import (
+    ALLOWED_ELEMENTS,
     ATOMIC_WEIGHTS,
     FormulaError,
     molar_mass,
     oxygen_balance,
     parse_formula,
 )
+from molmass import Formula
 
 #: `(formula, published OB% to CO2, published molar mass)`. Each OB% is the value quoted in the
 #: explosives literature for that compound; each molar mass is the standard one. Both are written
@@ -149,11 +151,26 @@ def test_a_two_letter_element_is_not_read_as_two_one_letter_ones() -> None:
 
 
 def test_every_weight_in_the_table_is_a_plausible_atomic_mass() -> None:
-    """A transposed digit in the table is a wrong answer in every formula that names the element.
+    """A wrong weight is a wrong answer in every formula that names the element.
 
-    Checked independently of any formula: every weight must exceed its own symbol's position in a
-    hydrogen-relative sense — concretely, be at least 1 and, for every element here, below 200 —
-    and the six that dominate organic chemistry are pinned to one decimal from the IUPAC table.
+    The table is no longer transcribed — `ATOMIC_WEIGHTS` is read from `molmass` over
+    `ALLOWED_ELEMENTS` — so this check changed subject rather than losing its point. It is now an
+    *independent* statement of the six weights that dominate organic chemistry, written here from
+    the IUPAC 2021 conventional table, against a library's own table: two sources that were
+    compiled separately and must agree.
+
+    **The tolerance is 0.005 g/mol and it is a measurement, not a round number.** Measured against
+    molmass 2026.1.8, four of the six agree to better than 5e-4 and two do not: sulfur is 32.0648
+    where IUPAC 2021 gives the conventional 32.06, and chlorine is 35.4529 against 35.45. Those are
+    the older standard atomic weights rather than the conventional values IUPAC publishes for
+    elements with a natural-abundance interval — a real difference between two defensible tables,
+    not an error in either, and one worth knowing about rather than hiding behind a loose bound.
+    0.005 covers it with nothing to spare, and is still an order of magnitude below what any
+    realistic corruption moves a weight by: carbon transposed to 12.101 is 0.09 out.
+
+    What that difference costs the answers is bounded a second time by
+    `test_published_compounds_come_back_at_their_published_values`, whose 0.15-point tolerance is
+    forty times the largest OB% change the whole table swap produced.
     """
     for symbol, weight in ATOMIC_WEIGHTS.items():
         assert 1.0 <= weight < 200.0, f"{symbol} at {weight} g/mol is not an atomic mass"
@@ -165,4 +182,50 @@ def test_every_weight_in_the_table_is_a_plausible_atomic_mass() -> None:
         ("S", 32.06),
         ("Cl", 35.45),
     ):
-        assert ATOMIC_WEIGHTS[symbol] == pytest.approx(expected, abs=0.001)
+        assert ATOMIC_WEIGHTS[symbol] == pytest.approx(expected, abs=0.005)
+
+
+def test_the_table_holds_exactly_the_elements_this_screen_is_reviewed_for() -> None:
+    """The allowlist is the policy; the library is only where the numbers come from.
+
+    `molmass` knows all 109 elements, so nothing about importing it narrows what could be parsed —
+    the narrowing is `ALLOWED_ELEMENTS` and this is the assertion that it still does the work. A
+    future edit that derived the table from the library's own symbol list instead would widen the
+    screen's reviewed domain to the whole periodic table without a line saying so.
+    """
+    assert set(ATOMIC_WEIGHTS) == set(ALLOWED_ELEMENTS)
+    assert len(ALLOWED_ELEMENTS) == 17
+    assert "Pb" not in ALLOWED_ELEMENTS
+
+
+def test_a_notation_molmass_would_answer_is_still_refused_here() -> None:
+    """The refusals run in front of the library, which is the only reason they still exist.
+
+    Each of these is a string `molmass.Formula` parses without complaint — measured against molmass
+    2026.1.8, `Ca(NO3)2` gives 164.09 g/mol, `CuSO4.5H2O` gives 249.68, and `2H2O` gives **deuterium
+    oxide** rather than two waters. Delegating the grammar would therefore have turned three
+    deliberate refusals into three confident wrong answers, and the last one silently: a chemist
+    who writes a stoichiometric coefficient does not mean a mass number.
+
+    Driven through the library here as well as through `parse_formula`, so that the day molmass
+    stops parsing one of them this test says the premise changed rather than passing for a new
+    reason.
+    """
+    for notation in ("Ca(NO3)2", "CuSO4.5H2O", "2H2O"):
+        assert Formula(notation).mass > 0, (
+            f"{notation!r} is no longer parsed by molmass, so the refusal above it is now "
+            "guarding a case the library would refuse anyway — re-read the argument"
+        )
+        with pytest.raises(FormulaError):
+            parse_formula(notation)
+
+
+def test_an_isotope_symbol_is_named_rather_than_silently_weighed() -> None:
+    """`D2O` reaches the allowlist as `2H`, which is not an element this screen carries.
+
+    Worth its own case because the refusal comes from a different place than the others: there is
+    no `D` character to reject up front, so this is the allowlist catching a symbol the library
+    invented during the parse. The message must name what it saw.
+    """
+    with pytest.raises(FormulaError, match="2H"):
+        parse_formula("D2O")
