@@ -137,16 +137,41 @@ decision leaves a record behind and the row goes.
   **Anchors:** `tests/test_fleet.py::_numeric_settings_fields`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
 
-- [ ] **The bound derivation reads two configuration mechanisms and four shapes past them are
+- [ ] **One bound is a `float` and is therefore still read the way the unguarded `int` ones were.**
+  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put every integer bound behind
+  `mcp_server_kit.limits.env_bound`, which is `int`-typed. `servers/props`'
+  `CHEMCLAW_PROPS_MAX_TB_RATIO` is a ratio, so it stayed a bare
+  `float(os.environ.get("CHEMCLAW_PROPS_MAX_TB_RATIO", "1.8"))` — and it has the same defect eight
+  of those eleven had: it multiplies a normal boiling point in kelvin, so `0` makes the ceiling
+  −273.15 °C and every vapour-pressure question is refused, on a pod that starts and passes
+  readiness. Re-derive the set with
+
+  ```sh
+  grep -rnE 'float\(os\.environ' packages/*/src servers/*/src --include=*.py
+  ```
+
+  which finds exactly this one today. What is *not* obvious is the remedy: a second `env_ratio`
+  with one caller is the abstraction the Rule of Three says to inline, and widening `env_bound` to
+  `int | float` makes its `minimum` and its return type ambiguous at eleven call sites that do not
+  need it. Decide between those two and a third — that this bound's floor is a `Field(gt=0)` if
+  `props` ever grows a settings object — rather than copying the helper.
+  **Anchors:** `servers/props/src/chemclaw_mcp_props/engine/correlations.py`,
+  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`.
+
+- [ ] **The bound derivation reads two configuration mechanisms and three shapes past them are
   invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
-  of these shapes exists in `src/` today and each would enter it as an ordinary line: a read through
-  a helper (`_env_int("X", 4)`), a settings class inheriting from a `BaseSettings` *subclass* (the
-  `env_prefix` is on the parent), a nested `BaseModel` reached through `env_nested_delimiter`, and
-  `Field(4, validation_alias="REAL_NAME")` — the last being worse than absent, because the bound is
-  found under the prefixed field name rather than under the alias the environment actually reads, so
-  the ratchet would refuse the wrong variable and wave the real one through. `os.getenv` and
-  `Annotated[int, …]` were in this list and are closed. Decide whether following an alias and a
-  parent class is worth the AST, or whether the honest arrangement is the floor that already exists
+  of these three exists in `src/` today and each would enter it as an ordinary line: a settings
+  class inheriting from a `BaseSettings` *subclass* (the `env_prefix` is on the parent), a nested
+  `BaseModel` reached through `env_nested_delimiter`, and `Field(4, validation_alias="REAL_NAME")` —
+  the last being worse than absent, because the bound is found under the prefixed field name rather
+  than under the alias the environment actually reads, so the ratchet would refuse the wrong
+  variable and wave the real one through. `os.getenv` and `Annotated[int, …]` were in this list and
+  are closed. So was **a read through a helper**, differently and only for one helper:
+  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put eleven bounds behind
+  `mcp_server_kit.limits.env_bound`, and `_BOUND_HELPERS` follows that one *by name* — measured, the
+  derived set fell 45→34 without it. A helper the scan does not know by name is still invisible,
+  and that is the part left standing here. Decide whether following an alias and a parent class is
+  worth the AST, or whether the honest arrangement is the floor that already exists
   (`_BOUND_ANCHORS`) plus this row.
   **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
@@ -190,22 +215,6 @@ decision leaves a record behind and the row goes.
   unpinned, on a two-core cgroup.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
-
-- [ ] **Five environment-read bounds still accept a value that silently breaks the server.**
-  `D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means` fixed the three W23
-  added — a batch bound of `0` started a `rxnlabel` pod that passed readiness and refused every
-  call — and left the older ones as they were: `MCP_MAX_SMILES_CHARS` and `MCP_MAX_MOLECULE_ATOMS`
-  in the kit, `CHEMCLAW_CHEM_RENDER_SIZE_PX`, `CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS` and
-  `CHEMCLAW_CHEM_MAX_DEPICTION_CHARS` in `chem`, plus `CHEMCLAW_SAFETY_MAX_COMPONENTS`. Each is a
-  bare `int(os.environ.get(...))` that accepts `0` and negatives. The obvious fix — one
-  `env_int(name, default)` helper — is the one thing that must not be done without a second change:
-  `tests/test_fleet.py::test_the_bound_scan_sees_both_configuration_mechanisms` pins that the
-  ratchet's inventory deliberately does not follow a read through a helper, so converting these
-  would take all seven out of the ratchet that exists to watch them. So the row is two decisions in
-  order: whether the scan should follow one named helper, and only then whether to share the check.
-  **Anchors:** `tests/test_fleet.py::_numeric_environ_reads`,
-  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
 
 ## 3 — Readiness, where it still stops
 

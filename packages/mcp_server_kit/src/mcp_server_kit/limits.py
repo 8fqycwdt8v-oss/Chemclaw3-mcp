@@ -19,11 +19,17 @@ without editing code):
   canonicalisation. This is the bound that actually stops the segfault, because the recursion depth
   scales with the atom count, not the string length.
 
-Neither function raises: they return a *worded reason* or `None`. A server that refuses (a chemist
-is waiting) raises its own `ValueError` subclass with the reason; a server that ingests a corpus
-leniently (`rxnlabel`) treats a reason as "could not be read" and drops the one species. The reason
-string is caller-safe — it quotes only sizes, never the offending megastring — so it is safe to
-surface to the model verbatim through `connector_app`.
+Neither of those two functions raises: they return a *worded reason* or `None`. A server that
+refuses (a chemist is waiting) raises its own `ValueError` subclass with the reason; a server that
+ingests a corpus leniently (`rxnlabel`) treats a reason as "could not be read" and drops the one
+species. The reason string is caller-safe — it quotes only sizes, never the offending megastring —
+so it is safe to surface to the model verbatim through `connector_app`.
+
+**`env_bound` is the exception to that rule and its docstring says why**: it is how every server in
+this fleet reads a resource bound out of the environment at import, and a bound that cannot work
+has to stop the process rather than hand somebody a reason there is nobody to receive. It is here
+rather than beside any one server for the reason `Admission` is — every server already imports this
+module, and what varied between the hand-written copies was the sentence, not the check.
 """
 
 from __future__ import annotations
@@ -38,11 +44,100 @@ __all__ = [
     "Admission",
     "Slots",
     "atom_count_error",
+    "env_bound",
     "smiles_length_error",
 ]
 
-MAX_SMILES_CHARS = int(os.environ.get("MCP_MAX_SMILES_CHARS", "4000"))
-MAX_MOLECULE_ATOMS = int(os.environ.get("MCP_MAX_MOLECULE_ATOMS", "2000"))
+
+def env_bound(name: str, *, default: int, minimum: int, consequence: str) -> int:
+    """One resource bound read from the environment at import, refused here if it cannot work.
+
+    **The defect this exists for is a pod that starts and then refuses every request.** A bare
+    `int(os.environ.get(name, default))` accepts `0` and every negative, and a bound whose whole job
+    is to refuse has no "off": measured on `rxnlabel` before its own guard,
+    `CHEMCLAW_RXNLABEL_MAX_BATCH=0` started the pod, passed its readiness probe, and answered every
+    call with "0 reactions in one request exceeds the batch limit of 0". `0` is also the value an
+    operator is most likely to try, because `MCP_MAX_SESSIONS=0` means *no ceiling* one layer down
+    and here it means the opposite. So an unusable bound is a **startup** failure, which a kubelet
+    reports as a pod that never became ready rather than as a server quietly serving nothing.
+
+    **Raising is the whole point, and it is why this does not follow `Admission` and the two size
+    bounds in this module** — both of which return a worded reason and let their caller raise
+    (`D-2026-09-15-five-copies-varied-the-message-not-the-mechanism` has that argument). Those run
+    inside a request, where the reason is written for a chemist waiting on an answer and the caller
+    chooses the exception type the model will read. This runs at import: there is no request, no
+    model and no caller, and the only reader is an operator looking at a container log. A returned
+    reason would have exactly one possible handler at every call site, which is the shape the Rule
+    of Three says to inline rather than abstract.
+
+    **What stays per-site is the wording and the floor**, which is the half that genuinely varies.
+    `consequence` is the server's own sentence about what the value would break, and `minimum` is
+    not `1` everywhere: `CHEMCLAW_CHEM_RENDER_SIZE_PX` is a canvas in pixels, not a count of
+    things, and a one-pixel canvas is not a smaller picture.
+
+    A non-integer is refused the same way rather than falling back with a warning, which is what
+    `executor.thread_pool_size` and `sessions.max_sessions` do with theirs. Those two have a
+    defensible runtime default and are read per call; these are read once, before the server has
+    accepted anything, and silently ignoring a number a deployment deliberately set is how a
+    deployment comes to believe a ceiling it does not have. An empty or whitespace-only value *is*
+    treated as unset, matching both of those and the way a Kubernetes `env:` entry with no value
+    arrives.
+
+    Args:
+        name: The environment variable, named in every refusal because it is the one thing an
+            operator reading a crash loop can act on — a traceback out of `int()` names neither
+            the variable nor the value.
+        default: What this bound is when the variable is unset. Named in the refusal too, so the
+            way back is in the message rather than in this repository.
+        minimum: The smallest value that still leaves the server able to do its work. Declared by
+            the call site, because only the call site knows what the number measures.
+        consequence: A clause completing "…: <consequence>." — what the rejected value would do to
+            this server, in the operator's own vocabulary.
+
+    Returns:
+        The configured value, which is at least `minimum`.
+
+    Raises:
+        ValueError: The variable is set to something that is not a whole number, or to a number
+            below `minimum`.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(
+            f"{name}={raw!r} is not a whole number, so this server cannot size the bound it "
+            f"controls; unset it for the default of {default} or give it an integer of at least "
+            f"{minimum}"
+        ) from None
+    if value < minimum:
+        raise ValueError(
+            f"{name}={value} is below the minimum of {minimum}: {consequence}. A bound has no "
+            f"'off' setting, so unset {name} for the default of {default}, or give it a value of "
+            f"at least {minimum}."
+        )
+    return value
+
+
+MAX_SMILES_CHARS = env_bound(
+    "MCP_MAX_SMILES_CHARS",
+    # Far above anything a process chemist submits; a real reagent SMILES is tens of characters.
+    default=4000,
+    # One character, because the guard refuses anything *longer* than this: at `0` every structure
+    # in the fleet is refused before it is parsed, including a one-atom `C`.
+    minimum=1,
+    consequence="every structure this fleet is given would be refused before it is parsed",
+)
+MAX_MOLECULE_ATOMS = env_bound(
+    "MCP_MAX_MOLECULE_ATOMS",
+    default=2000,
+    # One atom, for the same reason: a parsed molecule always has at least one, so `0` refuses
+    # every molecule that got past the parser — after the parse, which is the expensive half.
+    minimum=1,
+    consequence="every molecule would be refused after it is parsed and before it is canonicalised",
+)
 
 
 def smiles_length_error(

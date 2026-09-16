@@ -19,6 +19,7 @@ from a second table.
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import re
 import shlex
@@ -34,6 +35,7 @@ from mcp_server_kit.sessions import (
     SESSION_COST_BYTES,
     SMALLEST_POD_MEMORY_LIMIT_BYTES,
 )
+from mcp_server_kit.testing import reimported
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVERS = ROOT / "servers"
@@ -1304,6 +1306,11 @@ def test_no_shape_that_hides_a_value_from_this_ratchet_reads_as_clean() -> None:
 # mechanism and one per server that owns an admission ceiling, which `CLAUDE.md` calls the bound a
 # slow tool owes the fleet. They are named here rather than in prose for the reason this repository
 # keeps relearning: a count or a list in a document goes stale on somebody else's merge.
+#
+# **Four of these five now arrive through `_BOUND_HELPERS` rather than through a bare `os.environ`
+# read**, which makes this floor load-bearing in a way it was not before: renaming
+# `mcp_server_kit.limits.env_bound` without telling the scan takes them out of the inventory, and
+# this is the assertion that says so instead of the set silently shrinking.
 _BOUND_ANCHORS = frozenset(
     {
         "MCP_MAX_SMILES_CHARS",
@@ -1335,6 +1342,23 @@ _ARGUED_DEPLOYMENT_SETTINGS: frozenset[tuple[str, str]] = frozenset(
 )
 
 _NUMERIC_CASTS = frozenset({"int", "float"})
+
+# The one first-party helper the derivation below follows into, by name.
+#
+# **Following a helper at all is a decision this scan spent a while refusing**, and the docstring of
+# `numeric_env_bounds` named "a read through a helper" as a shape it does not parse. What changed is
+# that eleven of this fleet's bounds moved behind exactly one such helper —
+# `mcp_server_kit.limits.env_bound`, which reads the variable, refuses a value that would stop the
+# server working, and returns an `int` — so not following it would have taken eleven variables out
+# of the inventory in a single commit, four of the five `_BOUND_ANCHORS` rows among them. Measured
+# on 2026-09-16 before this constant existed, the derived set went from 45 bounds to 34.
+#
+# It is a *name*, which is a coupling: renaming the helper stops the scan seeing its call sites.
+# That is survivable only because `_BOUND_ANCHORS` fails loudly when it happens instead of letting
+# the set quietly shrink, which is the floor the rest of this derivation already rests on. An
+# arbitrary helper is still not followed, and
+# `test_the_derivation_reads_the_two_spellings_it_used_to_miss` asserts both halves.
+_BOUND_HELPERS = frozenset({"env_bound"})
 
 
 def _is_environ(node: ast.AST) -> bool:
@@ -1393,13 +1417,33 @@ def _env_read_within(node: ast.AST) -> str | None:
     return None
 
 
+def _bound_helper_variable(node: ast.AST) -> str | None:
+    """The variable a `_BOUND_HELPERS` call names, when `node` is one and names it literally.
+
+    One definition rather than two, because the derivation below and `env_bound_sites` further down
+    are answering the same question — which call sites are bounds — for two different checks. Two
+    copies of this shape would let the deployment ratchet and the import-refusal test cover
+    different sets, which is the failure both of them exist to prevent.
+    """
+    if not (isinstance(node, ast.Call) and _called_name(node) in _BOUND_HELPERS and node.args):
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
+
+
 def _numeric_environ_reads(tree: ast.Module) -> dict[str, int]:
     """Every environment variable this module turns into a number, and the line it happens on.
 
-    Two shapes, because the fleet uses both: the read wrapped directly in `int`/`float`, and the
+    Three shapes, because the fleet uses all three: the read wrapped directly in `int`/`float`; the
     read bound to a local that is converted further down (`raw = os.environ.get(...).strip()` then
     `float(raw)` — `executor.py` and `sessions.py` are written that way, and a scan that only
-    matched the direct form would report those three variables absent).
+    matched the direct form would report those three variables absent); and a call to one of
+    `_BOUND_HELPERS`, which does the read and the cast itself and whose first positional argument is
+    the variable's name. The third is the fleet's *majority* shape rather than an edge case — eleven
+    of the bounds here go through `mcp_server_kit.limits.env_bound` — and the constant beside it
+    carries the argument for following a named helper when this derivation follows no other.
     """
     from_var: dict[str, tuple[str, int]] = {}
     for node in ast.walk(tree):
@@ -1426,6 +1470,10 @@ def _numeric_environ_reads(tree: ast.Module) -> dict[str, int]:
             read, line = from_var[argument.id]
         if read is not None:
             found.setdefault(read, line)
+    for node in ast.walk(tree):
+        variable = _bound_helper_variable(node)
+        if variable is not None:
+            found.setdefault(variable, node.lineno)
     return found
 
 
@@ -1531,7 +1579,9 @@ def numeric_env_bounds() -> dict[str, Bound]:
     **What the derivation does not see, stated rather than implied** — each measured on 2026-09-12
     against a synthetic module, and none of these shapes exists in `src/` today:
 
-    - a read through a helper (`_env_int("X", 4)`), which needs the helper's body followed;
+    - a read through a helper this scan does not know by name (`_env_int("X", 4)`), which would
+      need the helper's body followed. `_BOUND_HELPERS` names the one exception and argues for it —
+      that list is a coupling `_BOUND_ANCHORS` is what catches, not a general capability;
     - a settings class inheriting from a `BaseSettings` *subclass*, where `env_prefix` is on the
       parent;
     - a nested `BaseModel` reached through `env_nested_delimiter`;
@@ -1856,8 +1906,12 @@ def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
     )
     assert set(_numeric_settings_fields(annotated)) == {"CHEMCLAW_MAX_RUNS"}
 
-    # And the boundary, asserted so the docstring naming it cannot quietly become false: a read
-    # through a helper is not followed, and that is a decision rather than an oversight.
+    # And the boundary, asserted so the docstring naming it cannot quietly become false. It moved
+    # on 2026-09-16 and is now a *pair*: one named helper is followed, every other is not.
+    known = ast.parse(
+        'LIMIT = env_bound("MCP_MAX_THINGS", default=4, minimum=1, consequence="x")\n'
+    )
+    assert set(_numeric_environ_reads(known)) == {"MCP_MAX_THINGS"}
     helper = ast.parse('LIMIT = _env_int("MCP_MAX_THINGS", 4)\n')
     assert _numeric_environ_reads(helper) == {}
 
@@ -1871,6 +1925,14 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
     every one of them is an environment variable. `servers/calc/tests/test_admission.py` measures
     the consequence on the ceiling itself; this asserts the *scan* can see it, which is what makes
     the ratchet above cover the heaviest server in the fleet rather than silently skip it.
+
+    **The environment half is now read through a helper, and that is the second thing this holds.**
+    `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` moved eleven bounds behind
+    `mcp_server_kit.limits.env_bound`, and measured before `_BOUND_HELPERS` existed the derived set
+    fell from 45 to 34 — every one of those eleven. So the coverage that is asserted here is not
+    "an `os.environ` read is seen" but "a bound read the way this fleet actually reads one is
+    seen", which is what the loss of those eleven would have made false while every other
+    assertion in this file stayed green.
     """
     bounds = numeric_env_bounds()
     environ_read = {
@@ -1879,6 +1941,18 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
         if bound.where.startswith(("packages/", "servers/chem/", "servers/pyexec/"))
     }
     assert "MCP_MAX_SMILES_CHARS" in environ_read
+    through_helper = {
+        "CHEMCLAW_CHEM_MAX_DEPICTION_CHARS",
+        "CHEMCLAW_CHEM_RENDER_SIZE_PX",
+        "CHEMCLAW_SAFETY_MAX_COMPONENTS",
+        "MCP_MAX_MOLECULE_ATOMS",
+        "MCP_MAX_SMILES_CHARS",
+    }
+    assert through_helper <= set(bounds), (
+        f"the scan lost {sorted(through_helper - set(bounds))!r}, which are read through "
+        "`env_bound`; a derivation that stops following the helper this fleet reads its bounds "
+        "with covers the shape nothing here uses and misses the one it does"
+    )
     calc = {name for name, bound in bounds.items() if bound.where.startswith("servers/calc/")}
     assert "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS" in calc, (
         "calc's admission ceiling is a settings field, not a constant; if the scan cannot see it "
@@ -1888,6 +1962,134 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
         f"the settings mechanism contributes {len(calc)} of calc's numbers; a collapse here is a "
         "ratchet that has quietly stopped covering the server with the most to move"
     )
+
+
+class BoundSite(NamedTuple):
+    """One `env_bound` call in the tree: the variable, and the module whose import reads it.
+
+    `module` is the dotted name, derived from the path under a `src/` root rather than transcribed,
+    because the whole point of this collection is that nobody keeps a list of it by hand.
+    """
+
+    variable: str
+    module: str
+    where: str
+
+
+def env_bound_sites() -> list[BoundSite]:
+    """Every `mcp_server_kit.limits.env_bound` call in first-party source, derived from the tree.
+
+    The first positional argument is the variable's name, which is the only shape this repository
+    writes and the only one `_numeric_environ_reads` follows — so a site spelled any other way is
+    absent from both this and the deployment ratchet, and that is one failure rather than two.
+    """
+    sites: list[BoundSite] = []
+    for root in sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src")):
+        for source in sorted(root.rglob("*.py")):
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            for node in ast.walk(tree):
+                variable = _bound_helper_variable(node)
+                if variable is None:
+                    continue
+                sites.append(
+                    BoundSite(
+                        variable=variable,
+                        module=str(source.relative_to(root).with_suffix("")).replace("/", "."),
+                        where=f"{source.relative_to(ROOT)}:{node.lineno}",
+                    )
+                )
+    return sites
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "not-a-number"])
+def test_every_environment_bound_refuses_at_import_and_names_its_own_variable(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Each bound is driven against its own defect: set it to nothing, watch the import refuse.
+
+    **A guard nobody has watched refuse is a claim that a control exists.** Before
+    `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place`, eight of these eleven had no
+    guard at all: six accepted `0` and every negative outright, so the pod started, passed its
+    readiness probe and then refused every request — `CHEMCLAW_SAFETY_MAX_COMPONENTS=0` is a
+    hazard-screening server that answers no hazard question — and the other two were refused by
+    `Admission`, whose message names the ceiling and not the variable that set it.
+
+    Three values, because the three failures are different and an operator sees only the message:
+    `0` (the value they are most likely to try, since `MCP_MAX_SESSIONS=0` means *no ceiling* one
+    layer down), a negative, and something that is not a number at all — which used to be a
+    traceback out of `int()` naming neither the variable nor the value.
+
+    The set is **derived** from the tree by `env_bound_sites`, not listed, so a twelfth bound is
+    covered by the commit that writes it rather than by whoever remembers this file. And it is
+    driven through `reimported`, which executes the module's own source again under the environment
+    in force now: re-typing the check into this test would assert that `if x < 1` works.
+    """
+    sites = env_bound_sites()
+    assert len(sites) >= 11, (
+        f"only {len(sites)} `env_bound` call sites found; a derivation that stops finding them "
+        "agrees with an empty tree forever"
+    )
+    for site in sites:
+        module = importlib.import_module(site.module)
+        monkeypatch.setenv(site.variable, value)
+        with pytest.raises(ValueError) as refusal:
+            reimported(module)
+        message = str(refusal.value)
+        assert site.variable in message, (
+            f"{site.where}: {site.variable}={value} refused with a message that does not name the "
+            f"variable — {message!r}. A CrashLoopBackOff plus a number whose source an operator "
+            "has to guess is the failure this guard replaced."
+        )
+        assert value.lstrip("-") in message, (
+            f"{site.where}: {site.variable}={value} refused without quoting the value seen — "
+            f"{message!r}. An operator cannot tell a typo from a policy without it."
+        )
+        monkeypatch.delenv(site.variable)
+
+
+def test_a_bound_at_its_own_floor_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other direction, so the test above cannot be passed by refusing everything.
+
+    Driven at each site's declared `minimum` rather than at `1`, because the floors are not all the
+    same number: `CHEMCLAW_CHEM_RENDER_SIZE_PX` measures a canvas rather than a count of things and
+    floors at RDKit's own `minFontSize`. A single fleet-wide floor is exactly what this would fail
+    to notice.
+
+    The assertion is the *absence* of a refusal — `reimported` raising is the failure — which is the
+    whole claim being made here and is why there is no `assert`. That the accepted value then
+    reaches the module's own attribute is a per-site question, checked where the floor is
+    interesting: `servers/chem/tests/test_depiction_bound.py` and each server's `test_admission.py`.
+    """
+    for site in env_bound_sites():
+        module = importlib.import_module(site.module)
+        monkeypatch.setenv(site.variable, str(_declared_minimum(site)))
+        reimported(module)
+        monkeypatch.delenv(site.variable)
+
+
+def _declared_minimum(site: BoundSite) -> int:
+    """The floor one call site declares, resolved through the module when it is a named constant.
+
+    A literal is read off the AST; a name (`minimum=MINIMUM_RENDER_SIZE_PX`) is read off the
+    imported module, which is the only honest source — the constant is computed from RDKit's own
+    drawing options, so transcribing it here would be a second copy that agrees with itself.
+    """
+    source = ROOT / site.where.rsplit(":", 1)[0]
+    line = int(site.where.rsplit(":", 1)[1])
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and node.lineno == line):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "minimum":
+                continue
+            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, int):
+                return keyword.value.value
+            if isinstance(keyword.value, ast.Name):
+                resolved = getattr(importlib.import_module(site.module), keyword.value.id)
+                assert isinstance(resolved, int)
+                return resolved
+    raise AssertionError(f"{site.where}: no `minimum=` on this `env_bound` call")
 
 
 # What `egress.py` says is outside the runtime guard, as the distinctive phrase for each channel.

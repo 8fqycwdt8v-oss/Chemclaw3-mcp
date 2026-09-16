@@ -21,7 +21,6 @@ gets reviewed anyway.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
@@ -29,6 +28,7 @@ from typing import Literal, TypeVar
 
 import yaml
 from mcp_server_kit import DatasetError, load_dataset
+from mcp_server_kit.limits import env_bound
 from pydantic import BaseModel, Field, computed_field
 from rdkit import Chem
 
@@ -71,7 +71,15 @@ RULES_FILE = "rules.yaml"
 # and bounds the worst case to ~1,000 pair flags and single-digit milliseconds. Chemclaw3 carried it
 # as `settings.safety_max_components`; here it is one environment variable at the same default,
 # because one integer does not earn a pydantic-settings dependency.
-MAX_COMPONENTS = int(os.environ.get("CHEMCLAW_SAFETY_MAX_COMPONENTS", "64"))
+MAX_COMPONENTS = env_bound(
+    "CHEMCLAW_SAFETY_MAX_COMPONENTS",
+    default=64,
+    # One component: a screen of nothing is not a screen, and the guard refuses anything *above*
+    # this, so `0` would answer every hazard question with a refusal — on a server whose whole job
+    # is to answer hazard questions, from a pod that started and reported itself ready.
+    minimum=1,
+    consequence="every hazard screen would be refused, on a pod that starts and passes readiness",
+)
 
 Severity = Literal["high", "medium", "low"]
 
