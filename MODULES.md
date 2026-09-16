@@ -35,7 +35,7 @@ utilization against, which is why the five servers that shipped at `100m`-`500m`
 a pod doing real work actually draws — at `100m`, one caller reads as 1000% utilization and the
 autoscaler runs to its maximum on a single request.
 
-| server | replicas (min → max) | requests/pod | baseline (min × req) | ceiling (max × req) |
+| server | replicas (min → max) | requests/pod | baseline (min x req) | ceiling (max x req) |
 | --- | --- | --- | --- | --- |
 | `props` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
 | `chem` | 2 → 6 | 500m / 256Mi | 1 CPU, 0.5 Gi | 3 CPU, 1.5 Gi |
@@ -449,13 +449,32 @@ This one extrapolates `k`, the rate constant of the reaction being run, and retu
 constant. Nothing here returns a TMR, a T_D24 or a criticality class, and a test asserts the module
 exports no such name.
 
-### `unitops` — scale-up and unit-operation sizing · port 8853 · proposed
+### `unitops` — scale-up and unit-operation sizing · port 8853 · **built**
 
 The correlations a process chemist reaches for when a route leaves the lab: mixing scale-up (P/V,
-tip speed, N_js), heat-transfer time constants, Fenske–Underwood–Gilliland shortcut distillation,
+tip speed, N_js), heat-transfer time constants, Fenske-Underwood-Gilliland shortcut distillation,
 crystallisation yield from a solubility curve, filtration and drying times.
 
-*Offline:* first-party correlations.
+*Tools:* `agitation_scale_up`, `just_suspended_speed`, `heat_transfer_time_constant`,
+`shortcut_distillation`, `crystallisation_yield`, `filtration_time`, `drying_time`.
+*Offline:* first-party correlations; no corpus, no `data/` and no `dataset.json`.
+
+**The row named six capability areas and no tool names, so the surface was a choice, and it is
+recorded here because another repository hardcodes it.** Five areas map one-to-one. Mixing became
+**two** tools: `agitation_scale_up` is definitions (`P = N_p·rho·N³·D⁵`, `π N D`) needing only
+geometry and fluid properties, while `just_suspended_speed` is Zwietering's fitted correlation
+needing a particle size, a crystal density, a solids loading and the geometry constant `S`. Merged,
+a chemist wanting a P/V would have to supply a size distribution to get one — and one answer would
+put an exact number beside a ±10% one with nothing saying which was which. See
+`D-2026-09-16-a-server-that-holds-no-data-is-a-server-that-refuses-defaults`.
+
+**It holds no data at all** — no vessel register, no VLE table, no solubility curve, no cake
+resistance, no drying curve, no impeller catalogue — so every tool refuses to default the measured
+number its answer is made of (`U`, `alpha`, `S`, `N_c`, the two solubilities), and a question naming
+only a vessel is one it cannot answer. It returns no TMR, MTSR or criticality class: the jacket
+figure is a heat-transfer **capacity**, and a process heat load is `thermalsafety`'s from
+calorimetry. It computes **no wash volume** and predicts no solubility, both asserted as absences
+rather than described.
 
 ### `retro` — retrosynthesis and route scoring · port 8854 · **adopted, not built**
 

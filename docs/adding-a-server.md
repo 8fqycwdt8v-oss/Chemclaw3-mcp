@@ -86,6 +86,18 @@ variance between servers should be in what they compute, not in how they are sha
    `packages/mcp_server_kit/src/mcp_server_kit/sessions.py` and
    `D-2026-09-12-a-session-is-memory-nobody-counted`.
 
+6. **Every bound you *do* write is read with `mcp_server_kit.limits.env_bound`, never with a bare
+   `int(os.environ.get(...))`.** It takes the variable's name, this server's `default`, the
+   `minimum` below which the bound cannot work, and one `consequence` clause in your own words —
+   and it refuses at **import**, naming the variable, the value it saw and the floor, because a pod
+   that starts and then refuses every request is worse than one that will not start. Eight of this fleet's bounds did not have that
+   check and six of them accepted `0` outright; `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place`
+   has the set and the measurement. Two things follow for a new server: the floor is **yours** to
+   declare and is not always `1` (`chem`'s render size is a canvas in pixels, floored at RDKit's own
+   `minFontSize`), and using the helper is what puts the variable into
+   `tests/test_fleet.py::numeric_env_bounds`, the inventory that stops a deployment moving your
+   bound without an argued row. A bound read any other way is in neither check.
+
 ## The files
 
 ```

@@ -1,0 +1,223 @@
+{
+  "agitation_scale_up": {
+    "large_impeller_diameter_m": {
+      "required": true,
+      "type": "number"
+    },
+    "large_liquid_volume_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "liquid_density_kg_per_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "liquid_viscosity_pa_s": {
+      "required": true,
+      "type": "number"
+    },
+    "power_number": {
+      "required": true,
+      "type": "number"
+    },
+    "small_impeller_diameter_m": {
+      "required": true,
+      "type": "number"
+    },
+    "small_liquid_volume_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "small_speed_rpm": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "crystallisation_yield": {
+    "solubility_cold_kg_per_kg_solvent": {
+      "required": true,
+      "type": "number"
+    },
+    "solubility_hot_kg_per_kg_solvent": {
+      "required": true,
+      "type": "number"
+    },
+    "solute_charged_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "solvent_charged_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "solvent_evaporated_kg": {
+      "default": 0.0,
+      "required": false,
+      "type": "number"
+    }
+  },
+  "drying_time": {
+    "constant_rate_kg_per_m2_s": {
+      "required": true,
+      "type": "number"
+    },
+    "critical_moisture_dry_basis": {
+      "required": true,
+      "type": "number"
+    },
+    "dry_solid_mass_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "drying_area_m2": {
+      "required": true,
+      "type": "number"
+    },
+    "final_moisture_dry_basis": {
+      "required": true,
+      "type": "number"
+    },
+    "initial_moisture_dry_basis": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "filtration_time": {
+    "dry_cake_per_filtrate_kg_per_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "filter_area_m2": {
+      "required": true,
+      "type": "number"
+    },
+    "filtrate_viscosity_pa_s": {
+      "required": true,
+      "type": "number"
+    },
+    "filtrate_volume_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "medium_resistance_per_m": {
+      "default": 0.0,
+      "required": false,
+      "type": "number"
+    },
+    "pressure_drop_pa": {
+      "required": true,
+      "type": "number"
+    },
+    "specific_cake_resistance_m_per_kg": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "heat_transfer_time_constant": {
+    "batch_mass_kg": {
+      "required": true,
+      "type": "number"
+    },
+    "heat_capacity_j_per_kg_k": {
+      "required": true,
+      "type": "number"
+    },
+    "heat_transfer_area_m2": {
+      "required": true,
+      "type": "number"
+    },
+    "initial_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "jacket_temperature_c": {
+      "required": true,
+      "type": "number"
+    },
+    "overall_heat_transfer_coefficient_w_per_m2_k": {
+      "required": true,
+      "type": "number"
+    },
+    "target_temperature_c": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "time_seconds": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    }
+  },
+  "just_suspended_speed": {
+    "impeller_diameter_m": {
+      "required": true,
+      "type": "number"
+    },
+    "liquid_density_kg_per_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "liquid_viscosity_pa_s": {
+      "required": true,
+      "type": "number"
+    },
+    "liquid_volume_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "particle_density_kg_per_m3": {
+      "required": true,
+      "type": "number"
+    },
+    "particle_diameter_m": {
+      "required": true,
+      "type": "number"
+    },
+    "power_number": {
+      "required": true,
+      "type": "number"
+    },
+    "solids_loading_percent": {
+      "required": true,
+      "type": "number"
+    },
+    "zwietering_constant": {
+      "required": true,
+      "type": "number"
+    }
+  },
+  "shortcut_distillation": {
+    "feed_quality": {
+      "default": 1.0,
+      "required": false,
+      "type": "number"
+    },
+    "light_key_in_bottoms": {
+      "required": true,
+      "type": "number"
+    },
+    "light_key_in_distillate": {
+      "required": true,
+      "type": "number"
+    },
+    "light_key_in_feed": {
+      "required": true,
+      "type": "number"
+    },
+    "reflux_over_minimum": {
+      "default": 1.3,
+      "required": false,
+      "type": "number"
+    },
+    "reflux_ratio": {
+      "default": null,
+      "required": false,
+      "type": "number|null"
+    },
+    "relative_volatility": {
+      "required": true,
+      "type": "number"
+    }
+  }
+}

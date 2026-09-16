@@ -10,7 +10,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src
 
 .PHONY: help
 help: ## Show this help.
@@ -276,6 +276,11 @@ run-props: ## Run the props server on its dev port with a dev token.
 run-kinetics: ## Run the kinetics server on its dev port with a dev token.
 	CHEMCLAW_KINETICS_TOKEN=$${CHEMCLAW_KINETICS_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_kinetics.app:app --host 127.0.0.1 --port 8852
+
+.PHONY: run-unitops
+run-unitops: ## Run the unitops server on its dev port with a dev token.
+	CHEMCLAW_UNITOPS_TOKEN=$${CHEMCLAW_UNITOPS_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_unitops.app:app --host 127.0.0.1 --port 8853
 
 .PHONY: run-suitability
 run-suitability: ## Run the suitability server on its dev port with a dev token.

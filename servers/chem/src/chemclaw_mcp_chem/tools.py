@@ -35,11 +35,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import os
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit.limits import env_bound
 
 from chemclaw_mcp_chem.engine import stoichiometry
 from chemclaw_mcp_chem.engine.admission import (
@@ -68,8 +68,18 @@ server = FastMCP("chem")
 # The pod's ceiling on concurrent depictions. Built at import; a test that needs a different ceiling
 # replaces this attribute, so the number a gate enforces is the number it was built from. The
 # default and its derivation live in `engine/admission.py`, beside the measurement they rest on.
+#
+# `env_bound` rather than a bare `int(os.environ.get(...))` because `Admission` refuses a ceiling
+# below 1 with a message naming the *ceiling* — "an admission ceiling of 0 would refuse every
+# depiction" — which leaves an operator a CrashLoopBackOff and a number whose source they have to
+# guess. The variable's own name is the one thing they can act on.
 _admission = Admission(
-    int(os.environ.get("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", str(DEFAULT_MAX_CONCURRENT_RENDERS)))
+    env_bound(
+        "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS",
+        default=DEFAULT_MAX_CONCURRENT_RENDERS,
+        minimum=1,
+        consequence="this pod would refuse every depiction it is asked for",
+    )
 )
 
 _P = ParamSpec("_P")

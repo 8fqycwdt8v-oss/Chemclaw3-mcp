@@ -32,7 +32,7 @@ worked example — and `test_nowhere_in_the_file_states_a_live_row_count` keeps 
 
 **4 · A row about another repository is marked `**Other repository:**` and names that repo's
 anchor**, because no test here can open it. This repository has been burned by exactly that: the
-`Ports` section published Chemclaw3's connector range as 8810–8815 while its `bo` connector sat on
+`Ports` section published Chemclaw3's connector range as 8810-8815 while its `bo` connector sat on
 8816, a number belonging to a checkout this suite cannot read. That section now records the
 clearance as a dated observation rather than a boundary, and a row here gets the same treatment —
 the anchor check skips it, and says out loud that it did.
@@ -137,16 +137,41 @@ decision leaves a record behind and the row goes.
   **Anchors:** `tests/test_fleet.py::_numeric_settings_fields`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
 
-- [ ] **The bound derivation reads two configuration mechanisms and four shapes past them are
+- [ ] **One bound is a `float` and is therefore still read the way the unguarded `int` ones were.**
+  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put every integer bound behind
+  `mcp_server_kit.limits.env_bound`, which is `int`-typed. `servers/props`'
+  `CHEMCLAW_PROPS_MAX_TB_RATIO` is a ratio, so it stayed a bare
+  `float(os.environ.get("CHEMCLAW_PROPS_MAX_TB_RATIO", "1.8"))` — and it has the same defect eight
+  of those eleven had: it multiplies a normal boiling point in kelvin, so `0` makes the ceiling
+  −273.15 °C and every vapour-pressure question is refused, on a pod that starts and passes
+  readiness. Re-derive the set with
+
+  ```sh
+  grep -rnE 'float\(os\.environ' packages/*/src servers/*/src --include=*.py
+  ```
+
+  which finds exactly this one today. What is *not* obvious is the remedy: a second `env_ratio`
+  with one caller is the abstraction the Rule of Three says to inline, and widening `env_bound` to
+  `int | float` makes its `minimum` and its return type ambiguous at eleven call sites that do not
+  need it. Decide between those two and a third — that this bound's floor is a `Field(gt=0)` if
+  `props` ever grows a settings object — rather than copying the helper.
+  **Anchors:** `servers/props/src/chemclaw_mcp_props/engine/correlations.py`,
+  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`.
+
+- [ ] **The bound derivation reads two configuration mechanisms and three shapes past them are
   invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
-  of these shapes exists in `src/` today and each would enter it as an ordinary line: a read through
-  a helper (`_env_int("X", 4)`), a settings class inheriting from a `BaseSettings` *subclass* (the
-  `env_prefix` is on the parent), a nested `BaseModel` reached through `env_nested_delimiter`, and
-  `Field(4, validation_alias="REAL_NAME")` — the last being worse than absent, because the bound is
-  found under the prefixed field name rather than under the alias the environment actually reads, so
-  the ratchet would refuse the wrong variable and wave the real one through. `os.getenv` and
-  `Annotated[int, …]` were in this list and are closed. Decide whether following an alias and a
-  parent class is worth the AST, or whether the honest arrangement is the floor that already exists
+  of these three exists in `src/` today and each would enter it as an ordinary line: a settings
+  class inheriting from a `BaseSettings` *subclass* (the `env_prefix` is on the parent), a nested
+  `BaseModel` reached through `env_nested_delimiter`, and `Field(4, validation_alias="REAL_NAME")` —
+  the last being worse than absent, because the bound is found under the prefixed field name rather
+  than under the alias the environment actually reads, so the ratchet would refuse the wrong
+  variable and wave the real one through. `os.getenv` and `Annotated[int, …]` were in this list and
+  are closed. So was **a read through a helper**, differently and only for one helper:
+  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put eleven bounds behind
+  `mcp_server_kit.limits.env_bound`, and `_BOUND_HELPERS` follows that one *by name* — measured, the
+  derived set fell 45→34 without it. A helper the scan does not know by name is still invisible,
+  and that is the part left standing here. Decide whether following an alias and a parent class is
+  worth the AST, or whether the honest arrangement is the floor that already exists
   (`_BOUND_ANCHORS`) plus this row.
   **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
@@ -190,22 +215,6 @@ decision leaves a record behind and the row goes.
   unpinned, on a two-core cgroup.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
-
-- [ ] **Five environment-read bounds still accept a value that silently breaks the server.**
-  `D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means` fixed the three W23
-  added — a batch bound of `0` started a `rxnlabel` pod that passed readiness and refused every
-  call — and left the older ones as they were: `MCP_MAX_SMILES_CHARS` and `MCP_MAX_MOLECULE_ATOMS`
-  in the kit, `CHEMCLAW_CHEM_RENDER_SIZE_PX`, `CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS` and
-  `CHEMCLAW_CHEM_MAX_DEPICTION_CHARS` in `chem`, plus `CHEMCLAW_SAFETY_MAX_COMPONENTS`. Each is a
-  bare `int(os.environ.get(...))` that accepts `0` and negatives. The obvious fix — one
-  `env_int(name, default)` helper — is the one thing that must not be done without a second change:
-  `tests/test_fleet.py::test_the_bound_scan_sees_both_configuration_mechanisms` pins that the
-  ratchet's inventory deliberately does not follow a read through a helper, so converting these
-  would take all seven out of the ratchet that exists to watch them. So the row is two decisions in
-  order: whether the scan should follow one named helper, and only then whether to share the check.
-  **Anchors:** `tests/test_fleet.py::_numeric_environ_reads`,
-  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
 
 - [ ] **One SMARTS table in the fleet is still compiled on every call, and it is the expensive
   one.** `servers/chem`'s `engine/species.py::_sites` runs `Chem.MolFromSmarts` over all eleven
@@ -449,3 +458,35 @@ decision leaves a record behind and the row goes.
   saying `retrosynthesis_multi_step` is a Chemclaw3 durable job rather than a synchronous tool —
   the first entry in the catalogue that needs one.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
+
+## 7 — The coverage floor, and what it is a floor over
+
+- [ ] **`[tool.coverage.run] source_pkgs` names eight distributions and this workspace ships
+  twelve.** `kinetics`, `suitability`, `thermalsafety` and `unitops` are all absent from it, so the
+  88% floor is measured over a basis that excludes four built servers outright — and the comment
+  above the list still opens "The eight distributions this workspace ships", which was true when it
+  was written and is a claim about a commit rather than about `HEAD`. That comment also states the
+  exact failure this causes: a package nobody imported "is the one case a floor exists to catch",
+  and four of them are now invisible to it by name rather than by import. **This is not something
+  `unitops` introduced** — it arrived with the three servers before it, and the row is filed with
+  `unitops` because that is the commit that noticed. Changing the basis changes the percentage, so
+  it is a measurement before it is an edit: add the four, run `make cov`, and either the floor holds
+  and the list is simply corrected, or it moves and the number is re-derived in the same commit the
+  way 88 was. What must not happen is one server being added to the list and the prose still saying
+  eight.
+  **Anchors:** `pyproject.toml`, `Makefile`.
+
+## 8 — Correlations that need data nobody here has
+
+- [ ] **`unitops` models an incompressible cake, and real organic cakes compress.** A filtration
+  time from `filtration_time` takes a single specific cake resistance and assumes it is independent
+  of pressure, so it overstates what pushing harder buys — and it does so in the optimistic
+  direction, which is the one that gets a filter under-sized. The compressible form is
+  `alpha = alpha₀·ΔPˢ`, and `s` is fitted over filtration tests at **several** pressures: a regression over
+  data that exists in nobody's checkout here, and a default `s` would be this server inventing a
+  compressibility. The tool's docstring says what the assumption costs and in which direction, which
+  is the honest interim. What reopens it is filtration-test data arriving through an ELN — the same
+  trigger `servers/kinetics`'s absent `fit_rate_law` waits on — at which point the shape is one tool
+  taking `alpha₀` and `s` rather than a default anywhere.
+  **Anchors:** `servers/unitops/src/chemclaw_mcp_unitops/engine/filtration.py`,
+  `servers/unitops/README.md`.

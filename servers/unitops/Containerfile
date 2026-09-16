@@ -1,0 +1,71 @@
+# The `unitops` server as one rootless image: there is no dataset to bake in and no scientific
+# stack to install, because every number this server returns is closed-form arithmetic over the
+# standard library. The process runs unprivileged, and the runtime image holds no credential for
+# any external service because none is ever called.
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+# **The lock, because an image that re-resolves is an image nobody audited.**
+# `make deps-audit` reads `uv.lock`; until this line existed no Containerfile in this repository
+# copied it, so all seven re-resolved independently from the open lower bounds in each
+# `pyproject.toml`. Measured 2026-08-28 against the `rxnpredict` image: 11 of 100 packages differed
+# from the export the audit reads, `pandas` by a major version — so the supply-chain gate proved a
+# property of a file and not of anything shipped
+# (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`).
+COPY pyproject.toml uv.lock /build/
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY servers/unitops /build/servers/unitops
+
+# Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
+# which is also what the tests import.
+# Two `pip wheel` passes, and the split is the point. The first resolves *nothing*: every
+# third-party version and hash comes from `uv.lock` by way of `uv export --frozen`, so what
+# this image installs is what `make deps-audit` read. The second builds the two workspace
+# packages `--no-deps`, because their dependencies are already in the wheelhouse and letting
+# pip look again is exactly the re-resolution this replaced.
+#
+# `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
+# version runs, and a `uv` that changed this CLI would fail the build loudly rather than
+# quietly ship a different closure.
+RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
+    && uv export --frozen --package chemclaw-mcp-unitops --no-dev --no-emit-workspace \
+         --format requirements-txt -o /build/requirements.txt \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
+         --require-hashes -r /build/requirements.txt \
+    && python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels ./packages/mcp_server_kit ./servers/unitops
+
+FROM python:3.11-slim
+
+# A fixed high UID rather than a name: OpenShift assigns an arbitrary UID from the namespace range,
+# and the process must own nothing it needs to write (it writes nothing).
+ARG UID=1001
+RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+
+COPY --from=build /wheels /wheels
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        mcp-server-kit chemclaw-mcp-unitops \
+    && rm -rf /wheels
+
+USER ${UID}
+EXPOSE 8853
+
+# The egress guard is armed on import and is left at its default. `MCP_EGRESS_ALLOW` is not set
+# here, and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside
+# this file denies egress at the network layer regardless.
+ENV MCP_EGRESS_GUARD=on
+
+# The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
+# carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
+# caller learns which build answered without a second endpoint. Left unsupplied it reports
+# `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the
+# field and its test both present and no build ever setting the variable. So `tests/test_fleet.py`
+# asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
+# nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
+ARG CHEMCLAW_REVISION=unknown
+ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}
+
+# The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8853/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_unitops.app:app", "--host", "0.0.0.0", "--port", "8853"]
