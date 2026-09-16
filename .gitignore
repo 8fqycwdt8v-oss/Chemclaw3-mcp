@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Agent tooling scratch. Claude Code checks out a throwaway worktree per background
+# agent here; they are transient copies of this repo, never source. Only `worktrees/`
+# is ignored, so a `.claude/skills/<name>/SKILL.md` is still committable.
+.claude/worktrees/
