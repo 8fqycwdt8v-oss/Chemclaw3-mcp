@@ -25,11 +25,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import os
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit.limits import env_bound
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, roles, species, version
@@ -47,35 +47,34 @@ server = FastMCP("rxnlabel")
 # is: a magic number is a bound nobody can loosen for a genuinely larger drain without editing
 # code, and being readable is also what puts it in `tests/test_fleet.py`'s derived inventory of
 # what a deployment can move.
-MAX_BATCH = int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", str(DEFAULT_MAX_BATCH)))
-if MAX_BATCH < 1:
-    # `0` is the value an operator is most likely to try, because `MCP_MAX_SESSIONS=0` means "no
-    # ceiling" one layer down — and here it meant the opposite and said nothing: every batch was
-    # refused with "0 reactions in one request exceeds the batch limit of 0", on a pod that started
-    # cleanly and passed its readiness probe. A bound whose whole job is to refuse cannot have an
-    # "off", so this refuses at import instead, naming the variable a traceback from `int()` does
-    # not. See `D-2026-09-12-a-bound-that-can-be-set-to-zero-has-to-say-what-zero-means`.
-    raise ValueError(
-        f"CHEMCLAW_RXNLABEL_MAX_BATCH={MAX_BATCH} would refuse every batch this server is asked "
-        "for; a batch bound has no 'off' setting, so unset it for the default of "
-        f"{DEFAULT_MAX_BATCH} or give it a positive number"
-    )
+#
+# The refusal below `1` was three hand-written copies of one check across this fleet before
+# `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` moved the mechanism into
+# `mcp_server_kit.limits.env_bound` and left this server its own sentence. What it caught here is
+# worth keeping in view: `0` is the value an operator is most likely to try, because
+# `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, and here it means the opposite and used
+# to say nothing — every batch was refused with "0 reactions in one request exceeds the batch
+# limit of 0", on a pod that started cleanly and passed its readiness probe.
+MAX_BATCH = env_bound(
+    "CHEMCLAW_RXNLABEL_MAX_BATCH",
+    default=DEFAULT_MAX_BATCH,
+    minimum=1,
+    consequence="every batch this server is asked for would be refused",
+)
 
 # The pod's ceiling on concurrent labelling, built at import like the batch bound above; a test that
 # needs a different ceiling replaces this attribute rather than the variable, because the number a
 # gate enforces and the number it was built from must be the same number.
-_MAX_CONCURRENT_BATCHES = int(
-    os.environ.get("CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", str(DEFAULT_MAX_CONCURRENT_BATCHES))
+#
+# `Admission` refuses a ceiling below `1` too, and its message names the ceiling rather than the
+# variable that set it — which leaves an operator with a CrashLoopBackOff and a number they have to
+# guess the source of. Same argument as the batch bound above.
+_MAX_CONCURRENT_BATCHES = env_bound(
+    "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES",
+    default=DEFAULT_MAX_CONCURRENT_BATCHES,
+    minimum=1,
+    consequence="every batch this server is asked for would be refused",
 )
-if _MAX_CONCURRENT_BATCHES < 1:
-    # `Admission` refuses this too, and its message names the ceiling rather than the variable that
-    # set it — which leaves an operator with a CrashLoopBackOff and a number they have to guess the
-    # source of. Same argument as the batch bound above.
-    raise ValueError(
-        f"CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES={_MAX_CONCURRENT_BATCHES} would refuse every "
-        "batch this server is asked for; an admission ceiling has no 'off' setting, so unset it "
-        f"for the default of {DEFAULT_MAX_CONCURRENT_BATCHES} or give it a positive number"
-    )
 _admission = Admission(_MAX_CONCURRENT_BATCHES)
 
 _P = ParamSpec("_P")

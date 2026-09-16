@@ -14,10 +14,9 @@ different claim. `engine/admission.py` has the numbers and what follows from the
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 
-from mcp_server_kit.limits import smiles_length_error
+from mcp_server_kit.limits import env_bound, smiles_length_error
 from rdkit import Chem
 from rdkit.Chem import Draw, rdChemReactions
 from rdkit.Chem.Draw import rdMolDraw2D
@@ -28,7 +27,17 @@ from chemclaw_mcp_chem.engine.chem import (
     require_whole_string,
 )
 
-__all__ = ["MAX_DEPICTION_CHARS", "RENDER_SIZE_PX", "render_svg"]
+__all__ = ["MAX_DEPICTION_CHARS", "MINIMUM_RENDER_SIZE_PX", "RENDER_SIZE_PX", "render_svg"]
+
+#: The smallest canvas RDKit can put an atom label on, in pixels — its own `minFontSize`.
+#:
+#: **Read off the drawing library rather than transcribed**, because it is the library's number and
+#: it is what makes a small canvas useless rather than merely small. Measured on the installed
+#: RDKit, drawing ethanol: the glyph shrinks with the canvas down to this size and then stops —
+#: 48 px gives a font of 8.1, 320 px one of 40, and every canvas of 32 px or less gets the same
+#: clamped 6, which no longer fits inside it. Below that there is no scale at which a depiction
+#: says which molecule it is.
+MINIMUM_RENDER_SIZE_PX = int(rdMolDraw2D.MolDrawOptions().minFontSize)
 
 # Edge length of a rendered depiction, in pixels; a reaction is drawn twice as wide as it is tall.
 #
@@ -37,7 +46,19 @@ __all__ = ["MAX_DEPICTION_CHARS", "RENDER_SIZE_PX", "render_svg"]
 # without a code edit. This server has no settings object of its own — one integer does not earn a
 # pydantic-settings dependency — so the same knob is one environment variable, read once at import
 # and prefixed like every other variable this fleet reads.
-RENDER_SIZE_PX = int(os.environ.get("CHEMCLAW_CHEM_RENDER_SIZE_PX", "320"))
+RENDER_SIZE_PX = env_bound(
+    "CHEMCLAW_CHEM_RENDER_SIZE_PX",
+    default=320,
+    # The one bound in this fleet whose floor is not 1, because it measures a canvas rather than a
+    # count of things. Measured: `MolDraw2DSVG(0, 0)` emits a well-formed document with
+    # `viewBox='0 0 0 0'` — a picture of nothing, returned as a success — and a *negative* size is
+    # discarded by RDKit, which substituted its own 70x21 canvas, so the knob silently did nothing.
+    minimum=MINIMUM_RENDER_SIZE_PX,
+    consequence=(
+        "a canvas that small cannot carry an atom label at any scale, so every depiction would "
+        "come back as a well-formed SVG of nothing"
+    ),
+)
 
 # The largest molecule (or whole reaction) this server will lay out and draw.
 #
@@ -49,7 +70,14 @@ RENDER_SIZE_PX = int(os.environ.get("CHEMCLAW_CHEM_RENDER_SIZE_PX", "320"))
 # *before* `Compute2DCoords`, since that is the call that runs away. A depiction is also useless far
 # below this: 250 atoms in a 320 px square is an unreadable tangle, so the limit costs no real
 # drawing. Config, not a constant, so a deployment rendering poster-size cards can raise it.
-MAX_DEPICTION_ATOMS = int(os.environ.get("CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS", "250"))
+MAX_DEPICTION_ATOMS = env_bound(
+    "CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS",
+    default=250,
+    # One atom: the guard refuses anything *above* this, and every molecule that parses has at
+    # least one, so `0` refuses the whole tool while the pod starts and reports itself ready.
+    minimum=1,
+    consequence="every molecule and every reaction would be refused before it is laid out",
+)
 
 # The largest SVG document this server will hand back, in characters.
 #
@@ -73,7 +101,22 @@ MAX_DEPICTION_ATOMS = int(os.environ.get("CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS", "2
 #
 # Config, not a constant, for the same reason as the two bounds above it: a deployment whose chat
 # surface renders poster-size cards, or whose caller has a larger result ceiling, raises it.
-MAX_DEPICTION_CHARS = int(os.environ.get("CHEMCLAW_CHEM_MAX_DEPICTION_CHARS", "50000"))
+#
+# The floor is **1** rather than a measured smallest document, and that is a deliberately weaker
+# guard than the one above it: the smallest SVG this server can emit depends on both the molecule
+# and `RENDER_SIZE_PX` (measured, methane is 1,194 characters at a 6 px canvas and 1,411 at 320),
+# so any constant here would be a bound that drifts against the thing it bounds on an RDKit bump.
+# What this catches is the value an operator actually types — `0`, or a negative.
+MAX_DEPICTION_CHARS = env_bound(
+    "CHEMCLAW_CHEM_MAX_DEPICTION_CHARS",
+    default=50000,
+    minimum=1,
+    consequence=(
+        "every drawing would be refused after it had been rendered; the smallest document this "
+        "server emits is about 1,200 characters, so a ceiling anywhere near the floor refuses "
+        "everything too"
+    ),
+)
 
 
 def render_svg(smiles: str, highlight_atoms: Sequence[int] | None = None) -> str:

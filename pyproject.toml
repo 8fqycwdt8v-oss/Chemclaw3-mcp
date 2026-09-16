@@ -24,6 +24,7 @@ dev = [
     "chemclaw-mcp-kinetics",
     "chemclaw-mcp-suitability",
     "chemclaw-mcp-thermalsafety",
+    "chemclaw-mcp-unitops",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
@@ -59,6 +60,7 @@ chemclaw-mcp-pyexec = { workspace = true }
 chemclaw-mcp-kinetics = { workspace = true }
 chemclaw-mcp-suitability = { workspace = true }
 chemclaw-mcp-thermalsafety = { workspace = true }
+chemclaw-mcp-unitops = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -112,7 +114,7 @@ python_version = "3.11"
 strict = true
 # Every package ships its own `src/` layout; point mypy at the sources rather than the installed
 # copies so a type error is reported against the file a person edits.
-mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/rxnlabel/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src:servers/kinetics/src:servers/suitability/src:servers/thermalsafety/src"
+mypy_path = "packages/mcp_server_kit/src:servers/props/src:servers/rxnpredict/src:servers/rxnlabel/src:servers/chem/src:servers/safety/src:servers/calc/src:servers/pyexec/src:servers/kinetics/src:servers/suitability/src:servers/thermalsafety/src:servers/unitops/src"
 
 [[tool.mypy.overrides]]
 module = [
@@ -171,9 +173,19 @@ suppressions = [
 ]
 
 [tool.coverage.run]
-# The eight distributions this workspace ships. Named rather than discovered, because a `--cov=src`
+# **Every distribution this workspace ships.** Named rather than discovered, because a `--cov=src`
 # over a `src/` layout measures whatever happens to be imported and quietly drops a package nobody
 # imported at all — which is the one case a floor exists to catch.
+#
+# **It dropped four of them anyway, for eleven months, and the count in this comment is how.** This
+# list read "the eight distributions this workspace ships" while twelve shipped: `kinetics`,
+# `suitability` and `thermalsafety` each arrived with their own tests and their own server, and
+# none was added here — so every coverage figure this repository has reported since excluded them,
+# and the comment asserting completeness is what made that invisible. A count of a list, written
+# beside the list, is the shape `D-2026-08-01-the-count-lives-in-the-test-not-in-the-prose` is
+# about; so the sentence no longer carries one and
+# `tests/test_fleet.py::test_the_coverage_basis_is_every_distribution_this_workspace_ships` derives
+# the set from the tree instead. A floor that silently narrows is worse than a lower floor.
 source_pkgs = [
     "mcp_server_kit",
     "chemclaw_mcp_props",
@@ -183,13 +195,28 @@ source_pkgs = [
     "chemclaw_mcp_pyexec",
     "chemclaw_mcp_rxnlabel",
     "chemclaw_mcp_rxnpredict",
+    "chemclaw_mcp_kinetics",
+    "chemclaw_mcp_suitability",
+    "chemclaw_mcp_thermalsafety",
+    "chemclaw_mcp_unitops",
 ]
 
 [tool.coverage.report]
-# **88, and it is a measurement rather than a round number.** Measured on the whole suite at the
-# commit that added this: 7,220 statements, 811 uncovered, **88.77%**. 88 is the largest integer
-# below that, so the floor is roughly 0.8 points of headroom - one commit's churn, not a licence to
-# drop - and raising it is what a wave that improves coverage should do.
+# **89, and it is a measurement rather than a round number.** Measured on the whole suite over every
+# distribution this workspace ships: 8,697 statements, 860 uncovered, **90.11%**.
+#
+# **It reads 89 rather than 90 because this entry's own rule and its own reason disagree here.** The
+# rule it shipped with was "the largest integer below the measurement", which at the old 88.77 gave
+# 88 and about 0.8 points of headroom — and the headroom is what the entry says the rule is *for*:
+# "one commit's churn, not a licence to drop". Applied literally to 90.11 it gives 90 and 0.11
+# points, which is not churn headroom, it is a red build on a docstring. So the reason wins and the
+# procedure is retired: ~1 point below the measurement, stated as such.
+#
+# **The rise from 88 is not an improvement and must not be read as one.** It is the same suite
+# measured over the basis it should always have had — four distributions were outside the old list,
+# and they measure *better* than the average (1,533 statements, 50 uncovered, 96.7%), which is
+# exactly why nobody noticed a floor that was quietly excluding them. Raising a floor because a
+# wave improved coverage is still the right move; this was not that.
 #
 # **What it does not cover, stated because a floor reads as a guarantee.** Three things are outside
 # it and none is an oversight:
@@ -204,7 +231,7 @@ source_pkgs = [
 # - **This measures the source tree, never an image.** What an image installs is
 #   `tests/test_fleet.py::test_every_image_installs_the_closure_the_audit_read`'s subject, and what
 #   it *answers* is the Jenkins verify stage's.
-fail_under = 88
+fail_under = 89
 show_missing = true
 skip_covered = true
 

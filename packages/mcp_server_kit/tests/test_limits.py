@@ -15,6 +15,7 @@ from mcp_server_kit.limits import (
     atom_count_error,
     smiles_length_error,
 )
+from mcp_server_kit.testing import reimported
 
 
 def test_a_short_string_is_within_bounds() -> None:
@@ -177,3 +178,92 @@ def test_concurrent_takers_never_exceed_the_ceiling() -> None:
         thread.join(timeout=10)
     assert sum(granted) == 4, granted
     assert budget.in_flight == 4
+
+
+def test_an_unset_bound_is_its_default() -> None:
+    """The ordinary case: nothing in the environment, so the call site's own number stands."""
+    assert limits.env_bound("MCP_A_BOUND_NOBODY_SETS", default=7, minimum=1, consequence="x") == 7
+
+
+def test_an_empty_value_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Kubernetes `env:` entry with no value arrives as `""`, and it is not a bound of zero.
+
+    Deliberate, and the same reading `executor.thread_pool_size` and `sessions.max_sessions` give
+    theirs. The alternative — `int("")` — is a `ValueError` naming neither the variable nor the
+    fact that the value was blank.
+    """
+    monkeypatch.setenv("MCP_A_BLANK_BOUND", "   \n\t ")
+    assert limits.env_bound("MCP_A_BLANK_BOUND", default=7, minimum=1, consequence="x") == 7
+
+
+def test_a_configured_bound_is_the_configured_number(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Surrounding whitespace is tolerated, because a YAML value rarely arrives trimmed."""
+    monkeypatch.setenv("MCP_A_SET_BOUND", " 99 ")
+    assert limits.env_bound("MCP_A_SET_BOUND", default=7, minimum=1, consequence="x") == 99
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-2000"])
+def test_a_bound_below_its_floor_names_the_variable_the_value_and_the_floor(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """All three, because that is what an operator reading a container log has to act on.
+
+    The message is the whole control here. `Admission` already refused a ceiling of `0` and said
+    "an admission ceiling of 0 would refuse every depiction" — true, and it leaves somebody staring
+    at a CrashLoopBackOff with a number whose source they have to guess.
+    """
+    monkeypatch.setenv("MCP_A_FLOORED_BOUND", value)
+    with pytest.raises(ValueError) as refusal:
+        limits.env_bound(
+            "MCP_A_FLOORED_BOUND", default=7, minimum=4, consequence="nothing would be served"
+        )
+    message = str(refusal.value)
+    assert "MCP_A_FLOORED_BOUND" in message
+    assert value.lstrip("-") in message
+    assert "minimum of 4" in message
+    assert "default of 7" in message
+    assert "nothing would be served" in message
+
+
+def test_the_floor_is_the_call_sites_own_number(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A floor above 1 is a real case, not a hypothetical — `chem`'s render size is a canvas.
+
+    Both directions on one site, so "refuses everything" cannot pass as "has a floor".
+    """
+    monkeypatch.setenv("MCP_A_PIXEL_BOUND", "5")
+    with pytest.raises(ValueError, match="minimum of 6"):
+        limits.env_bound("MCP_A_PIXEL_BOUND", default=320, minimum=6, consequence="x")
+    monkeypatch.setenv("MCP_A_PIXEL_BOUND", "6")
+    assert limits.env_bound("MCP_A_PIXEL_BOUND", default=320, minimum=6, consequence="x") == 6
+
+
+def test_a_value_that_is_not_a_number_is_refused_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`int("four")` raises a `ValueError` naming neither the variable nor what to do about it.
+
+    Refused rather than defaulted-with-a-warning, which is what the two per-call reads in this kit
+    do: those have a defensible runtime default, while this is read once before the server has
+    accepted anything, and quietly ignoring a number a deployment set is how a deployment comes to
+    believe in a ceiling it does not have.
+    """
+    monkeypatch.setenv("MCP_A_WORDY_BOUND", "four")
+    with pytest.raises(ValueError) as refusal:
+        limits.env_bound("MCP_A_WORDY_BOUND", default=7, minimum=1, consequence="x")
+    message = str(refusal.value)
+    assert "MCP_A_WORDY_BOUND" in message
+    assert "four" in message
+    assert "default of 7" in message
+
+
+def test_this_modules_own_two_bounds_refuse_at_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bootstrap case: `limits.py` defines the helper *and* is one of its callers.
+
+    `env_bound` has to be defined above `MAX_SMILES_CHARS` and `MAX_MOLECULE_ATOMS` for that to
+    work at all, and a reader cannot tell from the call sites that it is — module-scope order is
+    invisible at the point of use. Re-executing this module's own source with each variable set to
+    nothing is what shows the order holds.
+    """
+    for variable in ("MCP_MAX_SMILES_CHARS", "MCP_MAX_MOLECULE_ATOMS"):
+        monkeypatch.setenv(variable, "0")
+        with pytest.raises(ValueError, match=variable):
+            reimported(limits)
+        monkeypatch.delenv(variable)

@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 import yaml
+from chemclaw_mcp_chem.engine import depiction
 from chemclaw_mcp_chem.engine.admission import (
     DEFAULT_MAX_CONCURRENT_RENDERS,
     POD_THREAD_POOL_WIDTH,
@@ -35,9 +36,13 @@ from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
 from chemclaw_mcp_chem.engine.depiction import (
     MAX_DEPICTION_ATOMS,
     MAX_DEPICTION_CHARS,
+    MINIMUM_RENDER_SIZE_PX,
     render_svg,
 )
 from mcp_server_kit import executor
+from mcp_server_kit.testing import reimported
+from rdkit import Chem
+from rdkit.Chem.Draw import rdMolDraw2D
 
 #: The two files the pod's thread pool is decided by, read rather than transcribed.
 DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
@@ -333,3 +338,56 @@ def test_a_drug_sized_molecule_is_comfortably_inside_the_bound() -> None:
     svg = render_svg(ERYTHROMYCIN)
     assert "<svg" in svg
     assert len(svg) < MAX_DEPICTION_CHARS
+
+
+def test_the_render_size_floor_is_the_size_below_which_a_depiction_says_nothing() -> None:
+    """Why this one bound floors above 1, driven against RDKit rather than asserted about it.
+
+    `MINIMUM_RENDER_SIZE_PX` is read off `MolDrawOptions().minFontSize` — the drawing library's own
+    number — and the two halves of the argument are checked here, because a floor whose reason
+    lives only in a comment is a floor somebody will "simplify" to 1.
+
+    **Below it the glyph stops shrinking**: RDKit clamps the font at `minFontSize`, so a canvas
+    narrower than one glyph cannot carry an atom label at any scale. Measured on ethanol, the font
+    is 40.0 at 320 px, 8.1 at 48 px, and a clamped 6.0 at every size of 32 px and below.
+
+    **And a zero canvas is not a small picture, it is a successful answer containing nothing**:
+    `MolDraw2DSVG(0, 0)` returns a well-formed document whose `viewBox` is `0 0 0 0`. That is the
+    failure the floor exists for — not a crash, which somebody would notice.
+    """
+    molecule = Chem.MolFromSmiles("CCO")
+    Chem.rdDepictor.Compute2DCoords(molecule)
+
+    at_the_floor = rdMolDraw2D.MolDraw2DSVG(MINIMUM_RENDER_SIZE_PX, MINIMUM_RENDER_SIZE_PX)
+    at_the_floor.DrawMolecule(molecule)
+    at_the_floor.FinishDrawing()
+    assert at_the_floor.FontSize() == pytest.approx(MINIMUM_RENDER_SIZE_PX), (
+        "the floor is meant to be the size at which the glyph is exactly the canvas; if RDKit's "
+        "clamp has moved, `MINIMUM_RENDER_SIZE_PX` still follows it but this argument needs "
+        "re-reading"
+    )
+
+    empty = rdMolDraw2D.MolDraw2DSVG(0, 0)
+    empty.DrawMolecule(molecule)
+    empty.FinishDrawing()
+    assert "viewBox='0 0 0 0'" in empty.GetDrawingText(), (
+        "a zero canvas is supposed to be the silent failure this floor prevents; if RDKit now "
+        "refuses it outright, the floor is cheaper than it was rather than wrong"
+    )
+
+
+def test_the_render_size_refuses_below_its_floor_and_accepts_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound itself, at the floor and one below it, driven through the module's own import.
+
+    `tests/test_fleet.py::test_every_environment_bound_refuses_at_import_and_names_its_own_variable`
+    drives every bound in the fleet at `0` and `-1`, which every floor of 1 or more rejects. This
+    is the one site where that would pass on a floor of 1 as well, so the interesting value is the
+    one *between* the two: `minimum - 1`.
+    """
+    monkeypatch.setenv("CHEMCLAW_CHEM_RENDER_SIZE_PX", str(MINIMUM_RENDER_SIZE_PX - 1))
+    with pytest.raises(ValueError, match="CHEMCLAW_CHEM_RENDER_SIZE_PX"):
+        reimported(depiction)
+    monkeypatch.setenv("CHEMCLAW_CHEM_RENDER_SIZE_PX", str(MINIMUM_RENDER_SIZE_PX))
+    assert reimported(depiction).RENDER_SIZE_PX == MINIMUM_RENDER_SIZE_PX

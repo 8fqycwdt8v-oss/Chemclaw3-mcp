@@ -73,9 +73,11 @@ def reimported(module: ModuleType) -> ModuleType:
     build them again with the variable set to something else and read the *module's* value back.
 
     Every server that tried to assert that instead re-typed the expression under test into its own
-    test — `int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))` compared to `(7, 9)` — which
-    asserts that `os.environ.get` works. Measured: replacing the module's read with a hardcoded
-    constant left 209 tests green in one server and 203 in another, and `tests/test_fleet.py`'s
+    test — `int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))` compared to `(7, 9)`, which
+    is how that bound was spelled before `env_bound` and is quoted here as the *defect*, not as a
+    line anybody can still grep for — which asserts that `os.environ.get` works. Measured:
+    replacing the module's read with a hardcoded constant left 209 tests green in one server and
+    203 in another, and `tests/test_fleet.py`'s
     inventory of numeric bounds could not catch it either, because that inventory is *derived from
     the source* and a removed read simply shrinks it.
 

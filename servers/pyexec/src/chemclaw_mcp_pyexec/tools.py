@@ -17,11 +17,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
-import os
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit.limits import env_bound
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_pyexec.engine import sandbox
@@ -41,8 +41,19 @@ server = FastMCP("pyexec")
 # which is what makes the sandbox's `RLIMIT_AS` a bound that can actually fire. Built at import so
 # the number a gate enforces is the number the limits were derived from; `engine/admission.py` has
 # the measurement and the argument for refusing rather than queueing.
-_MAX_CONCURRENT_RUNS = int(
-    os.environ.get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS", str(DEFAULT_MAX_CONCURRENT_RUNS))
+#
+# `env_bound` rather than a bare `int(os.environ.get(...))` for a reason this knob makes sharper
+# than most: it is a *divisor* as well as a ceiling, so `0` reaches `default_memory_bytes` too, and
+# `Admission` happens to refuse it first with a message naming the ceiling rather than the variable
+# that set it. Which of the two fires first is not something an operator should have to know.
+_MAX_CONCURRENT_RUNS = env_bound(
+    "CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS",
+    default=DEFAULT_MAX_CONCURRENT_RUNS,
+    minimum=1,
+    consequence=(
+        "this pod would refuse every program it is asked to run, and the per-run memory bound "
+        "derived from it would have no divisor"
+    ),
 )
 _admission = Admission(_MAX_CONCURRENT_RUNS)
 _LIMITS = Limits(memory_bytes=default_memory_bytes(_MAX_CONCURRENT_RUNS))
