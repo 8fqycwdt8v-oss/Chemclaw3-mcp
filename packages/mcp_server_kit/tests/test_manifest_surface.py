@@ -36,11 +36,18 @@ from mcp.types import Tool
 from mcp_server_kit.app import connector_app
 from mcp_server_kit.testing import SURFACE_UPDATE_ENV, assert_manifest_matches, tool_surface
 
+# A *complete* manifest, because `load_manifest` validates one: `description` and a bearer `auth`
+# block are required of every manifest in this fleet, so a fixture without them would be testing a
+# shape no server may ship.
 MANIFEST = """\
 name: surface-probe
+description: a probe server that renders one structure
 endpoint:
   transport: http
   url: http://127.0.0.1:8850/mcp
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_SURFACE_PROBE_TOKEN
   tools:
     - render
   read_only:

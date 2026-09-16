@@ -6,6 +6,9 @@ import pytest
 
 pytest.importorskip("rdkit")
 
+from unittest.mock import patch
+
+from chemclaw_mcp_rxnpredict.engine.meta import classifier as classifier_module
 from chemclaw_mcp_rxnpredict.engine.meta.classifier import (
     CLASS_AMIDE_FORMATION,
     CLASS_ESTERIFICATION,
@@ -15,6 +18,7 @@ from chemclaw_mcp_rxnpredict.engine.meta.classifier import (
     CLASS_SUZUKI,
     classify_reaction,
 )
+from rdkit import Chem
 
 
 def test_amide_formation_from_acid_chloride():
@@ -99,3 +103,47 @@ def test_classifier_ignores_invalid_smiles():
         product="CC(=O)Nc1ccccc1",
     )
     assert klass == CLASS_AMIDE_FORMATION
+
+
+def test_a_pattern_is_compiled_once_per_process_rather_than_once_per_call() -> None:
+    """`Chem.MolFromSmarts` on the hot path is a parse paid per reaction, not per rule table.
+
+    `classify_reaction` is called per reaction by the aggregator's trust-prior gating, and it used
+    to compile every pattern of every rule tried, on every invocation. `servers/safety`'s
+    `screen.py::_load_rules` has been `lru_cache`d over its whole rule table since it was written,
+    for exactly this reason.
+
+    Asserted by counting the *parses*, not by timing: a timing assertion on a 180 µs difference is a
+    flake, and the property that matters is "compiled once", which is exact. The reaction chosen
+    matches nothing, so every rule is tried and every pattern in the table is reached — a reaction
+    that matched the first rule would leave most of the table uncompiled and pass vacuously.
+    """
+    parsed: list[str] = []
+    real = Chem.MolFromSmarts
+
+    def counting(smarts: str) -> object:
+        parsed.append(smarts)
+        return real(smarts)
+
+    classifier_module._compiled.cache_clear()
+    with patch.object(Chem, "MolFromSmarts", counting):
+        for _ in range(5):
+            assert classify_reaction("CCCCCCCC.CCCCCC", "CCCCCCCCCCCCCC") == CLASS_OTHER
+    assert parsed, "no pattern was compiled at all — the rule table was not reached"
+    assert len(parsed) == len(set(parsed)), (
+        f"{len(parsed)} compilations for {len(set(parsed))} distinct patterns over five calls; "
+        "the cache is not holding"
+    )
+
+
+def test_an_unparseable_pattern_is_warned_about_once_and_answers_no_match() -> None:
+    """The miss path survived the cache, and stopped being a log line per call.
+
+    `_compiled` returns `None` for a pattern RDKit rejects and `_any_mol_matches` reads that as no
+    match, which is the behaviour a malformed constant must have: a rule that cannot be compiled
+    must not silently match everything. What changed is that the warning is now issued on the
+    compile rather than on the call.
+    """
+    classifier_module._compiled.cache_clear()
+    assert classifier_module._compiled("this is not a SMARTS(((") is None
+    assert not classifier_module._any_mol_matches([Chem.MolFromSmiles("CCO")], "((((")

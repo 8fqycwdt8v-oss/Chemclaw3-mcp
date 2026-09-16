@@ -177,12 +177,13 @@ def test_the_flat_key_format_is_the_one_chemclaw3_parses() -> None:
     """
     key = CalculationKey(
         calc_type="xtb.sp",
-        calc_version="GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2",
+        calc_version="GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3",
         input_hash="389b625b3220108a",
         params_hash="74c818075e77fec2",
     )
     assert key.as_str() == (
-        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:74c818075e77fec2"
+        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3"
+        ":389b625b3220108a:74c818075e77fec2"
     )
 
 
@@ -269,14 +270,23 @@ def test_the_whole_key_is_stable_on_the_versions_this_test_observes() -> None:
 
     So what this pins is *this* server's derivation against the distributions it was measured on,
     which is the thing that can silently move a key while every unit test passes. Skipped on any
-    other `tblite`/`rdkit` pair, because a version bump *should* change this string and a test that
-    failed on the upgrade would be asserting the wrong thing.
+    other set, because a version bump *should* change this string and a test that failed on the
+    upgrade would be asserting the wrong thing.
+
+    **scipy is in the pinned set, and it did not used to be.** It joined `engine_version()` when
+    `xtb_engine`'s four unit conversions stopped being transcribed literals and became derivations
+    from `scipy.constants` — which ships whatever CODATA edition that release was built against, so
+    a scipy bump moves every geometry in its far decimals. Pinning it here is the same statement as
+    pinning the other two: this key belongs to a stack, and the stack is named in it.
     """
-    observed = (version("tblite"), version("rdkit"))
-    if observed != ("0.7.0", "2026.3.5"):
-        pytest.skip(f"pinned against tblite 0.7.0 / rdkit 2026.3.5; this env has {observed}")
+    observed = (version("tblite"), version("rdkit"), version("scipy"))
+    if observed != ("0.7.0", "2026.3.5", "1.17.1"):
+        pytest.skip(
+            f"pinned against tblite 0.7.0 / rdkit 2026.3.5 / scipy 1.17.1; env has {observed}"
+        )
     structure = _sp_structure("CCO", 0)
     assert structure.structure_id == "st_739a222f45be0c3a"
     assert XtbSpec(task="sp").cache_key(structure).as_str() == (
-        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/h2:389b625b3220108a:74c818075e77fec2"
+        "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3"
+        ":389b625b3220108a:74c818075e77fec2"
     )

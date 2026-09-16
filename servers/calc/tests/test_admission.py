@@ -283,9 +283,9 @@ def test_every_state_changing_tool_is_gated_and_no_read_only_one_is() -> None:
     `tests/test_server.py`, and one that is classified `state_changing` and left ungated here would
     otherwise ship as the one uncounted way to load this pod.
     """
-    endpoint = load_manifest(MANIFEST)["endpoint"]
-    state_changing = set(endpoint["state_changing"])
-    read_only = set(endpoint["read_only"])
+    endpoint = load_manifest(MANIFEST).endpoint
+    state_changing = set(endpoint.state_changing)
+    read_only = set(endpoint.read_only)
 
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}

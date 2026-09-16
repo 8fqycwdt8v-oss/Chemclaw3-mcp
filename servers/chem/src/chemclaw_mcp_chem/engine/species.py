@@ -243,6 +243,17 @@ def enumerate_tautomer_set(smiles: str) -> SpeciesSet:
 # the calculation server answers how readily. A site listed here that a chemist would not count is
 # a species that ranks near-zero downstream; a site missing here is a form nobody ever sees, which
 # is the worse error, so the patterns are inclusive.
+#
+# **`servers/calc`'s `engine/pka.py` perceives ionisable sites too, and the two are not copies of
+# each other.** They answer overlapping questions with opposite error preferences, and both
+# preferences are deliberate: this list is **inclusive**, because a microstate nobody enumerated is
+# a form that never reaches a caller; that module's is **narrow and frozen**, because its
+# enumeration is what `calc_version`'s linear calibration was fitted over and a broader site set
+# silently invalidates every residual the ledger holds against that version. So they disagree on
+# purpose — an amide N-H is an acidic site here and never a basic site there — and neither may be
+# "corrected" to match the other. (A third copy lives in Chemclaw3's `science/calc/logd.py`, where
+# it is pinned to the calc server's by `servers/calc/tests/test_logd_contract.py`; this one is
+# pinned to nothing on either side, and that is the right arrangement for a different question.)
 _ACIDIC: tuple[tuple[str, str], ...] = (
     ("carboxylic acid", "[OX2H1][CX3]=O"),
     ("sulfonic acid", "[OX2H1][SX4](=O)=O"),

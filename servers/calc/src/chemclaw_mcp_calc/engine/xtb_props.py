@@ -32,6 +32,7 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, Field
 from rdkit import Chem
+from scipy import constants
 
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import Keyed
@@ -57,8 +58,11 @@ __all__ = [
 ]
 
 # Physical constants, in the direction this module converts. The Debye conversion is imported from
-# the unit boundary (`xtb_engine`) rather than restated here.
-_HARTREE_TO_EV = 27.211386245988
+# the unit boundary (`xtb_engine`) rather than restated here; this one is derived from
+# `scipy.constants` for the reason that module's conversion block gives — a transcribed constant is
+# a claim about a CODATA edition that nothing checks, and the installed edition is in
+# `engine_version()` so a scipy bump is a cache miss rather than a silent shift.
+_HARTREE_TO_EV = constants.value("Hartree energy in eV")
 
 # An orbital counts as occupied above this occupation number. Fermi smearing at the default
 # electronic temperature leaves a gapped molecule's occupations at 2 and 0, so the threshold only

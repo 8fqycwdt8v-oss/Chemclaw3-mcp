@@ -48,7 +48,11 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-import socket
+
+# The guard *is* the rebinding of this module's methods, so it is the one file in `src/` that has
+# to hold `socket` at module level. `TID253` is the belt over `no_egress.network_imports`, and the
+# scan has never read this package's own sources — it is pointed at a server's `src/<package>`.
+import socket  # noqa: TID253
 import threading
 from collections.abc import Iterable, Sequence
 from typing import Any

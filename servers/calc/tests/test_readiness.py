@@ -12,7 +12,7 @@ not under the explicit setting. Measured on an image with no `xtb` on `PATH`:
 
     $ CHEMCLAW_XTB_ENGINE=xtb ... GET /healthz
     200 {"status":"ok","server":"calc",...}
-    calc_version() -> '...opt-GFN2-xTB+xtb+xtb-absent/tblite-0.7.0/rdkit-2026.3.5/h2'
+    calc_version() -> '...opt-GFN2-xTB+xtb+xtb-absent/tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3'
 
 So the pod took traffic and wrote ledger rows under a version naming a program that was not there —
 and those rows become unreachable the day the binary arrives and the key moves.

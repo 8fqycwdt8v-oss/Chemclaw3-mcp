@@ -207,6 +207,22 @@ decision leaves a record behind and the row goes.
   `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
   `servers/chem/src/chemclaw_mcp_chem/engine/depiction.py`.
 
+- [ ] **One SMARTS table in the fleet is still compiled on every call, and it is the expensive
+  one.** `servers/chem`'s `engine/species.py::_sites` runs `Chem.MolFromSmarts` over all eleven
+  `_ACIDIC`/`_BASIC` patterns on each invocation. `servers/safety`'s `screen.py::_load_rules` is
+  `lru_cache`d over its whole rule table and says why in its docstring; `servers/rxnpredict`'s
+  `classifier.py::_compiled` was fixed on 2026-09-16 and is measured at 1.11-1.83x. This one is
+  worth more: measured 2026-09-16 on tyrosine, both tables through `_sites` cost **440 µs** with
+  the per-call compile and **31 µs** against pre-compiled patterns, against a whole
+  `enumerate_microstates` call of **1,443 µs** — so roughly 28% of that call is re-parsing
+  constants. The fix is four lines and the reason it is a row rather than a commit is that
+  `enumerate_microstates` is `chem`'s heaviest tool and nothing here bounds or measures its latency,
+  so the honest order is a bound first (the section above) and then the saving. A `@cache` keyed on
+  the SMARTS string, as `classifier.py` now does, is the shape.
+  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py::_sites`,
+  `servers/safety/src/chemclaw_mcp_safety/engine/screen.py::_load_rules`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::_compiled`.
+
 ## 3 — Readiness, where it still stops
 
 - [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference

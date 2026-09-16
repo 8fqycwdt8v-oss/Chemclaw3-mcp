@@ -37,17 +37,24 @@ import os
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
 
-import httpx
+# `[testing]`-extra only: this module drives a *running* server, and a serving image never
+# imports it. `TID253` is the belt over `no_egress.network_imports`, whose per-server scan does
+# not read this package at all.
+import httpx  # noqa: TID253
 import yaml
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 __all__ = [
     "SURFACE_FILENAME",
     "SURFACE_UPDATE_ENV",
+    "BearerAuth",
+    "ConnectorManifest",
+    "HttpEndpoint",
     "assert_bearer_is_enforced",
     "assert_manifest_matches",
     "load_manifest",
@@ -98,12 +105,89 @@ def reimported(module: ModuleType) -> ModuleType:
     return fresh
 
 
-def load_manifest(path: Path) -> dict[str, Any]:
-    """Parse a `connector.yaml`. Raises rather than returning `{}` for an empty or invalid file."""
+class BearerAuth(BaseModel):
+    """The only auth mode this fleet declares, and the variable both sides read.
+
+    `mode: none` is expressible in Chemclaw3's model and is not expressible here, deliberately:
+    `CLAUDE.md` requires bearer on every manifest *including the loopback dev URL*, because a
+    manifest whose auth mode changes with its address is one whose serving side gets it wrong. A
+    model that accepted `none` would make the rule a review convention again.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["bearer"]
+    token_env: str = Field(min_length=1)
+
+
+class HttpEndpoint(BaseModel):
+    """The `endpoint:` block, modelled the way the repository that reads it models it.
+
+    Chemclaw3's `chemclaw.connectors.manifest.HttpEndpoint` is `extra="forbid"`, so a key this
+    fleet invents aborts *that* repository's startup with a `ConnectorError` naming the file. This
+    model exists so the refusal happens here instead, in the suite of the repository that **owns**
+    the manifests — the general form of that argument is
+    `D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in`.
+
+    `tools`, `read_only` and `state_changing` default to empty and accept an explicit `None`, and
+    that is what retires the defensive dict walking this helper used to do. A bare `tools:` key
+    parses to `None` in YAML rather than to `[]`, so `endpoint.get("tools") or []` was load-bearing
+    and carried a comment at the call site explaining why. The coercion is the same fact stated
+    once, in the model, where a reader looks for the shape — and it is a coercion rather than a
+    refusal on purpose: `tools:` with nothing under it means an empty list to the person who wrote
+    it, and `assert_manifest_matches` has a far better sentence for "declares [] and serves one"
+    than a type error does.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    transport: Literal["http"] = "http"
+    url: str = Field(min_length=1)
+    health_url: str | None = None
+    request_timeout: int | None = Field(default=None, gt=0)
+    auth: BearerAuth
+    tools: list[str] = Field(default_factory=list)
+    read_only: list[str] = Field(default_factory=list)
+    state_changing: list[str] = Field(default_factory=list)
+
+    @field_validator("tools", "read_only", "state_changing", mode="before")
+    @classmethod
+    def _an_empty_key_is_an_empty_list(cls, value: object) -> object:
+        """`tools:` with nothing under it is `None` in YAML and `[]` to whoever wrote it."""
+        return [] if value is None else value
+
+
+class ConnectorManifest(BaseModel):
+    """A whole `connector.yaml`: what it is, what it says it serves, and where it may be registered.
+
+    `mount` is the key Chemclaw3 refuses (`extra="forbid"` over there), which is what makes
+    `manifests-internal/` mechanical rather than trusted — see `tests/test_fleet.py`. It is
+    modelled rather than ignored so that a typo in it is a refusal here instead of a backend
+    silently declaring itself a connector.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    mount: Literal["connector", "backend"] = "connector"
+    endpoint: HttpEndpoint
+
+
+def load_manifest(path: Path) -> ConnectorManifest:
+    """Parse and validate a `connector.yaml`.
+
+    Raises `ValueError` rather than returning `{}` for an empty, non-mapping or invalid file —
+    `ValidationError` is a `ValueError`, so the contract the callers were written against is
+    unchanged and the diagnosis is better.
+    """
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError(f"{path} is not a mapping")
-    return parsed
+    try:
+        return ConnectorManifest.model_validate(parsed)
+    except ValidationError as error:
+        raise ValueError(f"{path} is not a connector manifest: {error}") from error
 
 
 async def served_tools(base_url: str, *, token: str | None = None) -> list[str]:
@@ -239,19 +323,15 @@ def assert_manifest_matches(
        objects are passed). Names alone cannot see this, and it is the check `MODULES.md`'s
        drop-in-replacement claim actually rests on.
     """
-    manifest = load_manifest(manifest_path)
-    endpoint = manifest.get("endpoint", {})
-    # `or []` rather than a default: a manifest with a bare `tools:` key parses to `None`, and
-    # `sorted(None)` is a TypeError naming this line instead of the assertion below naming the
-    # manifest — which is the whole reason this helper exists.
-    declared = sorted(endpoint.get("tools") or [])
+    endpoint = load_manifest(manifest_path).endpoint
+    declared = sorted(endpoint.tools)
     served = sorted(tool if isinstance(tool, str) else tool.name for tool in tools)
     assert served == declared, (
         f"{manifest_path} declares {declared} but the server serves {served}; "
         "the manifest is the contract Chemclaw3 reads, so these must be equal"
     )
-    read_only = set(endpoint.get("read_only") or [])
-    state_changing = set(endpoint.get("state_changing") or [])
+    read_only = set(endpoint.read_only)
+    state_changing = set(endpoint.state_changing)
     unclassified = set(declared) - read_only - state_changing
     both = read_only & state_changing
     assert not unclassified, f"{manifest_path}: unclassified tool(s) {sorted(unclassified)}"
@@ -329,11 +409,10 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
     mode where a token problem takes the pod out of the cluster as well as off the network is one
     this has to exclude.
     """
-    auth = load_manifest(manifest_path).get("endpoint", {})
-    declared = auth.get("auth", {}) if isinstance(auth, dict) else {}
-    assert declared.get("mode") == "bearer", f"{manifest_path} does not declare bearer auth"
-    token_env = declared.get("token_env")
-    assert isinstance(token_env, str) and token_env, f"{manifest_path} declares no token_env"
+    # The model makes `mode: bearer` and a non-empty `token_env` unrepresentable otherwise, so what
+    # is left to assert here is the half a model cannot see: that the variable the manifest names
+    # is the one this fixture actually provisioned.
+    token_env = load_manifest(manifest_path).endpoint.auth.token_env
     assert os.environ.get(token_env) == token, (
         f"{manifest_path} declares {token_env}, which is the variable the running server reads on "
         "every request. This check is only evidence if the token it offers is the one that "
