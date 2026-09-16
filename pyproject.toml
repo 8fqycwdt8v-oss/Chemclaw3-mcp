@@ -166,6 +166,12 @@ module = [
     # with no `py.typed`, so `Calculator` and its result object are untyped at the boundary
     # `engine/xtb_engine.py` deliberately keeps to one module.
     "tblite.*",
+    # geomeTRIC, the geometry optimizer (`servers/calc`). No `py.typed`, and the boundary is kept to
+    # one module for the same reason as tblite's: `engine/xtb_opt.py` holds the engine adapter, the
+    # coordinate-system builder and the parameter block, and nothing else in this tree imports it.
+    # Its `Engine` base class arrives as `Any`, so the subclass carries one `type: ignore[misc]`
+    # against `--strict`'s `disallow_subclassing_any` rather than the whole module losing a check.
+    "geometric.*",
     # Predictor dependencies, each behind its own extra and none installed here.
     "dgl.*",
     "onmt.*",

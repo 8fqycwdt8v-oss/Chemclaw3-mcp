@@ -310,7 +310,7 @@ version string saying so.
 
 `tblite` — which *does* ship manylinux wheels — carries the same GFN1/GFN2 Hamiltonians in-process,
 which is why the `xtb` binary is an optimisation rather than a capability. Everything the xTB tools do
-runs on it: single points, properties, Fukui indices, the L-BFGS-B optimizer over tblite's analytic
+runs on it: single points, properties, Fukui indices, the geomeTRIC optimizer over tblite's analytic
 gradient, the finite-difference Hessian, and both pKa branches. Chemclaw3's own deployment resolves
 to `tblite` too, for the same reason, so **the numbers and the `calc_version` strings this server
 produces are identical to the ones it produced before the split** — verified by deriving the same
@@ -319,9 +319,10 @@ keys and the same energies from both trees on the same package versions.
 What is given up without the binary:
 
 - **ANCopt**, xtb's approximate-normal-coordinate optimizer. Measured ~7x on a 76-atom substrate and
-  ~9x on 118 atoms, optimization plus Hessian. The in-process path is preconditioned
-  (`engine/anc.py`, ~2x over plain Cartesian L-BFGS) but does not close that gap; most of what
-  remains is the Hessian, which xtb computes analytically and this does not.
+  ~9x on 118 atoms, optimization plus Hessian. The in-process path is **geomeTRIC** over delocalised
+  internal coordinates, which is a real internal-coordinate optimizer rather than the ~2x Cartesian
+  preconditioner it replaced; what remains of the gap is mostly the Hessian, which xtb computes
+  analytically and this does not.
 - **GFN-FF**, xtb's force field. `optimize_geometry` with `method="GFN-FF"` raises a message naming
   the missing binary rather than substituting GFN2.
 
@@ -354,10 +355,12 @@ What that buys and what it costs:
   quadratic cost and `request_timeout` bounds the caller's wait rather than the work:
   - `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) bounds the primitive whose cost is 6N single points.
   - `CHEMCLAW_XTB_MAX_ATOMS` (500) bounds **every** structure, on `Structure` itself so each
-    primitive inherits it. The optimizer is the other quadratic one: its ANC preconditioner builds a
-    dense (3N, 3N) model Hessian and eigendecomposes it *once per leg* — measured here at 3.6 s for
-    120 atoms, 11.6 s for 240 and 32.9 s for 510, and at the ~42,000 atoms a body under the 1 MB cap
-    can carry, a 127 GB allocation that takes the process down with every other connected turn.
+    primitive inherits it. The optimizer is the other quadratic one: it builds a dense matrix over
+    3N coordinates while the 1 MB body cap is linear in the atom count, so at the ~42,000 atoms a
+    body can carry the allocation takes the process down with every other connected turn. The
+    figures that used to be quoted here — 3.6 s at 120 atoms, 32.9 s at 510, 127 GB at 42,000 —
+    were measured on the ANC preconditioner that geomeTRIC replaced, and are retired with it rather
+    than reused; `docs/BACKLOG.md` carries the row for re-deriving them.
   - `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` (780) bounds the in-process optimisation and Hessian
     loops, checked per gradient and per displacement. The two subprocess timeouts do not cover
     those paths, and they are the paths this image runs; cancelling the awaiting coroutine does not

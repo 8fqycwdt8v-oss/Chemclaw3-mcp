@@ -5,10 +5,31 @@ properties, the Fukui indices, the pKa acid branch — describes whatever confor
 embed and MMFF happened to relax; this module produces a stationary point of the surface those
 numbers are actually computed on, which is the precondition for a Hessian (`xtb_thermo`).
 
-The in-process optimizer is `scipy.optimize.minimize(method="L-BFGS-B")` driven by tblite's
-**analytic** gradient, in the eigenbasis of an approximate Hessian (`anc`). It works in Cartesian
-coordinates, which is the simple choice rather than the fast one; atoms can be frozen by pinning
-their coordinates with equal bounds — an exact constrained minimization over the free subspace.
+The in-process optimizer is **geomeTRIC**, driven by tblite's **analytic** gradient over
+delocalised internal coordinates (TRIC). It replaced ~330 lines of
+`scipy.optimize.minimize(method="L-BFGS-B")` run with *both* of its own stopping tests disabled
+(`gtol=0.0`, `ftol=0.0`), convergence enforced by a `StopIteration`-raising callback, over a
+hand-built per-coordinate trust region and a Lindh pairwise model Hessian (`engine/anc.py`, deleted
+with it). That module's own docstring stated the gap in the library's favour — "a full Lindh model
+with angle and torsion terms would do better, at the cost of primitive-internal machinery and a
+Wilson B matrix" — and measured its preconditioner at about **2x** against ANCopt's 8-11x. Atoms are
+frozen as Cartesian constraints in the coordinate system rather than as optimizer bounds.
+
+**What the swap is worth is a measured capability rather than a speedup.** Driven against a worktree
+at the commit before it, so only the optimizer differs: water, ethanol, acetic acid and benzene all
+relax to the same energy within 0.002 kcal/mol, in the same or fewer cycles — and **aspirin, which
+the old optimizer refused**, having spent the whole 780 s inline budget without converging, relaxes
+in 320.6 s and 29 cycles. Wall clocks are not quoted as a ratio: every run shared a four-core box,
+and the noise is larger than the difference.
+
+**geomeTRIC is used at `geometric.optimize.Optimize`, never at `run_optimizer`.** The driver is a
+command-line program wearing a function's clothes, and that was measured rather than inferred: one
+call to `run_optimizer` writes `<prefix>.log`, `<prefix>.tmp/` and `<prefix>_optim.xyz` into the
+process's working directory, and replaces the **root logger's handlers** with its own stream and
+*file* handlers — permanently, from inside a tool call, in a server whose log configuration
+`connector_app` owns. `Optimize` is the optimizer underneath it: driven with a temporary directory
+it writes nothing outside that directory and leaves the root logger untouched (measured in both
+directions).
 
 **Ported without `run_cached_optimization`,** and without the `geometry.record_optimization`
 cross-method pointer it wrote to on every miss: both are store operations, and this server has no
@@ -18,24 +39,73 @@ it — so lineage survives the removal of the thing that used to persist it.
 
 from __future__ import annotations
 
-from typing import Literal, Self
+import logging
+import tempfile
+from typing import Any, Literal, Self
 
 import numpy as np
+from geometric.engine import Engine
+from geometric.errors import GeomOptNotConvergedError
+from geometric.internal import DelocalizedInternalCoordinates
+from geometric.molecule import Elements, Molecule
+from geometric.optimize import Optimize
+from geometric.params import OptParams
+from geometric.prepare import parse_constraints
 from pydantic import Field
-from scipy.optimize import OptimizeResult, minimize
 
-from chemclaw_mcp_calc.engine import anc, xtb_cli
+from chemclaw_mcp_calc.engine import xtb_cli
 from chemclaw_mcp_calc.engine.budget import Deadline
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import Keyed
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb_engine import (
+    ANGSTROM_TO_BOHR,
     HARTREE_TO_KCAL,
     Calculator,
     evaluate_point,
     make_calculator,
 )
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
+
+# geomeTRIC reports its progress through `logging` at INFO: one line per optimizer cycle plus a
+# Hessian-eigenvalue line beside it. That is a command-line progress report, and it is emitted on a
+# logger this process does not own — `connector_app` owns the log configuration for every server in
+# this fleet, which is why `CLAUDE.md` says not to call `basicConfig` in one. The records are
+# stopped at geomeTRIC's own logger rather than reformatted at the root: `propagate = False` ends
+# the walk there, and the `NullHandler` is what keeps "no handlers could be found" off stderr.
+# Its *failures* do not travel this way — they are exceptions, and they are handled below.
+logging.getLogger("geometric").addHandler(logging.NullHandler())
+logging.getLogger("geometric").propagate = False
+
+# Where geomeTRIC's adaptive trust radius starts, in Angstrom — its own default. `trust_radius` is
+# the *ceiling* rather than the opening value, because starting at the ceiling gives up the
+# adaptivity that is half of why an internal-coordinate optimizer is fast.
+_OPENING_TRUST_RADIUS = 0.1
+
+# A convergence criterion set wide enough not to bind. geomeTRIC requires **all five** of its
+# criteria; this module's contract is one of them, the largest gradient component, and
+# `_optimize_with_binary` re-verifies exactly that on whatever geometry a backend returns. So the
+# energy and displacement criteria are opened up and the gradient is what decides. They cannot be
+# dropped instead: there is no "converge on gmax alone" switch that does not also change what
+# `maxiter` means.
+_UNBOUNDED_CRITERION = 1.0
+
+# geomeTRIC's constraint algorithm. **Not its default, and the difference is the whole constrained
+# path.** Upstream ships `0`, the 2016 algorithm, whose own source comment says constraints are
+# "satisfied slowly unless `enforce` is enabled"; `1` is the 2019 one, where they are "satisfied
+# instantly" and `enforce` is unnecessary. Measured on `scan_point`'s ethanol dihedral, four atoms
+# frozen, at this module's own 5.0e-04 Hartree/Angstrom target:
+#
+#   conmethod=0  E = -11.39379720  12 cycles  free-atom max |gradient| 1.014e-03  REFUSED
+#   conmethod=1  E = -11.39383627  27 cycles  free-atom max |gradient| 3.773e-04  accepted
+#
+# Both held the frozen atoms exactly (1.4e-08 and 0.0 Angstrom of movement). The failure under `0`
+# is not slack in the constraint, it is the *free* subspace being left unminimized — and it is not a
+# convergence-tightness problem either: driving geomeTRIC's own target to a quarter and a tenth of
+# ours moved the residual to 8.47e-04 and 8.83e-04, a plateau rather than a descent. `1` costs more
+# than twice the cycles and reaches a **lower** energy, which is what "the free subspace was not
+# minimized" looks like from the outside.
+_CONSTRAINT_METHOD = 1
 
 __all__ = [
     "OptSpec",
@@ -62,19 +132,14 @@ class OptSpec(XtbSpec):
     gradient_tolerance: float = Field(
         default_factory=lambda: settings.xtb_opt_gradient_tolerance, gt=0
     )
+    # Optimizer cycles allowed before the relaxation is refused, on either backend.
     max_steps: int = Field(default_factory=lambda: settings.xtb_opt_max_steps, gt=0)
-    # Cap on how far any atom may move in one leg, in Angstrom. A spec field rather than a settings
-    # read inside the loop, because it moves the answer and a setting that moves the answer belongs
-    # in the key: measured on ethanol, 0.35 and 0.05 relax to different geometries and different
-    # energies — and a structure id is what every downstream key is built from.
+    # Ceiling on how far one optimizer step may move an atom, in Angstrom — geomeTRIC's `tmax`,
+    # above an adaptive radius that starts at `_OPENING_TRUST_RADIUS`. A spec field rather than a
+    # settings read inside the loop, because it moves the answer and a setting that moves the answer
+    # belongs in the key: measured on ethanol, 0.35 and 0.05 relax to different geometries and
+    # different energies — and a structure id is what every downstream key is built from.
     trust_radius: float = Field(default_factory=lambda: settings.xtb_opt_trust_radius, gt=0)
-    # Curvature (Hartree/Angstrom^2) the ANC preconditioner assumes for the directions its pairwise
-    # model cannot see. Here for the same reason as `trust_radius`, and it was the same defect:
-    # `anc.basis` read it from `settings` inside the loop, so it was in no key at all. Measured on
-    # ethanol, 1.0 and 0.005 relax to different geometries and different energies, and on a floppy
-    # substrate the two floors can settle in different basins — at which point a shared cache row
-    # serves one configuration another's conformer.
-    curvature_floor: float = Field(default_factory=lambda: settings.xtb_anc_curvature_floor, gt=0)
     # The convergence level passed to `xtb --opt`, which is where the binary's relaxation stops.
     # Keyed only when the binary is what runs (`unkeyed_fields`), because the in-process path stops
     # on `gradient_tolerance` instead and never sees this.
@@ -86,11 +151,11 @@ class OptSpec(XtbSpec):
         """Also resolve the backend a *constrained* optimization really runs on.
 
         Frozen atoms are expressible as optimizer bounds and not as an xtb flag without a control
-        file, so `_optimize_with_binary` has always handed them straight to the Cartesian path. That
-        fallback happened *after* the key was derived, so a scan point on a deployment with the
+        file, so `_optimize_with_binary` has always handed them straight to the in-process path.
+        That fallback happened *after* the key was derived, so a scan point on a deployment with the
         binary was stored under a `calc_version` naming a program that had not run — the defect
         `_FIXED_BACKEND` describes for the fixed-backend tasks, in a third place, and the reason
-        `curvature_floor` can be keyed by backend at all: the resolved engine has to be the truth.
+        `opt_level` can be keyed by backend at all: the resolved engine has to be the truth.
         """
         if self.frozen_atoms and self.engine == "xtb":
             # Idempotent: the copy's engine is no longer the binary, so this arm runs once.
@@ -98,14 +163,22 @@ class OptSpec(XtbSpec):
         return super().for_structure(structure)
 
     def unkeyed_fields(self) -> set[str]:
-        """The two optimizer knobs are keyed on the backend that reads them, and only that one.
+        """`opt_level` is keyed on the backend that reads it, and only that one.
 
-        `curvature_floor` is the in-process preconditioner's; `opt_level` is ANCopt's. Each is inert
-        on the other backend, and `engine` is already resolved by the time `cache_key` asks — so
-        neither can be excluded on a spec whose declared engine is not the one that will run.
+        It is ANCopt's convergence level and is inert in-process, where geomeTRIC stops on
+        `gradient_tolerance` instead. `engine` is already resolved by the time `cache_key` asks, so
+        it cannot be excluded on a spec whose declared engine is not the one that will run.
+
+        **There used to be a second knob here and it is gone.** `curvature_floor` was the floor the
+        ANC preconditioner assumed for the directions its pairwise model could not see — bends and
+        torsions — and it has no analogue in an optimizer that builds real internal coordinates.
+        Removing it changes the *shape* of this spec and therefore of every optimization key, which
+        is why it shipped in the same commit as the `_HAMILTONIAN_REVISION` bump rather than on its
+        own: one invalidation, not two.
         """
         unkeyed = super().unkeyed_fields()
-        unkeyed.add("opt_level" if self.engine != "xtb" else "curvature_floor")
+        if self.engine != "xtb":
+            unkeyed.add("opt_level")
         return unkeyed
 
 
@@ -140,6 +213,11 @@ class OptimizationResult(Keyed):
     # How much the relaxation was worth, in the unit a chemist reads. A large value on a supposedly
     # relaxed input means the starting geometry was misleading.
     relaxation_kcal: float
+    # Optimizer *cycles*, which is what both backends count: geomeTRIC's accepted steps in-process,
+    # ANCopt's cycles on the binary. It is not the number of single points — a rejected step costs a
+    # gradient and advances no cycle — and the two used to be conflated, because the L-BFGS-B path
+    # reported `outcome.nit` summed over its legs. `0` means the input was already a minimum and no
+    # optimizer ran, which is the case that keeps a converged geometry byte-identical.
     steps: int
     # Largest absolute gradient component (Hartree/Angstrom) at the final geometry, over the free
     # atoms — the quantity `OptSpec.gradient_tolerance` bounds. `None` only for GFN-FF.
@@ -207,11 +285,12 @@ def optimize_structure(spec: OptSpec, structure: Structure) -> OptimizationResul
     goes to the in-process backend whatever was configured, because the binary cannot apply the
     spin-polarization term its energy needs.
 
-    The `xtb` binary optimizes in approximate normal coordinates (ANCopt) and is 9-11x faster on
-    drug-sized molecules than the Cartesian L-BFGS below it. The in-process path is what the shipped
-    image takes all the same — it installs the binary and pins `CHEMCLAW_XTB_ENGINE=tblite`, so
-    adding it did not re-key anything — and the two are keyed separately because they do not produce
-    identical geometries.
+    The `xtb` binary optimizes in approximate normal coordinates (ANCopt). It was measured 9-11x
+    faster on drug-sized molecules than the *Cartesian L-BFGS-B* that used to be below it, and that
+    figure has not been re-taken against geomeTRIC — `engine/xtb_cli.py` carries the table and says
+    so. The in-process path is what the shipped image takes either way: it installs the binary and
+    pins `CHEMCLAW_XTB_ENGINE=tblite`. The two backends are keyed separately because they do not
+    produce identical geometries.
 
     Raises `ValueError` if the gradient is still above `spec.gradient_tolerance` after
     `spec.max_steps` — with the numbers, so the caller can tell "nearly there" from "this geometry
@@ -233,91 +312,118 @@ def optimize_structure(spec: OptSpec, structure: Structure) -> OptimizationResul
     return _optimize_with_library(resolved, structure)
 
 
-def _preconditioned_leg(
-    calc: Calculator,
-    spec: OptSpec,
-    origin: np.ndarray,
-    free_mask: np.ndarray,
-    vectors: np.ndarray,
-    scale: np.ndarray,
-    max_iterations: int,
-    deadline: Deadline,
-) -> tuple[np.ndarray, int]:
-    """Run L-BFGS-B once in the preconditioned basis; return the geometry and its cost.
+class _TbliteEngine(Engine):  # type: ignore[misc]
+    """geomeTRIC's engine interface over tblite's analytic gradient.
 
-    A leg rather than the whole optimization, because the model Hessian depends on the interatomic
-    distances and a leg can move them enough that the basis is worth rebuilding. Its own function
-    rather than a closure inside the loop so the basis it uses is an argument — the version that
-    captured the loop variables was correct only by accident of evaluation order.
+    The `coords -> {energy, gradient}` callable is the whole of what geomeTRIC asks for, which is
+    what made this replacement a wiring job rather than a port: `evaluate_point` already had that
+    shape and already returned an analytic gradient.
+
+    **The unit boundary is here and nowhere else.** geomeTRIC works entirely in atomic units —
+    coordinates in Bohr, gradient in Hartree/Bohr — and everything above `xtb_engine` works in
+    Angstrom. Both conversions are the *same* constant applied in opposite directions, which is why
+    neither of them gets a literal of its own.
+
+    `evaluations` counts single points rather than optimizer cycles. The two differ by more than a
+    constant — a rejected step costs a gradient and advances no cycle — and it is the single points
+    that cost the seconds, so it is the number worth reporting when a relaxation was expensive.
     """
 
-    def to_cartesian(step: np.ndarray) -> np.ndarray:
-        full = origin.copy()
-        full[free_mask] += vectors @ (step * scale)
-        return full
+    def __init__(self, molecule: Any, calculator: Calculator, deadline: Deadline) -> None:
+        super().__init__(molecule)
+        self._calculator = calculator
+        self._deadline = deadline
+        self.evaluations = 0
 
-    # The convergence promise is about the *Cartesian* gradient, and the optimizer sees a
-    # preconditioned one — so rather than converting a threshold between the two (the first attempt
-    # converted it the wrong way and every leg stopped almost immediately), the objective records
-    # what the promise is actually about and a callback stops the leg the moment it is met.
-    reached = {"max_gradient": float("inf")}
+    def calc_new(self, coords: Any, dirname: Any) -> dict[str, Any]:
+        """One single point at `coords` (Bohr), as energy and gradient in atomic units."""
+        # Per gradient rather than per cycle: `max_steps` bounds cycles, and one cycle on a large
+        # substrate is unbounded in seconds — so a check outside the optimizer is exactly the one
+        # that misses this. It is the same placement the L-BFGS-B objective used.
+        self._deadline.check("geometry optimization")
+        self.evaluations += 1
+        positions = np.asarray(coords, dtype=float).reshape(-1, 3) / ANGSTROM_TO_BOHR
+        energy, gradient, _ = evaluate_point(self._calculator, positions)
+        return {"energy": energy, "gradient": (gradient / ANGSTROM_TO_BOHR).ravel()}
 
-    def objective(step: np.ndarray) -> tuple[float, np.ndarray]:
-        # Per gradient rather than per leg: `max_steps` bounds iterations, and one iteration on a
-        # large substrate is unbounded in seconds — so a leg is exactly what an outer check misses.
-        deadline.check("geometry optimization")
-        energy, gradient, _ = evaluate_point(calc, to_cartesian(step).reshape(-1, 3))
-        free_gradient = gradient.ravel()[free_mask]
-        reached["max_gradient"] = float(np.max(np.abs(free_gradient)))
-        # Chain rule through the linear transform: dE/ds = scale * (V^T dE/dx).
-        return energy, scale * (vectors.T @ free_gradient)
 
-    def stop_when_converged(intermediate: OptimizeResult) -> None:
-        """Halt the leg the moment the Cartesian promise is met.
+def _geometric_molecule(numbers: np.ndarray, positions: np.ndarray) -> Any:
+    """A geomeTRIC `Molecule` for `numbers` at `positions` (Angstrom).
 
-        `StopIteration` is scipy's documented way for a callback to end a minimization; it returns
-        the best point found rather than treating it as a failure.
-        """
-        if reached["max_gradient"] <= spec.gradient_tolerance:
-            raise StopIteration
+    The element symbols come from geomeTRIC's own `Elements` table rather than from RDKit's, so the
+    spelling is one the library certainly recognises; `build_topology` is what its coordinate
+    system is built over.
+    """
+    molecule = Molecule()
+    molecule.elem = [Elements[int(number)] for number in numbers]
+    molecule.xyzs = [np.array(positions, dtype=float)]
+    molecule.build_topology()
+    return molecule
 
-    # The trust region is a Cartesian distance, so it becomes a per-coordinate bound in the
-    # preconditioned basis by dividing by that coordinate's own scale — a soft direction is allowed
-    # a large `s` because a large `s` moves the atoms little.
-    limit = spec.trust_radius / np.maximum(scale, 1e-12)
-    # `type: ignore` scoped to one call: scipy's `minimize` overload for `jac=True` *with* a
-    # callback requires the objective to accept `*args, **kwargs`, which this one has no use for.
-    # The call is correct; the stub is narrow.
-    outcome = minimize(  # type: ignore[call-overload]
-        objective,
-        np.zeros(int(free_mask.sum())),
-        jac=True,
-        method="L-BFGS-B",
-        bounds=list(zip(-limit, limit, strict=True)),
-        callback=stop_when_converged,
-        options={
-            "maxiter": max_iterations,
-            # Both of L-BFGS-B's own stopping tests are disabled: `ftol` fires long before a tight
-            # gradient target is met, and `gtol` is in the preconditioned units the callback exists
-            # to avoid reasoning about.
-            "gtol": 0.0,
-            "ftol": 0.0,
-        },
+
+def _coordinate_system(molecule: Any, frozen_atoms: tuple[int, ...]) -> Any:
+    """Delocalised internal coordinates (TRIC), with any frozen atoms as Cartesian constraints.
+
+    `connect=False, addcart=True` is geomeTRIC's translation-rotation-internal setup, and it is the
+    right one here rather than a default worth revisiting: a structure reaching this function may be
+    a non-covalent complex (`combine_structures` builds them), and a coordinate system derived from
+    bonded connectivity alone has nothing to describe the distance between two fragments with.
+
+    Frozen atoms go through geomeTRIC's constraint *language*, which is 1-based text and is its only
+    public entry point for one. That is a constraint on the coordinate system rather than a bound on
+    the optimizer, which is a stronger statement than the equal-bounds trick it replaces: a frozen
+    coordinate is removed from the space being searched instead of being allowed to press against a
+    wall.
+
+    `conmethod` is what makes that true rather than nearly true — see `_CONSTRAINT_METHOD`, which
+    carries the measurement. It is passed only on this branch because it is a constraint algorithm
+    and there are no constraints on the other one.
+    """
+    if not frozen_atoms:
+        return DelocalizedInternalCoordinates(molecule, build=True, connect=False, addcart=True)
+    listing = ",".join(str(index + 1) for index in sorted(frozen_atoms))
+    constraints, values = parse_constraints(molecule, f"$freeze\nxyz {listing}\n")
+    return DelocalizedInternalCoordinates(
+        molecule,
+        build=True,
+        connect=False,
+        addcart=True,
+        constraints=constraints,
+        cvals=values[0],
+        conmethod=_CONSTRAINT_METHOD,
     )
-    return to_cartesian(np.asarray(outcome.x, dtype=float)), max(int(outcome.nit), 1)
+
+
+def _optimizer_params(spec: OptSpec) -> Any:
+    """geomeTRIC's parameters for one relaxation, with this module's contract expressed in them."""
+    # geomeTRIC converges on atomic units; `gradient_tolerance` is Hartree/Angstrom. Same constant,
+    # opposite direction, as in `_TbliteEngine.calc_new`.
+    gmax = spec.gradient_tolerance / ANGSTROM_TO_BOHR
+    return OptParams(
+        maxiter=spec.max_steps,
+        trust=min(_OPENING_TRUST_RADIUS, spec.trust_radius),
+        tmax=spec.trust_radius,
+        convergence_gmax=gmax,
+        # `grms <= gmax` always holds, so setting them equal leaves the largest component as the
+        # binding criterion — which is the one this module promises.
+        convergence_grms=gmax,
+        convergence_energy=_UNBOUNDED_CRITERION,
+        convergence_drms=_UNBOUNDED_CRITERION,
+        convergence_dmax=_UNBOUNDED_CRITERION,
+    )
 
 
 def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationResult:
-    """Relax with tblite's analytic gradient, L-BFGS-B, and an ANC preconditioner.
+    """Relax with geomeTRIC over tblite's analytic gradient.
 
     The only backend that can hold atoms fixed or describe an open shell, and — in an image without
-    the `xtb` binary — the only backend at all.
+    the `xtb` binary — the only backend at all. It is also the shipped path: the image installs
+    `xtb` and pins `CHEMCLAW_XTB_ENGINE=tblite`.
 
-    The optimization runs in the eigenbasis of an approximate Hessian, scaled by the square root of
-    its curvature, so the surface L-BFGS sees is nearly isotropic. The transform is linear, so a
-    step in it is an exact Cartesian displacement and there is nothing to back-transform. The trust
-    region and the convergence test both stay in Cartesian space, where they mean something
-    physical.
+    **The convergence check is this module's own, re-evaluated on the returned geometry**, exactly
+    as `_optimize_with_binary` does it for the binary and for the same reason: the contract of this
+    module is that holding an `OptimizationResult` guarantees `spec.gradient_tolerance` was met, and
+    a backend converging to its own criteria must not quietly weaken that. It costs one gradient.
     """
     # A budget rather than a spec field, deliberately: it decides whether an answer comes back, not
     # what the answer is, so keying on it would fork the cache every time a deployment gave itself
@@ -340,45 +446,50 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
         uhf=structure.uhf,
         solvent=spec.solvent,
     )
-    # The gradient of a frozen coordinate is zeroed rather than merely bounded: the convergence test
-    # must measure the forces the optimizer is allowed to relieve, not the ones the constraint is
-    # holding.
+    # The gradient of a frozen coordinate is zeroed rather than merely constrained: the convergence
+    # test must measure the forces the optimizer is allowed to relieve, not the ones the constraint
+    # is holding.
     free_mask = np.repeat(~frozen, 3)
 
     initial_energy, initial_gradient, _ = evaluate_point(calc, positions)
-    # Trust region, enforced with bounds. L-BFGS-B's first trial step is scaled by 1/|gradient|,
-    # which on a strained starting geometry is wildly too large: measured on a water with a 1.6
-    # Angstrom O-H, its opening move collapses the bond to 0.20 Angstrom, and a step like that puts
-    # the SCF somewhere it does not converge at all.
-    current = positions.ravel()
-    steps = 0
-    # Seeded from the *input* geometry, so a structure that is already a minimum runs no leg at all
-    # and comes back byte-identical. Previously the loop was bounded only by the step count, so it
-    # always ran at least one leg and always moved something: re-optimizing a converged water
-    # shifted it 3e-4 Angstrom, and since a structure id is a hash of the coordinates, every pass
-    # minted a new id. That silently forks the cache for every task keyed on a geometry. The
-    # gradient here costs nothing: `evaluate_point` above already computed it and threw it away.
+    # Seeded from the *input* geometry, so a structure that is already a minimum runs no optimizer
+    # at all and comes back byte-identical. The loop used to be bounded only by the step count, so
+    # it always ran and always moved something: re-optimizing a converged water shifted it 3e-4
+    # Angstrom, and since a structure id is a hash of the coordinates, every pass minted a new id.
+    # That silently forks the cache for every task keyed on a geometry. The gradient here costs
+    # nothing: `evaluate_point` above already computed it.
     max_gradient = float(np.max(np.abs(np.where(free_mask, initial_gradient.ravel(), 0.0))))
-    # The energy at whatever geometry `current` holds, carried forward rather than recomputed after
-    # the loop. Every `evaluate_point` is a full SCF, and the one that used to sit below the loop
-    # ran at a geometry already evaluated.
+    final = positions
     energy = initial_energy
-    while max_gradient > spec.gradient_tolerance and steps < spec.max_steps:
-        # The basis is rebuilt each leg, from the geometry the last one reached: the model Hessian
-        # depends on the distances, and a leg can move them enough to matter. It costs one O(N^2)
-        # assembly and one eigendecomposition — negligible against the SCFs the leg is about to run.
-        origin = current.copy()
-        vectors, scale = anc.basis(numbers, origin.reshape(-1, 3), free_mask, spec.curvature_floor)
-        current, iterations = _preconditioned_leg(
-            calc, spec, origin, free_mask, vectors, scale, spec.max_steps - steps, deadline
-        )
-        steps += iterations
-        energy, gradient, _ = evaluate_point(calc, current.reshape(-1, 3))
+    steps = 0
+    if max_gradient > spec.gradient_tolerance:
+        molecule = _geometric_molecule(numbers, positions)
+        engine = _TbliteEngine(molecule, calc, deadline)
+        coordinates = _coordinate_system(molecule, spec.frozen_atoms)
+        try:
+            with tempfile.TemporaryDirectory(prefix="chemclaw-geometric-") as scratch:
+                # `print_info=False` suppresses the banner geomeTRIC writes about the coordinate
+                # system it built; the scratch directory is where it would put a restart file.
+                progress = Optimize(
+                    np.asarray(positions, dtype=float).ravel() * ANGSTROM_TO_BOHR,
+                    molecule,
+                    coordinates,
+                    engine,
+                    scratch,
+                    _optimizer_params(spec),
+                    print_info=False,
+                )
+        except GeomOptNotConvergedError as error:
+            raise ValueError(
+                f"geometry optimization did not converge in {spec.max_steps} cycles "
+                f"({engine.evaluations} gradient evaluations): {error}"
+            ) from error
+        # geomeTRIC's progress carries one frame per accepted cycle, the input included.
+        steps = max(len(progress.xyzs) - 1, 1)
+        final = np.array(progress.xyzs[-1], dtype=float)
+        energy, gradient, _ = evaluate_point(calc, final)
         max_gradient = float(np.max(np.abs(np.where(free_mask, gradient.ravel(), 0.0))))
-        if max_gradient <= spec.gradient_tolerance:
-            break
 
-    final = current.reshape(-1, 3)
     if max_gradient > spec.gradient_tolerance:
         raise ValueError(
             f"geometry optimization did not converge in {steps} steps: "

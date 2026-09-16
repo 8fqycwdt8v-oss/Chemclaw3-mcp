@@ -223,6 +223,20 @@ decision leaves a record behind and the row goes.
   `servers/safety/src/chemclaw_mcp_safety/engine/screen.py::_load_rules`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::_compiled`.
 
+- [ ] **`servers/calc`'s 500-atom cap is unchanged and the measurement that set it is retired.**
+  `CHEMCLAW_XTB_MAX_ATOMS` was derived from the ANC preconditioner's dense `(3N, 3N)` model Hessian
+  — 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510, 127 GB at the ~42,000 atoms a
+  1 MB body can carry. `D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not`
+  deleted that preconditioner; geomeTRIC's coordinate system is dense over 3N as well, so the
+  *shape* of the argument carries and none of the constants do. The number was deliberately not
+  changed in that commit — moving a bound on an unmeasured basis is worse than leaving one whose
+  basis is stated as retired — so what is open is the measurement: geomeTRIC's coordinate-system
+  build plus one optimizer cycle at 120, 240 and 510 atoms, against the same 1 MB body cap, and
+  then whether 500 is still the right place for it.
+  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/config.py`,
+  `servers/calc/tests/test_cost_bounds.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/xtb_opt.py::_coordinate_system`.
+
 ## 3 — Readiness, where it still stops
 
 - [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference

@@ -31,6 +31,15 @@ measurements rather than re-timed end to end.) Most of the remaining gap is the 
 optimizer: preconditioning narrowed the optimization component to ~3x and left the second-derivative
 step untouched, because the in-process path takes it by finite differences and xtb does not.
 
+**The in-process optimizer in that table is gone**, and the table is kept as what it is: a dated
+measurement of the commit that made it. The record
+`D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not`
+replaced the ANC-preconditioned Cartesian L-BFGS-B with geomeTRIC over delocalised internal
+coordinates, which is a real internal-coordinate optimizer rather than a preconditioner, so the
+optimization component of both rows is a figure nobody has re-timed. The **Hessian** half — which
+the paragraph above says is most of the gap — is untouched by that change, and it is the half that
+decides whether the binary is worth having.
+
 **GFN-FF.** A force field with xTB's parameterization, which optimized the 118-atom substrate in
 **0.7 s**. It is not a quantum method and gives no orbitals, but it makes pre-optimization and
 large-system screening free.
