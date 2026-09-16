@@ -237,6 +237,30 @@ decision leaves a record behind and the row goes.
   `servers/calc/tests/test_cost_bounds.py`,
   `servers/calc/src/chemclaw_mcp_calc/engine/xtb_opt.py::_coordinate_system`.
 
+- [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
+  one this server already depends on is not wired to it.**
+  `servers/rxnpredict`'s `engine/meta/classifier.py` is a 190-line ten-class classifier over a
+  60-line `_RULES` SMARTS table; its own module docstring says to swap in Rxn-INSIGHT's classifier
+  "when available", and `rxn-insight` is *already* an optional dependency of this exact server,
+  already constructed in `engine/predictors/conditions/rxn_insight.py`, and already called for its
+  `get_reaction_info()` dict by the sibling
+  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`. That dict carries
+  `CLASS` from 527 curated SMIRKS against ten hand-written rules here.
+  **Three things make it a row rather than a commit, and the third is why it was not done in the
+  2026-09-16 wave.** (1) `ALL_CLASSES` is a wire contract against the vendored `trust_priors.json`
+  (`servers/rxnpredict/tests/test_dataset.py` checks the priors against it), so adopting Rxn-INSIGHT means writing and
+  arguing a mapping from its class vocabulary onto those ten keys — a new declaration, not a
+  deletion. (2) The SMARTS path has to **stay** as the no-extra fallback: `rxn_insight` is behind an
+  extra the core install does not carry, and `classify_reaction` is a served tool that must answer
+  without it. (3) A different class changes `effective_prior`, `consensus_score` and the candidate
+  rank order, so the change cannot land without measuring that on the probe corpus — and measuring
+  it needs `rxnmapper`, which means torch, transformers and a model checkpoint in a test
+  environment that carries none of them. The measurement is the work.
+  **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/conditions/rxn_insight.py`,
+  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
+  `servers/rxnpredict/tests/test_dataset.py`.
+
 ## 3 — Readiness, where it still stops
 
 - [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference
