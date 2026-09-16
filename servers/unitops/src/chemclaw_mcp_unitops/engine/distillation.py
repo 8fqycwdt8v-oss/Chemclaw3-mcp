@@ -264,8 +264,25 @@ def shortcut_column(
         The minimum stages, the minimum reflux, the reflux actually used and the stages it needs.
 
     Raises:
-        UnitOpsInputError: As the three functions above.
+        UnitOpsInputError: As the three functions above, and additionally when the three
+            compositions do not order as `x_B < z < x_D` — the overall mass balance that neither
+            Fenske nor Underwood sees the whole of.
     """
+    # **The three compositions have to be orderable before any of the three correlations runs.**
+    # Fenske checks `x_B < x_D` and Underwood checks `z < x_D`; between them nothing checked
+    # `x_B < z`, and the overall balance `F·z = D·x_D + B·x_B` has no solution in positive `D` and
+    # `B` without it. Measured before this guard: alpha 2.5 with z = 0.30, x_D = 0.95 and x_B = 0.50
+    # returned 7.26 theoretical stages for a split no column can produce — an answer, in the shape
+    # of an answer, to a mass balance that does not close. Refusing beats approximating.
+    if fraction(light_key_in_bottoms, "the light key in the bottoms") >= fraction(
+        light_key_in_feed, "the light key in the feed"
+    ):
+        raise UnitOpsInputError(
+            f"the bottoms are given as {light_key_in_bottoms} light key against a feed of "
+            f"{light_key_in_feed}, so both products would be richer in the light key than the feed "
+            "is. No split of a feed can do that: the overall balance F·z = D·x_D + B·x_B has no "
+            "solution in positive flows. Check which stream each composition belongs to."
+        )
     minimum_stages = fenske_minimum_stages(
         relative_volatility=relative_volatility,
         light_key_in_distillate=light_key_in_distillate,
