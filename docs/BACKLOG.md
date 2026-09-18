@@ -265,6 +265,24 @@ decision leaves a record behind and the row goes.
   rank order, so the change cannot land without measuring that on the probe corpus — and measuring
   it needs `rxnmapper`, which means torch, transformers and a model checkpoint in a test
   environment that carries none of them. The measurement is the work.
+  **That third reason is false, measured 2026-09-18.** `uv pip install
+  "rxn-insight>=0.1.2"` resolves in this family's container and pulls its whole
+  stack — `rxn-insight` 0.1.3, `rxnmapper` 0.4.3, `torch` 2.14.0, `transformers`
+  4.57.6, 6.0 GB — and `Reaction('CC(=O)O.CCO>>CC(=O)OCC.O').get_reaction_info()`
+  answers `CLASS: Acylation`, `NAME: Esterification of Carboxylic Acids`, with no
+  separate checkpoint step. So the measurement is available to whoever wants it,
+  and the first two reasons are the whole of what stands.
+  **What a partial measurement then said, and why it is not a verdict.** Over one
+  corpus the *incumbent* SMARTS table led, **97.1% to 91.3%**. That run stopped
+  before the arm that could overturn it — reactions where a spectator or
+  substituent carries the diagnostic group of a different class, which is the
+  false-positive mode a mapping-free table is structurally prone to and an
+  atom-mapped classifier is not — and the session that ran it recorded that its
+  corpus so far favoured SMARTS. Two numbers on a favourable corpus are evidence
+  about that corpus. They are written here because the row had none at all, and
+  because they point the opposite way from the row's framing: this may be a swap
+  not worth making, and the next session should expect to find that rather than
+  assume the curated table wins.
   **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/conditions/rxn_insight.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
