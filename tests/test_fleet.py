@@ -418,9 +418,9 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     retired check nobody notices; a name that under-describes its function is a docstring's job.
 
     `$(SRC)` listed the source roots and no test directory, so `mypy --strict` never read the files
-    that drive every ratchet here — 153 errors in 32 files were waiting in them, and nine
-    `# type: ignore[arg-type]` comments in `servers/thermalsafety/tests` suppressed nothing at all,
-    which is this repository's "a claim that a control exists" one layer down
+    that drive every ratchet here — measured at `0d58969`, 153 errors in 32 files were waiting in
+    them, and nine `# type: ignore[arg-type]` comments in `servers/thermalsafety/tests` suppressed
+    nothing at all — this repository's "a claim that a control exists" one layer down
     (`D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets`). Then
     `test_every_server_is_wired_into_the_type_gate` turned out to read `SRC :=` out of the Makefile
     *text* and never look at the recipe, so deleting `$(SRC)` from the invocation took every `src/`
@@ -437,9 +437,12 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     it was written in, because `tests` and `scripts` *are* directories; what they are not is
     *globbed*. `servers/rxnpredict/scripts/fetch_models.py` was neither, so it was invisible to the
     ratchet in both directions: not required on the command, and a second such directory would not
-    have been noticed either. Measured, `find` counted 309 `.py` files against `make type`'s
-    `checked 308 source files`, and the one out was the single script in this fleet whose own
-    docstring says it is *meant* to reach a network.
+    have been noticed either. `find` counted one more `.py` in the tree than `make type` reported
+    checking, and the one out was the single script in this fleet whose own docstring says it is
+    *meant* to reach a network. **No count of either is written here.** A count of this tree drifts
+    the day a server is added, and the version of this docstring that shipped before this one
+    carried three of them undated — the records carry them instead, at the commit each was taken
+    from, because a record is never edited and a docstring is.
 
     So the basis is the filesystem on both sides: every `.py` outside the caches must sit under some
     root on the observed command, which needs no list to extend and no glob to keep in step. A new
@@ -609,8 +612,8 @@ def test_a_planted_error_in_a_gated_file_reds_make_type() -> None:
     `D-2026-09-18-a-ratchet-that-reads-the-right-artefact-and-never-checks-what-it-does` is the
     record that this is a third way to get a ratchet wrong, beside the two the previous one names:
     **read the right artefact correctly, and never check what it does.** Six one-line states were
-    driven against the guard that shipped, each leaving a planted type error unreported with all
-    three gate tests green:
+    driven at `c6d2b3c` against the guard that shipped, each leaving a planted type error unreported
+    with all three gate tests green:
 
     - `ignore_errors = true` in `[tool.mypy]`, one key from the two that guard parsed;
     - `[[tool.mypy.overrides]] module = ["chemclaw_mcp_props.*"] ignore_errors = true`;
