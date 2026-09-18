@@ -286,6 +286,11 @@ async def test_deriving_a_key_runs_no_scf() -> None:
         raise AssertionError("deriving a key must not run an SCF")
 
     original = xtb_engine.Calculator
+    # Substituting a function for the class *is* the assertion — a key derivation that touched the
+    # SCF would call it and raise. mypy reports the one substitution under two codes, `misc`
+    # ("Cannot assign to a type") and `assignment` (a function is not a `type[Calculator]`), and
+    # both are the thing being done deliberately. The line carried `[misc]` alone while the test
+    # tree was outside the gate; `[assignment]` is what reading it for the first time added.
     xtb_engine.Calculator = _explode  # type: ignore[assignment, misc]
     try:
         for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):

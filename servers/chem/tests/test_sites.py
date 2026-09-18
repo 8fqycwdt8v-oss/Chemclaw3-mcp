@@ -120,6 +120,10 @@ def test_a_ring_fusion_is_not_a_substituent() -> None:
 def test_hydrogens_are_reported_on_their_carbon_with_a_calculators_numbering() -> None:
     """The join key for a C-H question, checked against RDKit's own explicit-H molecule."""
     smiles = "Cc1ccccc1"
+    # `rdkit-stubs` ships and annotates the compiled entry points — `MolFromSmiles` and `AddHs` on
+    # the next line need nothing — but declares `def CanonSmiles(smi, useChiral = 1):` with no
+    # types, so this is a gap in one stub rather than a check declined here. `warn_unused_ignores`
+    # turns it red the day rdkit annotates it, which is the only reason it is safe to write.
     canonical_smiles = Chem.CanonSmiles(smiles)  # type: ignore[no-untyped-call]
     explicit = Chem.AddHs(Chem.MolFromSmiles(canonical_smiles))
     expected: dict[int, list[int]] = {}
@@ -230,6 +234,8 @@ def test_a_rewritten_smiles_gives_the_same_sites_and_the_same_indices() -> None:
 def test_the_indices_are_the_ones_a_calculator_will_use() -> None:
     """The join asserted against RDKit's canonical ordering rather than against this module."""
     for writing in ("Oc1ccccc1", "c1ccccc1O", "c1cc(O)ccc1"):
+        # The same gap in `rdkit-stubs` as above: `CanonSmiles` is the one call here its stub
+        # leaves unannotated, and `MolFromSmiles` on the next line is annotated by the same package.
         written = Chem.CanonSmiles(writing)  # type: ignore[no-untyped-call]
         canonical = Chem.MolFromSmiles(written)
         expected = [atom.GetIdx() for atom in canonical.GetAtoms() if atom.GetSymbol() == "O"]

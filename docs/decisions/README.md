@@ -110,5 +110,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets](D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets.md) | A gate that does not read the tests does not read the ratchets |
 | [D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables](D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables.md) | A narrowing table with two bases is two tables |
 | [D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate](D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate.md) | A ratchet that observes half a command holds half a gate |
+| [D-2026-09-18-a-suppression-nobody-argued-reads-as-a-reviewed-one](D-2026-09-18-a-suppression-nobody-argued-reads-as-a-reviewed-one.md) | A suppression nobody argued reads as a reviewed one |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3
