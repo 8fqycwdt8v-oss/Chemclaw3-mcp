@@ -385,7 +385,7 @@ def test_every_server_is_wired_into_the_type_gate() -> None:
 
 
 def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
-    """`make type` must check every `tests/` directory in this workspace, observed rather than read.
+    """`make type` must check every `src/` and every `tests/` directory, observed rather than read.
 
     `$(SRC)` listed the source roots and no test directory, so `mypy --strict` never read the files
     that drive every ratchet here — 153 errors in 32 files were waiting in them, and nine
@@ -397,6 +397,22 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     reason `tests/test_context_floor.py` states about itself one repository over: a basis that is
     re-derived rather than observed will agree with itself forever. A `TESTS :=` line that is
     correct and a `type:` recipe that has stopped passing it are the same failure as no variable.
+
+    **This function shipped holding that about the test half only, and the argument was true of the
+    source half too** (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`).
+    `test_every_server_is_wired_into_the_type_gate` reads `SRC :=` out of the Makefile *text* and
+    never looks at the recipe, so deleting `$(SRC)` from the invocation took 164 source files out of
+    the gate, left `make type` reporting `Success: no issues found in 141 source files`, and kept
+    **both** gate tests green — the regression that adjacent test exists to prevent, one level up.
+    So both halves are checked against the same observed command, and the source half is globbed
+    rather than listed for the reason the `TESTS` variable already is.
+
+    **The same reading found two things the gate had never read at all.** `SRC` and `TESTS` are
+    directory lists, so the root `conftest.py` — layer 3 of the no-egress posture, the fixture that
+    arms the guard for every test in this repository — and `scripts/`, which holds
+    `offline_check.py` and is therefore the whole `make offline-run` lane, were outside
+    `mypy --strict`. Both were clean when they were added (305 files to 308, `Success`), so nothing
+    was hiding; what was missing was anything that would notice if something started.
 
     `--explicit-package-bases` is asserted because without it the invocation does not run at all:
     ten servers ship a `tests/test_no_egress.py`, and mypy keys a module by basename by default.
@@ -420,10 +436,14 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
         "checks anything, so the flag is part of the gate rather than a preference"
     )
 
-    expected = {"tests"}
+    # Three of these are not directories under a glob, so they are named. `conftest.py` arms the
+    # egress guard for the whole suite — layer 3 of the no-egress posture `CLAUDE.md` describes —
+    # and `scripts/` holds `offline_check.py`, which *is* `make offline-run`. Both were outside the
+    # gate entirely, and neither `SRC` nor `TESTS` could express them, being directory lists.
+    expected = {"tests", "conftest.py", "scripts"}
     expected |= {
         str(directory.relative_to(ROOT))
-        for pattern in ("packages/*/tests", "servers/*/tests")
+        for pattern in ("packages/*/tests", "servers/*/tests", "packages/*/src", "servers/*/src")
         for directory in ROOT.glob(pattern)
         if directory.is_dir()
     }
@@ -431,6 +451,65 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     assert not missing, (
         f"`make type` does not read {missing}. Every ratchet in this repository lives in a test "
         "file, and a ratchet mypy never reads is one that can stop meaning what it says in silence."
+    )
+
+
+def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
+    """`--strict` with nothing disabled, held in the declaration **and** in the invocation.
+
+    `D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets` measured a
+    narrower strictness before rejecting it, and the measurement is what rejects it: dropping
+    `attr-defined` and `arg-type` on top of `no-untyped-def` *manufactures* `unused-ignore`
+    findings, because a `# type: ignore` written against a disabled code becomes unused. Re-measured
+    whole-tree at `0d58969`, that configuration reports 51 of them against 2 under full strict, and
+    29 of the 51 are in **serving code** the narrowing was never proposed to touch. So
+    `--disable-error-code` and `warn_unused_ignores` fight, and the narrowing's loudest signal is an
+    artefact of its own configuration.
+
+    That record's decision — "no check dropped and no configuration relaxed" — had nothing holding
+    it (`D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables`). Both ends are checked here
+    for the reason `test_the_type_gate_reads_the_test_tree_and_not_only_the_source` gives one
+    function up: a clean `[tool.mypy]` and a recipe that passes `--disable-error-code` are the same
+    gate as a dirty one.
+
+    A per-module `ignore_missing_imports` is **not** this: it says a third-party distribution ships
+    no stubs, which is a fact about that distribution rather than a check this repository declines.
+    """
+    import tomllib
+
+    mypy = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
+    assert mypy.get("strict") is True, (
+        "`[tool.mypy] strict = true` is the gate. Without it `make type` runs a different and "
+        "quieter check under the same name"
+    )
+    narrowed = [
+        section
+        for section in (mypy, *mypy.get("overrides", []))
+        if section.get("disable_error_code") or section.get("warn_unused_ignores") is False
+    ]
+    assert not narrowed, (
+        f"`[tool.mypy]` narrows the gate: {narrowed}. The narrowing was measured and rejected — it "
+        "manufactures `unused-ignore` findings in serving code — so re-taking it is a decision for "
+        "a record, not a configuration key"
+    )
+
+    printed = subprocess.run(
+        ["make", "-n", "type"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    command = next(
+        line
+        for line in printed.splitlines()
+        if " mypy " in line and not line.lstrip().startswith("#")
+    )
+    relaxations = [
+        argument
+        for argument in shlex.split(command)
+        if argument.startswith("--disable-error-code")
+        or argument in {"--no-strict-optional", "--no-warn-unused-ignores", "--allow-untyped-defs"}
+    ]
+    assert not relaxations, (
+        f"the `type:` recipe passes {relaxations}, which relaxes the gate without touching the "
+        "configuration anybody reviews"
     )
 
 
@@ -725,8 +804,18 @@ def test_every_server_builds_a_wheel_that_carries_its_data() -> None:
     run that had already reached the internet in the other lane — the one claim
     ("a test that only passes by reaching the internet fails instead") the offline lane exists to
     make. With the flag the build reads the cache or fails, in both lanes and identically, and the
-    cache is warm by then because `uv sync` installs all eight workspace members editable and so
-    fetches the same backend.
+    cache is warm by then because `uv sync` installs every workspace member editable and so fetches
+    *a* backend — **not** necessarily the one the lock's `build` group names.
+
+    **That last sentence shipped saying "all eight workspace members" and "the same backend", and
+    both halves were wrong**
+    (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`).
+    `ls -d packages/*/ servers/*/ | wc -l` answers **12**, and the warmed cache carries
+    `hatchling-1.32.0.dist-info` beside `hatchling-1.32.3.dist-info`, which is the lock's. The ADR
+    written in the same commit
+    (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`) states it
+    correctly and bounds the exposure — this wheel is never shipped — so the tree was carrying two
+    documents disagreeing, with the wrong one in the file a reader opens first.
     """
     import subprocess
     import tempfile
@@ -1223,6 +1312,14 @@ def test_the_build_group_names_every_backend_this_workspace_declares() -> None:
     `test_the_build_group_is_what_the_calc_image_exports` catches for the group as a whole,
     applied to each name in it
     (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+
+    **That half shipped as a substring search over the file's text and did not hold it**
+    (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`): `name = "hatchling"`
+    also appears under `[package.dev-dependencies]` and `[package.metadata.requires-dev]`, which
+    are *references* to a resolution rather than the resolution, so deleting the whole
+    `[[package]] name = "hatchling"` block (numstat `0 16`) left this test passing. It parses the
+    lock and reads the resolved `name`s now, which is the idiom
+    `test_the_build_group_is_what_the_calc_image_exports` fifteen lines down already uses.
     """
     import tomllib
 
@@ -1247,8 +1344,10 @@ def test_the_build_group_names_every_backend_this_workspace_declares() -> None:
         "to come from that group or it comes from nowhere"
     )
 
-    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
-    unlocked = sorted(name for name in named if f'name = "{name}"' not in lock)
+    locked = _lock()["package"]
+    assert isinstance(locked, list)
+    resolved = {str(entry["name"]) for entry in locked}
+    unlocked = sorted(name for name in named if name not in resolved)
     assert not unlocked, (
         f"`uv.lock` resolves no {unlocked!r}, so `uv export --only-group build` omits it and the "
         "`--require-hashes` install that is supposed to pin the backend installs nothing"

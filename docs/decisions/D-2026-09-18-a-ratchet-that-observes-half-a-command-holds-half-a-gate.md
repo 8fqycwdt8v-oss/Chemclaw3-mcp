@@ -1,0 +1,159 @@
+# D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate — A ratchet that observes half a command holds half a gate
+
+**Status:** accepted · **Date:** 2026-09-18 · **Commit:** the type-gate ratchet takes both halves of
+`make -n type` off the wire instead of one. Corrects, without superseding, the control
+`D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets` shipped.
+
+## The defect
+
+That record shipped two tests and described them as a pair: a source half
+(`test_every_server_is_wired_into_the_type_gate`, unchanged) and a new test half
+(`test_the_type_gate_reads_the_test_tree_and_not_only_the_source`) which took its basis off
+`make -n type` *precisely because* — in its own docstring — "a basis that is re-derived rather than
+observed will agree with itself forever."
+
+That sentence is true of `TESTS` and **false of `SRC` in the adjacent function**, which reads the
+`SRC :=` line out of the Makefile *text* and never looks at the recipe that is supposed to pass it.
+So the pair observed one half of one command and re-derived the other. Driven at `6df6eb19`:
+
+```
+$ sed -i 's|--namespace-packages $(SRC) $(TESTS)|--namespace-packages $(TESTS)|' Makefile
+$ git diff --numstat -- Makefile
+1	1	Makefile
+$ uv run pytest tests/test_fleet.py -k "type_gate or wired_into_the_type_gate" -q
+2 passed, 198 deselected
+$ make type
+Success: no issues found in 141 source files
+```
+
+Against **305** on the unmutated tree. One character-class of edit takes **164 source files** —
+every `src/` root in the workspace, the whole serving tree — out of `mypy --strict`, `make type`
+reports `Success` louder than before, and **both** gate tests stay green.
+
+That is the exact regression `test_every_server_is_wired_into_the_type_gate` was written to prevent.
+Its own docstring recounts the shape twice: CI's hardcoded path list dropping `servers/safety/src`,
+and then the Makefile's `SRC` silently dropping `servers/rxnlabel/src` and `servers/rxnpredict/src`
+while `rxnlabel` sat with five real `--strict` errors CI had never run. Both of those were a
+*declaration* going stale. This one is one level up and strictly worse: the declaration stays
+correct and complete, and the recipe stops reading it.
+
+## The decision
+
+The observed command is the basis for **both** halves, and the source half is globbed rather than
+listed, for the same reason `TESTS` already is:
+
+```python
+    for pattern in ("packages/*/tests", "servers/*/tests", "packages/*/src", "servers/*/src")
+```
+
+One line. Driven with the fix plus the same Makefile mutation: `1 failed, 1 passed`, naming all
+twelve missing source roots.
+
+**`test_every_server_is_wired_into_the_type_gate` is kept rather than folded in**, and the
+difference is not redundancy. It holds the two *declarations* — the Makefile's `SRC` and
+`pyproject.toml`'s `mypy_path` — against the servers on disk, which is a check about a text file
+nobody invokes. This one holds the *invocation*. A server missing from `mypy_path` is invisible to
+the glob (mypy would still read the files; it would resolve their imports differently), and a recipe
+that has stopped passing `$(SRC)` is invisible to the declaration check. Neither sees the other's
+failure, which is what makes them two tests.
+
+## The same shape, one ratchet over: a substring is not a resolution
+
+`test_the_build_group_names_every_backend_this_workspace_declares` shipped its lock half as
+`f'name = "{name}"' not in lock` over `uv.lock`'s **text**, under a docstring claiming it catches
+"a group entry `uv.lock` does not resolve". It does not. `name = "hatchling"` also appears under
+`[package.dev-dependencies]` and `[package.metadata.requires-dev]`, which are *references* to a
+resolution rather than the resolution. Driven:
+
+```
+$ sed -i '1485,1500d' uv.lock          # the whole [[package]] name = "hatchling" block
+$ git diff --numstat -- uv.lock
+0	16	uv.lock
+$ .venv/bin/python -m pytest tests/test_fleet.py -k build_group -q
+2 passed, 198 deselected
+```
+
+The severity is bounded and stated: `uv` itself refuses such a lock (`Failed to parse uv.lock`), so
+a build fails loudly rather than silently — which is why this is a ratchet that does not hold what
+it says rather than a hole in the pin. The fix is the idiom already present fifteen lines away in
+`test_the_build_group_is_what_the_calc_image_exports`: parse the lock, read the resolved `name`s.
+Driven with it, the same mutation reds with `uv.lock` resolves no `['hatchling']`.
+
+The generalisation is the one this record is named for. A ratchet reads an *artefact*, and there
+are two ways to get the artefact wrong: read the wrong half of it (the type gate, above) or read a
+rendering of it instead of the thing (here). Both were written by sessions that had just argued
+against exactly that.
+
+## What the same reading found outside the gate altogether
+
+`SRC` and `TESTS` are lists of **directories**, and two things in this tree are not directories:
+
+- the root `conftest.py` — layer 3 of the four-layer no-egress posture, the fixture that arms the
+  guard for every test in this repository;
+- `scripts/`, which is a directory but was on neither variable, and holds `offline_check.py`, which
+  *is* the `make offline-run` lane.
+
+Neither was ever read by `mypy --strict`, and the new ratchet could not see that because it derived
+`expected` from the same two globs. Both are clean — adding them takes the gate from **305** files
+to **308**, `Success` — so nothing was hiding. What was missing was anything that would notice if
+something started, which is the whole argument of the record being corrected.
+
+`conftest.py` goes on `TESTS`, `scripts` on `SRC`, and both are named in the ratchet's `expected`
+beside `tests`. Driven, each separately: dropping ` scripts` from `SRC` reds with
+`does not read ['scripts']`; dropping `conftest.py` from `TESTS` reds with
+`does not read ['conftest.py']`.
+
+## A recipe comment calling a no-op load-bearing
+
+The same recipe read "`--explicit-package-bases` keys by path instead and `MYPYPATH=.` is what gives
+those paths a root to be relative to" — two halves of one fix. Only one is a fix:
+
+```
+$ env -u MYPYPATH .venv/bin/mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
+Success: no issues found in 308 source files
+$ MYPYPATH=. .venv/bin/mypy --namespace-packages $(SRC) $(TESTS)
+Found 1 error in 1 file (errors prevented further checking)
+    ... c) using `--explicit-package-bases` or adjusting `MYPYPATH`
+```
+
+`.` is already the root the flag falls back to — make chdirs before running a recipe — and
+`[tool.mypy] mypy_path` names the twelve `src/` trees besides. The variable is removed rather than
+the sentence rewritten, because a dead environment variable that a comment calls load-bearing is
+read as a control, and `CLAUDE.md` deletes those on sight. **No control is lost with it**: the half
+that is load-bearing is asserted, and mutating *that* out of the recipe reds
+`test_the_type_gate_reads_the_test_tree_and_not_only_the_source` on the sentence it already carries.
+
+## And one where the ratchet was right and the prose beside it was not
+
+`test_every_server_builds_a_wheel_that_carries_its_data`'s docstring closed on "the cache is warm by
+then because `uv sync` installs all **eight** workspace members editable and so fetches **the same
+backend**". Measured: `ls -d packages/*/ servers/*/ | wc -l` answers **12**, and the warmed cache
+carries `hatchling-1.32.0.dist-info` beside `hatchling-1.32.3.dist-info` — the lock resolves the
+second. `D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`, written in
+the same commit, has it right ("fetches *a* backend — not the one the lock's build group names")
+and bounds the exposure, so the tree carried two documents disagreeing with the wrong one in the
+file a reader opens first.
+
+The correction **deletes the count** rather than updating it to twelve, which is this repository's
+own rule about a number in prose and is why no ratchet is owed for it: there is nothing left that
+can go stale.
+
+## What this does not claim
+
+Nothing was wrong on `6df6eb19`. `make type` checked 305 files there and 308 here — the three added
+are the root `conftest.py` and the two `scripts/` modules, and all three were already clean, so no
+defect is uncovered and none is claimed. What changed is what can go wrong *next* without a red
+line, which is the whole argument the record being corrected makes about its own subject.
+
+## What keeps it true
+
+- `tests/test_fleet.py::test_the_type_gate_reads_the_test_tree_and_not_only_the_source` — requires
+  every `packages/*/src`, `servers/*/src`, `packages/*/tests` and `servers/*/tests` directory on
+  disk to appear in the command `make -n type` prints. A new server is covered in both halves the
+  day its directories exist, and `conftest.py` and `scripts` are named beside them because they are
+  not directories under either glob.
+- `tests/test_fleet.py::test_every_server_is_wired_into_the_type_gate` — the declaration half,
+  unchanged: `SRC :=` and `mypy_path` name every server that has a `src/`.
+- `tests/test_fleet.py::test_the_build_group_names_every_backend_this_workspace_declares` — its
+  lock half now parses `uv.lock` and compares resolved names, so a group entry the lock does not
+  resolve is red whatever the file's text happens to contain elsewhere.
