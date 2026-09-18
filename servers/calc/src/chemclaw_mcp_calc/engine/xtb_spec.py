@@ -12,9 +12,11 @@ calculation's subject, not its settings — and because keying on `Structure.str
 on "this SMILES with that embedding seed" is what lets an identical geometry from any source share
 an entry.
 
-**This module is the reason the port happened.** `calc_version()` reads the tblite and RDKit
+**This module is the reason the port happened.** `calc_version()` reads the tblite, RDKit and scipy
 distribution versions, a Hamiltonian-revision constant, and — when the backend resolves to the
-binary — `xtb --version`. None of those exist on a Chemclaw3 pod after the split. Every tool here
+binary — `xtb --version`; `OptSpec` adds the geomeTRIC distribution where the in-process optimizer
+is what runs, and `CrestSpec` adds `crest --version`. None of those exist on a Chemclaw3 pod after
+the split. Every tool here
 therefore returns the string rather than leaving it to be re-derived.
 
 **`CrestSpec` is here because crest now runs here.** Its whole content is "key on crest's build

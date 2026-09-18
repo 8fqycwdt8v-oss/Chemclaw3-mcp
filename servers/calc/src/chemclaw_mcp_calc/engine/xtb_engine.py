@@ -109,7 +109,7 @@ _HAMILTONIAN_REVISION = "h3"
 
 
 def engine_version() -> str:
-    """The installed tblite and RDKit builds, for embedding in calculation versions.
+    """The installed tblite, RDKit and scipy builds, for embedding in calculation versions.
 
     Every `calc_version` of a calculator that runs this engine (xTB energy, properties, Fukui,
     optimization, Hessian, pKa) must include all three so an upgrade of any one — tblite shifts
@@ -124,6 +124,13 @@ def engine_version() -> str:
     2018, and a later release shipping CODATA 2026 would move every geometry again with nothing to
     show for it in a version string. That is the failure `engine/key.py` is written against, so the
     fix is the one this function already implements for the other two.
+
+    **It names the engine, and an optimizer is not the engine.** geomeTRIC is deliberately absent:
+    this string keys `xtb.sp`, `xtb.properties`, `xtb.fukui` and `xtb.hess` as well, and none of
+    those runs an optimizer — they are evaluated at a geometry somebody hands them. The distribution
+    that decides *which* geometry belongs to `OptSpec.calc_version()`, which is the only spec whose
+    payload it produces
+    (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
 
     **This is the value a Chemclaw3 pod cannot compute.** Neither distribution is installed there
     after the split, so `version('tblite')` raises `PackageNotFoundError` rather than returning

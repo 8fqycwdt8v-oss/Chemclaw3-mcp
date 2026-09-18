@@ -34,8 +34,10 @@ non-monotonic relationship.
 ## Why this module is the reason the port has a critical requirement
 
 `calc_version()` interpolates **seven** `settings.*` values — both calibrations, both uncertainties
-and the solvent — plus `engine_version()` (tblite + RDKit distributions) plus the relaxation's own
-`OptSpec.calc_version()`, which resolves the backend and therefore may shell out to `xtb --version`.
+and the solvent — plus `engine_version()` (the tblite, RDKit and scipy distributions) plus the
+relaxation's own `OptSpec.calc_version()`, which resolves the backend, names the geomeTRIC
+distribution where that backend is the in-process one, and may shell out to `xtb --version` where
+it is not.
 That string is the primary key of Chemclaw3's calibration ledger: `predictions` is unique on
 `(calc_type, calc_version, input_hash)` and `reconciled_for` matches it **exactly**, with no version
 pooling, so a version string that does not match the one the ledger was filled under makes every
@@ -102,6 +104,15 @@ CALC_TYPE = "pka"
 #
 # `dimorphite-dl` was considered for this and declined for the same reason: it perceives a broader
 # set, which is exactly what must not change.
+#
+# **"Proven equal" was proven below a ceiling nobody mentioned, and `_all_matches` is where that
+# ceiling is now lifted** (`D-2026-09-16-a-default-ceiling-is-a-silent-truncation`).
+# `Mol.GetSubstructMatches` stops at **1,000** matches by default and says nothing; the bond walking
+# it replaced had no bound at all. Measured on `"N" * 1500` — a nitrogen chain of 1,500 heavy atoms,
+# inside `mcp_server_kit.limits.MAX_MOLECULE_ATOMS` and `MAX_SMILES_CHARS` — `_basic_nitrogens`
+# returned 1,000 where the walk counts 1,500, and `ionisable_sites` reported `basic=1000`. The
+# 216-molecule agreement stands: every probe is far below the ceiling, which is exactly why the
+# ceiling could not appear in it.
 # ---------------------------------------------------------------------------------------------
 
 #: Every O-H/S-H proton, on an explicit-hydrogen molecule (`parse_molecule`'s output). The match is
@@ -182,6 +193,25 @@ class PkaResult(Keyed):
     site: Literal["acid", "base"] = "acid"
 
 
+def _all_matches(mol: Chem.Mol, pattern: Chem.Mol) -> list[tuple[int, ...]]:
+    """Every match of `pattern` in `mol`, with RDKit's silent 1,000-match ceiling lifted.
+
+    `GetSubstructMatches` defaults to `maxMatches=1000` and truncates quietly — no warning, no
+    flag on the result, a short list that looks like a complete one. Every pattern here is anchored
+    on a distinct atom (a hydrogen for `_ACIDIC_PROTON`, a nitrogen for the other two), so the
+    number of matches cannot exceed the atom count, and the atom count is therefore a bound that
+    can be *derived* rather than chosen. A configured number would be a second ceiling to keep in
+    step with `mcp_server_kit.limits.MAX_MOLECULE_ATOMS`; this one moves with the molecule.
+
+    `max(..., 1)` because `maxMatches=0` is not "no limit" in RDKit's API and an empty molecule
+    should not take a different code path from a full one.
+    """
+    matches: list[tuple[int, ...]] = list(
+        mol.GetSubstructMatches(pattern, maxMatches=max(mol.GetNumAtoms(), 1))
+    )
+    return matches
+
+
 def _acidic_protons(mol: Chem.Mol) -> list[tuple[int, int]]:
     """`(hydrogen index, heavy-atom index)` for every O-H/S-H proton, explicit-H molecule.
 
@@ -194,7 +224,9 @@ def _acidic_protons(mol: Chem.Mol) -> list[tuple[int, int]]:
     exactly degenerate sites is reported, and a reordering there would be a diff in a stored result
     with no physics behind it.
     """
-    return sorted(mol.GetSubstructMatches(_ACIDIC_PROTON))
+    # `(match[0], match[1])` rather than `match`: `_all_matches` is shared with the two
+    # single-atom patterns, so its element type is the widest of the three.
+    return sorted((match[0], match[1]) for match in _all_matches(mol, _ACIDIC_PROTON))
 
 
 def _conjugate_bases(mol: Chem.Mol) -> list[Chem.Mol]:
@@ -225,7 +257,7 @@ def _basic_nitrogens(mol: Chem.Mol) -> list[int]:
     `predict_pka` would go on to report a basic pKa for a molecule whose only nitrogen is not basic.
     Both halves are now one pattern; `_BASIC_NITROGEN` is where the argument for each exclusion is.
     """
-    return sorted(match[0] for match in mol.GetSubstructMatches(_BASIC_NITROGEN))
+    return sorted(match[0] for match in _all_matches(mol, _BASIC_NITROGEN))
 
 
 class IonisableSites(NamedTuple):
@@ -266,7 +298,7 @@ def _aryl_nitrogens(mol: Chem.Mol) -> set[int]:
     SMARTS is matched against the whole molecule either way and `_protonated_forms` would otherwise
     re-run it per site.
     """
-    return {match[0] for match in mol.GetSubstructMatches(_ARYL_NITROGEN)}
+    return {match[0] for match in _all_matches(mol, _ARYL_NITROGEN)}
 
 
 def _protonated_forms(mol: Chem.Mol, sites: list[int]) -> list[tuple[Chem.Mol, bool]]:

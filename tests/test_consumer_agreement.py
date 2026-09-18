@@ -48,12 +48,20 @@ What the arrangement costs, stated rather than implied. Two things:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
+from mcp_server_kit.testing import (
+    CONNECTOR_NAME_PATTERN,
+    MAX_MANIFEST_TEXT_CHARS,
+    ConnectorManifest,
+)
+from pydantic import ValidationError
 
 #: The head of every skip message a missing consumer checkout produces, so one reporter can find
 #: them all — `conftest.py::pytest_terminal_summary` matches on it.
@@ -276,3 +284,184 @@ def test_every_place_the_live_lanes_look_for_the_checkout_is_looked_in_here(
     named.mkdir()
     monkeypatch.setenv(CONSUMER_ENV_VARS[0], str(named))
     assert consumer_repo() == (named, ""), "the variable must win over the default roots"
+
+
+# ---------------------------------------------------------------------------------------------
+# The manifest model this fleet validates against, held to the one that actually reads a manifest.
+#
+# `mcp_server_kit.testing.ConnectorManifest` says in its own docstring that it is modelled "the way
+# the repository that reads it models it… so the refusal happens here instead" of aborting the
+# consumer's startup. Nothing checked it, and at `6c6a0eb` it was wrong in **both** directions at
+# once (`D-2026-09-16-a-stand-in-that-refuses-a-real-field-is-not-a-stand-in`). Which is the shape
+# this whole file is about: a claim about another repository is checked by reading it.
+# ---------------------------------------------------------------------------------------------
+
+#: A well-formed endpoint block, reused by every probe below so each one varies exactly one thing.
+#: `read_only` covers the one declared tool, so removing it is the unclassified-tool probe.
+_ENDPOINT: dict[str, object] = {
+    "transport": "http",
+    "url": "http://127.0.0.1:8850/mcp",
+    "auth": {"mode": "bearer", "token_env": "CHEMCLAW_PROBE_TOKEN"},
+    "tools": ["a_tool"],
+    "read_only": ["a_tool"],
+    "state_changing": [],
+}
+
+
+def _manifest(**overrides: object) -> dict[str, object]:
+    """A minimal valid manifest document with `overrides` applied on top."""
+    return {"name": "probe", "description": "a probe manifest", "endpoint": _ENDPOINT, **overrides}
+
+
+#: `(label, document, verdict here, verdict over there)`. Where the two columns differ, the reason
+#: is one of the deliberate differences `ConnectorManifest`'s docstring lists and nothing else; the
+#: rows that used to differ *by accident* are the reason this table exists. The verdicts are written
+#: per side rather than as "agree"/"disagree" precisely so a difference has to be typed out.
+_MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
+    ("a plain manifest", _manifest(), True, True),
+    # The false accepts, measured at 6c6a0eb: both of these validated here and abort startup there.
+    ("a name that is not a slug", _manifest(name="Calc_Server!"), False, False),
+    ("a name with an underscore", _manifest(name="calc_server"), False, False),
+    ("a description past the cap", _manifest(description="x" * 20_000), False, False),
+    # The false refuses: real fields of the consumer's model that this one did not declare.
+    (
+        "endpoint.knowledge_read",
+        _manifest(endpoint={**_ENDPOINT, "knowledge_read": ["a_tool"]}),
+        True,
+        True,
+    ),
+    ("top-level skills", _manifest(skills=["a-skill"]), True, True),
+    ("top-level profiles", _manifest(profiles=["a-profile"]), True, True),
+    ("top-level note_types", _manifest(note_types=["job-result"]), True, True),
+    ("top-level relations", _manifest(relations=["computed-from"]), True, True),
+    # Still refused on both sides, which is what makes the row above a widening rather than a hole.
+    ("an invented key", _manifest(nonsense=["x"]), False, False),
+    # The deliberate differences. `endpoint` is the fourth the docstring names and does not show as
+    # a difference here: this probe drops the endpoint *and* declares no jobs, so the consumer
+    # refuses it too, for its own reason (`_contributes_capability`).
+    ("an unclassified tool", _manifest(endpoint={**_ENDPOINT, "read_only": []}), True, False),
+    ("mount: backend", _manifest(mount="backend"), True, False),
+    (
+        "auth: mode none",
+        _manifest(endpoint={**_ENDPOINT, "auth": {"mode": "none"}}),
+        False,
+        True,
+    ),
+    ("no endpoint at all", {"name": "probe", "description": "d", "jobs": []}, False, False),
+)
+
+#: Read each document on the consumer's own interpreter and report accept/refuse, nothing else.
+#: Deliberately not importing anything of this repository's: what is wanted is that model's verdict.
+_CONSUMER_VERDICTS = """
+import json, sys
+from chemclaw.connectors.manifest import ConnectorManifest
+from chemclaw.core.manifest_io import MAX_MANIFEST_TEXT_CHARS
+verdicts = []
+for document in json.load(sys.stdin):
+    try:
+        ConnectorManifest.model_validate(document)
+        verdicts.append(True)
+    except Exception:
+        verdicts.append(False)
+json.dump(
+    {
+        "verdicts": verdicts,
+        "max_text_chars": MAX_MANIFEST_TEXT_CHARS,
+        "name_pattern": ConnectorManifest.model_fields["name"].metadata[-1].pattern,
+    },
+    sys.stdout,
+)
+"""
+
+
+def _accepts_here(document: dict[str, object]) -> bool:
+    """Whether `mcp_server_kit.testing`'s model validates `document`."""
+    try:
+        ConnectorManifest.model_validate(document)
+    except ValidationError:
+        return False
+    return True
+
+
+def test_the_stand_in_manifest_model_refuses_what_it_says_it_refuses() -> None:
+    """This half runs everywhere, because a table nobody can read is worth nothing on a laptop.
+
+    The verdicts *over there* need a checkout; the verdicts *here* need only this model, and they
+    are what fails the moment somebody loosens it. Both halves read one table, so the two cannot
+    describe different probes.
+    """
+    for label, document, here, _ in _MANIFEST_PROBES:
+        assert _accepts_here(document) is here, (
+            f"{label}: mcp_server_kit.testing.ConnectorManifest "
+            f"{'refused' if here else 'accepted'} it, and the table says the opposite"
+        )
+
+
+def test_the_stand_in_manifest_model_agrees_with_the_model_that_reads_a_manifest() -> None:
+    """Every probe, and every manifest this fleet ships, through the consumer's own model.
+
+    **Why the shipped manifests are in here as well as the probes.** The stand-in accepts `jobs`,
+    `skills`, `profiles`, `note_types` and `relations` without validating their contents, because
+    a second copy of `JobSpec` and its three cross-field validators would be a second answer to one
+    question. That is a real gap in the stand-in and this is what closes it: the files that are
+    actually published go through the model that will actually read them, so a fleet manifest the
+    consumer would refuse fails here regardless of how loosely the stand-in is typed.
+
+    `manifests-internal/` is expected to be **refused** over there, and that refusal is the whole
+    mechanism behind `manifests-internal/`: `mount:` is a key the consumer's `extra="forbid"` model
+    will not take, so pointing `CHEMCLAW_CONNECTORS_DIR` at that directory is a startup error
+    naming the file rather than a backend winning a name collision.
+
+    Skips with the reason when there is no checkout, and a skip is not a pass — `conftest.py`
+    counts it and says what the run is therefore not evidence about.
+    """
+    interpreter, reason = consumer_python()
+    if interpreter is None:
+        pytest.skip(
+            f"{CONSUMER_SKIP} the stand-in manifest model was NOT checked against the model that "
+            f"reads a manifest: {reason}. Nothing in this run is evidence about whether they agree."
+        )
+
+    published = sorted((ROOT / "manifests").glob("*/connector.yaml"))
+    internal = sorted((ROOT / "manifests-internal").glob("*/connector.yaml"))
+    assert published and internal, "no shipped manifests found; has the layout changed?"
+    shipped: list[tuple[str, dict[str, object], bool, bool]] = [
+        (str(path.relative_to(ROOT)), yaml.safe_load(path.read_text(encoding="utf-8")), True, there)
+        for paths, there in ((published, True), (internal, False))
+        for path in paths
+    ]
+    rows = [*_MANIFEST_PROBES, *shipped]
+
+    completed = subprocess.run(
+        [str(interpreter), "-c", _CONSUMER_VERDICTS],
+        cwd=interpreter.parents[2],
+        input=json.dumps([document for _, document, _, _ in rows]),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert completed.returncode == 0, (
+        "the consumer's manifest model could not be asked for a verdict:\n"
+        f"{completed.stderr[-3000:]}"
+    )
+    answer = json.loads(completed.stdout)
+
+    assert answer["max_text_chars"] == MAX_MANIFEST_TEXT_CHARS, (
+        f"the consumer caps manifest text at {answer['max_text_chars']} characters and this "
+        f"repository's copy says {MAX_MANIFEST_TEXT_CHARS}"
+    )
+    assert answer["name_pattern"] == CONNECTOR_NAME_PATTERN, (
+        f"the consumer requires {answer['name_pattern']!r} of a connector name and this "
+        f"repository's copy says {CONNECTOR_NAME_PATTERN!r}"
+    )
+    for (label, document, here, there), verdict in zip(rows, answer["verdicts"], strict=True):
+        assert verdict is there, (
+            f"{label}: the consumer's ConnectorManifest "
+            f"{'accepted' if verdict else 'refused'} it, and this table says the opposite. Either "
+            "that model moved, or this table was wrong about it"
+        )
+        assert _accepts_here(document) is here, (
+            f"{label}: the stand-in model disagrees with its own table, which the shipped "
+            "manifests reach through this loop and the probe table reaches through the test above"
+        )

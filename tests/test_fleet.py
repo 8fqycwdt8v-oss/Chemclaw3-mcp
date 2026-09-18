@@ -564,21 +564,34 @@ def test_the_three_answers_to_molecular_mass_agree() -> None:
     - `thermalsafety` derives a molar mass from a formula with no cheminformatics toolkit at all,
       and that number divides into every oxygen balance it reports.
 
-    So this is a four-way agreement written as three comparisons against the vendored `mw`, and it
-    is what makes the `props` corpus's formula column checkable now that
-    `servers/props/tests/test_dataset.py` no longer carries a sixth-of-a-periodic-table copy of the
-    weights to check it against. A transposed digit in either column fails here.
+    Four sources, three numbers, **two comparisons** — the vendored `mw` is what the other two are
+    each checked against, and the formula column reaches its number through `thermalsafety`'s weight
+    table rather than on its own. This paragraph said "a four-way agreement written as three
+    comparisons" while the loop below built two, which is a count of a thing beside the thing
+    (`D-2026-09-16-a-number-in-prose-is-a-claim-about-a-commit`). It is what makes the `props`
+    corpus's formula column checkable now that `servers/props/tests/test_dataset.py` no longer
+    carries a sixth-of-a-periodic-table copy of the weights to check it against. A transposed digit
+    in either column fails here.
 
     **The tolerance is 0.05 g/mol absolute, and it is the one `props`' own check used.** It is not a
-    round number chosen to pass: measured over all 44 rows at the commit that added this test, the
-    largest spread between the three answers for one solvent was **0.011 g/mol** (chloroform:
-    119.38 tabulated, 119.378 from RDKit, 119.369 from `thermalsafety`), and the largest *relative*
-    spread was 2.8e-4 (water, whose `mw` is rounded to 18.02). The three disagree at all because
-    each rounds the standard atomic weights differently — RDKit carries `Cl` at 35.453 where
-    `thermalsafety` carries the IUPAC 2021 conventional 35.45 — and that is a difference no
-    reconciliation should try to remove. 0.05 leaves roughly four times the observed spread and is
-    still an order of magnitude below the ~1 g/mol a single transposed digit or a missing hydrogen
-    moves a mass by, which is the failure the check exists for.
+    round number chosen to pass. Re-measured over all 44 rows on 2026-09-16, after the atomic
+    weights moved from seventeen transcribed floats to the `molmass` distribution: the largest
+    spread between the three answers for one solvent is **0.006 g/mol** (dimethyl sulfoxide: 78.13
+    tabulated, 78.136 from RDKit, 78.1333 from `thermalsafety`), and the largest *relative* spread
+    is 2.8e-4 (water, whose `mw` is rounded to 18.02).
+
+    **The figures that stood here were the pre-`molmass` ones and the paragraph outlived them by a
+    commit** — "0.011 g/mol (chloroform: 119.38 tabulated, 119.378 from RDKit, 119.369 from
+    `thermalsafety`)", where chloroform now measures 119.3774 and spreads 0.003, and chloroform is
+    no longer the widest row at all. The sentence beside it went the same way: it said
+    `thermalsafety` "carries the IUPAC 2021 conventional 35.45" for chlorine, and the commit that
+    wrote that table out carries molmass's 35.4529 instead — which is most of why that row moved.
+    RDKit's 35.453 is a third rounding of the same element.
+
+    The three disagree at all because each rounds the standard atomic weights differently, and that
+    is a difference no reconciliation should try to remove. 0.05 leaves roughly eight times the
+    observed spread and is still an order of magnitude below the ~1 g/mol a single transposed digit
+    or a missing hydrogen moves a mass by, which is the failure the check exists for.
     """
     from chemclaw_mcp_chem.engine.chem import molecular_weight
     from chemclaw_mcp_props.engine import records
@@ -963,6 +976,148 @@ RUN python -m pip wheel --require-hashes -r /build/requirements.txt
 
     joined = containerfile_instructions("RUN a \\\n    && b \\\n    && c\n")
     assert joined == ["RUN a && b && c"], "a continuation was not joined into one instruction"
+
+
+def _lock() -> dict[str, object]:
+    import tomllib
+
+    return tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+
+
+def _sdist_only_distributions() -> set[str]:
+    """Registry packages `uv.lock` resolves to a source archive and to no wheel at all.
+
+    These are the only entries a `pip wheel --require-hashes` run actually *builds*, and building
+    is where pip's default isolation fetches a backend the lock never saw.
+    """
+    packages = _lock()["package"]
+    assert isinstance(packages, list)
+    return {
+        str(entry["name"])
+        for entry in packages
+        if "registry" in entry.get("source", {}) and entry.get("sdist") and not entry.get("wheels")
+    }
+
+
+def _locked_closure(distribution: str) -> set[str]:
+    """Every distribution reachable from `distribution` through `uv.lock`, extras included.
+
+    Extras are walked because an image installs them — `rxnpredict`'s Containerfile installs
+    `chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]`. That over-approximates a server's runtime
+    closure, and over-approximating is the safe direction here: it can only make a server *owe*
+    the build-backend pin, never excuse one from it.
+    """
+    packages = _lock()["package"]
+    assert isinstance(packages, list)
+    entries: dict[str, list[dict[str, object]]] = {}
+    for entry in packages:
+        entries.setdefault(str(entry["name"]), []).append(entry)
+
+    seen: set[str] = set()
+    stack = [distribution]
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for entry in entries.get(name, []):
+            requirements: list[dict[str, object]] = list(entry.get("dependencies", []))  # type: ignore[arg-type]
+            optional = entry.get("optional-dependencies", {})
+            assert isinstance(optional, dict)
+            for extra in optional.values():
+                requirements.extend(extra)
+            stack.extend(str(requirement["name"]) for requirement in requirements)
+    return seen
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_a_sdist_only_dependency_builds_under_a_pinned_backend(server: Path) -> None:
+    """A dependency with no wheel is *built* in the image, under a backend the lock must name.
+
+    `test_every_image_installs_the_closure_the_audit_read` proves every third-party version and
+    hash comes from `uv.lock`. That is a claim about what pip **installs**, and it walks straight
+    past what pip **builds**: `servers/calc` depends on `geometric`, which publishes no wheel on
+    PyPI for any release and whose sdist carries a legacy `setup.py` beside a bundled
+    `versioneer.py` with no `pyproject.toml` at all. Measured on the exported requirement line at
+    `6c6a0eb`, hashes and all, pip printed `Installing build dependencies` — it resolved
+    `setuptools` and `wheel` from PyPI at that moment, unhashed, absent from the lock, and then
+    executed `setup.py` and `versioneer.py` under them. The same sdist built under the backend pip
+    fetched and under the locked one produced wheels of different **sizes** — 408,349 bytes against
+    408,351 — so this is not a theoretical difference. Not different *digests*: these wheels are not
+    byte-reproducible under either backend, because the zip carries timestamps
+    (`D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day`).
+
+    The fix is the `build` dependency group in the root `pyproject.toml`: installed first, with
+    `--require-hashes`, so the wheel pass can run `--no-build-isolation` and fetch nothing.
+
+    **Both directions, because either one alone is satisfiable by accident.** A server whose
+    closure holds an sdist-only package must carry the whole shape; a server that carries
+    `--no-build-isolation` without installing that group is worse than one that carries neither,
+    because pip would then build against whatever the image happens to have.
+    """
+    block = next(
+        instruction
+        for instruction in containerfile_instructions(
+            (server / "Containerfile").read_text(encoding="utf-8")
+        )
+        if instruction.startswith("RUN ") and "uv export --frozen --package" in instruction
+    )
+    distribution = re.search(
+        r'^name\s*=\s*"([^"]+)"', (server / "pyproject.toml").read_text(encoding="utf-8"), re.M
+    )
+    assert distribution, f"{server.name}/pyproject.toml declares no distribution name"
+
+    built = sorted(_sdist_only_distributions() & _locked_closure(distribution.group(1)))
+    pinned = "--only-group build" in block and (
+        "--require-hashes -r /build/build-requirements.txt" in block
+    )
+
+    if built:
+        assert pinned, (
+            f"{server.name}/Containerfile installs {built!r}, which uv.lock resolves to an sdist "
+            "with no wheel, so pip builds it — and with pip's default build isolation the backend "
+            "that runs its setup.py is resolved from PyPI at build time, unhashed and outside the "
+            "lock. Export `--only-group build` and install it with `--require-hashes` in this same "
+            "RUN"
+        )
+        assert "--no-build-isolation" in block, (
+            f"{server.name}/Containerfile pins a build backend and then does not use it: without "
+            "`--no-build-isolation` pip still fetches its own, and the pinned one is dead weight"
+        )
+    else:
+        assert not pinned and "--no-build-isolation" not in block, (
+            f"{server.name}/Containerfile builds no sdist — every entry in its locked closure "
+            "ships a wheel — so the build-backend pin has no subject here and reads as a control "
+            "that is doing something"
+        )
+
+
+def test_the_build_group_is_what_the_calc_image_exports() -> None:
+    """The group the Containerfile exports has to exist in the lock, and hold a backend.
+
+    The assertion above reads a Containerfile. This one reads the other end of that pipe: an
+    `--only-group build` against a group `uv.lock` does not carry exports an empty requirements
+    file, `pip install` of nothing succeeds, and `--no-build-isolation` then builds `geometric`
+    against whatever `python:3.11-slim` ships — which is the defect wearing the fix's clothes.
+    """
+    import tomllib
+
+    groups = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "dependency-groups"
+    ]
+    assert "build" in groups, (
+        "servers/calc/Containerfile exports `--only-group build`; the root pyproject.toml declares "
+        "no such group, so the export is empty and the backend pin is a no-op"
+    )
+    assert any(requirement.startswith("setuptools") for requirement in groups["build"]), (
+        "the `build` group names no setuptools; geometric's sdist is a legacy setup.py and builds "
+        "under nothing else"
+    )
+    locked = _lock()["package"]
+    assert isinstance(locked, list)
+    assert any(entry["name"] == "setuptools" for entry in locked), (
+        "uv.lock resolves no setuptools, so `uv export --only-group build` cannot pin one"
+    )
 
 
 def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:

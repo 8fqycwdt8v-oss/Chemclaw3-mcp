@@ -18,8 +18,12 @@ requires-python = ">=3.11"
 #   tblite's analytic gradient, replacing ~330 lines of `scipy.optimize.minimize(L-BFGS-B)` driven
 #   with both of its own stopping tests disabled over a hand-built trust region and a Lindh pairwise
 #   model Hessian. BSD-3; measured, it adds exactly `networkx` to this closure, since numpy
-#   and scipy are already here. Its distribution version is in `engine_version()` for the same
-#   reason tblite's is: it decides which stationary point is reached.
+#   and scipy are already here. Its distribution version is in `OptSpec.calc_version()` — **not** in
+#   `engine_version()`, which this comment claimed for a wave while `'geometric' in
+#   engine_version()` measured `False` — because it decides which stationary point is reached and
+#   it runs on exactly one task. It is also **the one dependency here that publishes no wheel**, so
+#   the image builds it, which is why `Containerfile` pins a build backend out of the lock's
+#   `build` dependency group.
 # - `numpy` is declared rather than inherited: three engine modules index and reshape arrays
 #   directly, and >=2.0 is what tblite's and scipy's wheels resolve to here.
 #

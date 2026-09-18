@@ -56,12 +56,36 @@ COPY servers/calc /build/servers/calc
 
 # Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
 # which is also what the tests import. RDKit, tblite, scipy and numpy all ship manylinux wheels, so
-# nothing is compiled here and no Fortran toolchain is needed in this stage.
-# Two `pip wheel` passes, and the split is the point. The first resolves *nothing*: every
-# third-party version and hash comes from `uv.lock` by way of `uv export --frozen`, so what
-# this image installs is what `make deps-audit` read. The second builds the two workspace
+# none of those four is compiled here and no Fortran toolchain is needed in this stage.
+#
+# **`geometric` is the one that is compiled here — it is pure Python, but it is *built* — and that
+# is why the build backend is installed here at all.** It publishes no wheel on PyPI, for any
+# release, and its sdist has no `pyproject.toml` at all: a legacy `setup.py` beside a bundled
+# `versioneer.py`. Under pip's default build isolation that means pip resolves *its own* build
+# requirements (`setuptools`, `wheel`) from PyPI at the moment of the build — versions chosen that
+# day, no hashes, nothing in `uv.lock` — and then runs `setup.py` under them. Measured: the
+# `--require-hashes` form still prints `Installing build dependencies`, and the same sdist built
+# under the backend pip fetched and under the locked one produced wheels of **different sizes** —
+# 408,349 bytes against 408,351 — so what this image ships depends on what pip happened to install
+# that morning. So the build backend is installed **first**, from `uv.lock`'s `build` dependency
+# group with `--require-hashes`, and the wheel pass runs `--no-build-isolation` so pip uses that one
+# and fetches nothing
+# (`D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day`).
+# `--no-build-isolation` is safe to apply to the whole requirements file because everything else in
+# this closure ships a wheel and is therefore never built. *Which* entries are built is derived from
+# `uv.lock` rather than written down here, by
+# `tests/test_fleet.py::test_a_sdist_only_dependency_builds_under_a_pinned_backend` — which requires
+# this shape of any server whose closure grows a wheel-less dependency, and refuses it of any server
+# whose closure has none.
+#
+# Two `pip wheel` passes with a backend install in front of the first, and the split is the point.
+# The first wheel pass resolves *nothing*: every third-party version and hash comes from `uv.lock`
+# by way of `uv export --frozen`, so what this image installs is what `make deps-audit` read.
+# The second builds the two workspace
 # packages `--no-deps`, because their dependencies are already in the wheelhouse and letting
-# pip look again is exactly the re-resolution this replaced.
+# pip look again is exactly the re-resolution this replaced. That second pass still takes its own
+# build backend (`hatchling`) from pip's isolation, which is the fleet-wide shape rather than
+# anything this server introduced; `docs/BACKLOG.md` carries the row.
 #
 # `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
 # version runs, and a `uv` that changed this CLI would fail the build loudly rather than
@@ -69,7 +93,10 @@ COPY servers/calc /build/servers/calc
 RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
     && uv export --frozen --package chemclaw-mcp-calc --no-dev --no-emit-workspace \
          --format requirements-txt -o /build/requirements.txt \
-    && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
+    && uv export --frozen --only-group build --no-emit-workspace \
+         --format requirements-txt -o /build/build-requirements.txt \
+    && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
+    && python -m pip wheel --no-cache-dir --no-build-isolation --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
     && python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels ./packages/mcp_server_kit ./servers/calc
 

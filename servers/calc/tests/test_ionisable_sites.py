@@ -142,3 +142,39 @@ def test_the_pattern_this_file_asserts_is_the_module_s_own() -> None:
     mine = Chem.MolFromSmarts(_pattern(_ARMS))
     assert mine is not None
     assert Chem.MolToSmarts(pka._BASIC_NITROGEN) == Chem.MolToSmarts(mine)
+
+
+def test_a_molecule_with_more_sites_than_rdkit_s_default_ceiling_is_counted_whole() -> None:
+    """`GetSubstructMatches` stops at 1,000 matches and says nothing about having stopped.
+
+    The imperative walk these SMARTS replaced had no bound, so the transcription introduced one —
+    invisibly, because every molecule in the 231-row probe corpus above has fewer than ten sites
+    and could not reach it (`D-2026-09-16-a-default-ceiling-is-a-silent-truncation`).
+
+    **A nitrogen chain, because it is the cheapest molecule that crosses the ceiling while staying
+    inside every bound this server enforces**: 1,500 heavy atoms against
+    `MAX_MOLECULE_ATOMS`'s 2,000 and 1,500 characters against `MAX_SMILES_CHARS`'s 4,000. Measured
+    at `6c6a0eb`, `ionisable_sites` reported `basic=1000` for it. The count is asserted against
+    the molecule's own nitrogen count rather than against the literal 1,500, so the assertion is
+    about the perception being complete rather than about this string.
+
+    The published tool surface does not reach this — `predict_logd` is the only caller and its pKa
+    refuses above `xtb_max_atoms` first — which is why it is worth a test and not a release note:
+    an unreachable truncation is one that becomes reachable the day a bound moves, and nothing
+    would have said so.
+    """
+    from chemclaw_mcp_calc.engine.pka import _acidic_protons, _basic_nitrogens
+    from chemclaw_mcp_calc.engine.xtb_engine import parse_molecule
+    from mcp_server_kit.limits import MAX_MOLECULE_ATOMS, MAX_SMILES_CHARS
+
+    chain = "N" * 1_500
+    assert len(chain) <= MAX_SMILES_CHARS
+    molecule = parse_molecule(chain)
+    nitrogens = sum(1 for atom in molecule.GetAtoms() if atom.GetSymbol() == "N")
+    assert nitrogens <= MAX_MOLECULE_ATOMS, "the probe must stay inside the bound this server sets"
+    assert nitrogens > 1_000, "the probe no longer crosses RDKit's default ceiling"
+    assert len(_basic_nitrogens(molecule)) == nitrogens
+    assert ionisable_sites(chain).basic == nitrogens
+
+    hydroxyls = "C" + "C(O)" * 1_100 + "C"
+    assert len(_acidic_protons(parse_molecule(hydroxyls))) == 1_100

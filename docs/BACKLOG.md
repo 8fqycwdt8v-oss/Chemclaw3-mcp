@@ -323,6 +323,24 @@ decision leaves a record behind and the row goes.
 
 ## 4 — The gate itself
 
+- [ ] **Every image still takes its *build backend* from pip's isolation, unhashed, at build time.**
+  `D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day` closed this
+  for the one dependency that is actually built from source — `geometric`, the only sdist-only entry
+  in `uv.lock` — by exporting the lock's `build` dependency group and passing
+  `--no-build-isolation` to `servers/calc/Containerfile`'s first `pip wheel`. The **second** pass in
+  every Containerfile is untouched: `python -m pip wheel --no-deps ./packages/mcp_server_kit
+  ./servers/<name>` builds two `hatchling`-backed distributions, and pip resolves `hatchling` (and
+  its own `hatchling` dependencies) from PyPI at that moment — chosen that day, no hashes, outside
+  the lock, executing a build backend. Nothing installed that way reaches a shipped image, which is
+  why it is here and not above the `rxnlabel` row: what is at stake is unpinned code running in the
+  build and a wheel whose bytes depend on when it was built, not the runtime closure. Closing it is
+  `hatchling` in the `build` group plus the same two lines in twelve Containerfiles, and the reason
+  it is not done in the commit that found it is that twelve edits to close a fleet-wide property is
+  a change that wants its own measurement — specifically, whether a hatchling in the build
+  environment can change what `hatchling.build` puts in a wheel.
+  **Anchors:** `servers/calc/Containerfile`, `pyproject.toml` (`[dependency-groups] build`),
+  `tests/test_fleet.py::test_a_sdist_only_dependency_builds_under_a_pinned_backend`.
+
 - [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
   `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on
   `uv export --frozen ... --require-hashes`, and measured the result on `props`: 11 of 37 packages

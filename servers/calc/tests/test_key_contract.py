@@ -75,6 +75,7 @@ from chemclaw_mcp_calc.engine.ids import stable_hash
 from chemclaw_mcp_calc.engine.key import CALCULATION_EPOCH, CalculationKey
 from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.xtb import _sp_structure
+from chemclaw_mcp_calc.engine.xtb_opt import OptSpec
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 
 # (payload, the digest Chemclaw3's `stable_hash` returns for it). Pure: sorted keys, tight
@@ -278,15 +279,28 @@ def test_the_whole_key_is_stable_on_the_versions_this_test_observes() -> None:
     from `scipy.constants` — which ships whatever CODATA edition that release was built against, so
     a scipy bump moves every geometry in its far decimals. Pinning it here is the same statement as
     pinning the other two: this key belongs to a stack, and the stack is named in it.
+
+    **geomeTRIC is the fourth, and it is pinned on the *optimization* key rather than on the single
+    point.** Two keys are asserted for that reason and not for coverage: the `sp` string is what
+    proves the optimizer stays *out* of the engine's shared version, and the `opt` string is what
+    proves it is in the one calculation it decides. At `6c6a0eb` neither was true — the distribution
+    appeared in no key this server emits, while `servers/calc/pyproject.toml` said it appeared in
+    `engine_version()`
+    (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
     """
-    observed = (version("tblite"), version("rdkit"), version("scipy"))
-    if observed != ("0.7.0", "2026.3.5", "1.17.1"):
+    observed = (version("tblite"), version("rdkit"), version("scipy"), version("geometric"))
+    if observed != ("0.7.0", "2026.3.5", "1.17.1", "1.1.1"):
         pytest.skip(
-            f"pinned against tblite 0.7.0 / rdkit 2026.3.5 / scipy 1.17.1; env has {observed}"
+            "pinned against tblite 0.7.0 / rdkit 2026.3.5 / scipy 1.17.1 / geometric 1.1.1; "
+            f"env has {observed}"
         )
     structure = _sp_structure("CCO", 0)
     assert structure.structure_id == "st_739a222f45be0c3a"
     assert XtbSpec(task="sp").cache_key(structure).as_str() == (
         "xtb.sp@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3"
         ":389b625b3220108a:74c818075e77fec2"
+    )
+    assert OptSpec().cache_key(structure).as_str() == (
+        "xtb.opt@GFN2-xTB+tblite+tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3+geometric-1.1.1"
+        ":389b625b3220108a:5e9dada5819590e9"
     )

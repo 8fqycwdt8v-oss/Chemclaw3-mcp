@@ -39,9 +39,12 @@ from __future__ import annotations
 
 import re
 
+import pytest
 from chemclaw_mcp_calc import tools
 from chemclaw_mcp_calc.engine import crest_cli, xtb_cli
+from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.key import Keyed
+from chemclaw_mcp_calc.engine.xtb_opt import optimizer_version
 
 # `calc_type@calc_version:input_hash:params_hash`, with the two hashes being 16 hex characters —
 # `stable_hash`'s width, which is itself part of the contract with Chemclaw3 (`engine/ids.py`).
@@ -208,6 +211,46 @@ async def test_the_version_names_the_programs_that_actually_ran() -> None:
     # logD composes the two, and says so rather than passing itself off as either.
     logd = results["predict_logd"].calc_version
     assert logd.startswith("logd/") and "pka-" in logd and "rdkit-" in logd
+
+
+async def test_the_optimizer_that_decides_the_geometry_is_in_the_optimization_version() -> None:
+    """geomeTRIC chooses the stationary point, so a geomeTRIC upgrade is a different answer.
+
+    Measured at `6c6a0eb`: `engine_version()` read
+    `tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3` and `'geometric' in engine_version()` was
+    `False`, while `servers/calc/pyproject.toml` said in the present tense that the distribution
+    version was in it "for the same reason tblite's is". So the one program whose *output is the
+    payload* — the optimized geometry, which `optimize_geometry` and `relax_structure` store and
+    whose `structure_id` every downstream key is built from — was the one program no key named
+    (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
+
+    **Driven through the tools rather than through `OptSpec`**, for this file's stated reason: the
+    tool layer is where a summary projection can drop a field with every engine test still green.
+    `scan_point` and `predict_pka` are here because both relax through an `OptSpec` and neither
+    mentions the optimizer anywhere in its own code — if the version were assembled per tool
+    instead of on the spec, those are the two that would be missed.
+
+    The negative half is the rule's second clause. A single point, a properties panel and a Hessian
+    are evaluated at a geometry somebody hands them; naming geomeTRIC on their rows would key three
+    calculations on a program they do not run.
+    """
+    if xtb_cli.is_available() and settings.xtb_engine != "tblite":
+        pytest.skip(
+            "the binary's ANCopt relaxes here, not geomeTRIC; `backend_version` names xtb instead"
+        )
+    results = await _every_tool_result()
+    expected = optimizer_version()
+    for name in ("optimize_geometry", "relax_structure", "scan_point", "predict_pka"):
+        assert expected in results[name].calc_version, (
+            f"{name}: {results[name].calc_version!r} does not name the optimizer that chose its "
+            "geometry, so a geomeTRIC upgrade serves the old stationary point under an unchanged "
+            "key"
+        )
+    for name in ("compute_xtb_energy", "compute_electronic_properties", "compute_hessian"):
+        assert "geometric" not in results[name].calc_version, (
+            f"{name}: {results[name].calc_version!r} names an optimizer it never runs, which keys "
+            "it on a program that cannot have moved its answer"
+        )
 
 
 async def test_the_key_travels_wherever_the_source_derives_one() -> None:

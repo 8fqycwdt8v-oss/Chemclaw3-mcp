@@ -50,6 +50,8 @@ from mcp.types import Tool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 __all__ = [
+    "CONNECTOR_NAME_PATTERN",
+    "MAX_MANIFEST_TEXT_CHARS",
     "SURFACE_FILENAME",
     "SURFACE_UPDATE_ENV",
     "BearerAuth",
@@ -139,6 +141,13 @@ class HttpEndpoint(BaseModel):
     refusal on purpose: `tools:` with nothing under it means an empty list to the person who wrote
     it, and `assert_manifest_matches` has a far better sentence for "declares [] and serves one"
     than a type error does.
+
+    **`knowledge_read` is here because it is a field over there**, and this model refused it
+    (`D-2026-09-16-a-stand-in-that-refuses-a-real-field-is-not-a-stand-in`). A fleet manifest
+    declaring one would have failed `load_manifest` with "is not a connector manifest", which is
+    a false sentence about a key the consumer defines and reads. Nothing here declares one yet,
+    which is exactly why it went unnoticed — a latent false refusal costs nothing until the day
+    somebody writes the field and is told their manifest is not a manifest.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -151,12 +160,25 @@ class HttpEndpoint(BaseModel):
     tools: list[str] = Field(default_factory=list)
     read_only: list[str] = Field(default_factory=list)
     state_changing: list[str] = Field(default_factory=list)
+    knowledge_read: list[str] = Field(default_factory=list)
 
-    @field_validator("tools", "read_only", "state_changing", mode="before")
+    @field_validator("tools", "read_only", "state_changing", "knowledge_read", mode="before")
     @classmethod
     def _an_empty_key_is_an_empty_list(cls, value: object) -> object:
         """`tools:` with nothing under it is `None` in YAML and `[]` to whoever wrote it."""
         return [] if value is None else value
+
+
+#: The cap `Chemclaw3` puts on every manifest text field
+#: (`core.manifest_io.MAX_MANIFEST_TEXT_CHARS`). A literal here because this repository may not
+#: import that one, and held against the real value by `tests/test_consumer_agreement.py` whenever
+#: a consumer checkout is on the machine.
+MAX_MANIFEST_TEXT_CHARS = 4_000
+
+#: The shape `Chemclaw3`'s `ConnectorManifest.name` requires. A bundle's name is a directory name,
+#: a `CHEMCLAW_CONNECTOR_URLS` key and a metric label over there, which is why it is constrained at
+#: all.
+CONNECTOR_NAME_PATTERN = r"^[a-z][a-z0-9-]*$"
 
 
 class ConnectorManifest(BaseModel):
@@ -166,14 +188,57 @@ class ConnectorManifest(BaseModel):
     `manifests-internal/` mechanical rather than trusted — see `tests/test_fleet.py`. It is
     modelled rather than ignored so that a typo in it is a refusal here instead of a backend
     silently declaring itself a connector.
+
+    **The contract this model is held to, stated because it was wrong in both directions at once**
+    (`D-2026-09-16-a-stand-in-that-refuses-a-real-field-is-not-a-stand-in`). It must refuse
+    everything the consumer refuses and accept everything the consumer accepts, and every
+    deliberate difference is named here:
+
+    - `mount` — accepted here, refused there. That asymmetry *is* `manifests-internal/`.
+    - `auth.mode` — `bearer` only, where the consumer also allows `none`. `CLAUDE.md`'s rule, and
+      `BearerAuth` carries the argument.
+    - `endpoint` — required here, optional there. Over there a bundle may contribute Temporal jobs
+      and no endpoint; a server in this fleet that serves no MCP surface is not a server, and
+      `assert_manifest_matches` has nothing to drive without a URL.
+    - **The `read_only`/`state_changing` partition is not enforced by this model**, and the
+      consumer's `HttpEndpoint` does enforce it. That one is checked here by
+      `assert_manifest_matches` instead, against the tools a server **actually serves** rather than
+      against the ones it declares — which is strictly the stronger question, and is the reason
+      this model is allowed to be the weaker half of a pair rather than a hole. Every server in
+      this fleet owes that call (`tests/test_fleet.py`), so nothing reaches a deployment unchecked.
+
+    Everything else agreed by inspection and did not agree in fact. Measured at `6c6a0eb`:
+    `{"name": "Calc_Server!", "description": "x" * 20_000}` validated here and aborts the
+    consumer's startup — it enforces a pattern on `name` and a 4,000-character cap on
+    `description` — while `endpoint.knowledge_read` and the top-level `jobs`, `skills`, `profiles`,
+    `note_types` and `relations`, all real fields of the consumer's model, were refused here with
+    "is not a connector manifest".
+
+    The five top-level lists are accepted and **not** validated in depth: `JobSpec` alone carries
+    an effect model, a queue, a compensation and three cross-field validators, and a second copy of
+    that would be a second answer to one question — the defect this whole model exists to avoid one
+    layer down. What holds them is `tests/test_consumer_agreement.py`, which runs every shipped
+    manifest through the consumer's *own* model whenever a checkout is on the machine.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    name: str = Field(min_length=1)
-    description: str = Field(min_length=1)
+    name: str = Field(min_length=1, pattern=CONNECTOR_NAME_PATTERN)
+    description: str = Field(min_length=1, max_length=MAX_MANIFEST_TEXT_CHARS)
     mount: Literal["connector", "backend"] = "connector"
     endpoint: HttpEndpoint
+    # Declared so they are accepted, typed loosely on purpose — see the class docstring.
+    jobs: list[dict[str, Any]] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    profiles: list[str] = Field(default_factory=list)
+    note_types: list[str] = Field(default_factory=list)
+    relations: list[str] = Field(default_factory=list)
+
+    @field_validator("jobs", "skills", "profiles", "note_types", "relations", mode="before")
+    @classmethod
+    def _an_empty_key_is_an_empty_list(cls, value: object) -> object:
+        """`skills:` with nothing under it is `None` in YAML and `[]` to whoever wrote it."""
+        return [] if value is None else value
 
 
 def load_manifest(path: Path) -> ConnectorManifest:
