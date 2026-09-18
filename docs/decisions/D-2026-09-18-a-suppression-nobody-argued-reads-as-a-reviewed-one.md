@@ -55,10 +55,12 @@ Removing them was considered and declined for the third: rewriting the substitut
 the other way round — the same direction that record rejected when it reverted an
 `implicit_reexport` for `mcp.*`.
 
-**No tree-wide ratchet is added, and that is deliberate.** There are 125 `# type: ignore` comments
-in this repository; a control requiring an argument beside each would be a retrofit of 125 sites
-taken as a side effect of a fix round, which is how an allowlist nobody reads gets born. What the
-gate does hold is that none of them is inert.
+**No tree-wide ratchet is added, and that is deliberate.** Measured on 2026-09-18,
+`grep -rn '# type: ignore' --include=*.py . | grep -v '^./.venv' | wc -l` answers **125** — the
+command is here rather than only the number, for the reason this repository writes down about every
+other count. Requiring an argument beside each would be a retrofit of that many sites taken as a
+side effect of a fix round, which is how an allowlist nobody reads gets born. What the gate does
+hold is that none of them is inert.
 
 ## What keeps it true
 
