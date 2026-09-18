@@ -407,6 +407,13 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     So both halves are checked against the same observed command, and the source half is globbed
     rather than listed for the reason the `TESTS` variable already is.
 
+    **The same reading found two things the gate had never read at all.** `SRC` and `TESTS` are
+    directory lists, so the root `conftest.py` — layer 3 of the no-egress posture, the fixture that
+    arms the guard for every test in this repository — and `scripts/`, which holds
+    `offline_check.py` and is therefore the whole `make offline-run` lane, were outside
+    `mypy --strict`. Both were clean when they were added (305 files to 308, `Success`), so nothing
+    was hiding; what was missing was anything that would notice if something started.
+
     `--explicit-package-bases` is asserted because without it the invocation does not run at all:
     ten servers ship a `tests/test_no_egress.py`, and mypy keys a module by basename by default.
     """
@@ -429,7 +436,11 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
         "checks anything, so the flag is part of the gate rather than a preference"
     )
 
-    expected = {"tests"}
+    # Three of these are not directories under a glob, so they are named. `conftest.py` arms the
+    # egress guard for the whole suite — layer 3 of the no-egress posture `CLAUDE.md` describes —
+    # and `scripts/` holds `offline_check.py`, which *is* `make offline-run`. Both were outside the
+    # gate entirely, and neither `SRC` nor `TESTS` could express them, being directory lists.
+    expected = {"tests", "conftest.py", "scripts"}
     expected |= {
         str(directory.relative_to(ROOT))
         for pattern in ("packages/*/tests", "servers/*/tests", "packages/*/src", "servers/*/src")

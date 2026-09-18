@@ -10,10 +10,13 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src
+SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts
 # The test tree, globbed rather than listed: a new server's tests are checked the day the directory
 # exists, which is the half `SRC` gets wrong by being a list somebody has to remember to extend.
-TESTS := tests $(wildcard packages/*/tests) $(wildcard servers/*/tests)
+# `conftest.py` is named because it is a file rather than a directory and both variables are
+# directory lists: it is layer 3 of the no-egress posture — the fixture that arms the guard for the
+# whole suite — and it was outside the gate, as was `scripts/`, which is all of `make offline-run`.
+TESTS := conftest.py tests $(wildcard packages/*/tests) $(wildcard servers/*/tests)
 
 .PHONY: help
 help: ## Show this help.

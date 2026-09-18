@@ -84,6 +84,25 @@ are two ways to get the artefact wrong: read the wrong half of it (the type gate
 rendering of it instead of the thing (here). Both were written by sessions that had just argued
 against exactly that.
 
+## What the same reading found outside the gate altogether
+
+`SRC` and `TESTS` are lists of **directories**, and two things in this tree are not directories:
+
+- the root `conftest.py` — layer 3 of the four-layer no-egress posture, the fixture that arms the
+  guard for every test in this repository;
+- `scripts/`, which is a directory but was on neither variable, and holds `offline_check.py`, which
+  *is* the `make offline-run` lane.
+
+Neither was ever read by `mypy --strict`, and the new ratchet could not see that because it derived
+`expected` from the same two globs. Both are clean — adding them takes the gate from **305** files
+to **308**, `Success` — so nothing was hiding. What was missing was anything that would notice if
+something started, which is the whole argument of the record being corrected.
+
+`conftest.py` goes on `TESTS`, `scripts` on `SRC`, and both are named in the ratchet's `expected`
+beside `tests`. Driven, each separately: dropping ` scripts` from `SRC` reds with
+`does not read ['scripts']`; dropping `conftest.py` from `TESTS` reds with
+`does not read ['conftest.py']`.
+
 ## And one where the ratchet was right and the prose beside it was not
 
 `test_every_server_builds_a_wheel_that_carries_its_data`'s docstring closed on "the cache is warm by
@@ -101,16 +120,18 @@ can go stale.
 
 ## What this does not claim
 
-Nothing was wrong on `6df6eb19` and nothing was uncovered: `make type` checked 305 files there and
-checks 305 files here. What changed is what can go wrong *next* without a red line — which is the
-whole argument the record being corrected makes about its own subject.
+Nothing was wrong on `6df6eb19`. `make type` checked 305 files there and 308 here — the three added
+are the root `conftest.py` and the two `scripts/` modules, and all three were already clean, so no
+defect is uncovered and none is claimed. What changed is what can go wrong *next* without a red
+line, which is the whole argument the record being corrected makes about its own subject.
 
 ## What keeps it true
 
 - `tests/test_fleet.py::test_the_type_gate_reads_the_test_tree_and_not_only_the_source` — requires
   every `packages/*/src`, `servers/*/src`, `packages/*/tests` and `servers/*/tests` directory on
   disk to appear in the command `make -n type` prints. A new server is covered in both halves the
-  day its directories exist.
+  day its directories exist, and `conftest.py` and `scripts` are named beside them because they are
+  not directories under either glob.
 - `tests/test_fleet.py::test_every_server_is_wired_into_the_type_gate` — the declaration half,
   unchanged: `SRC :=` and `mypy_path` name every server that has a `src/`.
 - `tests/test_fleet.py::test_the_build_group_names_every_backend_this_workspace_declares` — its
