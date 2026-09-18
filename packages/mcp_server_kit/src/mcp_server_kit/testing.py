@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -94,6 +95,18 @@ def reimported(module: ModuleType) -> ModuleType:
     `sys.modules`, so every other module that did `from ...tools import server` at import keeps a
     reference to the old object while new callers get a different one. This executes the same
     source into a throwaway module instead, so nothing outside the assertion can see it.
+
+    **It is registered in `sys.modules` for the duration of the execution and removed afterwards**,
+    which reads like a contradiction of the paragraph above and is not: the name is the throwaway
+    one, so no existing importer can reach it, and it is gone before this returns. It has to be
+    there because a module is not self-contained while it executes — `dataclasses` resolves a
+    string annotation by looking its own class's module up in `sys.modules`, and with
+    `from __future__ import annotations` in force every annotation is a string. Driven on
+    `servers/props`' `correlations.py`, whose `VapourPressure` is a `slots=True` dataclass: without
+    the registration the re-execution dies with `AttributeError: 'NoneType' object has no attribute
+    '__dict__'` from inside `dataclasses`, which names neither this function nor the module it was
+    given. `finally`, so a module that raises on purpose — which is what every bound test asks for
+    — does not leave the name behind for the next test to find.
     """
     if module.__spec__ is None or module.__spec__.origin is None:  # pragma: no cover - not a file
         raise ValueError(f"{module.__name__} has no source file to re-execute")
@@ -105,7 +118,11 @@ def reimported(module: ModuleType) -> ModuleType:
             f"{module.__name__} could not be re-imported from {module.__spec__.origin}"
         )
     fresh = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fresh)
+    sys.modules[spec.name] = fresh
+    try:
+        spec.loader.exec_module(fresh)
+    finally:
+        del sys.modules[spec.name]
     return fresh
 
 

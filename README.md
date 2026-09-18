@@ -44,7 +44,11 @@ curl -si localhost:8850/mcp | head -1     # HTTP/1.1 401 Unauthorized — the be
 
 `make offline-run` runs the same suite inside a network namespace with no route off the host. It is
 the strongest form of the no-egress claim, because it does not trust this repository's own code:
-it takes the network away and checks every answer is unchanged.
+it takes the network away and checks every answer is unchanged. It is the **only** cover for the two
+egress channels no static scan reaches — a child process, and a `ctypes` call into libc — so
+`make check` now runs it too, wherever the kernel allows an unprivileged network namespace, and
+names it on screen where it does not. A gate that silently omits a layer reads exactly like one that
+ran it.
 
 ## Wiring it to Chemclaw3
 

@@ -78,8 +78,38 @@ cov: ## The suite again, with coverage measured and the floor in `pyproject.toml
 	@# suite twice. `test` stays for a fast bare run while iterating.
 	$(UV) run pytest -q --cov --cov-report=term
 
+# The fourth egress layer, run where the kernel permits it and **named** where it does not.
+#
+# `egress.py` lists four channels the runtime guard cannot reach by construction: a child process, a
+# `ctypes` call into `libc`, the private C type `_socket.socket`, and any syscall from a compiled
+# extension. The static scan refuses two of them (`_socket`, and a named compiled extension);
+# `ctypes` is off its list deliberately, because `servers/pyexec`'s sandbox needs it, and a child
+# process is what `pyexec` and `calc` *are*. So those two are covered by exactly one thing —
+# `offline-run`, which takes the network namespace away instead of asking Python nicely — and it
+# was outside `make check`, so a local gate went green with two of the four unverified and nothing
+# on screen saying so.
+#
+# **Folding it in costs CI nothing**, which is what makes this the cheap answer rather than a
+# trade: `.github/workflows/ci.yml` calls `make lint`, `make type` and `make cov` as separate
+# steps and runs `offline-run` as its own job. It never invokes `make check`.
+#
+# Guarded rather than unconditional, because `unshare --net` needs unprivileged user namespaces and
+# a container can be configured without them. A gate that *fails* there would be telling a
+# contributor their change is broken when it is their kernel; a gate that silently omits the step is
+# the thing this target exists to stop. So it says which layer it did not run, in the same shape
+# `deps-audit` below uses for an audit it could not reach.
+.PHONY: offline-guarded
+offline-guarded:  ## `offline-run` where the kernel allows a network namespace, a named notice where not.
+	@if unshare --user --map-root-user --net -- true >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory offline-run; \
+	else \
+		printf '\nSKIPPED offline-run: this kernel refuses an unprivileged network namespace.\n'; \
+		printf 'The two egress channels no static scan reaches - a child process and a `ctypes`\n'; \
+		printf 'call into libc - are unverified by this run. CI runs them as its own job.\n\n'; \
+	fi
+
 .PHONY: check
-check: lint type cov deps-audit ## Everything CI runs bar `offline-run`, which needs `unshare`.
+check: lint type cov offline-guarded deps-audit ## Everything CI runs, including the offline lane where the kernel allows it.
 	@# `deps-audit` is last on purpose: a dependency finding is a real failure, but not one that
 	@# should mask a broken test, and it is the only step here whose fix lives in `uv.lock` rather
 	@# than in the diff under review. It is in this list at all because CI now runs it, and a local

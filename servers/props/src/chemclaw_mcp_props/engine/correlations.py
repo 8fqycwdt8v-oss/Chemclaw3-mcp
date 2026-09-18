@@ -40,9 +40,10 @@ answer is the Clausius-Clapeyron route saying so -- which at 200 °C is +3.9%, n
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from typing import Literal
+
+from mcp_server_kit.limits import env_ratio
 
 from chemclaw_mcp_props.engine.records import Solvent
 
@@ -106,7 +107,38 @@ TROUTON_J_PER_MOL_K = 88.0
 # Config, not a magic number, for the reason `ANTOINE_EXTRAPOLATION_K` above it is: a deployment
 # with a real critical temperature in hand, or a supercritical question it means to ask, changes it
 # without editing code.
-MAX_TEMPERATURE_TB_RATIO = float(os.environ.get("CHEMCLAW_PROPS_MAX_TB_RATIO", "1.8"))
+#
+# **Through `env_ratio`, because a knob that loosens a bound is also a knob that removes it.** This
+# was the one bound in the fleet still read as a bare `float(os.environ.get(...))` after
+# `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put every integer one behind a
+# reader that refuses at import — it is a ratio, and that reader is `int`-typed. Measured here, on
+# toluene: at the default the ceiling is 417.6 °C; at `1.0` it is 110.6 °C, *exactly* the normal
+# boiling point, so every above-boiling question is refused; at `0` it is -273.1 °C and every
+# question is, on a pod that starts and passes readiness. `loose` raised
+# `could not convert string to float` naming neither the variable nor the way back.
+#
+# **The floor is just above 1 and there is deliberately no ceiling.** Below 1 the ceiling falls
+# under the normal boiling point and the server cannot answer the region it exists for; above the
+# default it merely gets looser, which is the freedom the paragraph above is written to preserve —
+# unlike `MAX_MOLECULE_ATOMS`, where raising the bound re-arms a crash.
+MAX_TEMPERATURE_TB_RATIO = env_ratio(
+    "CHEMCLAW_PROPS_MAX_TB_RATIO",
+    default=1.8,
+    # **1.01, and the first draft of this line said `nextafter(1.0, inf)`.** That is the correct
+    # mathematical floor and a useless one: it formats as `1`, so the refusal read "1 is below the
+    # minimum of 1", and a ratio one float above 1 leaves a liquid range of about 5e-14 K anyway.
+    # The rule the floor states instead is that the ceiling must sit a real distance above the
+    # normal boiling point. Measured against the lowest-boiling row in this corpus (diethyl ether,
+    # 34.6 °C), 1.0 leaves 0.0 K of headroom and 1.01 leaves 3.1 K — and Guldberg's own estimate is
+    # 1.5, so nothing a deployment could legitimately want is excluded by refusing under 1.01.
+    minimum=1.01,
+    consequence=(
+        "a ratio this small leaves no usable liquid range above the normal boiling point - at 1 "
+        "the ceiling is the boiling point itself, so every vapour pressure above it is refused, "
+        "and at 0 or below the ceiling is under absolute zero and every question is refused on a "
+        "pod that starts and passes its readiness probe"
+    ),
+)
 
 Method = Literal["antoine", "clausius_clapeyron", "clausius_clapeyron_trouton"]
 

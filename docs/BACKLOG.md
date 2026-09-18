@@ -44,22 +44,6 @@ decision leaves a record behind and the row goes.
 
 ## 1 — The no-egress posture, where it stops
 
-- [ ] **Two of the four channels outside the runtime guard are covered by nothing `make check`
-  runs.** `egress.py` names four channels it cannot reach by construction: a child process, a
-  `ctypes` call into `libc`, the private C type `_socket.socket`, and any syscall from a compiled
-  extension. Three of those arrive as an *import*, which is what the static scan reads, and it
-  refuses two: `_socket`, and a named compiled extension (`grpc` since `c1772fb`). The other two
-  — `ctypes`, off that list deliberately because `servers/pyexec`'s sandbox needs it for
-  `prctl(PR_SET_DUMPABLE, 0)`, and a child process, which no static reader can help with because
-  `subprocess` is how `pyexec` and `calc` work — are covered only by
-  `make offline-run`, which takes the network namespace away. That target is **not** in `make
-  check`: it needs `unshare`, so CI runs it as its own step and a local gate can be green without
-  it. Decide whether the Makefile can detect `unshare` and fold it in, or whether the honest
-  arrangement is a `make check` that says which layer it did not run — the shape
-  `tests/test_backlog_register.py` uses for the rows it cannot open.
-  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/egress.py`,
-  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`, `scripts/offline_check.py`, `Makefile`.
-
 - [ ] **A dynamic import whose name is computed from a *value* is outside the static scan, and
   always will be.** `importlib.import_module("gr" + "pc")` is folded to `grpc` since 2026-09-12, but
   `import_module(name)` cannot be resolved by any static reader, and `servers/rxnpredict` loads its
@@ -121,27 +105,6 @@ decision leaves a record behind and the row goes.
   field is argued in the register instead.
   **Anchors:** `tests/test_fleet.py::_numeric_settings_fields`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
-
-- [ ] **One bound is a `float` and is therefore still read the way the unguarded `int` ones were.**
-  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put every integer bound behind
-  `mcp_server_kit.limits.env_bound`, which is `int`-typed. `servers/props`'
-  `CHEMCLAW_PROPS_MAX_TB_RATIO` is a ratio, so it stayed a bare
-  `float(os.environ.get("CHEMCLAW_PROPS_MAX_TB_RATIO", "1.8"))` — and it has the same defect eight
-  of those eleven had: it multiplies a normal boiling point in kelvin, so `0` makes the ceiling
-  −273.15 °C and every vapour-pressure question is refused, on a pod that starts and passes
-  readiness. Re-derive the set with
-
-  ```sh
-  grep -rnE 'float\(os\.environ' packages/*/src servers/*/src --include=*.py
-  ```
-
-  which finds exactly this one today. What is *not* obvious is the remedy: a second `env_ratio`
-  with one caller is the abstraction the Rule of Three says to inline, and widening `env_bound` to
-  `int | float` makes its `minimum` and its return type ambiguous at eleven call sites that do not
-  need it. Decide between those two and a third — that this bound's floor is a `Field(gt=0)` if
-  `props` ever grows a settings object — rather than copying the helper.
-  **Anchors:** `servers/props/src/chemclaw_mcp_props/engine/correlations.py`,
-  `packages/mcp_server_kit/src/mcp_server_kit/limits.py`.
 
 - [ ] **The bound derivation reads two configuration mechanisms and three shapes past them are
   invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
@@ -430,21 +393,6 @@ decision leaves a record behind and the row goes.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
 
 ## 7 — The coverage floor, and what it is a floor over
-
-- [ ] **`[tool.coverage.run] source_pkgs` names eight distributions and this workspace ships
-  twelve.** `kinetics`, `suitability`, `thermalsafety` and `unitops` are all absent from it, so the
-  88% floor is measured over a basis that excludes four built servers outright — and the comment
-  above the list still opens "The eight distributions this workspace ships", which was true when it
-  was written and is a claim about a commit rather than about `HEAD`. That comment also states the
-  exact failure this causes: a package nobody imported "is the one case a floor exists to catch",
-  and four of them are now invisible to it by name rather than by import. **This is not something
-  `unitops` introduced** — it arrived with the three servers before it, and the row is filed with
-  `unitops` because that is the commit that noticed. Changing the basis changes the percentage, so
-  it is a measurement before it is an edit: add the four, run `make cov`, and either the floor holds
-  and the list is simply corrected, or it moves and the number is re-derived in the same commit the
-  way 88 was. What must not happen is one server being added to the list and the prose still saying
-  eight.
-  **Anchors:** `pyproject.toml`, `Makefile`.
 
 ## 8 — Correlations that need data nobody here has
 

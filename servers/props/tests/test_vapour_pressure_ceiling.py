@@ -17,8 +17,11 @@ server answers at 98.0 bar against the steam-table 85.879 that `test_tools.py` a
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from chemclaw_mcp_props.engine import correlations, records
+from mcp_server_kit.testing import reimported
 
 
 def test_a_temperature_above_the_estimated_critical_point_is_refused() -> None:
@@ -90,3 +93,64 @@ def test_the_ceiling_is_loose_enough_not_to_refuse_a_real_question() -> None:
     assert guldberg_ceiling_c < 300.0
     assert correlations.max_temperature_c(water) > 300.0
     assert correlations.vapour_pressure(water, 300.0).pressure_bar > 0.0
+
+
+def test_the_ratio_that_sets_the_ceiling_refuses_a_value_that_would_answer_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound behind the bound, driven through this module's own import.
+
+    `CHEMCLAW_PROPS_MAX_TB_RATIO` is the last bound in this fleet that was read as a bare
+    `float(os.environ.get(...))` after every integer one moved behind a reader that refuses at
+    import. It had the same defect eight of those had, and a sharper one than most because it
+    *multiplies* rather than caps. Measured on toluene before `env_ratio`:
+
+        1.8 (the default)  ceiling  417.6 °C
+        1.0                ceiling  110.6 °C — exactly the normal boiling point
+        0                  ceiling -273.1 °C — below absolute zero; every question refused
+        "loose"            ValueError: could not convert string to float: 'loose'
+
+    A pod set to `0` started, passed its readiness probe, and refused every vapour-pressure
+    question. Both directions are driven, because a reader that refuses everything is not a fix.
+    """
+    for unusable in ("0", "-1", "1.0", "loose"):
+        monkeypatch.setenv("CHEMCLAW_PROPS_MAX_TB_RATIO", unusable)
+        with pytest.raises(ValueError, match="CHEMCLAW_PROPS_MAX_TB_RATIO"):
+            reimported(correlations)
+
+    monkeypatch.setenv("CHEMCLAW_PROPS_MAX_TB_RATIO", "1.01")
+    at_the_floor = reimported(correlations)
+    toluene = records.require("toluene")
+    ceiling = at_the_floor.max_temperature_c(toluene)
+    assert ceiling > toluene.bp_c, (
+        "the floor must leave a liquid range above the normal boiling point; at or below 1 the "
+        "ceiling is the boiling point itself and the multiplier has stopped multiplying"
+    )
+
+    monkeypatch.delenv("CHEMCLAW_PROPS_MAX_TB_RATIO")
+    assert pytest.approx(1.8) == reimported(correlations).MAX_TEMPERATURE_TB_RATIO, (
+        "an unset variable must still be the default this module argues for"
+    )
+
+
+def test_the_ratio_can_still_be_loosened_which_is_what_the_knob_is_for() -> None:
+    """The asymmetry with the fleet's crash bounds, asserted where the argument lives.
+
+    `MAX_MOLECULE_ATOMS` has a ceiling because raising it re-arms an uncatchable SIGSEGV. This one
+    has none on purpose: the comment beside it says a deployment holding a real critical
+    temperature, or asking a supercritical question deliberately, changes it without editing code.
+    A `maximum` here would contradict the decision the knob exists to serve, so the absence of one
+    is asserted rather than left to be read off a docstring.
+    """
+    from mcp_server_kit import limits
+
+    assert limits.env_ratio(
+        "CHEMCLAW_PROPS_MAX_TB_RATIO_UNSET_IN_THIS_TEST",
+        default=1.8,
+        minimum=1.01,
+        consequence="x",
+    ) == pytest.approx(1.8)
+    assert "maximum" not in inspect.signature(limits.env_ratio).parameters, (
+        "env_ratio grew a ceiling; `servers/props`' own argument is that this ratio must stay "
+        "loosenable, so that is a decision needing a record rather than a parameter"
+    )
