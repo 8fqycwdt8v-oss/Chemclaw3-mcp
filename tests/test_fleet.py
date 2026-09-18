@@ -734,8 +734,18 @@ def test_every_server_builds_a_wheel_that_carries_its_data() -> None:
     run that had already reached the internet in the other lane — the one claim
     ("a test that only passes by reaching the internet fails instead") the offline lane exists to
     make. With the flag the build reads the cache or fails, in both lanes and identically, and the
-    cache is warm by then because `uv sync` installs all eight workspace members editable and so
-    fetches the same backend.
+    cache is warm by then because `uv sync` installs every workspace member editable and so fetches
+    *a* backend — **not** necessarily the one the lock's `build` group names.
+
+    **That last sentence shipped saying "all eight workspace members" and "the same backend", and
+    both halves were wrong**
+    (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`).
+    `ls -d packages/*/ servers/*/ | wc -l` answers **12**, and the warmed cache carries
+    `hatchling-1.32.0.dist-info` beside `hatchling-1.32.3.dist-info`, which is the lock's. The ADR
+    written in the same commit
+    (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`) states it
+    correctly and bounds the exposure — this wheel is never shipped — so the tree was carrying two
+    documents disagreeing, with the wrong one in the file a reader opens first.
     """
     import subprocess
     import tempfile

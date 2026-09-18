@@ -84,6 +84,21 @@ are two ways to get the artefact wrong: read the wrong half of it (the type gate
 rendering of it instead of the thing (here). Both were written by sessions that had just argued
 against exactly that.
 
+## And one where the ratchet was right and the prose beside it was not
+
+`test_every_server_builds_a_wheel_that_carries_its_data`'s docstring closed on "the cache is warm by
+then because `uv sync` installs all **eight** workspace members editable and so fetches **the same
+backend**". Measured: `ls -d packages/*/ servers/*/ | wc -l` answers **12**, and the warmed cache
+carries `hatchling-1.32.0.dist-info` beside `hatchling-1.32.3.dist-info` — the lock resolves the
+second. `D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`, written in
+the same commit, has it right ("fetches *a* backend — not the one the lock's build group names")
+and bounds the exposure, so the tree carried two documents disagreeing with the wrong one in the
+file a reader opens first.
+
+The correction **deletes the count** rather than updating it to twelve, which is this repository's
+own rule about a number in prose and is why no ratchet is owed for it: there is nothing left that
+can go stale.
+
 ## What this does not claim
 
 Nothing was wrong on `6df6eb19` and nothing was uncovered: `make type` checked 305 files there and
