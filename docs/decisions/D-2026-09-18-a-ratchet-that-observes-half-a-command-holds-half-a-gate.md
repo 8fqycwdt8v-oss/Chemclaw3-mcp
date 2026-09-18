@@ -103,6 +103,26 @@ beside `tests`. Driven, each separately: dropping ` scripts` from `SRC` reds wit
 `does not read ['scripts']`; dropping `conftest.py` from `TESTS` reds with
 `does not read ['conftest.py']`.
 
+## A recipe comment calling a no-op load-bearing
+
+The same recipe read "`--explicit-package-bases` keys by path instead and `MYPYPATH=.` is what gives
+those paths a root to be relative to" — two halves of one fix. Only one is a fix:
+
+```
+$ env -u MYPYPATH .venv/bin/mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
+Success: no issues found in 308 source files
+$ MYPYPATH=. .venv/bin/mypy --namespace-packages $(SRC) $(TESTS)
+Found 1 error in 1 file (errors prevented further checking)
+    ... c) using `--explicit-package-bases` or adjusting `MYPYPATH`
+```
+
+`.` is already the root the flag falls back to — make chdirs before running a recipe — and
+`[tool.mypy] mypy_path` names the twelve `src/` trees besides. The variable is removed rather than
+the sentence rewritten, because a dead environment variable that a comment calls load-bearing is
+read as a control, and `CLAUDE.md` deletes those on sight. **No control is lost with it**: the half
+that is load-bearing is asserted, and mutating *that* out of the recipe reds
+`test_the_type_gate_reads_the_test_tree_and_not_only_the_source` on the sentence it already carries.
+
 ## And one where the ratchet was right and the prose beside it was not
 
 `test_every_server_builds_a_wheel_that_carries_its_data`'s docstring closed on "the cache is warm by

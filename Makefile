@@ -38,15 +38,22 @@ format: ## Apply ruff's fixes and formatting.
 
 .PHONY: type
 type: ## mypy --strict over every server, the shared kit and the test tree.
-	@# **The two flags are what make the test tree checkable at all.** Ten servers ship a
-	@# `tests/test_no_egress.py`, and mypy keys a module by its basename unless told otherwise, so
+	@# **`--explicit-package-bases` is what makes the test tree checkable at all.** Ten servers ship
+	@# a `tests/test_no_egress.py`, and mypy keys a module by its basename unless told otherwise, so
 	@# the plain invocation dies on `Duplicate module named "test_no_egress"` before it checks
-	@# anything. `--explicit-package-bases` keys by path instead and `MYPYPATH=.` is what gives
-	@# those paths a root to be relative to.
+	@# anything. That flag keys by path instead, rooted at the working directory — which is this
+	@# repository, because make chdirs before it runs a recipe.
+	@#
+	@# This line carried `MYPYPATH=.` in front of it and a sentence calling it the other half of
+	@# that fix. It was a no-op: `env -u MYPYPATH` over the same invocation is byte-identical
+	@# `Success`, because `.` is already the root the flag falls back to and `[tool.mypy] mypy_path`
+	@# names the twelve `src/` trees. Dropping the flag *does* break the run, so only the variable
+	@# was dead (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`). The flag
+	@# is asserted by `tests/test_fleet.py`, which is why removing the variable removes no control.
 	@#
 	@# One invocation rather than two: mypy builds one graph, and the test tree imports the source
 	@# tree anyway, so splitting them would analyse the same modules twice.
-	MYPYPATH=. $(UV) run mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
+	$(UV) run mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
 
 .PHONY: test
 test: ## The whole suite, with the egress guard armed (see conftest.py).
