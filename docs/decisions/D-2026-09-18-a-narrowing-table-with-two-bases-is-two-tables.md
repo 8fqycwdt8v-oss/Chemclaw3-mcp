@@ -60,6 +60,16 @@ Neither changes the decision, and both are recorded for the reason this reposito
 record about: a figure in prose is a claim about a commit, and these are claims about a commit whose
 tree is still here to be re-run.
 
+## And one sentence that is true of the decision and false of the diff
+
+That record opens a paragraph **"Nothing in `pyproject.toml` changed."** Measured over the squash,
+`git diff 0d58969 6df6eb19 -- pyproject.toml` is `21 4`, and **zero of those lines touch
+`[tool.mypy]`**: the whole diff is the `build` dependency group, which is the other half of the same
+commit. So the claim is right about what it was making a claim about — the type-gate decision
+relaxed no configuration — and wrong as written, because a measurement taken between two commits was
+generalised to the squash that merged them. The true half is now checkable rather than stated, which
+is the section below.
+
 ## The decision this adds
 
 The record decided "full `--strict` … with no check dropped and no configuration relaxed", and
