@@ -279,7 +279,10 @@ independent layers because a rule that lives in one place rots:
    2's list" are not both available, and only the second is true. The **child process** is the one
    no static reader can help with at all, because `subprocess` is how `pyexec` and `calc` do their
    work. Layer 3 sees none of the four. What is left is `make offline-run`'s, because it takes the
-   network away instead of asking Python nicely.
+   network away instead of asking Python nicely — and since it is the only cover those two have,
+   `make check` runs it wherever the kernel allows an unprivileged network namespace and **names
+   it** where it does not, rather than going green with two of the four unverified and nothing on
+   screen saying so.
 2. **The static scan** (`mcp_server_kit/no_egress.py`), one three-line test per server. AST-based,
    not grep-based — `import httpx as h` and `from requests import get` read differently as text and
    identically as a tree.
@@ -540,10 +543,10 @@ table, one document over.
 
 ```sh
 make install         # uv sync
-make check           # lint + mypy --strict + the suite with its coverage floor + the dependency audit
+make check           # lint + mypy --strict + the suite with its coverage floor + the offline lane + the audit
 make cov             # the suite alone, with coverage measured against `[tool.coverage.report]`
 make deps-audit      # the supply-chain step alone: pip-audit over the exported lockfile
-make offline-run     # the same suite with the network namespace taken away
+make offline-run     # the same suite with the network namespace taken away (`check` runs it where it can)
 make run-props       # the reference server on 127.0.0.1:8850
 make run-safety      # one per server, on the port that server's own manifest publishes
 make run-calc        # the heaviest one — a call here can be minutes or hours, deliberately

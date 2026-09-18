@@ -366,3 +366,66 @@ def test_a_stack_too_small_for_the_default_keeps_it_and_says_so(
     with caplog.at_level(logging.WARNING, logger=limits.__name__):
         assert limits.stack_safe_atom_ceiling(floor=10**9) == 10**9
     assert any("may crash this pod" in record.getMessage() for record in caplog.records)
+
+
+def test_a_ratio_is_read_with_the_same_discipline_as_a_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The type `env_bound` could not cover, and the defect that stayed behind in it.
+
+    Putting every *integer* bound behind one reader left exactly one bound in the fleet outside it:
+    a dimensionless ratio, read as a bare `float(os.environ.get(...))` and carrying the whole
+    defect the sweep was about — `0` accepted at import, the pod started, and every question the
+    bound governs refused.
+
+    All three arms, because a reader that only rejects `0` is not the control: a value under the
+    floor, a value that is not a number at all, and the floor itself accepted.
+    """
+    monkeypatch.setenv("MCP_A_RATIO", "0")
+    with pytest.raises(ValueError) as refusal:
+        limits.env_ratio("MCP_A_RATIO", default=1.8, minimum=1.01, consequence="nothing answers")
+    message = str(refusal.value)
+    assert "MCP_A_RATIO" in message
+    assert "1.01" in message and "1.8" in message
+    assert "nothing answers" in message
+
+    monkeypatch.setenv("MCP_A_RATIO", "loose")
+    with pytest.raises(ValueError, match="is not a number"):
+        limits.env_ratio("MCP_A_RATIO", default=1.8, minimum=1.01, consequence="x")
+
+    monkeypatch.setenv("MCP_A_RATIO", "1.01")
+    assert limits.env_ratio(
+        "MCP_A_RATIO", default=1.8, minimum=1.01, consequence="x"
+    ) == pytest.approx(1.01)
+
+
+def test_a_ratio_has_a_floor_and_no_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The asymmetry with `MAX_MOLECULE_ATOMS`, asserted rather than left to a docstring.
+
+    That bound has a `maximum` because raising it re-arms an uncatchable SIGSEGV. A sanity ratio
+    has none on purpose: `servers/props`' own argument is that a deployment holding a real critical
+    temperature, or asking a supercritical question deliberately, must be able to loosen it without
+    editing code. A ceiling here would contradict the decision the knob exists to serve.
+    """
+    monkeypatch.setenv("MCP_A_RATIO", "99")
+    assert limits.env_ratio(
+        "MCP_A_RATIO", default=1.8, minimum=1.01, consequence="x"
+    ) == pytest.approx(99.0)
+
+
+def test_both_readers_refuse_a_low_value_in_the_same_words() -> None:
+    """One sentence, because an operator meeting either needs the same four facts in the same order.
+
+    `_refused` is what the two share; the parsing is what they do not. Compared as a *shape* rather
+    than by asserting one literal twice, so that improving the wording moves both or neither.
+    """
+    count = limits._refused("A_COUNT", 0, 500, 1, "no batch is admitted")
+    ratio = limits._refused("A_RATIO", 0, 1.8, 1.01, "nothing answers")
+    for message, name, value, default, minimum in (
+        (count, "A_COUNT", "0", "500", "1"),
+        (ratio, "A_RATIO", "0", "1.8", "1.01"),
+    ):
+        assert message.startswith(f"{name}={value} is below the minimum of {minimum}:"), message
+        assert f"unset {name} for the default of {default}" in message
+        assert "has no 'off' setting" in message
+    assert "500.0" not in count, "a count must not read as a float"

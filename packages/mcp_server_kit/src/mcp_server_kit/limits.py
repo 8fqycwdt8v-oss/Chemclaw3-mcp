@@ -53,9 +53,26 @@ __all__ = [
     "Slots",
     "atom_count_error",
     "env_bound",
+    "env_ratio",
     "smiles_length_error",
     "stack_safe_atom_ceiling",
 ]
+
+
+def _refused(name: str, value: float, default: float, minimum: float, consequence: str) -> str:
+    """The sentence both readers raise when a value is under the floor its call site declared.
+
+    One function because the two readers differ in the type they parse and in nothing a reader of
+    the message can see: an operator meeting `CHEMCLAW_RXNLABEL_MAX_BATCH=0` and one meeting
+    `CHEMCLAW_PROPS_MAX_TB_RATIO=0` need the same four facts in the same order — the variable, what
+    they set, what the floor is and why, and the way back. `:g` so a ratio reads `1.8` and a count
+    reads `500` rather than `500.0`.
+    """
+    return (
+        f"{name}={value:g} is below the minimum of {minimum:g}: {consequence}. A bound has no "
+        f"'off' setting, so unset {name} for the default of {default:g}, or give it a value of "
+        f"at least {minimum:g}."
+    )
 
 
 def env_bound(
@@ -138,17 +155,74 @@ def env_bound(
             f"{minimum}"
         ) from None
     if value < minimum:
-        raise ValueError(
-            f"{name}={value} is below the minimum of {minimum}: {consequence}. A bound has no "
-            f"'off' setting, so unset {name} for the default of {default}, or give it a value of "
-            f"at least {minimum}."
-        )
+        raise ValueError(_refused(name, value, default, minimum, consequence))
     if maximum is not None and value > maximum:
         raise ValueError(
             f"{name}={value} is above the maximum of {maximum}: {consequence}. This ceiling is not "
             f"a preference — above it the failure is a crash rather than a loosened bound — so "
             f"unset {name} for the default of {default}, or give it a value of at most {maximum}."
         )
+    return value
+
+
+def env_ratio(name: str, *, default: float, minimum: float, consequence: str) -> float:
+    """One dimensionless ratio read from the environment at import, refused if it cannot work.
+
+    **`env_bound`'s argument applies unchanged and its type does not.**
+    `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put every *integer* bound
+    behind that function, and one bound in this fleet is a ratio, so it stayed a bare
+    `float(os.environ.get(...))` and kept the whole defect the sweep was about. Measured on
+    `servers/props`' `CHEMCLAW_PROPS_MAX_TB_RATIO`, which multiplies a normal boiling point in
+    kelvin:
+
+        1.8 (the default)  toluene ceiling  417.6 °C   25 °C answers
+        1.0                toluene ceiling  110.6 °C   exactly the boiling point
+        0                  toluene ceiling -273.1 °C   every question refused
+        -1                 toluene ceiling -656.9 °C   below absolute zero
+        "loose"            ValueError: could not convert string to float: 'loose'
+
+    A pod started at `0`, passed its readiness probe, and refused every vapour-pressure question —
+    the same shape `CHEMCLAW_RXNLABEL_MAX_BATCH=0` had, one type over. The last line is the other
+    half: a bare traceback out of `float()` names neither the variable nor the way back.
+
+    **A floor and no ceiling, unlike `MAX_MOLECULE_ATOMS`.** That one has a `maximum` because
+    raising it re-arms an uncatchable SIGSEGV. Raising a *sanity* ratio loosens a bound and nothing
+    more, and `correlations.py` argues for that on purpose — a deployment holding a real critical
+    temperature, or asking a supercritical question deliberately, is meant to be able to. A ceiling
+    here would contradict the decision the knob exists to serve.
+
+    Separate from `env_bound` rather than folded into it: `int` refusing `"1.8"` is a feature of
+    every caller of that function, so a shared parser would have to be told which type it is
+    reading at each of twelve call sites to keep it. What the two genuinely share is the wording,
+    and that is what `_refused` holds.
+
+    Args:
+        name: The environment variable, named in every refusal because it is the one thing an
+            operator reading a crash loop can act on.
+        default: What this ratio is when the variable is unset. Named in the refusal too.
+        minimum: The smallest ratio that still leaves the server able to do its work. Declared by
+            the call site, because only the call site knows what the ratio multiplies.
+        consequence: A clause completing "…: <consequence>." — what the rejected value would do.
+
+    Returns:
+        The configured ratio, which is at least `minimum`.
+
+    Raises:
+        ValueError: The variable is set to something that is not a number, or to one below
+            `minimum`.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{name}={raw!r} is not a number, so this server cannot size the bound it controls; "
+            f"unset it for the default of {default:g} or give it a value of at least {minimum:g}"
+        ) from None
+    if value < minimum:
+        raise ValueError(_refused(name, value, default, minimum, consequence))
     return value
 
 

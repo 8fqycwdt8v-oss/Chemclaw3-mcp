@@ -1857,10 +1857,16 @@ def test_no_shape_that_hides_a_value_from_this_ratchet_reads_as_clean() -> None:
 # slow tool owes the fleet. They are named here rather than in prose for the reason this repository
 # keeps relearning: a count or a list in a document goes stale on somebody else's merge.
 #
-# **Four of these five now arrive through `_BOUND_HELPERS` rather than through a bare `os.environ`
+# **Five of these six now arrive through `_BOUND_HELPERS` rather than through a bare `os.environ`
 # read**, which makes this floor load-bearing in a way it was not before: renaming
 # `mcp_server_kit.limits.env_bound` without telling the scan takes them out of the inventory, and
 # this is the assertion that says so instead of the set silently shrinking.
+#
+# `CHEMCLAW_PROPS_MAX_TB_RATIO` is anchored for a sharper version of the same reason: it is the one
+# bound read through `env_ratio`, so it is the *whole* of what a rename of that second helper would
+# cost. Measured when it moved behind the helper, the derived set went 44 -> 43 until the helper's
+# name was added to `_BOUND_HELPERS` — a bound made safe at import and invisible to the deployment
+# ratchet in the same commit, which is exactly the trade this floor exists to make loud.
 _BOUND_ANCHORS = frozenset(
     {
         "MCP_MAX_SMILES_CHARS",
@@ -1868,6 +1874,7 @@ _BOUND_ANCHORS = frozenset(
         "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS",
         "CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS",
         "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS",
+        "CHEMCLAW_PROPS_MAX_TB_RATIO",
     }
 )
 
@@ -1908,7 +1915,15 @@ _NUMERIC_CASTS = frozenset({"int", "float"})
 # the set quietly shrink, which is the floor the rest of this derivation already rests on. An
 # arbitrary helper is still not followed, and
 # `test_the_derivation_reads_the_two_spellings_it_used_to_miss` asserts both halves.
-_BOUND_HELPERS = frozenset({"env_bound"})
+#
+# **`env_ratio` joined it the day it existed, and adding the helper without adding the name would
+# have been a silent shrink of exactly the kind this comment is about.** Measured: moving
+# `CHEMCLAW_PROPS_MAX_TB_RATIO` off its bare `float(os.environ.get(...))` and behind that reader
+# took the derived set from 44 bounds to 43 — the bound became safe at import and invisible to the
+# ratchet that keeps a Containerfile or a ConfigMap from setting it outside its floor, which is a
+# worse trade than the defect it fixed. The two readers are one entry per parsed type, not a
+# general capability: `env_ratio` is followed because it is `env_bound` for a `float`.
+_BOUND_HELPERS = frozenset({"env_bound", "env_ratio"})
 
 
 def _is_environ(node: ast.AST) -> bool:
@@ -2632,12 +2647,18 @@ def test_a_bound_at_its_own_floor_is_accepted(monkeypatch: pytest.MonkeyPatch) -
         monkeypatch.delenv(site.variable)
 
 
-def _declared_minimum(site: BoundSite) -> int:
+def _declared_minimum(site: BoundSite) -> float:
     """The floor one call site declares, resolved through the module when it is a named constant.
 
     A literal is read off the AST; a name (`minimum=MINIMUM_RENDER_SIZE_PX`) is read off the
     imported module, which is the only honest source — the constant is computed from RDKit's own
     drawing options, so transcribing it here would be a second copy that agrees with itself.
+
+    **Returns a `float` because not every floor is a count.** `env_ratio` reads a dimensionless
+    ratio and `CHEMCLAW_PROPS_MAX_TB_RATIO` floors at `1.01`; while this said `int` the whole
+    function fell through to the refusal below on that site, reporting "no `minimum=`" for a call
+    that plainly has one. `bool` is excluded explicitly rather than by accident — `True` is an
+    `int` in Python and is never a floor anybody wrote down.
     """
     source = ROOT / site.where.rsplit(":", 1)[0]
     line = int(site.where.rsplit(":", 1)[1])
@@ -2648,13 +2669,15 @@ def _declared_minimum(site: BoundSite) -> int:
         for keyword in node.keywords:
             if keyword.arg != "minimum":
                 continue
-            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, int):
-                return keyword.value.value
+            if isinstance(keyword.value, ast.Constant):
+                literal = keyword.value.value
+                if isinstance(literal, int | float) and not isinstance(literal, bool):
+                    return literal
             if isinstance(keyword.value, ast.Name):
                 resolved = getattr(importlib.import_module(site.module), keyword.value.id)
-                assert isinstance(resolved, int)
+                assert isinstance(resolved, int | float) and not isinstance(resolved, bool)
                 return resolved
-    raise AssertionError(f"{site.where}: no `minimum=` on this `env_bound` call")
+    raise AssertionError(f"{site.where}: no `minimum=` on this bound's call")
 
 
 # What `egress.py` says is outside the runtime guard, as the distinctive phrase for each channel.
@@ -3329,4 +3352,43 @@ def test_the_coverage_basis_is_every_distribution_this_workspace_ships() -> None
     assert not stale, (
         f"{stale} are named in the coverage basis and ship nowhere in this workspace. Coverage "
         "over a package that does not exist is silently zero-weighted, which flatters the total."
+    )
+
+
+def test_the_gate_runs_the_only_layer_that_covers_two_of_the_four_egress_channels() -> None:
+    """`make check` has to reach `offline-run`, because nothing else reaches those two channels.
+
+    `egress.py` names four channels the runtime guard cannot cover by construction. The static scan
+    refuses two of them as imports; the other two — a child process, and a `ctypes` call into libc —
+    are covered by exactly one thing, `make offline-run`, which takes the network namespace away
+    instead of asking Python nicely. Both are off the scan's list *deliberately*: `pyexec`'s sandbox
+    needs `ctypes`, and `subprocess` is how `pyexec` and `calc` do their work.
+
+    So a `check` target that does not reach that lane is a gate going green with half the egress
+    posture unverified and nothing on screen saying so
+    (`D-2026-09-18-a-gate-that-omits-a-layer-reads-like-one-that-ran-it`).
+
+    Read off the prerequisite list rather than by running it: what this asserts is that the target
+    is *wired in*, which is the edit a future change would drop. Whether the lane passes is
+    `offline-run`'s own business and CI's separate job.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    prerequisites = re.search(r"^check:([^#\n]*)", makefile, re.MULTILINE)
+    assert prerequisites, "no `check:` target in the Makefile; has the gate been renamed?"
+    wired = prerequisites.group(1).split()
+    assert "offline-guarded" in wired, (
+        f"`make check` no longer reaches the offline lane (prerequisites: {wired}). A child "
+        "process and a `ctypes` call into libc are covered by nothing else, so the gate would go "
+        "green with two of the four egress channels unverified"
+    )
+    assert re.search(r"^offline-guarded:", makefile, re.MULTILINE), (
+        "`check` names `offline-guarded` and the Makefile does not define it"
+    )
+    guard = makefile.split("offline-guarded:", 1)[1].split("\n.PHONY", 1)[0]
+    assert "unshare" in guard and "offline-run" in guard, (
+        "the guarded target no longer tries `offline-run` behind an `unshare` probe"
+    )
+    assert "SKIPPED offline-run" in guard, (
+        "the guarded target no longer names the lane it did not run; silently omitting a layer is "
+        "the defect it exists to prevent, and it reads exactly like having run it"
     )
