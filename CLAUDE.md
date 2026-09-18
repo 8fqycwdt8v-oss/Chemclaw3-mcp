@@ -148,6 +148,14 @@ that helper are non-obvious, and each is quiet when wrong:
   Datasets here load lazily, so before this a `chem` pod with a corpus that failed its checksum
   passed the probe, took traffic and failed every call. A new server passes `readiness=` to
   `connector_app`; see `docs/adding-a-server.md`.
+  **And it loads its corpus lazily, so the probe is what fails rather than the import**
+  (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`). Two servers
+  touched theirs at module scope — `props` deriving a tool-schema bound from the table's size,
+  `rxnpredict` through a settings load — and verifying a corpus in an import means failing in one:
+  driven, `DatasetError` out of `import <pkg>.tools`, no listener, and the two hashes reaching an
+  operator as `CrashLoopBackOff` plus a container log rather than as a 503 body.
+  `tests/test_fleet.py::test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error`
+  holds it for every server that vendors a corpus, derived from the corpora on disk.
   **Passing one is not the same as the check working, and the gap was three of seven**
   (`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`): a probe
   that checks a component *constructed*, or that a version string could be *derived*, passes a

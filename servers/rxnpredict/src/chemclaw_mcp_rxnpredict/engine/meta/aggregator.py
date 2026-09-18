@@ -74,7 +74,9 @@ def aggregate_forward(
         if reaction_class == CLASS_OTHER:
             reaction_class = None
 
-    per_class = settings.model_trust_priors_by_class
+    # `class_priors()` rather than the field: the field is the env override alone, and the
+    # vendored table is read lazily behind it so no import verifies a corpus.
+    per_class = settings.class_priors()
 
     weights: dict[str, float] = defaultdict(float)
     voters: dict[str, set[str]] = defaultdict(set)
@@ -166,7 +168,9 @@ def aggregate_conditions(
         if reaction_class == CLASS_OTHER:
             reaction_class = None
 
-    per_class = settings.model_trust_priors_by_class
+    # `class_priors()` rather than the field: the field is the env override alone, and the
+    # vendored table is read lazily behind it so no import verifies a corpus.
+    per_class = settings.class_priors()
 
     weights: dict[ConditionKey, float] = defaultdict(float)
     voters: dict[ConditionKey, set[str]] = defaultdict(set)

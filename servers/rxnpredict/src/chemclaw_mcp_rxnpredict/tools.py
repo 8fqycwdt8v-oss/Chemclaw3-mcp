@@ -134,7 +134,7 @@ def _provenance(predictors: list[str]) -> str:
     settings = get_settings()
     weighting = (
         "per-reaction-class trust priors"
-        if settings.use_class_priors and settings.model_trust_priors_by_class
+        if settings.use_class_priors and settings.class_priors()
         else "global per-model trust priors (no per-class calibration is loaded)"
     )
     return (

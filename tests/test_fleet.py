@@ -24,6 +24,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -3184,6 +3185,101 @@ def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> Non
         f"{app.relative_to(ROOT)} can pass `readiness=None` to connector_app, which is the "
         "constant-200 branch: /healthz then answers 200 with a corpus that failed its checksum. "
         "Pass a callable unconditionally, or make the degraded case the callable's answer."
+    )
+
+
+# What one of these subprocesses does: refuse every vendored corpus at the loader, then import the
+# server and ask its probe. Run out of process because the import is the subject — a module already
+# in `sys.modules` from another test would make the answer depend on collection order — and because
+# patching a module-level `from mcp_server_kit import load_dataset` binding after the fact is not
+# the thing a corrupt file does.
+_DRIVER = """
+import importlib, json, sys
+
+import mcp_server_kit
+import mcp_server_kit.datasets as datasets
+
+MARKER = "driven: this corpus is not the one the manifest approved"
+
+
+def _refuse(*_args, **_kwargs):
+    raise datasets.DatasetError(MARKER)
+
+
+# Both names: a server reaches the loader through the package re-export, and the package binding is
+# what `from mcp_server_kit import load_dataset` already copied into each engine module.
+datasets.load_dataset = _refuse
+mcp_server_kit.load_dataset = _refuse
+
+package = sys.argv[1]
+importlib.import_module(package + ".tools")
+app = importlib.import_module(package + ".app").app
+
+from fastapi.testclient import TestClient
+
+with TestClient(app) as client:
+    answer = client.get("/healthz")
+print(json.dumps({"status": answer.status_code, "body": answer.json(), "marker": MARKER}))
+"""
+
+
+def _dataset_servers() -> list[Path]:
+    """Every server that loads a vendored corpus, derived from the corpora rather than listed.
+
+    `dataset.json` is what `mcp_server_kit.load_dataset` refuses without, so its presence under a
+    server's package is this repository's own definition of "has a corpus to be corrupt". Derived
+    so that the ninth server to vendor a table owes this proof the day it does, and so that a
+    server which *stops* carrying one drops out instead of leaving a test asserting nothing.
+    """
+    return [server for server in server_dirs() if any((server / "src").glob("*/**/dataset.json"))]
+
+
+@pytest.mark.parametrize("server", _dataset_servers(), ids=lambda path: path.name)
+def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(server: Path) -> None:
+    """A corpus that fails its checksum makes this pod **unready**, never unable to start.
+
+    Both halves are the same sentence and neither is worth much alone: `import <server>.tools` and
+    `import <server>.app` survive a loader that refuses everything, and `/healthz` then answers 503
+    with the reason in the body.
+
+    **Why the import half is the part that had to be driven.** Two of the four servers that vendor
+    a corpus loaded one at module scope — `props` computed `MAX_COMPARED_SOLVENTS` as
+    `len(records.all_solvents())`, and `rxnpredict`'s `register_requested()` call at import reached
+    `get_settings()`, which populated the per-class trust priors — and *verifying a corpus in an
+    import means failing in one*. Measured on 2026-09-18 by appending one newline to each file:
+    `DatasetError` out of the import, no listener, no probe, `CrashLoopBackOff`, and the two hashes
+    only in a container log. `chem` and `safety`, which load lazily, answered 503 naming the file
+    and both hashes on the same driving.
+    `D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error` has the
+    arithmetic and the reason a bound in a tool schema may not be read off an unverified file.
+
+    A readiness callable is separately required by
+    `test_every_server_hands_connector_app_a_readiness_check`; what that one cannot see is whether
+    the process ever gets far enough to call it.
+    """
+    package = next((server / "src").glob("*/app.py")).parent.name
+    finished = subprocess.run(
+        [sys.executable, "-c", _DRIVER, package],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert finished.returncode == 0, (
+        f"{server.name} could not be imported with its corpus refused, so a `records.csv` that "
+        "failed its checksum would take the pod down before `/healthz` could say why:\n"
+        f"{finished.stderr[-2000:]}"
+    )
+    answered = json.loads(finished.stdout.strip().splitlines()[-1])
+    assert answered["status"] == 503, (
+        f"{server.name} imported with every corpus refused and then answered "
+        f"{answered['status']} from /healthz: {answered['body']}. A pod that cannot read its "
+        "table must be kept out of its Service, not left in it answering from nothing."
+    )
+    assert answered["marker"] in str(answered["body"]), (
+        f"{server.name} answered 503 without naming what failed: {answered['body']}. The reason "
+        "is the whole difference this test is about — an operator reads it off the probe instead "
+        "of off a crash loop."
     )
 
 

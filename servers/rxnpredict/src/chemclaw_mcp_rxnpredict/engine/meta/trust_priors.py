@@ -8,7 +8,9 @@ Suzuki coupling specifically, which is the whole point of gating by class.
 `~/.cache/chemclaw2_forward/trust_priors.json` and loaded them on startup if present, which meant
 the numbers driving every ranking had no licence, no checksum, and no record of which calibration
 run produced them. They are now read through `mcp_server_kit.load_dataset`, so a swapped or
-truncated file fails at startup with both hashes in the message.
+truncated file fails with both hashes in the message — on the `/healthz` probe, which is what takes
+the pod out of its Service and shows an operator the reason. It used to fail at *import*, which
+showed them `CrashLoopBackOff`.
 
 Calibration itself stays where it belongs — `scripts/calibrate_rxnpredict_priors.py`, run by a
 person outside the serving image, whose output is reviewed in a pull request.
@@ -52,8 +54,14 @@ def _coerce(data: object, source: str) -> dict[str, dict[str, float]]:
     }
 
 
+@lru_cache(maxsize=1)
 def load_vendored_priors(directory: Path) -> dict[str, dict[str, float]]:
     """The per-class priors shipped with this server, verified against their checksum.
+
+    Cached, because this is now on the serving path rather than read once into `Settings` at
+    startup: `Settings.class_priors()` calls it per aggregation, and re-reading and re-parsing the
+    file for every prediction would be the cost the eager load was paying to avoid. The checksum is
+    still paid exactly once, by `priors_dataset`.
 
     Args:
         directory: The server's `data/` directory — `dataset.json` plus `trust_priors.json`.
@@ -65,10 +73,15 @@ def load_vendored_priors(directory: Path) -> dict[str, dict[str, float]]:
     Raises:
         DatasetError: the file is missing, unlisted, or not the one the manifest approved. This is
             deliberately fatal — a ranking weight that silently reverted to a default is a change
-            in every answer nobody would notice.
+            in every answer nobody would notice. It is raised *here* rather than at import, so the
+            pod answers 503 from `/healthz` naming the file and both hashes instead of crash-looping
+            (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
     """
     dataset = priors_dataset(directory)
-    return _coerce(json.loads(dataset.records_path.read_text(encoding="utf-8")), str(directory))
+    priors = _coerce(json.loads(dataset.records_path.read_text(encoding="utf-8")), str(directory))
+    if priors:
+        logger.info("loaded per-class trust priors for %d reaction classes", len(priors))
+    return priors
 
 
 def load_priors_file(path: Path) -> dict[str, dict[str, float]]:

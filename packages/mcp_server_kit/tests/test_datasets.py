@@ -189,8 +189,8 @@ def test_a_key_nothing_reads_is_refused_rather_than_ignored(tmp_path: Path) -> N
 def test_no_shipped_manifest_carries_a_key_the_loader_does_not_read(tmp_path: Path) -> None:
     """Every `dataset.json` in this fleet, against the model — the direction the unit tests cannot.
 
-    `load_dataset` is called at import or at first use by each server, so a manifest with a stray
-    key already fails that server's own suite. This says so in one place and in one line, which is
+    `load_dataset` is called at first use by each server, so a manifest with a stray key already
+    fails that server's own suite. This says so in one place and in one line, which is
     what makes the deletion above a fleet fact rather than three servers that happened to be fixed.
     """
     root = Path(__file__).resolve().parents[3]

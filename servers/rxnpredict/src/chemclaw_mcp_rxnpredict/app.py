@@ -25,14 +25,22 @@ from chemclaw_mcp_rxnpredict.tools import server
 def _readiness() -> list[Dataset]:
     """Force the per-class trust-priors load every tool call already triggers, off the request path.
 
-    `get_settings()` is where `trust_priors.json` is actually read and checksummed — inside the
-    *first tool call*, not at import (`config.py`'s `get_settings` docstring says so), because
-    `Settings()` is plain pydantic construction and the vendored table is loaded lazily beside it.
-    Every other server with a vendored corpus (`props`, `chem`, `safety`, `calc`) passes a
-    `readiness` callable for exactly this reason; this one shipped without it, so a
-    `trust_priors.json` that failed its checksum would have passed `/healthz`, taken traffic, and
-    failed every real prediction — the same gap `chem`'s `_readiness` docstring documents having
-    been caught on.
+    `Settings.class_priors()` is where `trust_priors.json` is read and checksummed — inside the
+    first aggregation that wants it, not at import. Every other server with a vendored corpus
+    (`props`, `chem`, `safety`, `calc`) passes a `readiness` callable for exactly this reason; this
+    one shipped without it, so a `trust_priors.json` that failed its checksum would have passed
+    `/healthz`, taken traffic, and failed every real prediction — the same gap `chem`'s `_readiness`
+    docstring documents having been caught on.
+
+    **The sentence this docstring used to open with was false, and fixing it is what closed a
+    backlog row** — see
+    `D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`.
+    It said the load happened "inside the *first tool call*, not at import", and cited
+    `config.py`'s `get_settings` docstring as the authority. Measured: `tools.py` calls
+    `register_requested()` at module scope, `register_requested` calls `get_settings()`, and
+    `get_settings()` loaded the corpus — so one byte appended to `trust_priors.json` raised
+    `DatasetError` out of `import chemclaw_mcp_rxnpredict.tools` and this probe never ran at all.
+    `get_settings()` is pure environment now, and the load is `class_priors()`, called here.
 
     `priors_dataset` is `lru_cache`d, so naming the version here after `get_settings()` has already
     loaded it costs nothing further.
@@ -43,7 +51,7 @@ def _readiness() -> list[Dataset]:
     passed this probe and raised on every call. `verify_predictors` is that half; see
     `engine/readiness.py` for why an absent extra is ready and a broken one is not.
     """
-    get_settings()
+    get_settings().class_priors()
     verify_predictors()
     return [priors_dataset(DATA_DIR)]
 

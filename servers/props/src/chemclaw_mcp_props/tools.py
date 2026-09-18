@@ -27,13 +27,8 @@ from chemclaw_mcp_props.engine import correlations, records, selection
 
 server = FastMCP("props")
 
-# How many solvents one `compare_solvent_properties` call may name.
-#
-# **Derived from the corpus rather than chosen**, because the table is what makes the number
-# principled: a comparison naming more solvents than exist cannot be a comparison, only duplicates
-# or unknowns, so the largest legitimate request is "every solvent you have". A literal here would
-# be a magic number that either forbids a real question or leaves the cost unbounded, and it would
-# go stale the first time a row is added.
+# How many solvents one `compare_solvent_properties` call may name: the size of the table, because
+# a comparison naming more solvents than exist cannot be a comparison, only duplicates or unknowns.
 #
 # It exists because the unbounded version was measured, not imagined: 100 000 x "dcm" was a 700 KB
 # request — 70% of `DEFAULT_MAX_REQUEST_BYTES`, so accepted — that returned 81 601 345 B after
@@ -41,7 +36,23 @@ server = FastMCP("props")
 # event loop held in one block, and this module's own opening paragraph ("a dictionary lookup and a
 # few floating-point operations — microseconds — so the tools are synchronous") was false for as
 # long as the input could be any length. Bounding the input is what makes it true again.
-MAX_COMPARED_SOLVENTS = len(records.all_solvents())
+#
+# **Declared here and checked against the corpus by a test, rather than computed from it at import**
+# (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`). It was
+# `len(records.all_solvents())`, on the argument that a derived number cannot go stale when a row is
+# added — true, and it cost the whole server its readiness answer: loading the corpus here means
+# *verifying* it here, so a `records.csv` that failed its checksum raised `DatasetError` out of
+# `import chemclaw_mcp_props.tools` and the pod never started. Driven on this commit, that is
+# `CrashLoopBackOff` and a container log where `chem` and `safety` answer 503 from `/healthz` naming
+# the file and both hashes. The staleness the derivation guarded against is what
+# `servers/props/tests/test_tools.py::test_the_compare_bound_is_the_size_of_the_table` guards
+# against now — it derives the live count and fails on any row added or removed — and the number is
+# not restated anywhere else, because it is only ever read from this name.
+#
+# Reading the file *without* verifying it was the other option and is worse than either: the bound
+# is part of the tool schema Chemclaw3 advertises, and deriving an advertised schema from a corpus
+# nobody approved is the one thing `mcp_server_kit.datasets` exists to prevent.
+MAX_COMPARED_SOLVENTS = 44
 
 
 class SolventSummary(BaseModel):

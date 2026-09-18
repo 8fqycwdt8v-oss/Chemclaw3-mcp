@@ -20,14 +20,11 @@ year later.
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -95,8 +92,10 @@ class Settings(BaseSettings):
         }
     )
 
-    # Per-reaction-class priors, loaded from the vendored dataset by `get_settings`. An explicit
-    # JSON env value wins, so an operator can override without rebuilding the image.
+    # Per-reaction-class priors, as an explicit JSON env override and nothing else. Empty is the
+    # shipped state and means "read the vendored table" — which `class_priors()` does, lazily.
+    # **Never read this field directly on a serving path**; read `class_priors()`, which is the
+    # only place that knows the override beats the corpus.
     model_trust_priors_by_class: dict[str, dict[str, float]] = Field(default_factory=dict)
 
     @field_validator("model_trust_priors", mode="before")
@@ -117,6 +116,32 @@ class Settings(BaseSettings):
         if stripped in {"*", ""}:
             return None
         return {part.strip() for part in stripped.split(",") if part.strip()}
+
+    def class_priors(self) -> dict[str, dict[str, float]]:
+        """The per-reaction-class trust priors this process ranks by: the override, or the corpus.
+
+        **The corpus is read here rather than in `get_settings`, and that is the whole of
+        `D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`.**
+        `get_settings()` used to populate `model_trust_priors_by_class` eagerly, which made
+        *constructing the process settings* depend on `trust_priors.json` passing its checksum —
+        and `tools.py` calls `register_requested()` at module scope, which calls `get_settings()`
+        for two environment strings it could have had for nothing. Driven on this commit: a
+        `trust_priors.json` with one byte appended made `import chemclaw_mcp_rxnpredict.tools`
+        raise `DatasetError`, so the pod never started and the reason reached a kubelet as
+        `CrashLoopBackOff` instead of as the 503 `/healthz` exists to give.
+
+        Lazy here means the failure lands where `chem` and `safety` already put it: on the probe,
+        which runs this (`app.py`'s `_readiness`) before the pod takes traffic.
+
+        Returns:
+            `{reaction_class: {model_name: weight}}`, empty when no calibration has been run —
+            which is the shipped state, and makes the aggregator fall back to the global priors.
+        """
+        if self.model_trust_priors_by_class:
+            return self.model_trust_priors_by_class
+        from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import load_vendored_priors
+
+        return load_vendored_priors(DATA_DIR)
 
     def parse_disabled(self) -> set[str]:
         """The predictor IDs forced off, whatever the enabled list says."""
@@ -158,29 +183,36 @@ _settings: Settings | None = None
 
 
 def get_settings() -> Settings:
-    """The process-wide settings, with the vendored per-class priors loaded once.
+    """The process-wide settings: the environment, parsed once, and nothing read off disk.
 
-    The priors are read through `load_dataset`, so a truncated or swapped file fails here — at
-    startup, with both checksums in the message — rather than silently changing how every
-    prediction in this server is ranked.
+    **Nothing here touches a vendored corpus, deliberately.** This function is called at *import*
+    of `tools.py` — `register_requested()` needs two environment strings to decide whether the
+    configuration named a deterministic double — and it used to load and checksum
+    `trust_priors.json` on the way past. The cost of that was measured on this commit: one byte
+    appended to that file turned `import chemclaw_mcp_rxnpredict.tools` into a `DatasetError`, so
+    the pod crash-looped instead of answering 503 from `/healthz` with the file and both hashes in
+    the body. `Settings.class_priors()` is where the corpus is read now, and `app.py`'s readiness
+    check is what runs it before the pod takes traffic
+    (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
     """
     global _settings
     if _settings is None:
-        settings = Settings()
-        if not settings.model_trust_priors_by_class:
-            from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import load_vendored_priors
-
-            settings.model_trust_priors_by_class = load_vendored_priors(DATA_DIR)
-            if settings.model_trust_priors_by_class:
-                logger.info(
-                    "loaded per-class trust priors for %d reaction classes",
-                    len(settings.model_trust_priors_by_class),
-                )
-        _settings = settings
+        _settings = Settings()
     return _settings
 
 
 def reset_settings_for_tests() -> None:
-    """Force a fresh `Settings` on the next `get_settings()`."""
+    """Force a fresh `Settings`, and a fresh corpus read, on the next `get_settings()`.
+
+    Both halves: the priors are cached beside the settings rather than on them, so resetting only
+    the settings object would leave a test's corpus double in place for the next one.
+    """
     global _settings
     _settings = None
+    from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import (
+        load_vendored_priors,
+        priors_dataset,
+    )
+
+    load_vendored_priors.cache_clear()
+    priors_dataset.cache_clear()
