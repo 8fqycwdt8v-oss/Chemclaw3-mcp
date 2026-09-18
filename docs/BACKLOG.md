@@ -318,23 +318,6 @@ decision leaves a record behind and the row goes.
   `tests/test_consumer_agreement.py::test_the_consumer_still_agrees_with_the_surface_this_tree_declares`,
   `docs/decisions/D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md`.
 
-- [ ] **Eight `calc` tools are hardcoded in a third module neither repository checks.**
-  **Other repository:** `Chemclaw3`. Its `tests/test_sibling_manifest_agreement.py` lists two
-  callers — `connectors/calc/compose.py` and `remote.py` — and finds 13 hardcoded call sites naming
-  10 tools. Running that file's own AST walker over `src/chemclaw/connectors/calc/server/tools.py`
-  on 2026-09-14 found **11 more sites naming 10 tools, 8 of them named by no checked module**:
-  `compute_atomic_descriptors`, `compute_electronic_properties`, `compute_surface_potential`,
-  `compute_xtb_energy`, `predict_pka`, `predict_solubility`, `predict_site_reactivity`,
-  `predict_developability_profile`. Every one is served and every argument declared, so the
-  contract is sound and **unwatched** — a rename in `servers/calc/` would reach all eight with no
-  test on either side. Checked and unchecked together name 18 of the 20 tools
-  `servers/calc/tool-surface.json` records; `optimize_geometry` and `predict_logd` are named by no
-  hardcoded dict-literal site in any of the three modules, which is worth confirming rather than
-  assuming when this is worked. The fix is that repository's `_CALLERS` tuple and nothing here can
-  make it; this row is what keeps it from being forgotten.
-  **Anchors (Chemclaw3):** `tests/test_sibling_manifest_agreement.py::_CALLERS`,
-  `src/chemclaw/connectors/calc/server/tools.py`.
-
 ## 5 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA and `chembl` cannot be built until somebody has read what that obliges.**
