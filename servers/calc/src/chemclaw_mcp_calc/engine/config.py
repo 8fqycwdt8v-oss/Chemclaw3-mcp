@@ -43,10 +43,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #
 # 120 s, and the binding term is the *granularity* rather than the transport. `budget.Deadline` is
 # checked between units of work, never inside one, because a single point is not interruptible — so
-# a spent budget is noticed at most one single point late, and one single point at the 500-atom
-# ceiling `xtb_max_atoms` accepts is **81 s measured here** (53 atoms 0.20 s, 153 atoms 2.43 s, 303
-# atoms 19.8 s, 453 atoms 62.7 s, 493 atoms 81.1 s). 120 s is that plus the tens of milliseconds of
-# handshake and the embedding that precede this server's clock.
+# a spent budget is noticed at most one single point late, and one single point measured **81 s** at
+# 493 atoms here (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s, 493 atoms
+# 81.1 s). 120 s is that plus the tens of milliseconds of handshake and the embedding that precede
+# this server's clock. The cost of a single point rises with the atom count, so a figure measured
+# above `xtb_max_atoms` bounds every size the ceiling admits — which is why lowering the ceiling
+# needs no re-measurement and raising it does.
+#
+# **There is a second uninterruptible unit now and it is the smaller one.** `_optimize_with_library`
+# builds geomeTRIC's coordinate system between the initial single point and the first `Deadline`
+# check, and that build measured 0.52 s at 119 atoms, 3.64 s at 239 and 28.9 s at 509 against single
+# points of 0.68 s, 4.16 s and 41.9 s on the same molecules — below the single point at every size,
+# so the granularity of the clock is still one single point and this margin still covers it.
 #
 # It costs each tier 120 s of affordable calculation, which is 13% of the inline budget and under 1%
 # of the sampling one. That is the price of the refusal being the answer that arrives.
@@ -138,20 +146,33 @@ class CalcSettings(BaseSettings):
     # every task inherits it exactly as it inherits the electron-count check. The Hessian's own cap
     # above is the tighter, per-tool bound inside this one.
     #
-    # Not a promise that 500 atoms is affordable — `xtb_inline_timeout_seconds` is what prices the
-    # work. This refuses the inputs whose *allocation* alone takes the process down before any clock
-    # could run: a JSON body under the 1 MB cap holds ~42,000 atoms, and the optimizer builds a
-    # dense matrix over 3N coordinates, so the allocation is quadratic in the atom count while the
-    # body cap is linear in it.
+    # Not a promise that a structure at the ceiling is affordable — `xtb_inline_timeout_seconds` is
+    # what prices the work. This refuses the inputs whose *allocation* takes the pod down before any
+    # clock could act on it: a `tools/call` body under the 1 MB cap carries ~38,000 atoms (measured,
+    # 26.3 bytes an atom on a compact payload), and the optimizer's coordinate system is quadratic
+    # in the atom count while the body cap is linear in it.
     #
-    # **The number is unchanged and the measurement behind it is retired**, which is worth saying
-    # rather than leaving a figure that now describes deleted code. It was derived from the ANC
-    # preconditioner's (3N, 3N) model Hessian — 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and
-    # 18.7 MB at 510, and a 127 GB allocation at 42,000 — and that preconditioner left with
-    # geomeTRIC's arrival. geomeTRIC's coordinate system is dense over 3N too, so the *shape* of the
-    # argument carries and the constants do not. Re-deriving them against the optimizer that now
-    # runs is a `docs/BACKLOG.md` row rather than a number transcribed here from the old one.
-    xtb_max_atoms: int = 500
+    # **The number is derived rather than chosen, and `tests/test_cost_bounds.py` performs the
+    # derivation** (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`). geomeTRIC's
+    # `DelocalizedInternalCoordinates` builds the primitive G matrix and eigendecomposes it *twice*
+    # (`geometric/internal.py::build_dlc_0`), and `_coordinate_system` passes `addcart=True`, which
+    # puts 3N Cartesian primitives in that set on top of the bonded ones — so the peak is a small
+    # multiple of an (`nprim`, `nprim`) matrix with `nprim` linear in the atom count, and nothing in
+    # it is linear. What the ceiling has to satisfy is that `calc_max_concurrent_requests` calls at
+    # it fit inside the container memory limit `deploy/deployment.yaml` declares, after the server's
+    # own resident set and the session backlog `mcp_server_kit` has already budgeted.
+    #
+    # **The figures that set 500 are retired with the ANC preconditioner that produced them**
+    # (`D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not`) — 3.6 s at 120
+    # atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510. The shape of the argument carried and the
+    # constants did not, in the direction that mattered: geomeTRIC's coordinate-system build alone
+    # measured **956.4 MiB at 509 atoms** against that 18.7 MB, about fifty times, and one whole
+    # relaxation there peaks at 978.9 MiB. Four admitted slots at the old 500-atom ceiling therefore
+    # need 4,262 MiB — this server's resident set and the session backlog included — against a
+    # 4,096 MiB limit, so 500 was over its own bound. The derivation puts the bound at 489 and this
+    # is the largest fifty below it, because every constant in that arithmetic carries a few percent
+    # and a ceiling set at the bound is the defect the record is about.
+    xtb_max_atoms: int = 450
     # Wall-clock ceiling (seconds) on one in-process calculation — the optimizer's leg loop and the
     # finite-difference Hessian, which is what the shipped image runs for every `opt` and `hess`
     # (`CHEMCLAW_XTB_ENGINE=tblite`). The two timeouts above bound a *subprocess* and so bound
