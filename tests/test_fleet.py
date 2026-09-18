@@ -546,6 +546,14 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
         "a record, not a configuration key"
     )
 
+    # The second and last verbatim copy of "print the recipe, find the mypy line", and it stays a
+    # copy on purpose: **two callers, and this repository's rule is no abstraction without a third**
+    # (`CLAUDE.md`'s Rule of Three, and an abstraction with one caller gets inlined). The reviewer
+    # who flagged the duplication measured the same boundary and left it there. It nearly became
+    # three: `test_a_planted_error_in_a_gated_file_reds_make_type` was the obvious third caller and
+    # is not, because it runs `make type` rather than `make -n type` — the exit code is exactly what
+    # a dry run cannot show, and that is the whole point of it. If a genuine third reader of the
+    # printed recipe arrives, extract then.
     printed = subprocess.run(
         ["make", "-n", "type"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout
