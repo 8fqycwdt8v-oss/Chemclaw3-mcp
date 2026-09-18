@@ -5,14 +5,17 @@ cannot run away unpriced, a `request_timeout` stating the real budget". This ser
 the paths its shipped image actually runs, and the two gaps compound:
 
 - **No atom bound.** `compute_hessian` refused above `xtb_hessian_max_atoms`; nothing else did. A
-  `Structure` was validated for internal consistency and never for size, so a ~40,000-atom
+  `Structure` was validated for internal consistency and never for size, so a ~38,000-atom
   `relax_structure` (well inside the 1 MB body cap) reached `make_calculator` with no refusal.
   Measured on the optimizer of the day — an ANC preconditioner, a dense `(3N, 3N)`
   eigendecomposition rebuilt per leg: 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510,
   and at 40,000 atoms a 127 GB array that takes the whole uvicorn process down and with it every
-  other connected turn. That preconditioner is gone (geomeTRIC), so those constants are history
-  rather than a current claim; the *shape* is unchanged, because geomeTRIC's coordinate system is
-  dense over 3N as well and the body cap is linear in the atom count.
+  other connected turn. **That preconditioner is gone (geomeTRIC) and the constants moved by about
+  fifty times, not by a rounding** — `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`
+  has the tables. The *shape* is unchanged, because geomeTRIC's coordinate system is quadratic in
+  the atom count as well and the body cap is linear in it; what changed is that the ceiling is now
+  derived from the pod rather than read off a table of sizes, which is what
+  `test_a_full_pod_of_calculations_at_the_ceiling_fits_the_memory_limit_it_declares` performs.
 - **No wall clock.** `xtb_cli_timeout_seconds` and `crest_timeout_seconds` bound a *subprocess*, and
   `Containerfile` pins `CHEMCLAW_XTB_ENGINE=tblite`, so the shipped image takes the in-process path
   for every `opt` and `hess` and neither timeout applies. `max_steps` bounds iterations, and one
@@ -28,12 +31,18 @@ killing the process group; these tests are the in-process half.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
+import chemclaw_mcp_calc.engine.xtb_opt as xtb_opt
 import pytest
+import yaml
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, compute_hessian
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
 from chemclaw_mcp_calc.engine.xtb_props import PropertiesSpec, compute_properties
+from mcp_server_kit.sessions import DEFAULT_MAX_SESSIONS, SESSION_COST_BYTES
 
 
 def a_structure_of(atom_count: int) -> Structure:
@@ -60,6 +69,117 @@ def test_a_structure_larger_than_the_ceiling_is_refused_before_any_engine_sees_i
 
     at_the_limit = a_structure_of(settings.xtb_max_atoms)
     assert len(at_the_limit.elements) == settings.xtb_max_atoms
+
+
+#: This server's own Deployment, which is where the memory the ceiling is derived from is declared.
+_DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
+
+#: What one whole in-process relaxation peaks at, as MiB per atom squared.
+#:
+#: Quadratic and not cubic because geomeTRIC's `DelocalizedInternalCoordinates` eigendecomposes an
+#: (`nprim`, `nprim`) G matrix whose `nprim` is linear in the atom count — *time* is the cubic one.
+#: Measured out of process, one call per interpreter, absolute peak RSS from `getrusage`, the
+#: optimizer stopped after one cycle because the peak is reached in the initial single point, the
+#: coordinate-system build and the first gradients rather than after a hundred cycles:
+#:
+#:   atoms   119     239     509      (linear alkane, the densest primitive set of four shapes)
+#:   peak    67.2    253.7   978.9    MiB above the process's own resident set
+#:   /N**2   4.74e-3 4.44e-3 3.78e-3
+#:
+#: The coefficient falls with the atom count — a fixed part of the peak is not quadratic — so the
+#: value at the size the ceiling is near is the one that bounds it, not the largest of the three.
+PEAK_MIB_PER_ATOM_SQUARED = 3.78e-3
+
+#: What a *finished* calculation does not give back. The admission gate releases a slot the moment
+#: the work completes, so the next call is admitted against a count rather than against the pod's
+#: resident set — and glibc does not return the arena. Measured over three sequential 239-atom
+#: relaxations in one process: baseline 182.4 MiB resident, then 318.5 / 335.3 / 335.0 after each
+#: call, with the process peak 430.1 / 461.8 / 461.8. The arena is reused rather than added to, so
+#: the steady state costs 6% above a cold call's peak, which is what a slot is charged.
+RETAINED_ARENA_FACTOR = 1.06
+
+#: What the server's own process holds before any calculation. Measured on this repository's real
+#: `chemclaw_mcp_calc.app` — the served ASGI object and its whole import graph — at 181.1 MiB, and
+#: 195.2 MiB after one relaxation of water. Rounded up, because a server that has taken traffic is
+#: not the process this was measured in.
+SERVER_RESIDENT_MIB = 200
+
+#: The densest primitive set geomeTRIC builds per atom, over the shapes a caller can realistically
+#: send. Measured: linear alkane 8.83 at 119 atoms and 8.96 at 509, branched alkane (poly-isobutene)
+#: 8.93 at 293, polyphenylalanine 8.47 at 123, polyglycine 7.89 at 122 and 7.97 at 507. The memory
+#: coefficient above is measured on the first of those, so this is the guard on it: a geomeTRIC that
+#: built a denser set, or a `_coordinate_system` that stopped passing `addcart=True`, would move the
+#: peak by the square of this ratio and leave the coefficient describing a library nobody runs.
+PRIMITIVES_PER_ATOM = 9.0
+
+
+def _container_memory_limit_mib() -> int:
+    """The `limits.memory` this server's own Deployment declares, in MiB."""
+    manifest = yaml.safe_load(_DEPLOYMENT.read_text(encoding="utf-8"))
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+    declared = str(containers[0]["resources"]["limits"]["memory"])
+    assert declared.endswith("Gi"), f"unhandled memory unit in {declared!r}"
+    return int(declared[:-2]) * 1024
+
+
+def _peak_mib_for(atoms: int) -> float:
+    """What one admitted slot costs the pod at `atoms` atoms, retention included."""
+    return RETAINED_ARENA_FACTOR * PEAK_MIB_PER_ATOM_SQUARED * atoms**2
+
+
+def test_a_full_pod_of_calculations_at_the_ceiling_fits_the_memory_limit_it_declares() -> None:
+    """The ceiling's whole job is that an allocation cannot take the pod down, so it is derived.
+
+    Four numbers decide it and this repository declares every one of them: the container's
+    `limits.memory`, `calc_max_concurrent_requests`, `mcp_server_kit`'s own session backlog budget,
+    and what one relaxation peaks at. Written as an inequality over those rather than as a number,
+    because the failure this replaces is a ceiling whose basis was a table of sizes measured against
+    an optimizer that had since been deleted — and a number cannot say which of its inputs moved.
+
+    Measured, the ceiling it replaces did not satisfy this: at 500 atoms a slot costs 1,001 MiB and
+    four of them plus the resident set and the session budget is **4,262 MiB against a 4,096 MiB
+    limit**. The inequality below puts the bound at 489 atoms; `xtb_max_atoms` is the largest fifty
+    under it, because every constant here carries a few percent — the shape of the molecule, the
+    allocator, the installed geomeTRIC — and a ceiling set at its own bound is not a bound.
+
+    Raising `xtb_max_atoms` or `calc_max_concurrent_requests`, or lowering the Deployment's memory
+    limit, fails here instead of in an OOMKill that takes every other connected turn with it.
+    """
+    limit = _container_memory_limit_mib()
+    sessions_mib = DEFAULT_MAX_SESSIONS * SESSION_COST_BYTES / 1024**2
+    concurrent = settings.calc_max_concurrent_requests
+    needed = SERVER_RESIDENT_MIB + sessions_mib + concurrent * _peak_mib_for(settings.xtb_max_atoms)
+    assert needed <= limit, (
+        f"{concurrent} concurrent relaxations at {settings.xtb_max_atoms} atoms need "
+        f"{needed:.0f} MiB — the resident set ({SERVER_RESIDENT_MIB} MiB) and the session backlog "
+        f"({sessions_mib:.0f} MiB) included — against the {limit} MiB this pod's Deployment "
+        "declares. That is an OOMKill, and it takes the four-hour CREST search beside it too"
+    )
+
+
+def test_the_primitive_set_geometric_builds_is_still_what_that_bound_assumes() -> None:
+    """The memory coefficient is measured; the primitive count it rests on is re-derived here.
+
+    `PEAK_MIB_PER_ATOM_SQUARED` cannot be re-measured in-process — `getrusage` reports a high-water
+    mark the rest of the suite has already raised, and `tracemalloc` sees numpy's allocations but
+    not LAPACK's own workspace (measured: 3.0 copies of the G matrix against 6.2 by resident set).
+    So the constant is recorded with its measurement and *this* is the guard on it: the peak is a
+    multiple of an (`nprim`, `nprim`) matrix, so it moves with the square of the primitive density,
+    and a geomeTRIC release that added a primitive family would invalidate the ceiling in silence.
+
+    Driven on the shape the coefficient was measured on, through the same `_coordinate_system` the
+    optimizer calls, so a change to its `connect`/`addcart` arguments lands here too.
+    """
+    structure = structure_from_smiles("C" * 39)
+    numbers, positions = structure.arrays()
+    molecule = xtb_opt._geometric_molecule(numbers, positions)
+    coordinates: Any = xtb_opt._coordinate_system(molecule, ())
+    density = len(coordinates.Prims.Internals) / len(numbers)
+    assert density <= PRIMITIVES_PER_ATOM, (
+        f"geomeTRIC builds {density:.2f} primitives per atom where the atom ceiling was derived "
+        f"against {PRIMITIVES_PER_ATOM}. The peak goes as the square of this, so "
+        f"`PEAK_MIB_PER_ATOM_SQUARED` needs re-measuring before `xtb_max_atoms` can be believed"
+    )
 
 
 def test_the_hessian_cap_is_the_tighter_bound_inside_the_general_one() -> None:
@@ -167,19 +287,30 @@ def test_the_margin_covers_one_uninterruptible_single_point() -> None:
     """The binding term in that margin is granularity, not transport.
 
     `budget.Deadline` is checked *between* units of work and never inside one, because a single
-    point is not interruptible — so a spent budget is noticed at most one single point late. At the
-    500-atom ceiling `xtb_max_atoms` accepts, one single point measured **81 s** here (53 atoms
-    0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s, 493 atoms 81.1 s). A margin under
-    that is a margin the overrun eats, and the caller expires again.
+    point is not interruptible — so a spent budget is noticed at most one single point late. One
+    single point measured **81 s** here at 493 atoms (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms
+    19.8 s, 453 atoms 62.7 s, 493 atoms 81.1 s). A margin under that is a margin the overrun eats,
+    and the caller expires again.
 
     Asserted against `xtb_max_atoms` rather than against a bare number so that raising the atom
     ceiling — which raises the worst-case single point superlinearly — fails here instead of
-    quietly reintroducing the defect.
+    quietly reintroducing the defect. **As an inequality rather than an equality**, because the
+    cost of a single point rises monotonically with the atom count: a figure measured at 493 bounds
+    every ceiling at or below it, so lowering the ceiling owes no new measurement and raising it
+    past that size owes one. The equality this replaces failed on the *safe* direction, which is
+    how a ratchet teaches people to edit it
+    (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`).
+
+    The optimizer gained a second uninterruptible unit with geomeTRIC — the coordinate-system build,
+    which runs between the initial single point and the first `Deadline` check — and it is the
+    smaller one at every size measured (0.52 s against 0.68 s at 119 atoms, 3.64 against 4.16 at
+    239, 28.9 against 41.9 at 509), so the granularity is still one single point.
     """
     worst_single_point_seconds = 81.0
-    assert settings.xtb_max_atoms == 500, (
-        "the 81 s figure is one single point at 500 atoms; a different ceiling needs a "
-        "re-measurement, not a re-reading of this comment"
+    measured_at_atoms = 493
+    assert settings.xtb_max_atoms <= measured_at_atoms, (
+        f"the {worst_single_point_seconds:g} s figure is one single point at {measured_at_atoms} "
+        "atoms; a ceiling above that needs a re-measurement, not a re-reading of this comment"
     )
     margin = CHEMCLAW3_CALLER_BUDGETS["calc_server_timeout_seconds"] - (
         settings.xtb_inline_timeout_seconds

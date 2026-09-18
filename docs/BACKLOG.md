@@ -200,20 +200,6 @@ decision leaves a record behind and the row goes.
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/agents.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/species.py`.
 
-- [ ] **`servers/calc`'s 500-atom cap is unchanged and the measurement that set it is retired.**
-  `CHEMCLAW_XTB_MAX_ATOMS` was derived from the ANC preconditioner's dense `(3N, 3N)` model Hessian
-  — 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510, 127 GB at the ~42,000 atoms a
-  1 MB body can carry. `D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not`
-  deleted that preconditioner; geomeTRIC's coordinate system is dense over 3N as well, so the
-  *shape* of the argument carries and none of the constants do. The number was deliberately not
-  changed in that commit — moving a bound on an unmeasured basis is worse than leaving one whose
-  basis is stated as retired — so what is open is the measurement: geomeTRIC's coordinate-system
-  build plus one optimizer cycle at 120, 240 and 510 atoms, against the same 1 MB body cap, and
-  then whether 500 is still the right place for it.
-  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/config.py`,
-  `servers/calc/tests/test_cost_bounds.py`,
-  `servers/calc/src/chemclaw_mcp_calc/engine/xtb_opt.py::_coordinate_system`.
-
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**
   `servers/rxnpredict`'s `engine/meta/classifier.py` is a 190-line ten-class classifier over a
@@ -337,23 +323,6 @@ decision leaves a record behind and the row goes.
   **Anchors:** `tests/test_consumer_agreement.py::inert_outcome`,
   `tests/test_consumer_agreement.py::test_the_consumer_still_agrees_with_the_surface_this_tree_declares`,
   `docs/decisions/D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md`.
-
-- [ ] **Eight `calc` tools are hardcoded in a third module neither repository checks.**
-  **Other repository:** `Chemclaw3`. Its `tests/test_sibling_manifest_agreement.py` lists two
-  callers — `connectors/calc/compose.py` and `remote.py` — and finds 13 hardcoded call sites naming
-  10 tools. Running that file's own AST walker over `src/chemclaw/connectors/calc/server/tools.py`
-  on 2026-09-14 found **11 more sites naming 10 tools, 8 of them named by no checked module**:
-  `compute_atomic_descriptors`, `compute_electronic_properties`, `compute_surface_potential`,
-  `compute_xtb_energy`, `predict_pka`, `predict_solubility`, `predict_site_reactivity`,
-  `predict_developability_profile`. Every one is served and every argument declared, so the
-  contract is sound and **unwatched** — a rename in `servers/calc/` would reach all eight with no
-  test on either side. Checked and unchecked together name 18 of the 20 tools
-  `servers/calc/tool-surface.json` records; `optimize_geometry` and `predict_logd` are named by no
-  hardcoded dict-literal site in any of the three modules, which is worth confirming rather than
-  assuming when this is worked. The fix is that repository's `_CALLERS` tuple and nothing here can
-  make it; this row is what keeps it from being forgotten.
-  **Anchors (Chemclaw3):** `tests/test_sibling_manifest_agreement.py::_CALLERS`,
-  `src/chemclaw/connectors/calc/server/tools.py`.
 
 ## 5 — Corpora that are not yet licensed to exist
 

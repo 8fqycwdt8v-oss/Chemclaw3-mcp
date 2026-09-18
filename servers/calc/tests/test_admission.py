@@ -330,7 +330,7 @@ def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     skipped. The measurement, not the shape: the object is constructed twice and the numbers differ.
     """
     default = CalcSettings()
-    assert (default.calc_max_concurrent_requests, default.xtb_max_atoms) == (4, 500)
+    assert (default.calc_max_concurrent_requests, default.xtb_max_atoms) == (4, 450)
 
     monkeypatch.setenv("CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS", "99")
     monkeypatch.setenv("CHEMCLAW_XTB_MAX_ATOMS", "99999")
