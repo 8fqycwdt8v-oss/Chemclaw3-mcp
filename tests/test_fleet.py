@@ -443,6 +443,65 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     )
 
 
+def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
+    """`--strict` with nothing disabled, held in the declaration **and** in the invocation.
+
+    `D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets` measured a
+    narrower strictness before rejecting it, and the measurement is what rejects it: dropping
+    `attr-defined` and `arg-type` on top of `no-untyped-def` *manufactures* `unused-ignore`
+    findings, because a `# type: ignore` written against a disabled code becomes unused. Re-measured
+    whole-tree at `0d58969`, that configuration reports 51 of them against 2 under full strict, and
+    29 of the 51 are in **serving code** the narrowing was never proposed to touch. So
+    `--disable-error-code` and `warn_unused_ignores` fight, and the narrowing's loudest signal is an
+    artefact of its own configuration.
+
+    That record's decision — "no check dropped and no configuration relaxed" — had nothing holding
+    it (`D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables`). Both ends are checked here
+    for the reason `test_the_type_gate_reads_the_test_tree_and_not_only_the_source` gives one
+    function up: a clean `[tool.mypy]` and a recipe that passes `--disable-error-code` are the same
+    gate as a dirty one.
+
+    A per-module `ignore_missing_imports` is **not** this: it says a third-party distribution ships
+    no stubs, which is a fact about that distribution rather than a check this repository declines.
+    """
+    import tomllib
+
+    mypy = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
+    assert mypy.get("strict") is True, (
+        "`[tool.mypy] strict = true` is the gate. Without it `make type` runs a different and "
+        "quieter check under the same name"
+    )
+    narrowed = [
+        section
+        for section in (mypy, *mypy.get("overrides", []))
+        if section.get("disable_error_code") or section.get("warn_unused_ignores") is False
+    ]
+    assert not narrowed, (
+        f"`[tool.mypy]` narrows the gate: {narrowed}. The narrowing was measured and rejected — it "
+        "manufactures `unused-ignore` findings in serving code — so re-taking it is a decision for "
+        "a record, not a configuration key"
+    )
+
+    printed = subprocess.run(
+        ["make", "-n", "type"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
+    command = next(
+        line
+        for line in printed.splitlines()
+        if " mypy " in line and not line.lstrip().startswith("#")
+    )
+    relaxations = [
+        argument
+        for argument in shlex.split(command)
+        if argument.startswith("--disable-error-code")
+        or argument in {"--no-strict-optional", "--no-warn-unused-ignores", "--allow-untyped-defs"}
+    ]
+    assert not relaxations, (
+        f"the `type:` recipe passes {relaxations}, which relaxes the gate without touching the "
+        "configuration anybody reviews"
+    )
+
+
 def test_every_server_appears_in_the_catalogue() -> None:
     """A server the catalogue has never heard of is one nobody can find or plan around."""
     catalogue = (ROOT / "MODULES.md").read_text(encoding="utf-8")
