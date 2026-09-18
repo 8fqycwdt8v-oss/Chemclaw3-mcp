@@ -1232,6 +1232,14 @@ def test_the_build_group_names_every_backend_this_workspace_declares() -> None:
     `test_the_build_group_is_what_the_calc_image_exports` catches for the group as a whole,
     applied to each name in it
     (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+
+    **That half shipped as a substring search over the file's text and did not hold it**
+    (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`): `name = "hatchling"`
+    also appears under `[package.dev-dependencies]` and `[package.metadata.requires-dev]`, which
+    are *references* to a resolution rather than the resolution, so deleting the whole
+    `[[package]] name = "hatchling"` block (numstat `0 16`) left this test passing. It parses the
+    lock and reads the resolved `name`s now, which is the idiom
+    `test_the_build_group_is_what_the_calc_image_exports` fifteen lines down already uses.
     """
     import tomllib
 
@@ -1256,8 +1264,10 @@ def test_the_build_group_names_every_backend_this_workspace_declares() -> None:
         "to come from that group or it comes from nowhere"
     )
 
-    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
-    unlocked = sorted(name for name in named if f'name = "{name}"' not in lock)
+    locked = _lock()["package"]
+    assert isinstance(locked, list)
+    resolved = {str(entry["name"]) for entry in locked}
+    unlocked = sorted(name for name in named if name not in resolved)
     assert not unlocked, (
         f"`uv.lock` resolves no {unlocked!r}, so `uv export --only-group build` omits it and the "
         "`--require-hashes` install that is supposed to pin the backend installs nothing"

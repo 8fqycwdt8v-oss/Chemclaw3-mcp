@@ -57,6 +57,33 @@ the glob (mypy would still read the files; it would resolve their imports differ
 that has stopped passing `$(SRC)` is invisible to the declaration check. Neither sees the other's
 failure, which is what makes them two tests.
 
+## The same shape, one ratchet over: a substring is not a resolution
+
+`test_the_build_group_names_every_backend_this_workspace_declares` shipped its lock half as
+`f'name = "{name}"' not in lock` over `uv.lock`'s **text**, under a docstring claiming it catches
+"a group entry `uv.lock` does not resolve". It does not. `name = "hatchling"` also appears under
+`[package.dev-dependencies]` and `[package.metadata.requires-dev]`, which are *references* to a
+resolution rather than the resolution. Driven:
+
+```
+$ sed -i '1485,1500d' uv.lock          # the whole [[package]] name = "hatchling" block
+$ git diff --numstat -- uv.lock
+0	16	uv.lock
+$ .venv/bin/python -m pytest tests/test_fleet.py -k build_group -q
+2 passed, 198 deselected
+```
+
+The severity is bounded and stated: `uv` itself refuses such a lock (`Failed to parse uv.lock`), so
+a build fails loudly rather than silently — which is why this is a ratchet that does not hold what
+it says rather than a hole in the pin. The fix is the idiom already present fifteen lines away in
+`test_the_build_group_is_what_the_calc_image_exports`: parse the lock, read the resolved `name`s.
+Driven with it, the same mutation reds with `uv.lock` resolves no `['hatchling']`.
+
+The generalisation is the one this record is named for. A ratchet reads an *artefact*, and there
+are two ways to get the artefact wrong: read the wrong half of it (the type gate, above) or read a
+rendering of it instead of the thing (here). Both were written by sessions that had just argued
+against exactly that.
+
 ## What this does not claim
 
 Nothing was wrong on `6df6eb19` and nothing was uncovered: `make type` checked 305 files there and
@@ -71,3 +98,6 @@ whole argument the record being corrected makes about its own subject.
   day its directories exist.
 - `tests/test_fleet.py::test_every_server_is_wired_into_the_type_gate` — the declaration half,
   unchanged: `SRC :=` and `mypy_path` name every server that has a `src/`.
+- `tests/test_fleet.py::test_the_build_group_names_every_backend_this_workspace_declares` — its
+  lock half now parses `uv.lock` and compares resolved names, so a group entry the lock does not
+  resolve is red whatever the file's text happens to contain elsewhere.
