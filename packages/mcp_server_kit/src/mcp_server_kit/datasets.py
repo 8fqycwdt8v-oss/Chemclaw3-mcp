@@ -88,10 +88,34 @@ _REQUIRED: tuple[str, ...] = tuple(DatasetManifest.model_fields)
 def _explain(manifest_path: Path, error: ValidationError) -> str:
     """Turn a `ValidationError` into the sentence a reviewer of a `dataset.json` needs.
 
-    Three shapes, because each sends the reader somewhere different: a file that is not an object at
-    all, a key nobody recognises, and a field that is absent or blank. The second and third arrive
-    *together* for the case this model exists to catch — one misspelling produces both — so they are
-    reported together rather than whichever pydantic happened to list first.
+    **Four shapes, and the fourth is the one this function was written to prevent and then
+    committed itself** (`D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing`).
+    The module docstring above says the hand-rolled predecessor "actively misled on the one file
+    whose whole purpose is that a reviewer can audit it" by naming as *missing* a field the author
+    had written. This function bucketed every non-`extra_forbidden` error as absent, so
+    `"version": 1` — a JSON number, on a line the author can see — was reported as
+    `missing required field(s) version`. A `"licence": ""` a template left behind got the same
+    sentence, and it is a third condition wanting a third fix.
+
+    So the buckets are pydantic's own error types rather than "extra, and everything else":
+
+    - `missing` — the key is not in the file.
+    - `value_error` — the key is there and blank, which `DatasetManifest._is_not_blank` raises.
+    - anything else about a named field — the key is there and is not a string. Reported with the
+      type that was found, because "must be a string" without "got a number" sends a reviewer back
+      to a line that looks correct to them.
+    - `extra_forbidden` — a key nobody recognises, reported beside the others because one
+      misspelling produces two errors and only both together say what happened.
+
+    **Why a number is refused rather than coerced**, which the predecessor did with
+    `str(manifest.get(field, ""))`. JSON has no way to hold `1.10` as a number: it parses to `1.1`,
+    so a corpus at version 1.10 would be recorded as a different version than the one a reviewer
+    approved, silently and in the field that exists to tell two builds apart. `sha256` is worse — a
+    digest that happens to be all digits loses its leading zeros, and one long enough reaches
+    scientific notation. This is the module's own "refuse rather than approximate" rule applied to
+    provenance, and the cost is a startup failure with a sentence naming the line, which is the
+    loud direction. Measured over the eight `dataset.json` files this fleet ships: every field of
+    every one is already a JSON string, so nothing shipped changes behaviour.
     """
     problems = error.errors()
     # An empty `loc` is an error about the whole document rather than about a field — a JSON array
@@ -100,20 +124,39 @@ def _explain(manifest_path: Path, error: ValidationError) -> str:
     if any(not item["loc"] for item in problems):
         found = type(json.loads(manifest_path.read_text(encoding="utf-8"))).__name__
         return f"{manifest_path} must contain a JSON object, got {found}"
-    unexpected = sorted(
-        str(item["loc"][-1]) for item in problems if item["type"] == "extra_forbidden"
-    )
-    absent = sorted(str(item["loc"][-1]) for item in problems if item["type"] != "extra_forbidden")
+    named: dict[str, list[str]] = {"missing": [], "blank": [], "wrong_type": [], "extra": []}
+    for item in problems:
+        field = str(item["loc"][-1])
+        if item["type"] == "extra_forbidden":
+            named["extra"].append(field)
+        elif item["type"] == "missing":
+            named["missing"].append(field)
+        elif item["type"] == "value_error":
+            named["blank"].append(field)
+        else:
+            found = type(item.get("input")).__name__
+            named["wrong_type"].append(f"{field} (got {found}, expected string)")
+    listed = {kind: ", ".join(sorted(fields)) for kind, fields in named.items()}
     parts = []
-    if absent:
+    if listed["missing"]:
         parts.append(
-            f"missing required field(s) {', '.join(absent)}; a dataset with no recorded licence "
+            f"missing required field(s) {listed['missing']}; a dataset with no recorded licence "
             "or checksum is one nobody can review"
         )
-    if unexpected:
-        blamed = ", ".join(absent) or "a required field"
+    if listed["blank"]:
         parts.append(
-            f"unrecognised key(s) {', '.join(unexpected)}; a key nothing reads is one a reviewer "
+            f"blank field(s) {listed['blank']}; a key a template left empty is exactly as "
+            "unreviewable as one that is not there"
+        )
+    if listed["wrong_type"]:
+        parts.append(
+            f"non-string field(s) {listed['wrong_type']}; provenance is recorded verbatim rather "
+            "than coerced, because JSON cannot hold version 1.10 or a digest with a leading zero"
+        )
+    if listed["extra"]:
+        blamed = listed["missing"] or "a required field"
+        parts.append(
+            f"unrecognised key(s) {listed['extra']}; a key nothing reads is one a reviewer "
             f"believes is doing something, and a misspelled one is why {blamed} reads as absent"
         )
     return f"{manifest_path} is not a dataset manifest: {' — and '.join(parts)}"
@@ -162,8 +205,10 @@ def load_dataset(directory: Path, *, records_file: str = "records.csv") -> Datas
 
     Raises:
         DatasetError: The manifest or records file is missing, the manifest is not a JSON object,
-            a required field is absent or blank, a key is not one of the six, or the file on disk
-            is not the one the manifest's `sha256` names.
+            a required field is absent, blank or not a string, a key is not one of the six, or the
+            file on disk is not the one the manifest's `sha256` names. Those four field cases are
+            reported as four different sentences, which is `_explain`'s whole subject: naming a
+            field the author wrote as "missing" is the failure this contract exists to avoid.
     """
     manifest_path = directory / "dataset.json"
     records_path = directory / records_file

@@ -4,12 +4,16 @@
 here (`engine/pka.py`), but Chemclaw3 never calls this server's `predict_logd` tool. Instead it
 takes a *cached* `PkaResult` — however it was obtained, in production a call to this server's own
 `predict_pka` — and composes logD client-side in `chemclaw.science.calc.logd`: a Crippen LogP sum,
-one Henderson-Hasselbalch term, and a domain check (`ionisable_sites`, `_lone_pair_is_available`,
-`_require_a_single_equilibrium`) that decides which molecules a single equilibrium term can honestly
-describe. That domain-check arithmetic is therefore duplicated verbatim across the repository
-boundary — this server's copy lives in `engine/pka.py` (site enumeration) and `engine/logd.py`
-(the single-equilibrium refusal); Chemclaw3's copy is inlined into `science/calc/logd.py` because it
-has no `pka.py` left to import from. Nothing before this file pinned the two copies together.
+one Henderson-Hasselbalch term, and a domain check (`ionisable_sites` over the `_ACIDIC_SITE` and
+`_BASIC_SITE` patterns, then `_require_a_single_equilibrium`) that decides which molecules a single
+equilibrium term can honestly describe. This sentence named `_lone_pair_is_available` for a wave —
+a function that had been replaced by a recursive SMARTS on **both** sides and exists in neither
+repository, so the one document pointing a reader at the duplicated arithmetic named a third of it
+by a name nothing answers to. That domain-check arithmetic is therefore duplicated verbatim across
+the repository boundary — this server's copy lives in `engine/pka.py` (site enumeration) and
+`engine/logd.py` (the single-equilibrium refusal); Chemclaw3's copy is inlined into
+`science/calc/logd.py` because it has no `pka.py` left to import from. Nothing before this file
+pinned the two copies together.
 
 **Two different kinds of duplication, tested two different ways.**
 

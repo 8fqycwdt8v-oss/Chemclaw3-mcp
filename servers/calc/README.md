@@ -312,9 +312,25 @@ version string saying so.
 which is why the `xtb` binary is an optimisation rather than a capability. Everything the xTB tools do
 runs on it: single points, properties, Fukui indices, the geomeTRIC optimizer over tblite's analytic
 gradient, the finite-difference Hessian, and both pKa branches. Chemclaw3's own deployment resolves
-to `tblite` too, for the same reason, so **the numbers and the `calc_version` strings this server
-produces are identical to the ones it produced before the split** — verified by deriving the same
-keys and the same energies from both trees on the same package versions.
+to `tblite` too, for the same reason.
+
+**The numbers and the `calc_version` strings have since moved, deliberately, and this paragraph
+claimed for a wave that they had not.** It read "identical to the ones it produced before the split
+— verified by deriving the same keys and the same energies from both trees", and the commit that
+introduced geomeTRIC had already falsified it three times over in the same hunk: it bumped
+`_HAMILTONIAN_REVISION` from `h2` to `h3`, put the scipy distribution into `engine_version()`, and
+removed `curvature_floor` from `OptSpec`, which changes the shape of every optimization key. The
+line two above this one was updated in that hunk and this one was not
+(`D-2026-09-16-a-number-in-prose-is-a-claim-about-a-commit` applies here as it did next door). Since
+then `OptSpec.calc_version()` also names the geomeTRIC distribution, which moves it again.
+
+So what is true today: the *tier* is unchanged — the same GFN2-xTB Hamiltonian through the same
+library, on a deployment that resolves the same backend — and the key strings are this server's
+own, deliberately different from the pre-split ones, so a Chemclaw3 cache row or calibration
+residual recorded before the split is a miss rather than a stale hit. That is the direction the key
+contract exists to take. The live strings are whatever
+`servers/calc/tests/test_key_contract.py::test_the_whole_key_is_stable_on_the_versions_this_test_observes`
+pins; a transcription of them here would be stale on the next distribution bump.
 
 What is given up without the binary:
 

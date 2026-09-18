@@ -265,6 +265,24 @@ decision leaves a record behind and the row goes.
   rank order, so the change cannot land without measuring that on the probe corpus — and measuring
   it needs `rxnmapper`, which means torch, transformers and a model checkpoint in a test
   environment that carries none of them. The measurement is the work.
+  **That third reason is false, measured 2026-09-18.** `uv pip install
+  "rxn-insight>=0.1.2"` resolves in this family's container and pulls its whole
+  stack — `rxn-insight` 0.1.3, `rxnmapper` 0.4.3, `torch` 2.14.0, `transformers`
+  4.57.6, 6.0 GB — and `Reaction('CC(=O)O.CCO>>CC(=O)OCC.O').get_reaction_info()`
+  answers `CLASS: Acylation`, `NAME: Esterification of Carboxylic Acids`, with no
+  separate checkpoint step. So the measurement is available to whoever wants it,
+  and the first two reasons are the whole of what stands.
+  **What a partial measurement then said, and why it is not a verdict.** Over one
+  corpus the *incumbent* SMARTS table led, **97.1% to 91.3%**. That run stopped
+  before the arm that could overturn it — reactions where a spectator or
+  substituent carries the diagnostic group of a different class, which is the
+  false-positive mode a mapping-free table is structurally prone to and an
+  atom-mapped classifier is not — and the session that ran it recorded that its
+  corpus so far favoured SMARTS. Two numbers on a favourable corpus are evidence
+  about that corpus. They are written here because the row had none at all, and
+  because they point the opposite way from the row's framing: this may be a swap
+  not worth making, and the next session should expect to find that rather than
+  assume the curated table wins.
   **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/conditions/rxn_insight.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
@@ -322,6 +340,24 @@ decision leaves a record behind and the row goes.
   `src/chemclaw/science/labels/store.py::underived_stamp`.
 
 ## 4 — The gate itself
+
+- [ ] **Every image still takes its *build backend* from pip's isolation, unhashed, at build time.**
+  `D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day` closed this
+  for the one dependency that is actually built from source — `geometric`, the only sdist-only entry
+  in `uv.lock` — by exporting the lock's `build` dependency group and passing
+  `--no-build-isolation` to `servers/calc/Containerfile`'s first `pip wheel`. The **second** pass in
+  every Containerfile is untouched: `python -m pip wheel --no-deps ./packages/mcp_server_kit
+  ./servers/<name>` builds two `hatchling`-backed distributions, and pip resolves `hatchling` (and
+  its own `hatchling` dependencies) from PyPI at that moment — chosen that day, no hashes, outside
+  the lock, executing a build backend. Nothing installed that way reaches a shipped image, which is
+  why it is here and not above the `rxnlabel` row: what is at stake is unpinned code running in the
+  build and a wheel whose bytes depend on when it was built, not the runtime closure. Closing it is
+  `hatchling` in the `build` group plus the same two lines in twelve Containerfiles, and the reason
+  it is not done in the commit that found it is that twelve edits to close a fleet-wide property is
+  a change that wants its own measurement — specifically, whether a hatchling in the build
+  environment can change what `hatchling.build` puts in a wheel.
+  **Anchors:** `servers/calc/Containerfile`, `pyproject.toml` (`[dependency-groups] build`),
+  `tests/test_fleet.py::test_a_sdist_only_dependency_builds_under_a_pinned_backend`.
 
 - [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
   `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on

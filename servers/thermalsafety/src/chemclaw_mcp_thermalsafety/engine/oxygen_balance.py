@@ -151,14 +151,31 @@ class OxygenBalance:
 def parse_formula(formula: str) -> dict[str, float]:
     """Element counts from a plain molecular formula such as `C6H5NO2` or `C3H5N3O9`.
 
-    Deliberately narrow: no nesting, no parentheses, no hydrates, no charges, no isotopes, no
-    leading multiplier. Each of those is a thing a chemist writes, `molmass` parses, and this screen
-    would report a wrong number for — `Ca(NO3)2` expanded correctly is one calcium, two nitrogens
-    and **six** oxygens, so a caller who meant the salt and a parser that read three oxygens
-    disagree by a factor of two on the element that decides the whole answer. Delegating the
+    Deliberately narrow: no nesting, no grouping of any kind, no hydrates, no charges, no isotopes,
+    no leading multiplier. Each of those is a thing a chemist writes, `molmass` parses, and this
+    screen would report a wrong number for — `Ca(NO3)2` expanded correctly is one calcium, two
+    nitrogens and **six** oxygens, so a caller who meant the salt and a parser that read three
+    oxygens disagree by a factor of two on the element that decides the whole answer. Delegating the
     notation to the library would be exactly that: `molmass` answers `Ca(NO3)2`, and it answers
     `2H2O` as deuterium oxide. So each notation is refused by name, before the library sees the
     string, and the message says what to write instead.
+
+    **All three bracket pairs, because a refusal set with a hole in it is not a policy**
+    (`D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set`). The blocklist held
+    `()` and `[]` and not `{}`, so `{H2O}2` came back as `{'H': 4.0, 'O': 2.0}` — molmass expands a
+    brace group like any other — while `(H2O)2` and `[H2O]2` were refused by name. The *number* was
+    right, which is what makes it worth fixing rather than shrugging at: one notation silently
+    delegated to the library is one notation nobody reviewed, and the next brace group is a salt
+    rather than a hydrate. The pre-`molmass` parser refused braces because its regex accepted
+    nothing but element symbols and digits; the blocklist that replaced it enumerated, and
+    enumerations drop things.
+
+    **Two things this parser accepts that its predecessor did not, kept deliberately and recorded
+    here rather than left to be rediscovered.** Whitespace inside a formula (`"C6 H5 NO2"`) now
+    parses, because `molmass` ignores it — the answer is the one the chemist meant, and refusing a
+    copy-pasted formula for its spaces would be pedantry rather than safety. And an explicit zero
+    count (`"C0"`, `"C1H0"`) is now *refused* where the old parser returned a zero, which is the
+    stricter direction: an element written with a count of nothing is a typo, not a composition.
 
     The tokenizing and the weights are the library's; the domain is this module's. An element
     outside `ALLOWED_ELEMENTS` — including an isotope symbol such as `2H`, which is how `molmass`
@@ -167,8 +184,9 @@ def parse_formula(formula: str) -> dict[str, float]:
 
     Raises:
         FormulaError: the string is empty, holds a character no formula contains, names an element
-            outside `ALLOWED_ELEMENTS`, or uses a notation (parentheses, a hydrate dot, a charge, a
-            leading multiplier) this parser refuses rather than guesses at.
+            outside `ALLOWED_ELEMENTS`, carries an element count of zero, or uses a notation
+            (brackets or braces of any kind, a hydrate dot, a charge, a leading multiplier) this
+            parser refuses rather than guesses at.
     """
     text = formula.strip()
     if not text:
@@ -178,6 +196,8 @@ def parse_formula(formula: str) -> dict[str, float]:
         (")", "parentheses", "expand the group, e.g. Ca(NO3)2 as CaN2O6"),
         ("[", "isotope or group brackets", "write the natural-abundance composition, e.g. H2O"),
         ("]", "isotope or group brackets", "write the natural-abundance composition, e.g. H2O"),
+        ("{", "braces", "expand the group, e.g. {H2O}2 as H4O2"),
+        ("}", "braces", "expand the group, e.g. {H2O}2 as H4O2"),
         (".", "a hydrate or salt dot", "write the whole composition, e.g. CuSO4.5H2O as CuSH10O9"),
         ("·", "a hydrate or salt dot", "write the whole composition, e.g. CuSO4·5H2O as CuSH10O9"),
         ("+", "a charge", "oxygen balance is defined for a neutral composition"),

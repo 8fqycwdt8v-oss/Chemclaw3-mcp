@@ -12,6 +12,7 @@ read wrongly moves both numbers and is caught twice.
 from __future__ import annotations
 
 import pytest
+from chemclaw_mcp_thermalsafety.engine import selftest
 from chemclaw_mcp_thermalsafety.engine.oxygen_balance import (
     ALLOWED_ELEMENTS,
     ATOMIC_WEIGHTS,
@@ -101,6 +102,8 @@ def test_a_notation_this_parser_would_get_silently_wrong_is_refused_by_name() ->
     """
     for bad, expected in (
         ("Ca(NO3)2", "parentheses"),
+        ("[H2O]2", "brackets"),
+        ("{H2O}2", "braces"),
         ("CuSO4.5H2O", "hydrate"),
         ("CuSO4·5H2O", "hydrate"),
         ("NO3-", "charge"),
@@ -108,6 +111,89 @@ def test_a_notation_this_parser_would_get_silently_wrong_is_refused_by_name() ->
     ):
         with pytest.raises(FormulaError, match=expected):
             oxygen_balance(bad)
+
+
+def test_every_grouping_bracket_is_refused_and_not_just_the_two_somebody_listed() -> None:
+    """A brace group was expanded by the library while its two siblings were refused by name.
+
+    Measured at `6c6a0eb`: `parse_formula("{H2O}2")` returned `{'H': 4.0, 'O': 2.0}` — the correct
+    expansion, produced by `molmass` rather than by anything reviewed here — while `(H2O)2` and
+    `[H2O]2` were refused. The pre-`molmass` parser refused all three because its regex admitted
+    nothing but element symbols and digits; the blocklist that replaced it enumerated two pairs of
+    three (`D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set`).
+
+    Driven over the three pairs as *characters* rather than over three example strings, because the
+    defect was a missing row in a table and an example-by-example test is the same table written a
+    second time. Each is confirmed to be something the library would otherwise answer, so the
+    refusal is guarding a real delegation rather than a case molmass refuses anyway.
+    """
+    for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+        grouped = f"{opening}H2O{closing}2"
+        assert Formula(grouped).mass > 0, (
+            f"{grouped!r} is no longer parsed by molmass, so refusing it guards nothing"
+        )
+        with pytest.raises(FormulaError, match="refuses rather than guesses"):
+            parse_formula(grouped)
+
+
+def test_the_published_constants_version_and_digest_both_see_the_adopted_table() -> None:
+    """A version that cannot see its own table is not a version, and neither is a digest.
+
+    `CONSTANTS_VERSION` is hand-bumped and `_constants_digest()` hashes `oxygen_balance.py`. Since
+    the weights moved to `molmass`, neither covers a weight: the module holds a comprehension, and
+    `uv.lock` resolves **two** molmass releases on purpose (2026.1.8 below Python 3.12, 2026.8.15
+    at or above it), so two pods can legitimately serve different tables
+    (`D-2026-09-16-a-version-that-cannot-see-its-own-table-is-not-a-version`).
+
+    Asserted in both directions, because the version half alone would pass on a digest that still
+    ignored the numbers:
+
+    - the published version names the installed molmass distribution;
+    - the digest **moves** when a weight moves, which is what a checksum is for. Driven by
+      substituting one weight rather than by comparing two literals — a pinned digest would have to
+      be re-transcribed on every unrelated edit to that module, and would then be pinning the file
+      rather than the table.
+    """
+    from importlib.metadata import version as _distribution_version
+
+    published = selftest.CONSTANTS_VERSION
+    assert f"molmass-{_distribution_version('molmass')}" in published, (
+        f"{published!r} does not name the distribution the atomic weights come from, so two pods "
+        "holding the two molmass releases uv.lock resolves publish the same version string"
+    )
+
+    before = selftest._constants_digest()
+    original = dict(ATOMIC_WEIGHTS)
+    try:
+        ATOMIC_WEIGHTS["C"] = original["C"] + 0.01
+        assert selftest._constants_digest() != before, (
+            "a changed atomic weight left the digest unmoved, so /healthz cannot tell two tables "
+            "apart — which is the one question a digest exists to answer that a version cannot"
+        )
+    finally:
+        ATOMIC_WEIGHTS.clear()
+        ATOMIC_WEIGHTS.update(original)
+    assert selftest._constants_digest() == before
+
+
+def test_the_two_widenings_molmass_brought_are_the_ones_that_were_argued() -> None:
+    """Adopting a library moves a boundary, and a boundary that moved silently is the finding.
+
+    Both of these are changes from the hand-written parser and both are recorded in
+    `parse_formula`'s docstring rather than left to be rediscovered:
+
+    - **whitespace inside a formula now parses**, because molmass ignores it. Kept: the answer is
+      the one the chemist meant, and a copy-pasted `C6 H5 NO2` is not a notation this screen would
+      get wrong.
+    - **an explicit zero count is now refused**, where the old parser returned a zero. Kept for the
+      opposite reason: it is the stricter direction, and an element written with a count of nothing
+      is a typo rather than a composition.
+    """
+    assert parse_formula("C6 H5 NO2") == parse_formula("C6H5NO2")
+    assert parse_formula("  C7H5N3O6  ") == {"C": 7.0, "H": 5.0, "N": 3.0, "O": 6.0}
+    for zeroed in ("C0", "C1H0"):
+        with pytest.raises(FormulaError):
+            parse_formula(zeroed)
 
 
 def test_an_element_outside_the_table_is_named_rather_than_approximated() -> None:

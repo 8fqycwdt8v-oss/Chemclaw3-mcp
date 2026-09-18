@@ -846,6 +846,9 @@ version = "0.1.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
+build = [
+    { name = "setuptools" },
+]
 dev = [
     { name = "chemclaw-mcp-calc" },
     { name = "chemclaw-mcp-chem" },
@@ -875,6 +878,7 @@ dev = [
 [package.metadata]
 
 [package.metadata.requires-dev]
+build = [{ name = "setuptools", specifier = ">=70.1" }]
 dev = [
     { name = "chemclaw-mcp-calc", editable = "servers/calc" },
     { name = "chemclaw-mcp-chem", editable = "servers/chem" },

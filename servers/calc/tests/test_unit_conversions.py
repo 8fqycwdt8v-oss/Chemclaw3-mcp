@@ -85,3 +85,24 @@ def test_the_version_string_names_the_distribution_the_constants_come_from() -> 
     assert f"scipy-{version('scipy')}" in engine_version()
     assert f"tblite-{version('tblite')}" in engine_version()
     assert f"rdkit-{version('rdkit')}" in engine_version()
+
+
+def test_the_engine_string_does_not_name_a_program_the_engine_does_not_run() -> None:
+    """The other half of the rule, and the reason geomeTRIC is deliberately absent from here.
+
+    `servers/calc/pyproject.toml` said for a wave that geomeTRIC's distribution version was "in
+    `engine_version()` for the same reason tblite's is" — measured, it was not, and putting it
+    there would have been the wrong repair. `engine_version()` is the *engine's* string: it is what
+    keys `xtb.sp`, `xtb.properties`, `xtb.fukui` and `xtb.hess`, none of which runs an optimizer.
+    `XtbSpec.calc_version`'s rule has two halves, and the second one — "no program that does not
+    run" — is what this asserts. `OptSpec.calc_version()` is where it belongs, and
+    `test_the_optimizer_that_decides_the_geometry_is_in_the_optimization_version` in
+    `servers/calc/tests/test_xtb_opt.py` is what holds that end.
+
+    Written as an absence on purpose: an absence test is what fails whoever "fixes" this by
+    widening the shared string, which is the change that looks like the obvious one.
+    """
+    assert "geometric" not in engine_version(), (
+        "geomeTRIC is in engine_version(), which keys four calculations that never run it; it "
+        "belongs in OptSpec.calc_version(), the one task whose payload it decides"
+    )

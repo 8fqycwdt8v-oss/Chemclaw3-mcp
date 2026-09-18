@@ -25,13 +25,24 @@ MANIFEST = {
 RECORDS = "name,value\nalpha,1\nbeta,2\n"
 
 
-def _write(directory: Path, *, records: str = RECORDS, **overrides: object) -> Path:
-    """Write a dataset directory whose manifest is correct except for `overrides`."""
+def _write(
+    directory: Path,
+    *,
+    records: str = RECORDS,
+    _replace: dict[str, object] | None = None,
+    **overrides: object,
+) -> Path:
+    """Write a dataset directory whose manifest is correct except for `overrides`.
+
+    `_replace` supplies the whole manifest instead, which is the only way to write one with a key
+    *absent*: an override can change a value and cannot remove a line.
+    """
     import hashlib
 
     (directory / "records.csv").write_text(records, encoding="utf-8")
-    manifest = dict(MANIFEST)
-    manifest["sha256"] = hashlib.sha256(records.encode("utf-8")).hexdigest()
+    manifest = dict(MANIFEST if _replace is None else _replace)
+    if "sha256" in manifest:
+        manifest["sha256"] = hashlib.sha256(records.encode("utf-8")).hexdigest()
     manifest.update(overrides)
     (directory / "dataset.json").write_text(json.dumps(manifest), encoding="utf-8")
     return directory
@@ -65,8 +76,32 @@ def test_every_provenance_field_is_required(tmp_path: Path, field: str) -> None:
     been dropped from the enforcement with the suite green, and a corpus could ship with no
     human-readable statement of what it is. A seventh field is now covered the day it is added.
     """
-    with pytest.raises(DatasetError, match="missing required field"):
+    with pytest.raises(DatasetError, match="blank field"):
         load_dataset(_write(tmp_path, **{field: ""}))
+    absent = {name: value for name, value in MANIFEST.items() if name != field}
+    with pytest.raises(DatasetError, match="missing required field"):
+        load_dataset(_write(tmp_path, _replace=absent))
+
+
+@pytest.mark.parametrize("field", datasets._REQUIRED)
+def test_a_field_the_author_wrote_is_not_reported_as_missing(tmp_path: Path, field: str) -> None:
+    """The three ways a field can be wrong are three sentences, not one.
+
+    `_explain` bucketed every non-`extra_forbidden` error as absent, so `"version": 1` — a JSON
+    number, on a line the author is looking at — came back as `missing required field(s) version`,
+    and a `"licence": ""` a template left behind said the same thing. That is the exact failure the
+    module docstring says the model was introduced to eliminate, committed by the code that
+    replaced it (`D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing`).
+
+    The wrong-type arm also pins the **refusal** rather than a coercion. The hand-rolled
+    predecessor did `str(manifest.get(field, ""))`, so a numeric version parsed clean; a JSON number
+    cannot hold `1.10`, and a digest that starts with a zero loses it, so provenance is taken
+    verbatim or not at all.
+    """
+    with pytest.raises(DatasetError, match=f"non-string field.*{field}.*got int"):
+        load_dataset(_write(tmp_path, **{field: 7}))
+    with pytest.raises(DatasetError, match="blank field"):
+        load_dataset(_write(tmp_path, **{field: "   "}))
 
 
 def test_a_manifest_that_is_not_a_mapping_is_named(tmp_path: Path) -> None:

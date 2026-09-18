@@ -8,6 +8,24 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
+# **`build` is not a runtime group and it is not optional decoration.** `servers/calc` depends on
+# `geometric`, which publishes **no wheel on PyPI — not for 1.1.1 and not for any release** — and
+# whose sdist carries a legacy `setup.py` + `versioneer.py` with no `pyproject.toml` at all. pip's
+# default build isolation therefore fetches *its own* build requirements from PyPI at image-build
+# time: resolved that day, unhashed, absent from `uv.lock`, and executing `setup.py` under them.
+# Measured: `pip wheel --require-hashes` on that one line prints `Installing build dependencies`,
+# and the same sdist built under the backend pip fetched and under the locked one produced wheels of
+# different sizes — 408,349 bytes against 408,351. So the `calc` image installs the build backend
+# from *this* group first, with `--require-hashes`, and builds with `--no-build-isolation`
+# (`D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day`).
+#
+# `setuptools` alone, deliberately: it is already in the closure `make deps-audit` reads (through
+# `rxn-insight`, which is also what caps it below 81), so this group adds no dependency the
+# supply-chain gate cannot see. `wheel` is not needed — setuptools has carried `bdist_wheel` since
+# 70.1, measured against this sdist.
+build = [
+    "setuptools>=70.1",
+]
 dev = [
     # `[testing]` because every server's `test_server.py` imports `mcp_server_kit.testing`,
     # whose `httpx`/`pyyaml` are declared there rather than assumed from this list. `[otel]` for the

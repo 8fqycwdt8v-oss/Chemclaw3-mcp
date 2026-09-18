@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from importlib.metadata import version
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -113,7 +114,18 @@ __all__ = [
     "OptimizationSummary",
     "optimization_inputs",
     "optimize_structure",
+    "optimizer_version",
 ]
+
+
+def optimizer_version() -> str:
+    """The installed geomeTRIC build, for the `calc_version` of anything it relaxes.
+
+    **This module is the only importer of `geometric` in the tree**, deliberately (see the mypy
+    override in the root `pyproject.toml`), so the one place allowed to ask the distribution its
+    version is the one place allowed to run it.
+    """
+    return f"geometric-{version('geometric')}"
 
 
 class OptSpec(XtbSpec):
@@ -161,6 +173,45 @@ class OptSpec(XtbSpec):
             # Idempotent: the copy's engine is no longer the binary, so this arm runs once.
             return self.model_copy(update={"engine": "tblite"}).for_structure(structure)
         return super().for_structure(structure)
+
+    def calc_version(self) -> str:
+        """Name the optimizer too, because on this task the optimizer decides the answer.
+
+        `XtbSpec.calc_version`'s rule is "name every program whose output survives into the stored
+        payload, and no program that does not run", and for the in-process path the program that
+        *is* the payload is geomeTRIC: what `optimize_geometry` and `relax_structure` store is a
+        geometry, chosen by which stationary point the optimizer walked to. `engine_version()`
+        named tblite, RDKit and scipy and did not name it — so a geomeTRIC upgrade would have moved
+        every optimized geometry under an unchanged key, and Chemclaw3 would have served the old
+        one forever while stamping new residuals into one calibration bucket with the old ones.
+        Measured at `6c6a0eb`: `'geometric' in engine_version()` was `False`
+        (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
+
+        **Here and not in `engine_version()`, which is the repair this looks like.** That string is
+        the *engine's*, shared by every tblite task, and geomeTRIC runs in none of the others: a
+        single point, an electronic-properties panel, a Fukui triple and a Hessian are all evaluated
+        at a geometry somebody hands them. Naming it there would have keyed those four on a program
+        none of them runs, which is the second half of the rule above and the exact defect
+        `_FIXED_BACKEND` exists for. This is `CrestSpec.calc_version`'s shape one task over: key on
+        the build of the thing that actually did the work.
+
+        **Conditional on the resolved backend, because `optimize_structure` is.** That function
+        dispatches on `for_structure(...).engine` — `xtb` goes to ANCopt inside the binary, which
+        `backend_version` already names and which does not touch geomeTRIC — and `cache_key`
+        resolves before it asks for a version, so `self.engine` here is the one that will run. The
+        shipped image takes the in-process path either way (it installs the binary and pins
+        `CHEMCLAW_XTB_ENGINE=tblite`), so in every shipped configuration this string grows.
+
+        **What it costs, stated rather than discovered:** every `xtb.opt` row on disk is now a
+        miss, which is correct — those rows do not record the optimizer that produced them — and
+        every downstream key built from an optimized `structure_id` was already going to move the
+        moment the geometry did. `predict_pka` folds this string in through
+        `pka.calc_version()`'s `opt-` segment, so its calibration ledger resets with it, on the
+        same argument that function already makes for its own widening.
+        """
+        if self.engine == "xtb":
+            return super().calc_version()
+        return f"{super().calc_version()}+{optimizer_version()}"
 
     def unkeyed_fields(self) -> set[str]:
         """`opt_level` is keyed on the backend that reads it, and only that one.
