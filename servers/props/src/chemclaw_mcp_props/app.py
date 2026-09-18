@@ -24,10 +24,16 @@ def _readiness() -> list[Dataset]:
     """Verify the solvent table, and name the version of it this pod serves.
 
     `/healthz` was a constant 200 before this, and on this server it happened to be *right* — but
-    only by accident: `tools.py` calls `len(records.all_solvents())` at module scope, so the corpus
-    is loaded and checksummed at import. Measured beside `chem`, which does not and returned 200
-    healthy with a corpus that failed its checksum. Relying on an incidental module-level call is
-    not a readiness check, and deleting that line would have silently removed one.
+    only by accident: `tools.py` computed `MAX_COMPARED_SOLVENTS` as `len(records.all_solvents())`
+    at module scope, so the corpus was loaded and checksummed at import. Measured beside `chem`,
+    which does not and returned 200 healthy with a corpus that failed its checksum. Relying on an
+    incidental module-level call is not a readiness check, and this is now the only one: that line
+    is gone (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`),
+    because an import that verifies a corpus is an import that *fails* on a corrupt one — which
+    takes the pod down with `CrashLoopBackOff` in place of a 503 naming the file and both hashes.
+    Nothing this server does at import touches the table any more, and
+    `tests/test_fleet.py::test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error`
+    is what keeps it that way for every server in the fleet that loads one.
     """
     return [records.dataset()]
 

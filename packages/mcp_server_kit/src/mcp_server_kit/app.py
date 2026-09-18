@@ -584,11 +584,17 @@ def connector_app(
         measured cost of the two probes having shared this one route. It was never evidence that the
         server could answer anything, and the difference is not theoretical: datasets load lazily
         here, so a `chem` pod whose corpus fails its checksum returned 200, passed the kubelet
-        probe, took traffic and failed every tool call — while `load_dataset`'s own docstring says
-        a bad corpus "fails at startup with the two hashes in the message", which is true only of
-        the servers that happen to touch their corpus at import. Measured: `props` had its table
-        loaded at import *by accident* (an incidental module-level `len(...)` in `tools.py`) and
-        `chem` did not.
+        probe, took traffic and failed every tool call.
+
+        **Lazily on every server, since
+        `D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`.** Two
+        of the four that vendor a corpus used to touch it at import — `props` through an incidental
+        module-level `len(...)` in `tools.py`, `rxnpredict` through a settings load — which made
+        `load_dataset`'s "fails at startup with the two hashes in the message" true of them in the
+        worst way available: the import raised, so the pod never started, this route never answered,
+        and the hashes reached an operator as `CrashLoopBackOff` plus a container log.
+        `tests/test_fleet.py::test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error`
+        is what keeps the load behind this route for every server in the fleet.
 
         So a server that has something to be unready about passes a `readiness` callable, and this
         route runs it: 503 with the reason on failure, and on success the corpora it verified, so

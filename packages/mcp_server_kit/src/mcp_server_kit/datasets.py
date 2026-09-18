@@ -11,8 +11,11 @@ only record of where a human obtained the file. **Nothing reads `retrieved_from`
 nothing can fetch it** — the egress guard would refuse if it tried.
 
 The checksum is verified on load, not on build. A dataset that was truncated by a bad COPY or
-swapped in a rebuild fails at startup with the two hashes in the message, rather than answering
-chemistry questions from a file nobody approved.
+swapped in a rebuild fails with the two hashes in the message, rather than answering chemistry
+questions from a file nobody approved. **Where that failure lands is the readiness probe**, because
+no server in this fleet loads a corpus at import — `/healthz` answers 503 naming the file, which an
+operator reads without a shell on the pod, instead of the process dying before it can serve the
+route (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
 
 **The manifest is a pydantic model with `extra="forbid"`, and the forbidding is the point.** This
 package already ships pydantic, so the hand-rolled version of it — a `_REQUIRED` tuple, a `missing`

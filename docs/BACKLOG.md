@@ -238,21 +238,6 @@ decision leaves a record behind and the row goes.
 
 ## 3 — Readiness, where it still stops
 
-- [ ] **Two servers answer a corrupt corpus with a crash loop rather than a 503, and the difference
-  is what an operator can see.** Driven on 2026-09-12 by mutating each vendored corpus in place:
-  `chem` and `safety` answered **503** naming the table and both hashes, while `props` and
-  `rxnpredict` raised `DatasetError` at *import* — `props`'s `tools.py` calls
-  `len(records.all_solvents())` at module scope, and `rxnpredict`'s settings load pulls
-  `trust_priors.json` in. Neither pod ever serves, so neither is dangerous; what is lost is the
-  reason, which reaches a kubelet as `CrashLoopBackOff` and a container log instead of as a probe
-  body naming the two hashes. Decide whether a corpus load belongs behind the probe on every server
-  (which means `props` giving up the incidental module-scope load its own `_readiness` docstring
-  already calls an accident) or whether a crash loop is the honest answer for a corpus that cannot
-  be read at all.
-  **Anchors:** `servers/props/src/chemclaw_mcp_props/tools.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
-  `packages/mcp_server_kit/src/mcp_server_kit/datasets.py`.
-
 - [ ] **An `ImportError` from a broken shared library reads as an extra nobody installed, and only
   one of the two servers catches it.** `degradation.classify` sorts every `ImportError` as
   `not_installed`, which is right for `ModuleNotFoundError` and wrong for

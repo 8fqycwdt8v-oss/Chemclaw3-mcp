@@ -7,6 +7,7 @@ atmospheric one, a swap shortlist that quietly promoted a worse hazard band.
 
 from __future__ import annotations
 
+import asyncio
 import math
 
 import pytest
@@ -236,3 +237,45 @@ def test_the_hansen_polar_term_of_dimethyl_carbonate_is_the_published_one() -> N
     )
     assert abs(correlations.hansen_distance(acetone, dmc) - 7.04) < 0.05
     assert place > 10
+
+
+def test_the_compare_bound_is_the_size_of_the_table() -> None:
+    """`MAX_COMPARED_SOLVENTS` is declared, so this is what keeps it the number it claims to be.
+
+    It used to be `len(records.all_solvents())`, computed at import, and the argument for that was
+    exactly the staleness this test now covers: a derived number cannot disagree with the corpus
+    when a row is added. What it cost was the server's readiness answer — loading the table at
+    import means *verifying* it at import, so a `records.csv` that failed its checksum raised
+    `DatasetError` out of `import chemclaw_mcp_props.tools` and the pod crash-looped where `chem`
+    and `safety` answer 503 naming the file and both hashes
+    (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
+
+    So the count is derived **here**, where reading the corpus costs a pod nothing, and the failure
+    mode of adding a row without bumping the constant is a red test rather than a silent bound.
+    Equality in both directions and not `<=`: a bound below the table forbids a legitimate
+    comparison, and a bound above it can only be satisfied by duplicates or unknown names, which is
+    the argument the constant exists on.
+    """
+    live = len(records.all_solvents())
+    assert live == tools.MAX_COMPARED_SOLVENTS, (
+        f"the table holds {live} solvents and `compare_solvent_properties` accepts "
+        f"{tools.MAX_COMPARED_SOLVENTS} names. The bound is the table's size — set "
+        f"MAX_COMPARED_SOLVENTS to {live} in the commit that changed the corpus."
+    )
+
+
+def test_the_compare_bound_is_the_one_the_tool_schema_advertises() -> None:
+    """The constant is only worth checking if it is the number Chemclaw3 is actually told.
+
+    `MAX_COMPARED_SOLVENTS` reaches the agent as `maxItems` on the advertised input schema, and a
+    constant that agreed with the corpus while the schema carried something else would be a check
+    about nothing. So it is read off the built tool rather than off the source — which is also what
+    makes the test above a statement about the *contract* and not about a module-level name.
+    """
+    advertised = asyncio.run(tools.server.list_tools())
+    schema = next(
+        tool.inputSchema for tool in advertised if tool.name == "compare_solvent_properties"
+    )
+    names = schema["properties"]["names"]
+    assert names["maxItems"] == tools.MAX_COMPARED_SOLVENTS
+    assert names["minItems"] == 1
