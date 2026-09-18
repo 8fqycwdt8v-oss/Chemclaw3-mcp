@@ -530,6 +530,20 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
     """
     import tomllib
 
+    # Nothing outranks the table this function is about to read. mypy's configuration discovery is
+    # `mypy.ini`, then `.mypy.ini`, then `pyproject.toml` — documented and fixed upstream, so this
+    # is an enumeration of somebody else's constant rather than of the ways to say "check less",
+    # which is the distinction that makes it a control and not a list. Driven: a root `mypy.ini`
+    # holding `disable_error_code = arg-type` reds nothing else here, because `arg-type` is a code
+    # no line of `_TYPE_GATE_CANARY` violates and the execution check below is a floor rather than a
+    # proof of strictness. `setup.cfg` ranks *after* `pyproject.toml`, and a driven `[mypy]` section
+    # in one changes no answer, so it is not asserted against: a file that cannot win is not a hole.
+    for shadowing in ("mypy.ini", ".mypy.ini"):
+        assert not (ROOT / shadowing).exists(), (
+            f"{shadowing} wins mypy's config discovery over `pyproject.toml`, so every assertion "
+            "below is about a table mypy never reads. Put the configuration in `[tool.mypy]`"
+        )
+
     mypy = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
     assert mypy.get("strict") is True, (
         "`[tool.mypy] strict = true` is the gate. Without it `make type` runs a different and "

@@ -98,6 +98,19 @@ the question actually being asked.
 `_TYPE_GATE_CANARY` violates passes. Raising the floor is adding a line to that constant, and the
 four it carries are the four the deleted list named.
 
+That residue was measured rather than left implied, and one channel of it is closed. A root
+`mypy.ini` holding `disable_error_code = arg-type` — a code the canary does not violate — passed
+every assertion here, because the declaration half reads `pyproject.toml` and mypy would not have.
+So `test_the_type_gate_narrows_no_check_it_was_argued_out_of` now asserts that neither `mypy.ini`
+nor `.mypy.ini` exists at the repository root: **nothing may outrank the table it reads.** That is
+an enumeration of mypy's own documented discovery order, fixed upstream, rather than of the ways to
+say "check less", which is the distinction that makes it a control and not a list. `setup.cfg` ranks
+*after* `pyproject.toml` and is deliberately not asserted against — driven, a `[mypy]` section in one
+changes no answer and the canary still reports all four codes, so a file that cannot win is not a
+hole. What is left of the residue is a relaxation written into `[tool.mypy]` itself against a code
+outside the canary's four, which the `disable_error_code` assertion covers for the shape the record
+rejects by name and nothing covers for any other.
+
 **It says nothing about which roots are gated.** That is
 `test_the_type_gate_reads_the_test_tree_and_not_only_the_source`, which walks the tree; the canary
 is planted at two named paths precisely so that deriving them from the command cannot make the check
@@ -124,8 +137,11 @@ can go wrong next without a red line.
   `--no-warn-unused-ignores` on the recipe, a `[tool.mypy] exclude` naming the canary, and a root
   `.mypy.ini`, each driven.
 - `tests/test_fleet.py::test_the_type_gate_narrows_no_check_it_was_argued_out_of` — the named
-  rejection that remains: `strict = true`, no `disable_error_code` and no `warn_unused_ignores =
-  false` in `[tool.mypy]` or any override, and no `--disable-error-code` on the recipe. Reds on
-  `--disable-error-code=arg-type`, which is a code the canary does not violate.
+  rejection that remains: no `mypy.ini` or `.mypy.ini` outranking the table it reads, `strict =
+  true`, no `disable_error_code` and no `warn_unused_ignores = false` in `[tool.mypy]` or any
+  override, and no `--disable-error-code` on the recipe. Reds on `--disable-error-code=arg-type`,
+  which is a code the canary does not violate; on a `mypy.ini` and on a `.mypy.ini` carrying the
+  same; and on an empty `mypy.ini`, which reds the execution check too because shadowing
+  `pyproject.toml` loses `strict` with it.
 - `tests/test_fleet.py::test_the_type_gate_reads_the_test_tree_and_not_only_the_source` — unchanged
   in purpose: which roots the command reads.
