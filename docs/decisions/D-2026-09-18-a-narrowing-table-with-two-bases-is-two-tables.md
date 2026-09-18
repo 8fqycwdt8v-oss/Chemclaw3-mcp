@@ -37,6 +37,29 @@ suppressions in **serving code** into noise, which is a cost the filtered row co
 
 The correct sentence for row 3 is **75 (46 in the test tree)**.
 
+## The other two loose links, in the cost paragraph
+
+The same record's "what the fix actually cost" chain is read as a measurement, and two of its links
+are not one. Re-driven at `0d58969` against the same whole-tree invocation:
+
+- "`servers/chem/tests/test_sites.py` reported 24 of them. `_by_atom` was annotated
+  `dict[int, object]` where it returns `dict[int, Site]`. One line, plus an import: **153 → 131**."
+  Applying exactly that edit (`git diff --numstat` → `2 2`) gives `Found 131 errors in 32 files`, so
+  the arithmetic is right *about the annotation*. The file's 24 is **22 `attr-defined` plus 2
+  `no-untyped-call`**, and the two the annotation does not touch are the pair
+  `D-2026-09-18-a-suppression-nobody-argued-reads-as-a-reviewed-one` is about. Putting 24 and
+  153 → 131 in one sentence reads as if the file's count were the delta; it is 22.
+- "38 `no-untyped-def` were `def test_x():` with no `-> None`, applied mechanically from mypy's own
+  note: **131 → 95**." With the annotation applied and `no-untyped-def` disabled the run reports
+  `Found 93 errors in 27 files`, and 131 − 38 = 93 independently. So 95 is neither the arithmetic
+  nor the disable. If it came from actually writing 38 annotations, then two errors appeared that
+  "applied mechanically" does not account for and the record does not mention — which is the same
+  reading failure as the row above, in the other direction.
+
+Neither changes the decision, and both are recorded for the reason this repository already has a
+record about: a figure in prose is a claim about a commit, and these are claims about a commit whose
+tree is still here to be re-run.
+
 ## The decision this adds
 
 The record decided "full `--strict` … with no check dropped and no configuration relaxed", and
