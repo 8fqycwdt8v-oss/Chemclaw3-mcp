@@ -370,13 +370,18 @@ What that buys and what it costs:
 - **Two bounds on the input and one on the clock**, because the Hessian's cap was not the only
   quadratic cost and `request_timeout` bounds the caller's wait rather than the work:
   - `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` (150) bounds the primitive whose cost is 6N single points.
-  - `CHEMCLAW_XTB_MAX_ATOMS` (500) bounds **every** structure, on `Structure` itself so each
-    primitive inherits it. The optimizer is the other quadratic one: it builds a dense matrix over
-    3N coordinates while the 1 MB body cap is linear in the atom count, so at the ~42,000 atoms a
-    body can carry the allocation takes the process down with every other connected turn. The
-    figures that used to be quoted here — 3.6 s at 120 atoms, 32.9 s at 510, 127 GB at 42,000 —
-    were measured on the ANC preconditioner that geomeTRIC replaced, and are retired with it rather
-    than reused; `docs/BACKLOG.md` carries the row for re-deriving them.
+  - `CHEMCLAW_XTB_MAX_ATOMS` (450) bounds **every** structure, on `Structure` itself so each
+    primitive inherits it. The optimizer is the other quadratic one: geomeTRIC eigendecomposes an
+    (`nprim`, `nprim`) G matrix whose `nprim` is linear in the atom count, while the 1 MB body cap
+    is linear in it too — so at the ~38,000 atoms a compact `tools/call` body can carry (measured,
+    26.3 bytes an atom) the allocation takes the process down with every other connected turn.
+    **The number is derived rather than chosen**: one whole relaxation of 509 atoms peaks at
+    978.9 MiB, and what the ceiling has to satisfy is that `calc_max_concurrent_requests` of those
+    fit inside `deploy/deployment.yaml`'s memory limit alongside the server's resident set and the
+    session backlog `mcp_server_kit` budgets. `servers/calc/tests/test_cost_bounds.py` performs the
+    derivation; `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` has the measurements
+    and says why the 500 it replaces — derived from the ANC preconditioner geomeTRIC deleted, whose
+    constants were about fifty times smaller — was over its own bound.
   - `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` (780) bounds the in-process optimisation and Hessian
     loops, checked per gradient and per displacement. The two subprocess timeouts do not cover
     those paths, and they are the paths this image runs; cancelling the awaiting coroutine does not

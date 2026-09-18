@@ -26,6 +26,7 @@ import inspect
 import pytest
 from chemclaw_mcp_calc import tools
 from chemclaw_mcp_calc.engine import xtb_props
+from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.identity import COMPUTE_TOOLS
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 
@@ -98,11 +99,15 @@ def test_the_row_is_bounded_by_the_atom_ceiling_rather_than_by_a_slice(
     """Completeness costs response size, and the bound on it is the one `Structure` already applies.
 
     Measured on this fixture: 185 bytes of JSON per site (4,469 for aspirin's 21, envelope
-    included), so the full list at `xtb_max_atoms` (500) extrapolates to ~94 kB — an order of
+    included), so the full list at `xtb_max_atoms` extrapolates to well under 100 kB — an order of
     magnitude inside the 1 MB body cap, and far smaller than `compute_hessian`'s ~2.2 MB at its own
     ceiling. There is no separate bound to add; the atom ceiling is it.
+
+    The projection reads `xtb_max_atoms` rather than the number it happened to be, so a deployment
+    that raises the ceiling projects its own row instead of the one this was written against.
     """
+    ceiling = settings.xtb_max_atoms
     per_site = len(from_smiles.sites[0].model_dump_json())
     assert per_site < 250, f"{per_site} bytes per site is bigger than this bound assumed"
-    projected = len(from_smiles.model_dump_json()) + (500 - len(from_smiles.sites)) * per_site
-    assert projected < 200_000, f"a full 500-atom row projects to {projected} bytes"
+    projected = len(from_smiles.model_dump_json()) + (ceiling - len(from_smiles.sites)) * per_site
+    assert projected < 200_000, f"a full {ceiling}-atom row projects to {projected} bytes"
