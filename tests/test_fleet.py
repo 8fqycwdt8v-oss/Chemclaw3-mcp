@@ -23,6 +23,7 @@ import importlib
 import json
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
@@ -381,6 +382,56 @@ def test_every_server_is_wired_into_the_type_gate() -> None:
         expected = f"servers/{server.name}/src"
         assert expected in make_src, f"Makefile's SRC is missing {expected} — make type skips it"
         assert expected in mypy_path, f"pyproject.toml's mypy_path is missing {expected}"
+
+
+def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
+    """`make type` must check every `tests/` directory in this workspace, observed rather than read.
+
+    `$(SRC)` listed the source roots and no test directory, so `mypy --strict` never read the files
+    that drive every ratchet here — 153 errors in 32 files were waiting in them, and nine
+    `# type: ignore[arg-type]` comments in `servers/thermalsafety/tests` suppressed nothing at all,
+    which is this repository's "a claim that a control exists" one layer down
+    (`D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets`).
+
+    The command is taken off `make -n` rather than re-derived from the `TESTS` variable, for the
+    reason `tests/test_context_floor.py` states about itself one repository over: a basis that is
+    re-derived rather than observed will agree with itself forever. A `TESTS :=` line that is
+    correct and a `type:` recipe that has stopped passing it are the same failure as no variable.
+
+    `--explicit-package-bases` is asserted because without it the invocation does not run at all:
+    ten servers ship a `tests/test_no_egress.py`, and mypy keys a module by basename by default.
+    """
+    printed = subprocess.run(
+        ["make", "-n", "type"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    command = next(
+        line
+        for line in printed.splitlines()
+        if " mypy " in line and not line.lstrip().startswith("#")
+    )
+    arguments = set(shlex.split(command))
+
+    assert "--explicit-package-bases" in arguments, (
+        'without it `make type` dies on `Duplicate module named "test_no_egress"` before it '
+        "checks anything, so the flag is part of the gate rather than a preference"
+    )
+
+    expected = {"tests"}
+    expected |= {
+        str(directory.relative_to(ROOT))
+        for pattern in ("packages/*/tests", "servers/*/tests")
+        for directory in ROOT.glob(pattern)
+        if directory.is_dir()
+    }
+    missing = sorted(expected - arguments)
+    assert not missing, (
+        f"`make type` does not read {missing}. Every ratchet in this repository lives in a test "
+        "file, and a ratchet mypy never reads is one that can stop meaning what it says in silence."
+    )
 
 
 def test_every_server_appears_in_the_catalogue() -> None:
@@ -1021,13 +1072,31 @@ def _locked_closure(distribution: str) -> set[str]:
             continue
         seen.add(name)
         for entry in entries.get(name, []):
-            requirements: list[dict[str, object]] = list(entry.get("dependencies", []))  # type: ignore[arg-type]
+            dependencies = entry.get("dependencies", [])
+            assert isinstance(dependencies, list)
+            requirements: list[dict[str, object]] = list(dependencies)
             optional = entry.get("optional-dependencies", {})
             assert isinstance(optional, dict)
             for extra in optional.values():
                 requirements.extend(extra)
             stack.extend(str(requirement["name"]) for requirement in requirements)
     return seen
+
+
+def _wheel_pass(block: str, distinguishing: str) -> str:
+    """The one `pip wheel` invocation inside `block` that carries `distinguishing`.
+
+    A Containerfile's build stage runs two of them and they are pinned by different arguments — the
+    third-party pass by `--require-hashes -r /build/requirements.txt`, the workspace pass by
+    `--no-deps`. A substring match against the whole RUN cannot tell them apart, so a flag present
+    on either one would satisfy an assertion about the other.
+    """
+    passes = [f"pip wheel {part}" for part in block.split("pip wheel ")[1:]]
+    matching = [invocation for invocation in passes if distinguishing in invocation.split("&&")[0]]
+    assert len(matching) == 1, (
+        f"expected exactly one `pip wheel` carrying {distinguishing!r}, found {len(matching)}"
+    )
+    return matching[0].split("&&")[0]
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -1050,10 +1119,12 @@ def test_a_sdist_only_dependency_builds_under_a_pinned_backend(server: Path) -> 
     The fix is the `build` dependency group in the root `pyproject.toml`: installed first, with
     `--require-hashes`, so the wheel pass can run `--no-build-isolation` and fetch nothing.
 
-    **Both directions, because either one alone is satisfiable by accident.** A server whose
-    closure holds an sdist-only package must carry the whole shape; a server that carries
-    `--no-build-isolation` without installing that group is worse than one that carries neither,
-    because pip would then build against whatever the image happens to have.
+    **This is the third-party pass only.** The pass that builds the two *workspace* distributions
+    is every image's, not this server's, and
+    `test_every_image_builds_its_workspace_wheels_under_the_locked_backend` is what holds it — this
+    one used to assert the absence of a pin on any server with no sdist in its closure, which became
+    false the day the backend was pinned fleet-wide
+    (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
     """
     block = next(
         instruction
@@ -1068,28 +1139,120 @@ def test_a_sdist_only_dependency_builds_under_a_pinned_backend(server: Path) -> 
     assert distribution, f"{server.name}/pyproject.toml declares no distribution name"
 
     built = sorted(_sdist_only_distributions() & _locked_closure(distribution.group(1)))
-    pinned = "--only-group build" in block and (
+    if not built:
+        pytest.skip(f"{server.name}'s locked closure builds no sdist")
+
+    third_party = _wheel_pass(block, "--require-hashes -r /build/requirements.txt")
+    assert "--only-group build" in block and (
         "--require-hashes -r /build/build-requirements.txt" in block
+    ), (
+        f"{server.name}/Containerfile installs {built!r}, which uv.lock resolves to an sdist "
+        "with no wheel, so pip builds it — and with pip's default build isolation the backend "
+        "that runs its setup.py is resolved from PyPI at build time, unhashed and outside the "
+        "lock. Export `--only-group build` and install it with `--require-hashes` in this same RUN"
+    )
+    assert "--no-build-isolation" in third_party, (
+        f"{server.name}/Containerfile pins a build backend and then does not use it on the pass "
+        f"that builds {built!r}: without `--no-build-isolation` pip still fetches its own, and the "
+        "pinned one is dead weight"
     )
 
-    if built:
-        assert pinned, (
-            f"{server.name}/Containerfile installs {built!r}, which uv.lock resolves to an sdist "
-            "with no wheel, so pip builds it — and with pip's default build isolation the backend "
-            "that runs its setup.py is resolved from PyPI at build time, unhashed and outside the "
-            "lock. Export `--only-group build` and install it with `--require-hashes` in this same "
-            "RUN"
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_every_image_builds_its_workspace_wheels_under_the_locked_backend(server: Path) -> None:
+    """The second `pip wheel` pass builds this fleet's own distributions, under the lock's backend.
+
+    Every distribution here declares `build-system.requires = ["hatchling"]` with no bound, so
+    pip's default build isolation resolves a backend from PyPI at image-build time — unhashed,
+    absent from `uv.lock`, outside everything `make deps-audit` read, and then *executed*. Nothing
+    installed that way reaches a shipped image (the final stage installs `--no-index
+    --find-links=/wheels`), which is why this sat below the runtime rows; what was at stake is
+    unpinned code running in the build and a wheel whose bytes depend on the day it was built.
+
+    **Measured before it was closed, because the row asked for exactly that**: `servers/props` and
+    `packages/mcp_server_kit` built under hatchling 1.21.1 and 1.32.3, `--no-build-isolation`, same
+    source. Identical member sets, every payload member byte-identical, and three dist-info members
+    different in both wheels — `WHEEL` (`Generator:`), `METADATA` (`Metadata-Version: 2.1` against
+    `2.5`) and `RECORD`, which carries their digests. So the backend does not silently drop a
+    corpus today, and it does decide the metadata grammar the wheel advertises itself with
+    (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+
+    **This is the assertion a twelfth Containerfile owes.** A fleet-wide property closed in eleven
+    files is eleven edits that the next server does not inherit — the exact shape
+    `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload` was written
+    for after seven copies of one NetworkPolicy rule left an eighth server owing none of it.
+
+    Both directions: `--no-build-isolation` without the group installed is *worse* than neither,
+    because pip would then build against whatever the base image happens to carry.
+    """
+    block = next(
+        instruction
+        for instruction in containerfile_instructions(
+            (server / "Containerfile").read_text(encoding="utf-8")
         )
-        assert "--no-build-isolation" in block, (
-            f"{server.name}/Containerfile pins a build backend and then does not use it: without "
-            "`--no-build-isolation` pip still fetches its own, and the pinned one is dead weight"
-        )
-    else:
-        assert not pinned and "--no-build-isolation" not in block, (
-            f"{server.name}/Containerfile builds no sdist — every entry in its locked closure "
-            "ships a wheel — so the build-backend pin has no subject here and reads as a control "
-            "that is doing something"
-        )
+        if instruction.startswith("RUN ") and "uv export --frozen --package" in instruction
+    )
+    workspace = _wheel_pass(block, "--no-deps")
+
+    assert "--only-group build" in block, (
+        f"{server.name}/Containerfile never exports the `build` group, so the backend its "
+        "workspace wheels are built with is whatever pip resolves from PyPI that day"
+    )
+    assert "--require-hashes -r /build/build-requirements.txt" in block, (
+        f"{server.name}/Containerfile exports the `build` group and installs it without "
+        "`--require-hashes`, which is the export's whole point"
+    )
+    assert "--no-build-isolation" in workspace, (
+        f"{server.name}/Containerfile installs a pinned backend and then builds its own two "
+        "distributions in isolation anyway: pip fetches its own hatchling and the pinned one is "
+        "dead weight"
+    )
+
+
+def test_the_build_group_names_every_backend_this_workspace_declares() -> None:
+    """Every `build-system.requires` in this workspace has to be in the `build` group and the lock.
+
+    `--no-build-isolation` means pip builds against what is already installed, and what is already
+    installed is `uv export --only-group build`. So a distribution whose backend that group does not
+    name would build against nothing and fail — or, worse, against something the base image happens
+    to carry. Derived from the twelve `pyproject.toml` files rather than written out, so a server
+    that switches backend next year is red here instead of red in a build log.
+
+    The lock half is the other end: a group entry `uv.lock` does not resolve exports nothing, and
+    `pip install` of nothing succeeds. That is the same defect
+    `test_the_build_group_is_what_the_calc_image_exports` catches for the group as a whole,
+    applied to each name in it
+    (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+    """
+    import tomllib
+
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    group = declared["dependency-groups"]["build"]
+    named = {re.split(r"[<>=!~\[]", requirement, maxsplit=1)[0].strip() for requirement in group}
+
+    manifests = [ROOT / "pyproject.toml"]
+    manifests += sorted(ROOT.glob("packages/*/pyproject.toml"))
+    manifests += sorted(ROOT.glob("servers/*/pyproject.toml"))
+    backends: dict[str, set[str]] = {}
+    for manifest in manifests:
+        requires = tomllib.loads(manifest.read_text(encoding="utf-8")).get("build-system", {})
+        for requirement in requires.get("requires", []):
+            backend = re.split(r"[<>=!~\[]", requirement, maxsplit=1)[0].strip()
+            backends.setdefault(backend, set()).add(str(manifest.relative_to(ROOT)))
+
+    missing = {name: sorted(where) for name, where in backends.items() if name not in named}
+    assert not missing, (
+        f"the `build` dependency group does not name {sorted(missing)}, declared as a build "
+        f"backend by {missing}. Those images build `--no-build-isolation`, so the backend has "
+        "to come from that group or it comes from nowhere"
+    )
+
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    unlocked = sorted(name for name in named if f'name = "{name}"' not in lock)
+    assert not unlocked, (
+        f"`uv.lock` resolves no {unlocked!r}, so `uv export --only-group build` omits it and the "
+        "`--require-hashes` install that is supposed to pin the backend installs nothing"
+    )
 
 
 def test_the_build_group_is_what_the_calc_image_exports() -> None:
@@ -1705,8 +1868,12 @@ def _env_read_within(node: ast.AST) -> str | None:
     return None
 
 
-def _bound_helper_variable(node: ast.AST) -> str | None:
-    """The variable a `_BOUND_HELPERS` call names, when `node` is one and names it literally.
+def _bound_helper_variable(node: ast.AST) -> tuple[str, int] | None:
+    """The variable a `_BOUND_HELPERS` call names and the line it is named on, or `None`.
+
+    The line comes back with the name because only an `ast.Call` can carry one: every caller wants
+    both, and reading `node.lineno` back off the bare `ast.AST` the walk yields is an access the
+    base class does not have.
 
     One definition rather than two, because the derivation below and `env_bound_sites` further down
     are answering the same question — which call sites are bounds — for two different checks. Two
@@ -1717,7 +1884,7 @@ def _bound_helper_variable(node: ast.AST) -> str | None:
         return None
     first = node.args[0]
     if isinstance(first, ast.Constant) and isinstance(first.value, str):
-        return first.value
+        return first.value, node.lineno
     return None
 
 
@@ -1759,9 +1926,9 @@ def _numeric_environ_reads(tree: ast.Module) -> dict[str, int]:
         if read is not None:
             found.setdefault(read, line)
     for node in ast.walk(tree):
-        variable = _bound_helper_variable(node)
-        if variable is not None:
-            found.setdefault(variable, node.lineno)
+        bound = _bound_helper_variable(node)
+        if bound is not None:
+            found.setdefault(bound[0], bound[1])
     return found
 
 
@@ -2286,14 +2453,15 @@ def env_bound_sites() -> list[BoundSite]:
         for source in sorted(root.rglob("*.py")):
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
             for node in ast.walk(tree):
-                variable = _bound_helper_variable(node)
-                if variable is None:
+                bound = _bound_helper_variable(node)
+                if bound is None:
                     continue
+                variable, line = bound
                 sites.append(
                     BoundSite(
                         variable=variable,
                         module=str(source.relative_to(root).with_suffix("")).replace("/", "."),
-                        where=f"{source.relative_to(ROOT)}:{node.lineno}",
+                        where=f"{source.relative_to(ROOT)}:{line}",
                     )
                 )
     return sites

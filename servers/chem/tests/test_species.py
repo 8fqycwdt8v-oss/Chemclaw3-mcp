@@ -143,7 +143,7 @@ def test_topology_answers_whether_a_search_would_find_anything() -> None:
     assert rigid.tautomer_count == 1, "benzene has no tautomer question"
 
     tautomeric = describe_molecule("CC(=O)CC(C)=O")
-    assert tautomeric.tautomer_count > 1
+    assert tautomeric.tautomer_count is not None and tautomeric.tautomer_count > 1
 
     amphoteric = describe_molecule("NCCC(=O)O")
     assert amphoteric.ionisable_acidic_sites == 1

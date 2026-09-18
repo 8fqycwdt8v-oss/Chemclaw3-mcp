@@ -289,7 +289,13 @@ def test_every_state_changing_tool_is_gated_and_no_read_only_one_is() -> None:
 
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
-    gated = {name for name in served if getattr(manager.get_tool(name).fn, ADMISSION_MARKER, False)}
+    registered = {name: manager.get_tool(name) for name in served}
+    assert all(tool is not None for tool in registered.values())
+    gated = {
+        name
+        for name, tool in registered.items()
+        if tool is not None and getattr(tool.fn, ADMISSION_MARKER, False)
+    }
 
     assert gated == state_changing, (
         f"ungated calculations: {sorted(state_changing - gated)}; "

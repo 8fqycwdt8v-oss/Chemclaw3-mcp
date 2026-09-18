@@ -22,18 +22,23 @@ from mcp_server_kit.testing import load_manifest
 
 ROOT = Path(__file__).resolve().parents[3]
 
-COMPLETE = {
+# The `endpoint:` block is a name of its own because every case below rebuilds it with one key
+# changed, and `COMPLETE["endpoint"]` is an `object` to any reader that does not already know the
+# shape — including this one.
+ENDPOINT: dict[str, object] = {
+    "transport": "http",
+    "url": "http://127.0.0.1:8850/mcp",
+    "health_url": "http://127.0.0.1:8850/healthz",
+    "request_timeout": 15,
+    "auth": {"mode": "bearer", "token_env": "PROBE_TOKEN"},
+    "tools": ["a_tool"],
+    "read_only": ["a_tool"],
+}
+
+COMPLETE: dict[str, object] = {
     "name": "probe",
     "description": "a probe server",
-    "endpoint": {
-        "transport": "http",
-        "url": "http://127.0.0.1:8850/mcp",
-        "health_url": "http://127.0.0.1:8850/healthz",
-        "request_timeout": 15,
-        "auth": {"mode": "bearer", "token_env": "PROBE_TOKEN"},
-        "tools": ["a_tool"],
-        "read_only": ["a_tool"],
-    },
+    "endpoint": ENDPOINT,
 }
 
 
@@ -63,7 +68,7 @@ def test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error(tmp_path: Pa
     one" than any type error does.
     """
     manifest = dict(COMPLETE)
-    manifest["endpoint"] = {**COMPLETE["endpoint"], "tools": None, "read_only": None}  # type: ignore[dict-item]
+    manifest["endpoint"] = {**ENDPOINT, "tools": None, "read_only": None}
     assert load_manifest(_written(tmp_path, manifest)).endpoint.tools == []
 
 
@@ -77,7 +82,7 @@ def test_a_key_this_fleet_invents_is_refused_here_rather_than_at_chemclaw3_s_sta
     this model existed nothing on this side would have noticed somebody adding it anyway.
     """
     manifest = dict(COMPLETE)
-    manifest["endpoint"] = {**COMPLETE["endpoint"], "arguments": {"a_tool": {}}}  # type: ignore[dict-item]
+    manifest["endpoint"] = {**ENDPOINT, "arguments": {"a_tool": {}}}
     with pytest.raises(ValueError, match="arguments"):
         load_manifest(_written(tmp_path, manifest))
     with pytest.raises(ValueError, match="mystery"):
@@ -94,12 +99,12 @@ def test_auth_cannot_be_omitted_or_declared_none(tmp_path: Path) -> None:
     """
     without = {
         **COMPLETE,
-        "endpoint": {k: v for k, v in COMPLETE["endpoint"].items() if k != "auth"},
-    }  # type: ignore[union-attr]
+        "endpoint": {k: v for k, v in ENDPOINT.items() if k != "auth"},
+    }
     with pytest.raises(ValueError, match="auth"):
         load_manifest(_written(tmp_path, without))
     none_mode = dict(COMPLETE)
-    none_mode["endpoint"] = {**COMPLETE["endpoint"], "auth": {"mode": "none"}}  # type: ignore[dict-item]
+    none_mode["endpoint"] = {**ENDPOINT, "auth": {"mode": "none"}}
     with pytest.raises(ValueError, match="bearer"):
         load_manifest(_written(tmp_path, none_mode))
 

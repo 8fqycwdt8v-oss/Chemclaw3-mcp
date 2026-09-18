@@ -192,7 +192,11 @@ def test_doubling_the_area_quarters_a_cake_limited_filtration() -> None:
 def test_a_missing_cake_resistance_cannot_be_defaulted() -> None:
     """alpha is the answer, so a caller without a filtration test gets a TypeError, not a guess."""
     with pytest.raises(TypeError):
-        filtration.filtration_time(
+        # The omission is the assertion: `specific_cake_resistance_m_per_kg` has no default, and
+        # this call is here to prove a caller cannot leave it out. mypy reports exactly that, which
+        # is why the ignore names `call-arg` — if the parameter ever gained a default the ignore
+        # would go unused and this test would go red with it.
+        filtration.filtration_time(  # type: ignore[call-arg]
             filtrate_volume_m3=0.25,
             filter_area_m2=0.456,
             pressure_drop_pa=8.0e4,

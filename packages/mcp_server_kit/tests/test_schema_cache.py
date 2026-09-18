@@ -22,7 +22,7 @@ import copy
 from collections.abc import Iterator
 from typing import Any
 
-import jsonschema
+import jsonschema  # type: ignore[import-untyped]
 import pytest
 from mcp_server_kit import schema_cache
 from mcp_server_kit.schema_cache import cached_validate, validator_cache_size
@@ -208,10 +208,13 @@ def test_installing_the_cache_twice_does_not_wrap_the_shim_in_a_shim() -> None:
     from mcp.server.lowlevel import server as lowlevel
 
     schema_cache.install_validator_cache()
-    once = lowlevel.jsonschema
+    # `jsonschema` is a name the SDK imports and does not declare, which is exactly why this shim
+    # can be swapped in at all — the ignores say so at the four sites that read it, the way
+    # `schema_cache.install_validator_cache` already does at the site that writes it.
+    once = lowlevel.jsonschema  # type: ignore[attr-defined]
     schema_cache.install_validator_cache()
-    assert lowlevel.jsonschema is once
+    assert lowlevel.jsonschema is once  # type: ignore[attr-defined]
     # And the shim is still `jsonschema` to every other name the SDK reads off it — the handler's
     # `except jsonschema.ValidationError` has to catch upstream's own class.
-    assert lowlevel.jsonschema.ValidationError is jsonschema.ValidationError
-    assert lowlevel.jsonschema.SchemaError is jsonschema.SchemaError
+    assert lowlevel.jsonschema.ValidationError is jsonschema.ValidationError  # type: ignore[attr-defined]
+    assert lowlevel.jsonschema.SchemaError is jsonschema.SchemaError  # type: ignore[attr-defined]

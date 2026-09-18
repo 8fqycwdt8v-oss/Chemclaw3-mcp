@@ -15,10 +15,12 @@ than by a pinned number that would be updated alongside the bug.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 from chemclaw_mcp_calc.engine import xtb_atomic, xtb_cli, xtb_props
 from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+from chemclaw_mcp_calc.engine.xtb_engine import run_singlepoint
 from chemclaw_mcp_calc.engine.xtb_spec import XtbSpec
 
 _BINARY = pytest.mark.skipif(
@@ -41,9 +43,9 @@ def test_the_panel_costs_no_extra_single_point(monkeypatch: pytest.MonkeyPatch) 
     someone who did not know the energies were already in hand.
     """
     calls = 0
-    original = xtb_props.run_singlepoint
+    original = run_singlepoint
 
-    def counting(*args: object, **kwargs: object) -> object:
+    def counting(*args: Any, **kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
@@ -269,7 +271,9 @@ def test_atomic_multipoles_are_present_and_finite() -> None:
         assert atom.dipole_norm_au is not None and math.isfinite(atom.dipole_norm_au)
         assert atom.quadrupole_norm_au is not None and math.isfinite(atom.quadrupole_norm_au)
     oxygen = next(atom for atom in result.atoms if atom.element == "O")
-    assert oxygen.dipole_norm_au > 0, "a lone pair is not isotropic"
+    assert oxygen.dipole_norm_au is not None and oxygen.dipole_norm_au > 0, (
+        "a lone pair is not isotropic"
+    )
 
 
 # --- the backend a version names must be the backend that ran ---------------------------------

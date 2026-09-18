@@ -11,6 +11,9 @@ SHELL := bash
 .DEFAULT_GOAL := help
 UV ?= uv
 SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src
+# The test tree, globbed rather than listed: a new server's tests are checked the day the directory
+# exists, which is the half `SRC` gets wrong by being a list somebody has to remember to extend.
+TESTS := tests $(wildcard packages/*/tests) $(wildcard servers/*/tests)
 
 .PHONY: help
 help: ## Show this help.
@@ -31,8 +34,16 @@ format: ## Apply ruff's fixes and formatting.
 	$(UV) run ruff format .
 
 .PHONY: type
-type: ## mypy --strict over every server and the shared kit.
-	$(UV) run mypy $(SRC)
+type: ## mypy --strict over every server, the shared kit and the test tree.
+	@# **The two flags are what make the test tree checkable at all.** Ten servers ship a
+	@# `tests/test_no_egress.py`, and mypy keys a module by its basename unless told otherwise, so
+	@# the plain invocation dies on `Duplicate module named "test_no_egress"` before it checks
+	@# anything. `--explicit-package-bases` keys by path instead and `MYPYPATH=.` is what gives
+	@# those paths a root to be relative to.
+	@#
+	@# One invocation rather than two: mypy builds one graph, and the test tree imports the source
+	@# tree anyway, so splitting them would analyse the same modules twice.
+	MYPYPATH=. $(UV) run mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
 
 .PHONY: test
 test: ## The whole suite, with the egress guard armed (see conftest.py).
@@ -237,6 +248,15 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# `chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]`, which is where the predictor stack — torch,
 	@# transformers — actually enters a shipped closure.
 	@#
+	@# **`--group build` is here because that group is code that *runs*.** Every image installs it
+	@# with `--require-hashes` and then builds `--no-build-isolation`, so `hatchling` and
+	@# `setuptools` execute in eleven builds; a group in `uv.lock` that this export omits is
+	@# `D-2026-09-13`'s own defect one group over — an audit of a closure nothing installs.
+	@# Measured 2026-09-18: the flag adds 4 packages the audit had never seen (`hatchling`,
+	@# `tomlkit`, `trove-classifiers`, `pathspec` — `setuptools` and `pluggy` were already in
+	@# through `rxn-insight`) and moves the finding count not at all, `13 ignored` either way
+	@# (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+	@#
 	@# **A found vulnerability and an unreachable advisory database are different events, and
 	@# `pip-audit` gives them the same exit code.** So the output is classified rather than the status
 	@# trusted, and the answer is asymmetric on purpose. This repository's whole posture is offline —
@@ -250,8 +270,8 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# first. The one scratch file is an `mktemp` rather than a fixed name, because a predictable path
 	@# in a shared /tmp is a symlink somebody else can plant.
 	@scratch=$$(mktemp -d); trap 'rm -rf "$$scratch"' EXIT; \
-	$(UV) export --all-packages --all-extras --no-hashes --no-dev --format requirements-txt \
-	  > "$$scratch/requirements.txt"; \
+	$(UV) export --all-packages --all-extras --group build --no-hashes --no-dev \
+	  --format requirements-txt > "$$scratch/requirements.txt"; \
 	report=$$(uvx pip-audit --no-deps --disable-pip $(AUDIT_IGNORE) \
 	  -r "$$scratch/requirements.txt" 2>&1) && rc=0 || rc=$$?; \
 	printf '%s\n' "$$report"; \

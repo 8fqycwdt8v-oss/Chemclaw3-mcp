@@ -269,17 +269,19 @@ def test_the_catch_all_files_a_broken_module_under_its_registry_name(
     `rxnpredict` suite passing until this test existed.
     """
     import importlib
+    from types import ModuleType
 
     broken = "chemclaw_mcp_rxnpredict.engine.predictors.forward.reaction_t5"
     real = importlib.import_module
 
-    def refuse(name: str, *args: object, **kwargs: object) -> object:
+    def refuse(name: str, package: str | None = None) -> ModuleType:
         """Fail the way a module with a syntax error or a bad top-level import fails."""
         if name == broken:
             raise RuntimeError("a top-level import this module does not guard")
-        return real(name, *args, **kwargs)
+        return real(name, package)
 
-    monkeypatch.setattr(registry.importlib, "import_module", refuse)
+    # The registry imports `importlib` itself, so this is the same module object it reads.
+    monkeypatch.setattr(importlib, "import_module", refuse)
     monkeypatch.setattr(registry, "_DISCOVERY_DONE", False)
     registry._UNAVAILABLE.clear()
     registry.discover_predictors()

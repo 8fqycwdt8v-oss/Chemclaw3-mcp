@@ -286,7 +286,7 @@ async def test_deriving_a_key_runs_no_scf() -> None:
         raise AssertionError("deriving a key must not run an SCF")
 
     original = xtb_engine.Calculator
-    xtb_engine.Calculator = _explode  # type: ignore[misc]
+    xtb_engine.Calculator = _explode  # type: ignore[assignment, misc]
     try:
         for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
             if tool in NEEDS_A_BINARY and not xtb_cli.is_available():

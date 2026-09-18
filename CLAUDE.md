@@ -175,7 +175,7 @@ that helper are non-obvious, and each is quiet when wrong:
   `calc` ready on an image with no `xtb` binary while `compute_atomic_descriptors` and
   `compute_surface_potential` refuse by name, at the point of *asking* as well as of computing: a
   well-formed key naming a program the pod lacks is worse than no key, and `calculation_key` was
-  minting one for 2 of 17 tools under the shipped default.
+  minting one for two of its tools under the shipped default.
 - **Declare `auth: {mode: bearer, token_env: ...}` in every manifest, even on the loopback dev
   URL.** Chemclaw3's `HttpEndpoint` would accept `mode: none` for loopback and refuse it the moment
   a deployment moved the address — and a manifest whose auth mode changes with its address is one
@@ -489,7 +489,7 @@ would leave both live, which is the duplication this section exists to prevent. 
 `servers/chem/README.md` and `servers/safety/README.md`.
 
 **`calc` is the third row and it left in a different way, which is why it is struck through only in
-part.** Chemclaw3 keeps its `calc` bundle and all fifteen of its tools; what moved is the *physics
+part.** Chemclaw3 keeps its `calc` bundle and its whole tool surface; what moved is the *physics
 underneath* — exposed here as `servers/calc/`, a **backend** Chemclaw3 calls from inside
 `science/calc/store.py::cached_compute` on a cache miss, not a connector it dials. A `calc` manifest
 reaching `CHEMCLAW_CONNECTORS_DIR` would let a partial surface win the name collision and remove the

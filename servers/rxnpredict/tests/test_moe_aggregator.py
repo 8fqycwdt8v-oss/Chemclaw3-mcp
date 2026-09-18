@@ -28,7 +28,7 @@ def settings() -> Settings:
     return s
 
 
-def test_per_class_priors_override_global_for_known_class(settings):
+def test_per_class_priors_override_global_for_known_class(settings: Settings) -> None:
     """For an amide-formation reaction, model_b's vote should outweigh model_a's
     because per-class priors flip the trust."""
     per_model = {
@@ -40,7 +40,7 @@ def test_per_class_priors_override_global_for_known_class(settings):
     assert out[0].product_smiles == "CC(=O)Nc1ccccc1"
 
 
-def test_global_priors_used_when_class_unknown(settings):
+def test_global_priors_used_when_class_unknown(settings: Settings) -> None:
     """For a reaction that doesn't match any class rule, global priors apply."""
     per_model = {
         "model_a": [_fwd("model_a", "CCO", rank=1)],
@@ -55,7 +55,7 @@ def test_global_priors_used_when_class_unknown(settings):
     assert out[0].product_smiles == "CCO"
 
 
-def test_class_priors_disabled_uses_globals(settings):
+def test_class_priors_disabled_uses_globals(settings: Settings) -> None:
     """When use_class_priors=False, even amide-forming reactants use global priors."""
     settings.use_class_priors = False
     per_model = {
@@ -67,7 +67,7 @@ def test_class_priors_disabled_uses_globals(settings):
     assert out[0].product_smiles == "CCO"
 
 
-def test_no_reactants_falls_back_to_globals(settings):
+def test_no_reactants_falls_back_to_globals(settings: Settings) -> None:
     """Aggregator without `reactants=` ignores class priors entirely."""
     per_model = {
         "model_a": [_fwd("model_a", "CCO", rank=1)],

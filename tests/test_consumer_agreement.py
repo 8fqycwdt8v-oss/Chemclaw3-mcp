@@ -280,10 +280,10 @@ def test_every_place_the_live_lanes_look_for_the_checkout_is_looked_in_here(
         )
         candidate.rmdir()
 
-    named = tmp_path / "named-explicitly"
-    named.mkdir()
-    monkeypatch.setenv(CONSUMER_ENV_VARS[0], str(named))
-    assert consumer_repo() == (named, ""), "the variable must win over the default roots"
+    explicit = tmp_path / "named-explicitly"
+    explicit.mkdir()
+    monkeypatch.setenv(CONSUMER_ENV_VARS[0], str(explicit))
+    assert consumer_repo() == (explicit, ""), "the variable must win over the default roots"
 
 
 # ---------------------------------------------------------------------------------------------

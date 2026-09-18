@@ -24,11 +24,20 @@ COPY servers/pyexec /build/servers/pyexec
 
 # Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
 # which is also what the tests import.
-# Two `pip wheel` passes, and the split is the point. The first resolves *nothing*: every
-# third-party version and hash comes from `uv.lock` by way of `uv export --frozen`, so what
-# this image installs is what `make deps-audit` read. The second builds the two workspace
-# packages `--no-deps`, because their dependencies are already in the wheelhouse and letting
-# pip look again is exactly the re-resolution this replaced.
+# Two `pip wheel` passes with the build backend installed in front of them, and the split is the
+# point. The first pass resolves *nothing*: every third-party version and hash comes from `uv.lock`
+# by way of `uv export --frozen`, so what this image installs is what `make deps-audit` read. The
+# second builds the two workspace packages `--no-deps`, because their dependencies are already in
+# the wheelhouse and letting pip look again is exactly the re-resolution this replaced.
+#
+# **`--no-build-isolation` on the second pass is what makes the backend the lock's rather than the
+# day's.** Both workspace distributions declare `build-system.requires = ["hatchling"]` with no
+# bound, so without it pip fetches a backend from PyPI at this moment — unhashed, absent from
+# `uv.lock`, and then *executed*. Measured across hatchling 1.21.1 and 1.32.3 on this workspace:
+# identical member sets and byte-identical payloads, with `WHEEL`, `METADATA` and `RECORD` differing
+# — `Metadata-Version: 2.1` against `2.5`. So the backend decides the metadata a wheel advertises
+# itself with, which is a smaller harm than a dropped corpus and is still a build whose output is a
+# function of the date (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
 #
 # `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
 # version runs, and a `uv` that changed this CLI would fail the build loudly rather than
@@ -36,9 +45,12 @@ COPY servers/pyexec /build/servers/pyexec
 RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
     && uv export --frozen --package chemclaw-mcp-pyexec --no-dev --no-emit-workspace \
          --format requirements-txt -o /build/requirements.txt \
+    && uv export --frozen --only-group build --no-emit-workspace \
+         --format requirements-txt -o /build/build-requirements.txt \
+    && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
     && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
-    && python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels ./packages/mcp_server_kit ./servers/pyexec
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/mcp_server_kit ./servers/pyexec
 
 FROM python:3.11-slim
 

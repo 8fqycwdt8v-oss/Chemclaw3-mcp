@@ -32,7 +32,7 @@ def _fwd(model: str, smi: str, rank: int, score: float = 0.9) -> ForwardPredicti
     return ForwardPrediction(product_smiles=smi, score=score, rank=rank, source_model=model)
 
 
-def test_forward_consensus_prefers_unanimous_top_pick(settings):
+def test_forward_consensus_prefers_unanimous_top_pick(settings: Settings) -> None:
     per_model = {
         "model_a": [_fwd("model_a", "CCO", 1), _fwd("model_a", "CCC", 2)],
         "model_b": [_fwd("model_b", "CCO", 1), _fwd("model_b", "OCC", 2)],  # OCC == CCO canon
@@ -45,7 +45,7 @@ def test_forward_consensus_prefers_unanimous_top_pick(settings):
     assert set(out[0].contributing_models) == {"model_a", "model_b", "model_c"}
 
 
-def test_forward_consensus_breaks_ties_by_vote_count(settings):
+def test_forward_consensus_breaks_ties_by_vote_count(settings: Settings) -> None:
     # Two candidates with equal raw weight; one has more voters → it wins.
     per_model = {
         "model_a": [_fwd("model_a", "CCO", 1, score=1.0)],
@@ -58,11 +58,11 @@ def test_forward_consensus_breaks_ties_by_vote_count(settings):
     assert out[0].vote_count == 2
 
 
-def test_forward_handles_no_predictions(settings):
+def test_forward_handles_no_predictions(settings: Settings) -> None:
     assert aggregate_forward({}, settings, top_k=5) == []
 
 
-def test_forward_ignores_invalid_smiles(settings):
+def test_forward_ignores_invalid_smiles(settings: Settings) -> None:
     per_model = {
         "model_a": [
             _fwd("model_a", "CCO", 1),
@@ -75,19 +75,28 @@ def test_forward_ignores_invalid_smiles(settings):
     assert any(r.product_smiles == "CCO" for r in out)
 
 
-def _cond(model, **kw) -> ConditionsPrediction:
+def _cond(
+    model: str,
+    *,
+    catalysts: list[str] | None = None,
+    solvents: list[str] | None = None,
+    reagents: list[str] | None = None,
+    temperature_c: float | None = None,
+    score: float = 0.9,
+    rank: int = 1,
+) -> ConditionsPrediction:
     return ConditionsPrediction(
-        catalysts=kw.get("catalysts", []),
-        solvents=kw.get("solvents", []),
-        reagents=kw.get("reagents", []),
-        temperature_c=kw.get("temperature_c"),
-        score=kw.get("score", 0.9),
-        rank=kw.get("rank", 1),
+        catalysts=catalysts or [],
+        solvents=solvents or [],
+        reagents=reagents or [],
+        temperature_c=temperature_c,
+        score=score,
+        rank=rank,
         source_model=model,
     )
 
 
-def test_conditions_consensus_buckets_temperature(settings):
+def test_conditions_consensus_buckets_temperature(settings: Settings) -> None:
     per_model = {
         "model_a": [_cond("model_a", solvents=["O"], temperature_c=25.0, rank=1)],
         "model_b": [_cond("model_b", solvents=["O"], temperature_c=28.0, rank=1)],
@@ -102,7 +111,7 @@ def test_conditions_consensus_buckets_temperature(settings):
     assert 24.0 <= top.temperature_c <= 29.0  # average of 25 + 28
 
 
-def test_conditions_canonicalises_solvent_strings(settings):
+def test_conditions_canonicalises_solvent_strings(settings: Settings) -> None:
     # "O" and "[OH2]" both canonicalise to "O" — should count as the same vote.
     per_model = {
         "model_a": [_cond("model_a", solvents=["O"], rank=1)],

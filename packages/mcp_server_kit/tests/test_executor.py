@@ -14,9 +14,10 @@ import os
 import socket
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -141,7 +142,7 @@ def _free_port() -> int:
 
 
 @contextmanager
-def _serving(app: object) -> Iterator[str]:
+def _serving(app: Callable[..., Any]) -> Iterator[str]:
     """Run one app under uvicorn on a free loopback port for one test's duration."""
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))

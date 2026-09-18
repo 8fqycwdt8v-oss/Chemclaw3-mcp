@@ -30,7 +30,7 @@ from pathlib import Path
 import httpx
 import pytest
 from chemclaw_mcp_rxnlabel import app as app_module
-from chemclaw_mcp_rxnlabel.engine import mapping, readiness
+from chemclaw_mcp_rxnlabel.engine import mapping, naming, readiness, species, version
 from mcp_server_kit import degradation
 
 _DEPLOYMENT_PATH = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
@@ -74,9 +74,9 @@ async def test_an_uninstalled_component_is_ready_and_not_a_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No mapper installed is this deployment's decision, and the server answers with it."""
-    monkeypatch.setattr(readiness.mapping, "available", lambda: False)
-    monkeypatch.setattr(readiness.naming, "available", lambda: False)
-    monkeypatch.setattr(readiness.version, "_installed", lambda _name: "absent")
+    monkeypatch.setattr(mapping, "available", lambda: False)
+    monkeypatch.setattr(naming, "available", lambda: False)
+    monkeypatch.setattr(version, "_installed", lambda _name: "absent")
     assert (await _probe()).status_code == 200
 
 
@@ -84,8 +84,8 @@ async def test_an_installed_component_that_will_not_construct_is_unready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A checkpoint that failed to load is a broken image, and it must not take traffic."""
-    monkeypatch.setattr(readiness.mapping, "available", lambda: False)
-    monkeypatch.setattr(readiness.version, "_installed", lambda name: "9.9.9")
+    monkeypatch.setattr(mapping, "available", lambda: False)
+    monkeypatch.setattr(version, "_installed", lambda name: "9.9.9")
     response = await _probe()
     assert response.status_code == 503
     assert "rxnmapper" in response.json()["reason"]
@@ -107,9 +107,9 @@ async def test_an_unbuilt_component_is_unready_whatever_the_cause_said(
     whether the
     refusal can be lifted without a restart.
     """
-    monkeypatch.setattr(readiness.mapping, "available", lambda: False)
-    monkeypatch.setattr(readiness.mapping, "construction_failure", lambda: "resource_exhausted")
-    monkeypatch.setattr(readiness.version, "_installed", lambda name: "9.9.9")
+    monkeypatch.setattr(mapping, "available", lambda: False)
+    monkeypatch.setattr(mapping, "construction_failure", lambda: "resource_exhausted")
+    monkeypatch.setattr(version, "_installed", lambda name: "9.9.9")
     assert degradation.CAUSE_RESOURCE_EXHAUSTED not in degradation.PERMANENT_CAUSES, "the premise"
     response = await _probe()
     assert response.status_code == 503
@@ -199,9 +199,9 @@ async def test_a_component_that_breaks_after_a_good_probe_stops_reporting_ready(
     assert (await _probe()).status_code == 200, "the verdict is cached, which is the point of it"
 
     monkeypatch.setattr(
-        readiness.naming,
+        naming,
         "name",
-        lambda _reaction: readiness.naming.Naming(failure=degradation.CAUSE_FAILED),
+        lambda _reaction: naming.Naming(failure=degradation.CAUSE_FAILED),
     )
     assert (await _probe()).status_code == 200, (
         "still cached: the window is what bounds the fixture's cost, and it is asserted here so "
@@ -251,7 +251,7 @@ async def test_a_transient_failure_of_the_labelling_path_keeps_the_pod_in_servic
         calls.append("tried")
         raise MemoryError("Unable to allocate array")
 
-    monkeypatch.setattr(readiness.species, "functional_groups", out_of_memory)
+    monkeypatch.setattr(species, "functional_groups", out_of_memory)
     response = await _probe()
     assert response.status_code == 200, (
         "a transient failure of the labelling path must shed no traffic; the counter is what it "
@@ -281,7 +281,7 @@ async def test_a_permanent_failure_of_the_labelling_path_sheds_traffic(
         """Fail the way a corrupt SMARTS vocabulary does."""
         raise RuntimeError("the functional-group vocabulary will not compile")
 
-    monkeypatch.setattr(readiness.species, "functional_groups", corrupt)
+    monkeypatch.setattr(species, "functional_groups", corrupt)
     response = await _probe()
     assert response.status_code == 503
     assert "vocabulary" in response.json()["reason"]

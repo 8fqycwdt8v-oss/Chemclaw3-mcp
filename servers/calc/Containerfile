@@ -83,9 +83,10 @@ COPY servers/calc /build/servers/calc
 # by way of `uv export --frozen`, so what this image installs is what `make deps-audit` read.
 # The second builds the two workspace
 # packages `--no-deps`, because their dependencies are already in the wheelhouse and letting
-# pip look again is exactly the re-resolution this replaced. That second pass still takes its own
-# build backend (`hatchling`) from pip's isolation, which is the fleet-wide shape rather than
-# anything this server introduced; `docs/BACKLOG.md` carries the row.
+# pip look again is exactly the re-resolution this replaced. It is `--no-build-isolation` too, for
+# the same reason the first pass is: `hatchling` is in the `build` group and therefore in the lock,
+# so both passes execute a backend the audit read
+# (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
 #
 # `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
 # version runs, and a `uv` that changed this CLI would fail the build loudly rather than
@@ -98,7 +99,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
     && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
     && python -m pip wheel --no-cache-dir --no-build-isolation --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
-    && python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels ./packages/mcp_server_kit ./servers/calc
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/mcp_server_kit ./servers/calc
 
 FROM python:3.11-slim
 

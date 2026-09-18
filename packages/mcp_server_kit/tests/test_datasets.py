@@ -8,6 +8,7 @@ reviewer needs — as loud errors at load time rather than wrong answers at call
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -29,21 +30,25 @@ def _write(
     directory: Path,
     *,
     records: str = RECORDS,
-    _replace: dict[str, object] | None = None,
-    **overrides: object,
+    replace: Mapping[str, object] | None = None,
+    overrides: Mapping[str, object] | None = None,
 ) -> Path:
     """Write a dataset directory whose manifest is correct except for `overrides`.
 
-    `_replace` supplies the whole manifest instead, which is the only way to write one with a key
+    `replace` supplies the whole manifest instead, which is the only way to write one with a key
     *absent*: an override can change a value and cannot remove a line.
+
+    Both are mappings rather than `**kwargs` because a manifest field is named by a variable at
+    every call site here (`_REQUIRED` is what parametrises them), and `**{field: value}` is a call
+    no checker can match against a signature that also has keyword parameters of its own.
     """
     import hashlib
 
     (directory / "records.csv").write_text(records, encoding="utf-8")
-    manifest = dict(MANIFEST if _replace is None else _replace)
+    manifest = dict(MANIFEST if replace is None else replace)
     if "sha256" in manifest:
         manifest["sha256"] = hashlib.sha256(records.encode("utf-8")).hexdigest()
-    manifest.update(overrides)
+    manifest.update(overrides or {})
     (directory / "dataset.json").write_text(json.dumps(manifest), encoding="utf-8")
     return directory
 
@@ -77,10 +82,10 @@ def test_every_provenance_field_is_required(tmp_path: Path, field: str) -> None:
     human-readable statement of what it is. A seventh field is now covered the day it is added.
     """
     with pytest.raises(DatasetError, match="blank field"):
-        load_dataset(_write(tmp_path, **{field: ""}))
+        load_dataset(_write(tmp_path, overrides={field: ""}))
     absent = {name: value for name, value in MANIFEST.items() if name != field}
     with pytest.raises(DatasetError, match="missing required field"):
-        load_dataset(_write(tmp_path, _replace=absent))
+        load_dataset(_write(tmp_path, replace=absent))
 
 
 @pytest.mark.parametrize("field", datasets._REQUIRED)
@@ -99,9 +104,9 @@ def test_a_field_the_author_wrote_is_not_reported_as_missing(tmp_path: Path, fie
     verbatim or not at all.
     """
     with pytest.raises(DatasetError, match=f"non-string field.*{field}.*got int"):
-        load_dataset(_write(tmp_path, **{field: 7}))
+        load_dataset(_write(tmp_path, overrides={field: 7}))
     with pytest.raises(DatasetError, match="blank field"):
-        load_dataset(_write(tmp_path, **{field: "   "}))
+        load_dataset(_write(tmp_path, overrides={field: "   "}))
 
 
 def test_a_manifest_that_is_not_a_mapping_is_named(tmp_path: Path) -> None:
@@ -178,7 +183,7 @@ def test_a_key_nothing_reads_is_refused_rather_than_ignored(tmp_path: Path) -> N
     think something consumed them.
     """
     with pytest.raises(DatasetError, match="unrecognised key"):
-        load_dataset(_write(tmp_path, text_column="name"))
+        load_dataset(_write(tmp_path, overrides={"text_column": "name"}))
 
 
 def test_no_shipped_manifest_carries_a_key_the_loader_does_not_read(tmp_path: Path) -> None:

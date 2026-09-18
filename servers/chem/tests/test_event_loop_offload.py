@@ -25,6 +25,8 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_chem import tools as chem_tools
+from chemclaw_mcp_chem.engine.depiction import render_svg
+from chemclaw_mcp_chem.engine.reagents import resolve_compound_name
 
 
 def _thread_recording(target: Any, seen: list[int]) -> Any:
@@ -40,7 +42,7 @@ def _thread_recording(target: Any, seen: list[int]) -> Any:
 def test_render_structure_draws_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Depiction — 2D coordinate generation plus SVG rasterisation — is the heaviest call here."""
     seen: list[int] = []
-    monkeypatch.setattr(chem_tools, "render_svg", _thread_recording(chem_tools.render_svg, seen))
+    monkeypatch.setattr(chem_tools, "render_svg", _thread_recording(render_svg, seen))
 
     async def _run() -> tuple[int, str]:
         return threading.get_ident(), await chem_tools.render_structure("CCO")
@@ -61,7 +63,7 @@ def test_resolve_compound_looks_up_off_the_event_loop(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         chem_tools,
         "resolve_compound_name",
-        _thread_recording(chem_tools.resolve_compound_name, seen),
+        _thread_recording(resolve_compound_name, seen),
     )
 
     async def _run() -> tuple[int, Any]:

@@ -181,7 +181,9 @@ def test_the_one_tool_is_admission_gated() -> None:
     served = manager.list_tools()
     assert served, "no tools registered"
     for tool in served:
-        assert getattr(manager.get_tool(tool.name).fn, ADMISSION_MARKER, False), (
+        registered = manager.get_tool(tool.name)
+        assert registered is not None
+        assert getattr(registered.fn, ADMISSION_MARKER, False), (
             f"{tool.name} is served without an admission slot: it would run whenever a caller "
             "asked, regardless of how many are already running"
         )

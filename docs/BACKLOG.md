@@ -88,21 +88,6 @@ decision leaves a record behind and the row goes.
   `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
   `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
-- [ ] **The build backend every wheel is built with is outside `uv.lock`, and therefore outside
-  `make deps-audit`.** `uv build` resolves `build-system.requires` per build, not from the locked
-  closure — `grep -n 'name = "hatchling"' uv.lock` answers nothing — so the supply-chain control
-  `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` built cannot see it.
-  `tests/test_fleet.py::test_every_server_builds_a_wheel_that_carries_its_data` now passes
-  `--offline`, which stops that build reaching an index
-  (`D-2026-09-14-a-child-process-is-outside-the-guard-and-uv-build-is-one`), and that is a no-egress
-  fix rather than an audit one: what it now builds with is whatever version the cache happens to
-  hold. The exposure is bounded — those wheels are never shipped, since an image installs the
-  exported closure with `--require-hashes` — so the open question is whether a build dependency is
-  worth pinning at all here, and if so whether the honest place is a `[tool.uv] constraint`
-  the export can carry rather than a second lock nothing reads.
-  **Anchors:** `uv.lock`, `pyproject.toml`, `tests/test_fleet.py::test_every_server_builds_a_wheel_that_carries_its_data`,
-  `Makefile`.
-
 ## 2 — The resource-bound ratchet, where it stops
 
 - [ ] **Neither ratchet can see a pod `env:` a cluster operator adds outside these files.** Both
@@ -341,24 +326,6 @@ decision leaves a record behind and the row goes.
 
 ## 4 — The gate itself
 
-- [ ] **Every image still takes its *build backend* from pip's isolation, unhashed, at build time.**
-  `D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day` closed this
-  for the one dependency that is actually built from source — `geometric`, the only sdist-only entry
-  in `uv.lock` — by exporting the lock's `build` dependency group and passing
-  `--no-build-isolation` to `servers/calc/Containerfile`'s first `pip wheel`. The **second** pass in
-  every Containerfile is untouched: `python -m pip wheel --no-deps ./packages/mcp_server_kit
-  ./servers/<name>` builds two `hatchling`-backed distributions, and pip resolves `hatchling` (and
-  its own `hatchling` dependencies) from PyPI at that moment — chosen that day, no hashes, outside
-  the lock, executing a build backend. Nothing installed that way reaches a shipped image, which is
-  why it is here and not above the `rxnlabel` row: what is at stake is unpinned code running in the
-  build and a wheel whose bytes depend on when it was built, not the runtime closure. Closing it is
-  `hatchling` in the `build` group plus the same two lines in twelve Containerfiles, and the reason
-  it is not done in the commit that found it is that twelve edits to close a fleet-wide property is
-  a change that wants its own measurement — specifically, whether a hatchling in the build
-  environment can change what `hatchling.build` puts in a wheel.
-  **Anchors:** `servers/calc/Containerfile`, `pyproject.toml` (`[dependency-groups] build`),
-  `tests/test_fleet.py::test_a_sdist_only_dependency_builds_under_a_pinned_backend`.
-
 - [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
   `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on
   `uv export --frozen ... --require-hashes`, and measured the result on `props`: 11 of 37 packages
@@ -371,39 +338,6 @@ decision leaves a record behind and the row goes.
   image deliberately takes the CPU index's), which is a measurement and an argument rather than a
   line edit. Until then this is the one image whose closure `make deps-audit` does not describe.
   **Anchors:** `servers/rxnlabel/Containerfile`, `tests/test_fleet.py`, `uv.lock`.
-
-- [ ] **`make type` does not check the test tree, and 146 errors are waiting in it.** `$(SRC)`
-  lists the `src/` roots and no test directory, so `mypy --strict` never reads the files that drive
-  every ratchet in this repository. Chemclaw3 by contrast types `src`, `examples` and `tests`.
-
-  **The hard half is solved and the estimate was wrong, both measured 2026-09-15.** The invocation
-  that reads the tree is `MYPYPATH=. mypy --strict --explicit-package-bases --namespace-packages
-  tests packages/*/tests servers/*/tests`: keying modules by path rather than basename is what gets
-  past `Duplicate module named "test_no_egress"`, which ten servers now trigger. Run that way, the
-  tree reports **146 errors in 31 files**, not the one this row used to claim — the figure was one
-  because that was all anybody had checked, on the single file they could invoke mypy on without
-  hitting the collision.
-
-  **The yield looks low, which is why this is still a row rather than a commit.** 38 of the 146 are
-  `no-untyped-def` on test helpers and 58 are `attr-defined`, mostly RDKit's unstubbed module
-  surface and `object` returned by untyped fixtures. Twenty-two were read individually and **none
-  was a live defect**: the two that looked like one are a loop variable rebound to a different type
-  later in the same scope (`tests/test_consumer_agreement.py` at line 276, which runs correctly and
-  types inconsistently) and an `int | None` compared with `>` that is never `None` for that input
-  (`servers/chem/tests/test_species.py` at line 146, which would raise `TypeError` rather than
-  fail its assertion if a regression made it `None`).
-
-  So the decision this row now needs is whether 146 fixes with a measured-low defect yield is worth
-  the gate, or whether a narrower strictness for tests is — and the second is the one to be careful
-  about, since dropping `--disallow-untyped-defs` alone removes 38 of the errors without removing
-  any of the risk.
-
-  **What it did find, on the three servers added since:** nine `# type: ignore[arg-type]` comments
-  in `servers/thermalsafety/tests/test_semenov.py` that suppressed nothing — the same "claim a
-  control exists" shape this repository keeps deleting, one layer down. Those are gone, and
-  `servers/kinetics`, `servers/suitability` and `servers/thermalsafety` are clean under the
-  invocation above, so the 146 is entirely older code.
-  **Anchors:** `Makefile`, `servers/calc/tests/test_admission.py`, `pyproject.toml`.
 
 - [ ] **The cross-repository agreement runs nowhere automated, on either side.**
   `tests/test_consumer_agreement.py` closes the direction this tree was blind in — measured

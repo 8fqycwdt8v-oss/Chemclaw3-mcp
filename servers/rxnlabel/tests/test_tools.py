@@ -145,7 +145,7 @@ class TestAReactionIsMappedOnce:
             calls.append(reaction_smiles)
             return mapping.MapResult()
 
-        monkeypatch.setattr(rxnlabel_tools.mapping, "map_reaction", counted)
+        monkeypatch.setattr(mapping, "map_reaction", counted)
         requests = [
             rxnlabel_tools.ReactionRequest(
                 id=str(index),
