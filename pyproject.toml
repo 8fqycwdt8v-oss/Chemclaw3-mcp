@@ -19,11 +19,28 @@ dependencies = []
 # from *this* group first, with `--require-hashes`, and builds with `--no-build-isolation`
 # (`D-2026-09-16-a-dependency-with-no-wheel-builds-under-whatever-pip-fetches-that-day`).
 #
-# `setuptools` alone, deliberately: it is already in the closure `make deps-audit` reads (through
-# `rxn-insight`, which is also what caps it below 81), so this group adds no dependency the
-# supply-chain gate cannot see. `wheel` is not needed — setuptools has carried `bdist_wheel` since
-# 70.1, measured against this sdist.
+# `setuptools` is here for that sdist. **`hatchling` is here for every image**, and the two are one
+# group because they are one question: what backend executes during a build, and is it the one the
+# lock names. Every distribution in this workspace declares `build-system.requires = ["hatchling"]`
+# with no bound, so the *second* `pip wheel` pass in each Containerfile — the one that builds
+# `mcp_server_kit` and the server — used to let pip resolve a backend from PyPI at that moment,
+# unhashed and absent from `uv.lock`
+# (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+#
+# **Measured, and the measurement is narrower than the headline.** `servers/props` and
+# `mcp_server_kit` built under hatchling 1.21.1 and 1.32.3, `--no-build-isolation`, same source:
+# identical member *sets*, every payload member byte-identical, and three dist-info members
+# different in each wheel — `WHEEL` (`Generator:`), `METADATA` (`Metadata-Version: 2.1` against
+# `2.5`) and `RECORD`, which carries their digests. So a backend swap does not silently drop a
+# corpus today; it does decide the metadata grammar the wheel advertises itself with, and it is
+# arbitrary third-party code *executing* in the build either way.
+#
+# No lower bound, on purpose: the twelve `build-system.requires` lines state none, this group's job
+# is to make the resolution reproducible rather than to add a floor nobody measured, and the lock is
+# what pins the exact version. `wheel` is not needed — setuptools has carried `bdist_wheel` since
+# 70.1, measured against `geometric`'s sdist.
 build = [
+    "hatchling",
     "setuptools>=70.1",
 ]
 dev = [

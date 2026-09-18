@@ -248,6 +248,15 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# `chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]`, which is where the predictor stack — torch,
 	@# transformers — actually enters a shipped closure.
 	@#
+	@# **`--group build` is here because that group is code that *runs*.** Every image installs it
+	@# with `--require-hashes` and then builds `--no-build-isolation`, so `hatchling` and
+	@# `setuptools` execute in eleven builds; a group in `uv.lock` that this export omits is
+	@# `D-2026-09-13`'s own defect one group over — an audit of a closure nothing installs.
+	@# Measured 2026-09-18: the flag adds 4 packages the audit had never seen (`hatchling`,
+	@# `tomlkit`, `trove-classifiers`, `pathspec` — `setuptools` and `pluggy` were already in
+	@# through `rxn-insight`) and moves the finding count not at all, `13 ignored` either way
+	@# (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+	@#
 	@# **A found vulnerability and an unreachable advisory database are different events, and
 	@# `pip-audit` gives them the same exit code.** So the output is classified rather than the status
 	@# trusted, and the answer is asymmetric on purpose. This repository's whole posture is offline —
@@ -261,8 +270,8 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# first. The one scratch file is an `mktemp` rather than a fixed name, because a predictable path
 	@# in a shared /tmp is a symlink somebody else can plant.
 	@scratch=$$(mktemp -d); trap 'rm -rf "$$scratch"' EXIT; \
-	$(UV) export --all-packages --all-extras --no-hashes --no-dev --format requirements-txt \
-	  > "$$scratch/requirements.txt"; \
+	$(UV) export --all-packages --all-extras --group build --no-hashes --no-dev \
+	  --format requirements-txt > "$$scratch/requirements.txt"; \
 	report=$$(uvx pip-audit --no-deps --disable-pip $(AUDIT_IGNORE) \
 	  -r "$$scratch/requirements.txt" 2>&1) && rc=0 || rc=$$?; \
 	printf '%s\n' "$$report"; \
