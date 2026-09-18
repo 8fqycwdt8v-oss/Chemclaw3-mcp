@@ -17,6 +17,8 @@ argued in that record: the two named above, three `import-untyped` on `jsonschem
 `attr-defined` on `lowlevel.jsonschema`, both covered by its "nothing in `pyproject.toml` changed"
 paragraph. **Three are argued nowhere:**
 
+Line numbers are as `6df6eb19` has them; this record's own commit adds the comments above them.
+
 | where | code | what it suppresses |
 | --- | --- | --- |
 | `servers/chem/tests/test_sites.py:123` | `no-untyped-call` | `Call to untyped function "CanonSmiles"` |
