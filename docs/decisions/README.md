@@ -113,6 +113,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-18-a-gate-that-omits-a-layer-reads-like-one-that-ran-it](D-2026-09-18-a-gate-that-omits-a-layer-reads-like-one-that-ran-it.md) | A gate that omits a layer reads like one that ran it |
 | [D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables](D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables.md) | A narrowing table with two bases is two tables |
 | [D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate](D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate.md) | A ratchet that observes half a command holds half a gate |
+| [D-2026-09-18-a-ratchet-that-reads-the-right-artefact-and-never-checks-what-it-does](D-2026-09-18-a-ratchet-that-reads-the-right-artefact-and-never-checks-what-it-does.md) | A ratchet that reads the right artefact and never checks what it does |
 | [D-2026-09-18-a-suppression-nobody-argued-reads-as-a-reviewed-one](D-2026-09-18-a-suppression-nobody-argued-reads-as-a-reviewed-one.md) | A suppression nobody argued reads as a reviewed one |
 | [D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work](D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work.md) | An output cap is not a bound on the work |
 | [D-2026-09-18-the-last-bound-outside-the-reader-was-outside-it-by-type](D-2026-09-18-the-last-bound-outside-the-reader-was-outside-it-by-type.md) | The last bound outside the reader was outside it by type |

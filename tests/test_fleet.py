@@ -456,7 +456,7 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
 
 
 def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
-    """`--strict` with nothing disabled, held in the declaration **and** in the invocation.
+    """`[tool.mypy]` does not carry the narrowing that was measured and rejected.
 
     `D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets` measured a
     narrower strictness before rejecting it, and the measurement is what rejects it: dropping
@@ -467,11 +467,25 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
     `--disable-error-code` and `warn_unused_ignores` fight, and the narrowing's loudest signal is an
     artefact of its own configuration.
 
-    That record's decision — "no check dropped and no configuration relaxed" — had nothing holding
-    it (`D-2026-09-18-a-narrowing-table-with-two-bases-is-two-tables`). Both ends are checked here
-    for the reason `test_the_type_gate_reads_the_test_tree_and_not_only_the_source` gives one
-    function up: a clean `[tool.mypy]` and a recipe that passes `--disable-error-code` are the same
-    gate as a dirty one.
+    **This is a named rejection, not a bound, and the version that shipped read as a bound.** It
+    held three config keys and a four-name list of CLI flags, which is a deny-list over a tool with
+    dozens of ways to say "check less" —
+    `D-2026-09-18-a-ratchet-that-reads-the-right-artefact-and-never-checks-what-it-does` drove six
+    one-line states that left a planted type error unreported with this function green,
+    `ignore_errors = true` one key from the two it inspected among them. What bounds the gate is
+    `test_a_planted_error_in_a_gated_file_reds_make_type` below, which measures the answer instead
+    of the declaration.
+
+    **What survives here is `--disable-error-code`, in both places it can be written, and nothing
+    else.** That is the narrowing the record argues about by name, so re-taking it should fail
+    against the sentence that rejected it rather than against a generic canary — and the recipe is
+    the other place it can be written, which is the gap
+    `D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate` found one level up.
+    The other three names that list carried are gone because the execution check covers them by
+    *driving* them: `--no-strict-optional` takes `assignment` out of the canary,
+    `--allow-untyped-defs` takes `no-untyped-def`, `--no-warn-unused-ignores` takes `unused-ignore`,
+    each measured. A name on a list and a code the gate is required to report are not the same
+    control, and only the second one noticed `--exclude`.
 
     A per-module `ignore_missing_imports` is **not** this: it says a third-party distribution ships
     no stubs, which is a fact about that distribution rather than a check this repository declines.
@@ -502,16 +516,111 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
         for line in printed.splitlines()
         if " mypy " in line and not line.lstrip().startswith("#")
     )
-    relaxations = [
-        argument
-        for argument in shlex.split(command)
-        if argument.startswith("--disable-error-code")
-        or argument in {"--no-strict-optional", "--no-warn-unused-ignores", "--allow-untyped-defs"}
+    disabled = [
+        argument for argument in shlex.split(command) if argument.startswith("--disable-error-code")
     ]
-    assert not relaxations, (
-        f"the `type:` recipe passes {relaxations}, which relaxes the gate without touching the "
-        "configuration anybody reviews"
+    assert not disabled, (
+        f"the `type:` recipe passes {disabled}, which takes the same narrowing the record rejected "
+        "and puts it where nobody reviewing `pyproject.toml` will see it"
     )
+
+
+# A module that violates four checks at once, planted into the tree and removed again by the test
+# below. Each line is here because a *different* relaxation silences it, driven one at a time:
+# `--allow-untyped-defs` (or `strict = false`) takes `no-untyped-def`, `--no-strict-optional` takes
+# `assignment`, `--no-warn-unused-ignores` (or `strict = false`) takes `unused-ignore`, and
+# `--disable-error-code=return-value` takes `return-value`. Four codes rather than one because the
+# assertion is that *each* is reported: a canary with a single error proves only that mypy still
+# runs, and `make type` would stay red under every flag the deleted deny-list used to name.
+_TYPE_GATE_CANARY = '''"""Planted by the type gate's execution check, and removed by it.
+
+If this file is in a checkout, `test_a_planted_error_in_a_gated_file_reds_make_type` died between
+planting and its `finally`. Delete it; nothing imports it.
+"""
+
+
+def gate_canary_untyped():
+    """No annotations: `--strict`'s `disallow_untyped_defs`."""
+    return 1
+
+
+def gate_canary_return_value() -> int:
+    """A `str` where an `int` is declared: mypy's base configuration reports this."""
+    return "not an int"
+
+
+gate_canary_optional: int = None
+gate_canary_unused: int = 1  # type: ignore[assignment]
+'''
+
+# One gated `src/` root and one gated `tests/` root, named rather than derived. Derivation is what
+# `test_the_type_gate_reads_the_test_tree_and_not_only_the_source` does, and it is the wrong tool
+# here: a canary planted under whatever the command happens to name is checked by definition, which
+# is the "agrees with itself forever" basis that test's own docstring warns about. These two paths
+# are checked because they are two real places in this tree, and if either stops being read the
+# assertion below says so.
+_TYPE_GATE_CANARY_PATHS = (
+    Path("packages/mcp_server_kit/src/mcp_server_kit/_type_gate_canary.py"),
+    Path("tests/_type_gate_canary.py"),
+)
+_TYPE_GATE_CANARY_CODES = ("no-untyped-def", "return-value", "assignment", "unused-ignore")
+
+
+def test_a_planted_error_in_a_gated_file_reds_make_type() -> None:
+    """Run the real recipe against a known error and require it to be reported. One warm mypy run.
+
+    Every other check on this gate reads an artefact — the `SRC :=` line, `mypy_path`, the command
+    `make -n type` prints, the `[tool.mypy]` table.
+    `D-2026-09-18-a-ratchet-that-reads-the-right-artefact-and-never-checks-what-it-does` is the
+    record that this is a third way to get a ratchet wrong, beside the two the previous one names:
+    **read the right artefact correctly, and never check what it does.** Six one-line states were
+    driven against the guard that shipped, each leaving a planted type error unreported with all
+    three gate tests green:
+
+    - `ignore_errors = true` in `[tool.mypy]`, one key from the two that guard parsed;
+    - `[[tool.mypy.overrides]] module = ["chemclaw_mcp_props.*"] ignore_errors = true`;
+    - a root `mypy.ini`, which wins mypy's config discovery and touches neither `pyproject.toml`
+      nor the `Makefile`, so no artefact any guard read changed at all;
+    - `--exclude "_canary"` on the recipe — inside the deny-list's stated job and not on its list;
+    - a leading `-` on the recipe line, which prints the error and exits **0**, and CI runs
+      `make type` as its own step;
+    - a file-level `# mypy: ignore-errors` comment.
+
+    None of the six survives this test, because all six change the *answer* and this assertion is
+    about the answer. `make type` rather than `mypy` directly: the exit code is the part the leading
+    `-` defeats, and a check that shells mypy itself would have reported the error and passed.
+
+    **What this does not claim.** It is a floor, not a proof of strictness: a relaxation that
+    silences some check no line of `_TYPE_GATE_CANARY` violates passes here. The floor is raised by
+    adding a line to that constant, which is the whole cost, and the four it carries are the four
+    the deleted flag deny-list used to name. It also says nothing about *which* roots are gated —
+    that is the test above, which walks every `.py` in the tree.
+    """
+    for path in _TYPE_GATE_CANARY_PATHS:
+        (ROOT / path).write_text(_TYPE_GATE_CANARY, encoding="utf-8")
+    try:
+        run = subprocess.run(
+            ["make", "type"], cwd=ROOT, capture_output=True, text=True, check=False
+        )
+    finally:
+        for path in _TYPE_GATE_CANARY_PATHS:
+            (ROOT / path).unlink(missing_ok=True)
+    reported = run.stdout + run.stderr
+
+    assert run.returncode != 0, (
+        "`make type` exited 0 with a deliberately ill-typed module in two gated directories. The "
+        f"gate reports nothing about them:\n{reported}"
+    )
+    for path in _TYPE_GATE_CANARY_PATHS:
+        for code in _TYPE_GATE_CANARY_CODES:
+            assert any(
+                str(path) in line and f"[{code}]" in line for line in reported.splitlines()
+            ), (
+                f"`make type` did not report [{code}] in {path}. Every line of the planted module "
+                "is violated under the configuration this repository ships, so a missing code is a "
+                "check that has been turned off somewhere — the configuration, an override, a "
+                f"`mypy.ini`, or the recipe.\n{reported}"
+            )
 
 
 def test_every_server_appears_in_the_catalogue() -> None:
