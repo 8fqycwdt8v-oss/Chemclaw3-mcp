@@ -385,38 +385,73 @@ def test_every_server_is_wired_into_the_type_gate() -> None:
         assert expected in mypy_path, f"pyproject.toml's mypy_path is missing {expected}"
 
 
+def _tracked_python_files() -> list[Path]:
+    """Every `.py` file this repository ships — tracked, or newly written and not ignored.
+
+    `git ls-files` rather than a filesystem walk with a list of directories to prune. The criterion
+    wanted is "what this repository ships", `.gitignore` already states it for `.venv`, the three
+    caches and every build artefact, and a prune list written here would be the second declaration
+    of that — the hand list the check below exists to stop using, one layer down. `--others
+    --exclude-standard` includes a file somebody has just written and not staged, which is exactly
+    when the gate most needs to notice it; a tracked file that has been deleted is dropped, because
+    a path with nothing behind it is not something mypy can fail to read.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [
+        (ROOT / name).resolve() for name in listed.split("\0") if name and (ROOT / name).exists()
+    ]
+
+
 def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
-    """`make type` must check every `src/` and every `tests/` directory, observed rather than read.
+    """Every `.py` this repository ships sits under some root on the command `make type` runs.
+
+    **The name is narrower than what this now holds, and it is kept deliberately.** Five merged
+    records cite it in their `## What keeps it true`, a merged record is never edited, and
+    `tests/test_decision_log.py::test_every_test_a_record_names_still_exists` resolves those
+    citations — driven, renaming this function reds it by name. A citation that stops resolving is a
+    retired check nobody notices; a name that under-describes its function is a docstring's job.
 
     `$(SRC)` listed the source roots and no test directory, so `mypy --strict` never read the files
     that drive every ratchet here — 153 errors in 32 files were waiting in them, and nine
     `# type: ignore[arg-type]` comments in `servers/thermalsafety/tests` suppressed nothing at all,
     which is this repository's "a claim that a control exists" one layer down
-    (`D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets`).
+    (`D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets`). Then
+    `test_every_server_is_wired_into_the_type_gate` turned out to read `SRC :=` out of the Makefile
+    *text* and never look at the recipe, so deleting `$(SRC)` from the invocation took every `src/`
+    root out of the gate and kept both gate tests green
+    (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`). The command is
+    therefore taken off `make -n`, for the reason `tests/test_context_floor.py` states about itself
+    one repository over: a basis that is re-derived rather than observed will agree with itself
+    forever.
 
-    The command is taken off `make -n` rather than re-derived from the `TESTS` variable, for the
-    reason `tests/test_context_floor.py` states about itself one repository over: a basis that is
-    re-derived rather than observed will agree with itself forever. A `TESTS :=` line that is
-    correct and a `type:` recipe that has stopped passing it are the same failure as no variable.
+    **What it compared that command against was a hand list, and one file fell through it**
+    (`D-2026-09-18-every-py-in-the-tree-or-a-named-exemption`). The version that shipped globbed
+    four patterns and named three more roots as literals, under a criterion — "`SRC` and `TESTS` are
+    directory lists, and these are not directories" — that contradicted itself in the same sentence
+    it was written in, because `tests` and `scripts` *are* directories; what they are not is
+    *globbed*. `servers/rxnpredict/scripts/fetch_models.py` was neither, so it was invisible to the
+    ratchet in both directions: not required on the command, and a second such directory would not
+    have been noticed either. Measured, `find` counted 309 `.py` files against `make type`'s
+    `checked 308 source files`, and the one out was the single script in this fleet whose own
+    docstring says it is *meant* to reach a network.
 
-    **This function shipped holding that about the test half only, and the argument was true of the
-    source half too** (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`).
-    `test_every_server_is_wired_into_the_type_gate` reads `SRC :=` out of the Makefile *text* and
-    never looks at the recipe, so deleting `$(SRC)` from the invocation took 164 source files out of
-    the gate, left `make type` reporting `Success: no issues found in 141 source files`, and kept
-    **both** gate tests green — the regression that adjacent test exists to prevent, one level up.
-    So both halves are checked against the same observed command, and the source half is globbed
-    rather than listed for the reason the `TESTS` variable already is.
-
-    **The same reading found two things the gate had never read at all.** `SRC` and `TESTS` are
-    directory lists, so the root `conftest.py` — layer 3 of the no-egress posture, the fixture that
-    arms the guard for every test in this repository — and `scripts/`, which holds
-    `offline_check.py` and is therefore the whole `make offline-run` lane, were outside
-    `mypy --strict`. Both were clean when they were added (305 files to 308, `Success`), so nothing
-    was hiding; what was missing was anything that would notice if something started.
+    So the basis is the filesystem on both sides: every `.py` outside the caches must sit under some
+    root on the observed command, which needs no list to extend and no glob to keep in step. A new
+    `packages/*/src`, a new `servers/*/tests`, a new `servers/*/scripts` and a directory nobody has
+    thought of yet are all covered the day a `.py` lands in one.
 
     `--explicit-package-bases` is asserted because without it the invocation does not run at all:
     ten servers ship a `tests/test_no_egress.py`, and mypy keys a module by basename by default.
+
+    This says which roots are read, and nothing about what reading them *does* — that is
+    `test_a_planted_error_in_a_gated_file_reds_make_type`, and `--exclude "_canary"` on the recipe
+    passes here (the path token is still on the command) and reds there.
     """
     printed = subprocess.run(
         ["make", "-n", "type"],
@@ -430,28 +465,28 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
         for line in printed.splitlines()
         if " mypy " in line and not line.lstrip().startswith("#")
     )
-    arguments = set(shlex.split(command))
+    arguments = shlex.split(command)
 
     assert "--explicit-package-bases" in arguments, (
         'without it `make type` dies on `Duplicate module named "test_no_egress"` before it '
         "checks anything, so the flag is part of the gate rather than a preference"
     )
 
-    # Three of these are not directories under a glob, so they are named. `conftest.py` arms the
-    # egress guard for the whole suite — layer 3 of the no-egress posture `CLAUDE.md` describes —
-    # and `scripts/` holds `offline_check.py`, which *is* `make offline-run`. Both were outside the
-    # gate entirely, and neither `SRC` nor `TESTS` could express them, being directory lists.
-    expected = {"tests", "conftest.py", "scripts"}
-    expected |= {
-        str(directory.relative_to(ROOT))
-        for pattern in ("packages/*/tests", "servers/*/tests", "packages/*/src", "servers/*/src")
-        for directory in ROOT.glob(pattern)
-        if directory.is_dir()
-    }
-    missing = sorted(expected - arguments)
-    assert not missing, (
-        f"`make type` does not read {missing}. Every ratchet in this repository lives in a test "
-        "file, and a ratchet mypy never reads is one that can stop meaning what it says in silence."
+    roots = [
+        (ROOT / argument).resolve()
+        for argument in arguments
+        if not argument.startswith("-") and (ROOT / argument).exists()
+    ]
+    ungated = sorted(
+        str(source.relative_to(ROOT))
+        for source in _tracked_python_files()
+        if not any(source == root or root in source.parents for root in roots)
+    )
+    assert not ungated, (
+        f"`make type` never reads {ungated}. Every ratchet in this repository lives in a Python "
+        "file, and one mypy never reads can stop meaning what it says in silence. Put the "
+        "directory on `SRC` or `TESTS` — and if it is deliberately out, that is a decision for a "
+        "record and a named exemption here, not a silence."
     )
 
 
