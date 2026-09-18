@@ -21,7 +21,7 @@ from chemclaw_mcp_rxnpredict.engine.meta.classifier import (
 from rdkit import Chem
 
 
-def test_amide_formation_from_acid_chloride():
+def test_amide_formation_from_acid_chloride() -> None:
     klass = classify_reaction(
         reactants="CC(=O)Cl.Nc1ccccc1",
         product="CC(=O)Nc1ccccc1",
@@ -29,7 +29,7 @@ def test_amide_formation_from_acid_chloride():
     assert klass == CLASS_AMIDE_FORMATION
 
 
-def test_esterification():
+def test_esterification() -> None:
     klass = classify_reaction(
         reactants="CC(=O)O.CCO",
         product="CCOC(C)=O",
@@ -37,7 +37,7 @@ def test_esterification():
     assert klass == CLASS_ESTERIFICATION
 
 
-def test_suzuki_coupling():
+def test_suzuki_coupling() -> None:
     klass = classify_reaction(
         reactants="Brc1ccccc1.OB(O)c1ccccc1",
         product="c1ccc(-c2ccccc2)cc1",
@@ -45,7 +45,7 @@ def test_suzuki_coupling():
     assert klass == CLASS_SUZUKI
 
 
-def test_carbonyl_reduction():
+def test_carbonyl_reduction() -> None:
     klass = classify_reaction(
         reactants="CC(C)=O.[Na+].[BH4-]",
         product="CC(C)O",
@@ -53,7 +53,7 @@ def test_carbonyl_reduction():
     assert klass == CLASS_REDUCTION
 
 
-def test_nitration():
+def test_nitration() -> None:
     klass = classify_reaction(
         reactants="c1ccccc1.O=[N+]([O-])O",
         product="O=[N+]([O-])c1ccccc1",
@@ -61,7 +61,7 @@ def test_nitration():
     assert klass == CLASS_NITRATION
 
 
-def test_unknown_returns_other():
+def test_unknown_returns_other() -> None:
     # Random nonsense reactants -> no rule fires
     klass = classify_reaction(
         reactants="C(F)(F)F.C#N",
@@ -70,7 +70,7 @@ def test_unknown_returns_other():
     assert klass == CLASS_OTHER
 
 
-def test_specific_class_wins_over_generic_substitution():
+def test_specific_class_wins_over_generic_substitution() -> None:
     """A reaction that is both an alkyl-halide+nucleophile (generic SN) AND a
     more specific named reaction should classify as the specific one, because
     the broad nucleophilic_substitution rule is evaluated last.
@@ -86,7 +86,7 @@ def test_specific_class_wins_over_generic_substitution():
     assert klass == CLASS_NUCLEOPHILIC_SUBSTITUTION
 
 
-def test_amide_not_shadowed_by_generic_substitution():
+def test_amide_not_shadowed_by_generic_substitution() -> None:
     """An acid-chloride aminolysis (which also contains a halide + N) must
     classify as amide_formation, not the generic substitution fallback."""
     klass = classify_reaction(
@@ -96,7 +96,7 @@ def test_amide_not_shadowed_by_generic_substitution():
     assert klass == CLASS_AMIDE_FORMATION
 
 
-def test_classifier_ignores_invalid_smiles():
+def test_classifier_ignores_invalid_smiles() -> None:
     # Should not raise even if RDKit refuses one of the inputs
     klass = classify_reaction(
         reactants="CC(=O)Cl.Nc1ccccc1.not_a_smiles",

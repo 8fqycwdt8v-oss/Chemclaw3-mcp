@@ -106,5 +106,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not](D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not.md) | The driver is a command-line program, the optimizer is not |
 | [D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string](D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string.md) | The optimizer that decides the geometry is not in the version string |
 | [D-2026-09-16-the-refusals-belong-in-front-of-the-library](D-2026-09-16-the-refusals-belong-in-front-of-the-library.md) | The refusals belong in front of the library |
+| [D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets](D-2026-09-18-a-gate-that-does-not-read-the-tests-does-not-read-the-ratchets.md) | A gate that does not read the tests does not read the ratchets |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

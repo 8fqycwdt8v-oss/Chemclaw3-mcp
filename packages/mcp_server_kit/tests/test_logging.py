@@ -159,9 +159,12 @@ def test_a_line_carries_the_correlation_id_that_joins_it_to_the_audit_trail() ->
     logging.getLogger().removeHandler(handler)
 
     assert len(kept) == 1
-    assert kept[0].correlation == "corr-abc123"
-    assert kept[0].actor == "alice@example.test"
-    assert kept[0].session == "session-77"
+    # The three names are what `ContextFilter` *injects*, so they live in the record's `__dict__`
+    # rather than on `LogRecord` — reading them there is what the formatter does too.
+    bound = vars(kept[0])
+    assert bound["correlation"] == "corr-abc123"
+    assert bound["actor"] == "alice@example.test"
+    assert bound["session"] == "session-77"
 
 
 def test_the_json_record_is_the_shape_chemclaw3_emits(monkeypatch: pytest.MonkeyPatch) -> None:

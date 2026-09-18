@@ -11,6 +11,9 @@ SHELL := bash
 .DEFAULT_GOAL := help
 UV ?= uv
 SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src
+# The test tree, globbed rather than listed: a new server's tests are checked the day the directory
+# exists, which is the half `SRC` gets wrong by being a list somebody has to remember to extend.
+TESTS := tests $(wildcard packages/*/tests) $(wildcard servers/*/tests)
 
 .PHONY: help
 help: ## Show this help.
@@ -31,8 +34,16 @@ format: ## Apply ruff's fixes and formatting.
 	$(UV) run ruff format .
 
 .PHONY: type
-type: ## mypy --strict over every server and the shared kit.
-	$(UV) run mypy $(SRC)
+type: ## mypy --strict over every server, the shared kit and the test tree.
+	@# **The two flags are what make the test tree checkable at all.** Ten servers ship a
+	@# `tests/test_no_egress.py`, and mypy keys a module by its basename unless told otherwise, so
+	@# the plain invocation dies on `Duplicate module named "test_no_egress"` before it checks
+	@# anything. `--explicit-package-bases` keys by path instead and `MYPYPATH=.` is what gives
+	@# those paths a root to be relative to.
+	@#
+	@# One invocation rather than two: mypy builds one graph, and the test tree imports the source
+	@# tree anyway, so splitting them would analyse the same modules twice.
+	MYPYPATH=. $(UV) run mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
 
 .PHONY: test
 test: ## The whole suite, with the egress guard armed (see conftest.py).

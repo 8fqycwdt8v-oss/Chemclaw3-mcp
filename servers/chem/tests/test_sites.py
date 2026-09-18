@@ -12,11 +12,11 @@ import time
 
 import pytest
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
-from chemclaw_mcp_chem.engine.sites import SCOPES, describe_atom_sites, site_handle
+from chemclaw_mcp_chem.engine.sites import SCOPES, Site, describe_atom_sites, site_handle
 from rdkit import Chem
 
 
-def _by_atom(smiles: str) -> dict[int, object]:
+def _by_atom(smiles: str) -> dict[int, Site]:
     """Every site of `smiles`, keyed by each atom index it covers."""
     return {atom: site for site in describe_atom_sites(smiles).sites for atom in site.atoms}
 
@@ -120,7 +120,8 @@ def test_a_ring_fusion_is_not_a_substituent() -> None:
 def test_hydrogens_are_reported_on_their_carbon_with_a_calculators_numbering() -> None:
     """The join key for a C-H question, checked against RDKit's own explicit-H molecule."""
     smiles = "Cc1ccccc1"
-    explicit = Chem.AddHs(Chem.MolFromSmiles(Chem.CanonSmiles(smiles)))
+    canonical_smiles = Chem.CanonSmiles(smiles)  # type: ignore[no-untyped-call]
+    explicit = Chem.AddHs(Chem.MolFromSmiles(canonical_smiles))
     expected: dict[int, list[int]] = {}
     for atom in explicit.GetAtoms():
         if atom.GetAtomicNum() == 1:
@@ -229,7 +230,8 @@ def test_a_rewritten_smiles_gives_the_same_sites_and_the_same_indices() -> None:
 def test_the_indices_are_the_ones_a_calculator_will_use() -> None:
     """The join asserted against RDKit's canonical ordering rather than against this module."""
     for writing in ("Oc1ccccc1", "c1ccccc1O", "c1cc(O)ccc1"):
-        canonical = Chem.MolFromSmiles(Chem.CanonSmiles(writing))
+        written = Chem.CanonSmiles(writing)  # type: ignore[no-untyped-call]
+        canonical = Chem.MolFromSmiles(written)
         expected = [atom.GetIdx() for atom in canonical.GetAtoms() if atom.GetSymbol() == "O"]
         oxygen = next(site for site in describe_atom_sites(writing).sites if site.element == "O")
         assert oxygen.atoms == expected, writing

@@ -451,7 +451,11 @@ async def test_the_short_lease_is_never_applied_over_a_session_that_is_already_w
     promoted.idle_scope.deadline = far
     fresh = SimpleNamespace(idle_scope=anyio.CancelScope())
     fresh.idle_scope.deadline = far
-    instances.update({"working": working, "promoted": promoted, "fresh": fresh})
+    # Stand-ins rather than real transports: `_start_the_short_lease` reads `idle_scope` and the
+    # used-marker off each value and nothing else, and a real `StreamableHTTPServerTransport`
+    # cannot be built without a live session. The ignore names what upstream's mapping declares;
+    # were that type ever widened it would go unused and this line would go red with it.
+    instances.update({"working": working, "promoted": promoted, "fresh": fresh})  # type: ignore[dict-item]
     for session_id in ("working", "promoted", "fresh"):
         _start_the_short_lease(server, session_id, unused=FIRST_LEASE_SECONDS)
 

@@ -26,14 +26,18 @@ def _spec() -> dict[str, object]:
 def test_egress_is_denied() -> None:
     """`Egress` governed and the rule list empty — the two halves of "deny all"."""
     spec = _spec()
-    assert "Egress" in spec["policyTypes"]
+    governed = spec["policyTypes"]
+    assert isinstance(governed, list)
+    assert "Egress" in governed
     assert spec["egress"] == [], f"rxnpredict must reach nothing; found {spec['egress']!r}"
 
 
 def test_ingress_admits_only_the_agent_and_the_scraper() -> None:
     """A prediction surface open to the namespace is a prediction surface open to the namespace."""
     spec = _spec()
-    assert "Ingress" in spec["policyTypes"]
+    governed = spec["policyTypes"]
+    assert isinstance(governed, list)
+    assert "Ingress" in governed
     rules = spec["ingress"]
     assert isinstance(rules, list) and len(rules) == 1
     assert rules[0]["ports"] == [{"protocol": "TCP", "port": 8857}]
@@ -41,9 +45,9 @@ def test_ingress_admits_only_the_agent_and_the_scraper() -> None:
 
 def test_the_policy_selects_this_server() -> None:
     """A selector that matches nothing protects nothing."""
-    assert (
-        _spec()["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == "chemclaw-mcp-rxnpredict"
-    )
+    selector = _spec()["podSelector"]
+    assert isinstance(selector, dict)
+    assert selector["matchLabels"]["app.kubernetes.io/name"] == "chemclaw-mcp-rxnpredict"
 
 
 def test_the_image_runs_offline_and_on_the_declared_port() -> None:

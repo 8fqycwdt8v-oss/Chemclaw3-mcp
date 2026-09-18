@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 from chemclaw_mcp_safety import tools as safety_tools
+from chemclaw_mcp_safety.engine import genotox, screen
 
 
 def _thread_recording(target: Any, seen: list[int]) -> Any:
@@ -41,7 +42,7 @@ def test_a_single_structure_screen_runs_off_the_event_loop(monkeypatch: pytest.M
     """The one-molecule path takes its own hop — it is a different call from the reaction path."""
     seen: list[int] = []
     monkeypatch.setattr(
-        safety_tools, "screen_structure", _thread_recording(safety_tools.screen_structure, seen)
+        safety_tools, "screen_structure", _thread_recording(screen.screen_structure, seen)
     )
 
     async def _run() -> tuple[int, Any]:
@@ -61,7 +62,7 @@ def test_a_reaction_screen_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPat
     """The path whose cost is quadratic in a caller-supplied list — the one that was measured."""
     seen: list[int] = []
     monkeypatch.setattr(
-        safety_tools, "screen_reaction", _thread_recording(safety_tools.screen_reaction, seen)
+        safety_tools, "screen_reaction", _thread_recording(screen.screen_reaction, seen)
     )
 
     async def _run() -> tuple[int, Any]:
@@ -82,9 +83,9 @@ def test_the_genotoxicity_screen_runs_off_the_event_loop(monkeypatch: pytest.Mon
     """The sibling screen has the identical shape, and a hop in one place is not a hop in both."""
     seen: list[int] = []
     monkeypatch.setattr(
-        safety_tools.genotox,
+        genotox,
         "screen_genotoxic_alerts",
-        _thread_recording(safety_tools.genotox.screen_genotoxic_alerts, seen),
+        _thread_recording(genotox.screen_genotoxic_alerts, seen),
     )
 
     async def _run() -> tuple[int, Any]:

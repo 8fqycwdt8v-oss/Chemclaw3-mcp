@@ -21,8 +21,8 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-import jsonschema
-import jsonschema.validators
+import jsonschema  # type: ignore[import-untyped]
+import jsonschema.validators  # type: ignore[import-untyped]
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel import server as lowlevel
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER, StreamableHTTPServerTransport

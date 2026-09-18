@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
-from chemclaw_mcp_unitops.engine import mixing, selftest
+from chemclaw_mcp_unitops.engine import distillation, mixing, selftest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp_server_kit.testing import assert_bearer_is_enforced, assert_manifest_matches
@@ -120,13 +120,13 @@ def test_the_readiness_probe_refuses_when_a_correlation_stops_matching_its_close
     the right interval and a minimum reflux that is still a plausible number — and it no longer
     reproduces the closed form, which is what the check is for.
     """
-    original = selftest.distillation.UNDERWOOD_BISECTION_STEPS
-    selftest.distillation.UNDERWOOD_BISECTION_STEPS = 1
+    original = distillation.UNDERWOOD_BISECTION_STEPS
+    distillation.UNDERWOOD_BISECTION_STEPS = 1
     try:
         with pytest.raises(selftest.SelfTestFailed, match="minimum reflux"):
             selftest.verify()
     finally:
-        selftest.distillation.UNDERWOOD_BISECTION_STEPS = original
+        distillation.UNDERWOOD_BISECTION_STEPS = original
 
     assert selftest.verify(), "the probe must recover once the solver is restored"
 

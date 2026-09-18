@@ -149,7 +149,8 @@ def test_a_depiction_holds_the_gil_so_threads_buy_no_throughput() -> None:
         return time.perf_counter() - started
 
     one, four = timed(1), timed(4)
-    assert os.cpu_count() and os.cpu_count() > 1, "a single-core runner cannot answer this question"
+    cores = os.cpu_count()
+    assert cores is not None and cores > 1, "a single-core runner cannot answer this question"
     assert four >= 2 * one, (
         f"four concurrent depictions took {four:.3f}s against {one:.3f}s for one. That is closer "
         "to parallel than to serial, so RDKit's GIL behaviour has changed and both the admission "

@@ -32,7 +32,7 @@ import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -414,7 +414,10 @@ async def test_the_charge_does_not_follow_the_callers_models_argument(
     """
     registry_of(*(_SlowPredictor(f"slow_{index}") for index in range(FAN_OUT)))
     one = ["slow_0"]
-    assert [predictor.name for predictor in tools._forward_predictors(one)] == one, (
+    # `_forward_predictors` is annotated `list[object]` in the server; the objects it hands back
+    # are the `_SlowPredictor`s `registry_of` just registered, and their names are the subject.
+    narrowed = cast(list[BaseForwardPredictor], tools._forward_predictors(one))
+    assert [predictor.name for predictor in narrowed] == one, (
         "the execution path no longer narrows on `models`, so there is nothing to walk past"
     )
     ensemble = tools._forward_ensemble_slots()

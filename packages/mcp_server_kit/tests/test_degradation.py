@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[3]
 RECORD_CALL_SITES = 8
 
 
-def _refusal() -> BaseException:
+def _refusal() -> OSError:
     """The exception the armed guard actually raises, obtained by tripping it."""
     try:
         socket.getaddrinfo("example.invalid", 443)
@@ -327,13 +327,12 @@ def _is_derived_cause(cause: ast.expr | None, function: ast.FunctionDef) -> bool
     if not isinstance(cause, ast.Name):
         return False
     for node in ast.walk(function):
-        targets = (
-            node.targets
-            if isinstance(node, ast.Assign)
-            else [node.target]
-            if isinstance(node, ast.AnnAssign)
-            else []
-        )
+        if isinstance(node, ast.Assign):
+            targets: list[ast.expr] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
         if not any(isinstance(t, ast.Name) and t.id == cause.id for t in targets):
             continue
         if _is_derived_cause(node.value, function):

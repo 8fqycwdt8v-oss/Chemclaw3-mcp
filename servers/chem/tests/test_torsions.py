@@ -29,7 +29,7 @@ from chemclaw_mcp_chem.engine.torsions import (
     torsion_handle,
 )
 from rdkit import Chem
-from rdkit.Chem import AllChem, rdMolDescriptors, rdMolTransforms
+from rdkit.Chem import rdDistGeom, rdForceFieldHelpers, rdMolDescriptors, rdMolTransforms
 
 
 def _by_kind(smiles: str, kind: str) -> Torsion:
@@ -229,8 +229,9 @@ class TestSymmetry:
         orbit = _bond_orbits(mol)
         merged: dict[str, set[int]] = {}
         for bond in mol.GetBonds():
-            pair = (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
-            merged.setdefault(torsion_handle(mol, pair), set()).add(orbit[tuple(sorted(pair))])
+            begin, end = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            ordered = (begin, end) if begin <= end else (end, begin)
+            merged.setdefault(torsion_handle(mol, (begin, end)), set()).add(orbit[ordered])
         for handle, orbits in merged.items():
             assert len(orbits) == 1, f"{smiles}: {handle} merges {len(orbits)} automorphism orbits"
 
@@ -243,18 +244,22 @@ def _bond_orbits(mol: Chem.Mol) -> dict[tuple[int, int], int]:
     """
     parent: dict[tuple[int, int], tuple[int, int]] = {}
 
+    def pair(one: int, other: int) -> tuple[int, int]:
+        """A bond as an ordered pair — `tuple(sorted(...))` is a tuple of unknown length."""
+        return (one, other) if one <= other else (other, one)
+
     def find(item: tuple[int, int]) -> tuple[int, int]:
         while parent.setdefault(item, item) != item:
             parent[item] = parent[parent[item]]
             item = parent[item]
         return item
 
-    bonds = [tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))) for b in mol.GetBonds()]
+    bonds = [pair(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds()]
     for bond in bonds:
         find(bond)
     for mapping in mol.GetSubstructMatches(mol, uniquify=False, useChirality=True, maxMatches=5000):
         for begin, end in bonds:
-            image = tuple(sorted((mapping[begin], mapping[end])))
+            image = pair(mapping[begin], mapping[end])
             first, second = find((begin, end)), find(image)
             if first != second:
                 parent[first] = second
@@ -375,16 +380,19 @@ def _relaxed_profile(smiles: str, atoms: list[int]) -> dict[float, float]:
     angle — a relaxed scan is basin-local, and the two directions leave different basins.
     """
     mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
-    AllChem.EmbedMolecule(mol, randomSeed=0xC0FFEE)
-    AllChem.MMFFOptimizeMolecule(mol, maxIters=4000)
+    rdDistGeom.EmbedMolecule(mol, randomSeed=0xC0FFEE)
+    rdForceFieldHelpers.MMFFOptimizeMolecule(mol, maxIters=4000)
     points = int(360.0 / _SCAN_STEP_DEGREES)
     lowest: dict[float, float] = {}
     for direction in (1, -1):
         walk = Chem.Mol(mol)
         for step in range(points):
             angle = (direction * step * _SCAN_STEP_DEGREES) % 360.0
-            rdMolTransforms.SetDihedralDeg(walk.GetConformer(), *atoms, angle)
-            field = AllChem.MMFFGetMoleculeForceField(walk, AllChem.MMFFGetMoleculeProperties(walk))
+            first, second, third, fourth = atoms
+            rdMolTransforms.SetDihedralDeg(walk.GetConformer(), first, second, third, fourth, angle)
+            field = rdForceFieldHelpers.MMFFGetMoleculeForceField(
+                walk, rdForceFieldHelpers.MMFFGetMoleculeProperties(walk)
+            )
             field.MMFFAddTorsionConstraint(*atoms, False, angle - 0.05, angle + 0.05, 1.0e6)
             field.Minimize(maxIts=4000)
             energy = field.CalcEnergy()
