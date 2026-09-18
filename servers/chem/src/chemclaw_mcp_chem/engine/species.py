@@ -30,8 +30,10 @@ would then be a fraction reported as a whole. Chemclaw3's
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Literal
 
+from mcp_server_kit.limits import env_bound
 from pydantic import BaseModel, Field
 from rdkit import Chem
 from rdkit.Chem import rdChemReactions, rdMolDescriptors
@@ -42,6 +44,7 @@ from chemclaw_mcp_chem.engine.chem import require_molecule
 
 __all__ = [
     "MAX_DEGRADANTS",
+    "MAX_IONISABLE_SITES",
     "MAX_MICROSTATES",
     "MAX_STEREOISOMERS",
     "MAX_TAUTOMERS",
@@ -64,6 +67,49 @@ MAX_TAUTOMERS = 64
 MAX_MICROSTATES = 32
 MAX_STEREOISOMERS = 64
 MAX_DEGRADANTS = 64
+
+#: How many ionisable sites `enumerate_microstates` will walk before it refuses — a bound on the
+#: **input**, and the only one of the five that prices CPU rather than the next step.
+#:
+#: **The four caps above bound an answer; none of them bounds this tool's work, and measuring it is
+#: what found that.** Every other bound in this server stops the cost before it is paid:
+#: `MAX_MOLECULE_ATOMS` refuses a megamolecule at the parse, and `StereoEnumerationOptions`'
+#: `maxIsomers` stops the stereo enumerator one past its cap rather than materialising 2^n.
+#: `enumerate_microstates` had neither — it shifted, sanitised and canonicalised **every** site and
+#: consulted `MAX_MICROSTATES` afterwards — so the cap made the refusal certain and not cheap.
+#: Measured on this container, both cases inside every bound that existed:
+#:
+#:     N + CCN*659      1,978 atoms, 660 sites  48,077 ms  then ValueError (nothing returned)
+#:     C1 + CNC*659     1,980 atoms, 660 sites  15,647 ms  then **answered**, with 2 species
+#:
+#: The second is the case an output cap can never reach: the sites are equivalent, every microstate
+#: collapses to one string, and the answer is inside `MAX_MICROSTATES` — so the tool burns 15 s to
+#: return two structures and no cap on the answer would have fired. The first exceeds this server's
+#: own `request_timeout` of 30 s, so the caller has gone before the refusal is written.
+#:
+#: **32 is derived twice and the two derivations agree.** By cost: at the largest molecule the parse
+#: bounds admit (1,900 atoms) the call is ~158 ms of parse and canonicalisation plus ~15 ms per
+#: site, measured at 385 ms for 16 sites, 640 ms for 32, 1,035 ms for 48 and 10,253 ms for 256 — so
+#: 32 keeps the worst legal call inside the 0.1-0.62 s band this server's four *other*
+#: enumerators already occupy at that size, and 48 puts it outside. By contract: a microstate here
+#: is one site toggled, so the answer is at most `1 + sites`, and a molecule with more sites than
+#: `MAX_MICROSTATES` can only come in under that cap by degeneracy — which is the 15 s case above.
+#:
+#: Overridable, because a bound nobody can loosen for a real polyelectrolyte is one somebody edits
+#: code around; `env_bound` refuses a value that would make the tool refuse everything.
+MAX_IONISABLE_SITES = env_bound(
+    "CHEMCLAW_CHEM_MAX_IONISABLE_SITES",
+    default=32,
+    # One site, because the bound refuses anything *above* it: at 0 every ionisable molecule would
+    # be refused and the tool would answer only for molecules it has nothing to say about.
+    minimum=1,
+    consequence=(
+        "below it every ionisable molecule would be refused and enumerate_microstates would "
+        "answer only for molecules that have no protonation microstates; far above it one call "
+        "can hold this pod's interpreter for tens of seconds, past the request timeout its caller "
+        "is waiting on"
+    ),
+)
 
 
 class SpeciesSet(BaseModel):
@@ -221,6 +267,30 @@ def _refuse_past(count: int, cap: int, what: str, smiles: str) -> None:
         )
 
 
+def _refuse_past_site_count(sites: int, smiles: str) -> None:
+    """Raise when a molecule carries more ionisable sites than one call may walk.
+
+    Separate from `_refuse_past` rather than a fifth caller of it, because the two refusals are
+    about different things and a caller acts on them differently. That one says *the answer would
+    be too large to be useful*, and its remedy is to narrow the question. This one says *finding
+    out would cost more than the answer is worth*, and its remedy is to ask about a fragment —
+    which is advice the other message does not give and which is the whole reason this check
+    exists. The wording therefore names the site count, not the species count, since a caller
+    reading "660 microstates" for a molecule that yields two would be told something untrue.
+
+    A `ValueError`, so `connector_app` passes the wording through to the model verbatim.
+    """
+    if sites > MAX_IONISABLE_SITES:
+        raise ValueError(
+            f"{smiles!r} has {sites} ionisable sites, above the limit of {MAX_IONISABLE_SITES}. "
+            f"Each one is toggled, sanitised and canonicalised separately, so enumerating them "
+            f"all would hold this server for tens of seconds — past the timeout you are waiting "
+            f"on — to produce a set this tool would then refuse as too large, or a handful of "
+            f"structures if the sites are equivalent. Ask about the fragment whose protonation "
+            f"you care about, or resolve the ionisation you already know."
+        )
+
+
 def enumerate_tautomer_set(smiles: str) -> SpeciesSet:
     """Every tautomer RDKit's enumerator reaches from `smiles`, parent first.
 
@@ -274,6 +344,49 @@ _BASIC: tuple[tuple[str, str], ...] = (
 )
 
 
+@cache
+def _compiled(smarts: str) -> Chem.Mol | None:
+    """One SMARTS, compiled once per process. `None` for a pattern RDKit will not parse.
+
+    **Both tables above are constants and were re-parsed on every call.** The two of them hold
+    eleven patterns between them, and `_sites` ran `Chem.MolFromSmarts` over each one every time
+    it was called — eleven rebuilds per `enumerate_microstates`, and twenty-two per
+    `describe_molecule`, which perceived each table twice until the pass that added this cache made
+    it perceive each once. `servers/safety`'s `screen.py::_load_rules` is `lru_cache`d
+    over its whole rule table for this reason and says so, and `servers/rxnpredict`'s
+    `classifier.py::_compiled` is the same shape one server over.
+
+    **It is not the last one in the fleet, and this docstring said it was.** Grepping after the
+    measurement found four more constant tables compiled per call — `_TRANSFORMS` fifty lines
+    below, `sites.py::_matched_atoms`, `torsions.py::_matched_pairs` and `rxnlabel`'s two — none of
+    which was measured here, so none is claimed either way. `docs/BACKLOG.md` carries them as the
+    row they are.
+
+    **What it is worth, measured here against the exact code this replaced rather than transcribed
+    from the row that asked for it.** On tyrosine, over five runs of 2,000 iterations: both tables
+    through `_sites` go 209-227 µs → 35.5-35.9 µs (**5.8x to 6.4x**), and a whole
+    `enumerate_microstates` call goes 853-890 µs → 602-620 µs (**1.39x to 1.43x**) — so the
+    per-call compile was ~30% of that call, which is the 28% the backlog row measured four days
+    earlier on a machine this is not.
+
+    **The saving is a constant rather than a factor, and that is the thing to read off it**: it is
+    ~250 µs per call whatever the molecule, so it is a third of a small call and nothing at all in
+    a large one — at the largest molecule `MAX_IONISABLE_SITES` admits (1,891 atoms, 31 sites) the
+    two forms measure 580 ms and 595 ms, inside each other's noise. Which is why the bound above is
+    the half of this commit that matters and this is the half that was asked for.
+
+    Cached on the string rather than pre-compiled at import, following `classifier.py`, so a bad
+    constant is still a per-pattern skip rather than an import-time failure — this server loads its
+    corpus lazily on purpose (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer…`) and
+    a module-scope parse of eleven patterns would be a second thing that can fail in an import.
+    `@cache` is unbounded and bounded in fact: the keys are the literals in `_ACIDIC` and `_BASIC`.
+
+    Sharing one compiled query across calls is safe because `GetSubstructMatches` does not mutate
+    it, which is what lets the two tables be module constants in the first place.
+    """
+    return Chem.MolFromSmarts(smarts)
+
+
 def _sites(mol: Chem.Mol, patterns: tuple[tuple[str, str], ...]) -> list[tuple[str, int]]:
     """`(group name, atom index)` for every match, de-duplicated by atom.
 
@@ -290,7 +403,7 @@ def _sites(mol: Chem.Mol, patterns: tuple[tuple[str, str], ...]) -> list[tuple[s
     """
     found: dict[int, str] = {}
     for name, smarts in patterns:
-        query = Chem.MolFromSmarts(smarts)
+        query = _compiled(smarts)
         if query is None:  # pragma: no cover - a malformed constant would fail every call
             continue
         for match in mol.GetSubstructMatches(query):
@@ -330,20 +443,28 @@ def enumerate_microstates(smiles: str) -> SpeciesSet:
     the parent and each single ionisation. Combined states are reachable by calling this on a
     result, which makes the expansion the caller's explicit decision rather than a silent 2^n.
 
+    **The site count is checked before any proton is moved**, which is the other bound and the one
+    that prices the call. See `MAX_IONISABLE_SITES` for what that costs when it is missing; the
+    check itself is the two `_sites` passes this function already made, so it is free.
+
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
-        ValueError: more microstates than `MAX_MICROSTATES`.
+        ValueError: more ionisable sites than `MAX_IONISABLE_SITES`, or more microstates than
+            `MAX_MICROSTATES`.
     """
     mol = require_molecule(smiles)
     parent = _canonical(mol)
+    acidic = _sites(mol, _ACIDIC)
+    basic = _sites(mol, _BASIC)
+    _refuse_past_site_count(len(acidic) + len(basic), smiles)
     species: list[str] = []
     labels: list[str] = []
-    for name, index in _sites(mol, _ACIDIC):
+    for name, index in acidic:
         shifted = _shift(mol, index, -1)
         if shifted is not None:
             species.append(_canonical(shifted))
             labels.append(f"{name} deprotonated")
-    for name, index in _sites(mol, _BASIC):
+    for name, index in basic:
         shifted = _shift(mol, index, +1)
         if shifted is not None:
             species.append(_canonical(shifted))
@@ -498,6 +619,15 @@ def describe_molecule(smiles: str) -> Topology:
     # The tautomer count is the one field here that is not a bare descriptor read, and it is worth
     # the enumeration: "is this molecule tautomeric at all" is the question the calling skill says
     # to ask before paying for a resolution, and no count of heteroatoms answers it.
+    # Perceived once each and counted three times. This read `_sites(mol, _ACIDIC)` twice and
+    # `_sites(mol, _BASIC)` twice — four passes over the graph for three numbers, two of which are
+    # the other two added up. **`describe_molecule` is deliberately *not* bounded by
+    # `MAX_IONISABLE_SITES`**: it is the free, total tool a caller consults to decide whether an
+    # enumeration is worth asking for, so "this molecule has 660 ionisable sites" is precisely the
+    # answer that should reach them rather than a refusal. Perceiving them costs 7.4 ms at 660
+    # sites and 1,978 atoms, measured; walking them is what costs 48 s.
+    acidic = _sites(mol, _ACIDIC)
+    basic = _sites(mol, _BASIC)
     try:
         tautomers: int | None = len(enumerate_tautomer_set(smiles).smiles)
     except ValueError:
@@ -516,9 +646,9 @@ def describe_molecule(smiles: str) -> Topology:
         unassigned_stereocentres=len(open_centres),
         assigned_stereocentres=len(assigned),
         unassigned_double_bonds=open_bonds,
-        ionisable_acidic_sites=len(_sites(mol, _ACIDIC)),
-        ionisable_basic_sites=len(_sites(mol, _BASIC)),
-        mobile_proton_sites=len(_sites(mol, _ACIDIC)) + len(_sites(mol, _BASIC)),
+        ionisable_acidic_sites=len(acidic),
+        ionisable_basic_sites=len(basic),
+        mobile_proton_sites=len(acidic) + len(basic),
         tautomer_count_saturated=tautomers is None,
         tautomer_count=tautomers,
     )

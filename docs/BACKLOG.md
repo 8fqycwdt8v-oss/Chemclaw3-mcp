@@ -164,21 +164,41 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
-- [ ] **One SMARTS table in the fleet is still compiled on every call, and it is the expensive
-  one.** `servers/chem`'s `engine/species.py::_sites` runs `Chem.MolFromSmarts` over all eleven
-  `_ACIDIC`/`_BASIC` patterns on each invocation. `servers/safety`'s `screen.py::_load_rules` is
-  `lru_cache`d over its whole rule table and says why in its docstring; `servers/rxnpredict`'s
-  `classifier.py::_compiled` was fixed on 2026-09-16 and is measured at 1.11-1.83x. This one is
-  worth more: measured 2026-09-16 on tyrosine, both tables through `_sites` cost **440 µs** with
-  the per-call compile and **31 µs** against pre-compiled patterns, against a whole
-  `enumerate_microstates` call of **1,443 µs** — so roughly 28% of that call is re-parsing
-  constants. The fix is four lines and the reason it is a row rather than a commit is that
-  `enumerate_microstates` is `chem`'s heaviest tool and nothing here bounds or measures its latency,
-  so the honest order is a bound first (the section above) and then the saving. A `@cache` keyed on
-  the SMARTS string, as `classifier.py` now does, is the shape.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py::_sites`,
-  `servers/safety/src/chemclaw_mcp_safety/engine/screen.py::_load_rules`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::_compiled`.
+- [ ] **`servers/chem` has five enumerators in one cost band and a ceiling on none of them, and
+  the measurement that would decide whether they need one has been taken.**
+  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` bounded
+  `enumerate_microstates`' input and deliberately added no admission ceiling, on a driven result:
+  eight concurrent worst-legal calls left the event loop 384 ms late at worst against a 3 s
+  `readinessProbe.timeoutSeconds`, so a ceiling would not bind. What it did *not* settle is the
+  other four. Measured the same day on a 1,900-atom alkane, one call each:
+  `describe_topology` **615 ms**, `enumerate_tautomer_set` **400 ms**, `enumerate_stereoisomer_set`
+  **367 ms**, `enumerate_degradant_candidates` **106 ms** — all ungated, and `describe_topology`
+  sits level with the worst call the new bound admits (640 ms). Whether those four hold the
+  interpreter the way `enumerate_microstates` measurably does is **not** measured and is the first
+  thing this row owes. `render_structure` is gated at
+  8 while its worst *legal* depiction is 4.6 ms, which is the inversion worth resolving: either the
+  band shares one ceiling derived from the probe, or `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob
+  `POD_THREAD_POOL_WIDTH` already makes unreachable. The row is the decision, not the number — the
+  numbers above are what it is to be decided against.
+  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
+  `servers/chem/tests/test_microstate_bound.py`, `servers/chem/tests/test_depiction_bound.py`.
+
+- [ ] **Four more constant SMARTS tables in this fleet are compiled on every call, and "that was
+  the last one" has now been said twice.** `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work`
+  cached `servers/chem`'s `_ACIDIC`/`_BASIC` and its docstring claimed to be the third and last
+  such fix; grepping `MolFromSmarts`/`ReactionFromSmarts` across `servers/*/src` in the same
+  session found four more, each over a table that is a module constant:
+  `species.py::enumerate_degradant_candidates` rebuilding all eleven `_TRANSFORMS` reaction SMARTS,
+  `chem`'s `sites.py::_matched_atoms` and `torsions.py::_matched_pairs`, and `rxnlabel`'s
+  `agents.py` and `species.py`. **None of them is measured**, which is the whole row: the one that
+  was measured turned out to be worth 1.4x on a real molecule and nothing at all on a large one, so
+  the useful output here is four numbers and then four `@cache`s or a note saying they are not
+  worth one — not four caches applied on the strength of the pattern looking familiar.
+  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py::enumerate_degradant_candidates`,
+  `servers/chem/src/chemclaw_mcp_chem/engine/sites.py::_matched_atoms`,
+  `servers/chem/src/chemclaw_mcp_chem/engine/torsions.py::_matched_pairs`,
+  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/agents.py`,
+  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/species.py`.
 
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**

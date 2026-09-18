@@ -66,6 +66,16 @@ tool result at 60,000 characters divided by the width of the batch it was called
 draws nothing, so an oversized depiction is refused whole, the way every enumeration on this server
 refuses past its bound rather than returning a partial answer.
 
+`CHEMCLAW_CHEM_MAX_IONISABLE_SITES` (default 32) is the one bound here that prices CPU rather than
+the step after it. `enumerate_protonation_states` toggles, sanitises and canonicalises each
+ionisable site separately, so the cost is the site count times the molecule size — and the cap on
+what it *returns* could not see that, because a molecule whose sites are all equivalent comes in
+under the cap after burning the whole time: measured, a 660-amine macrocycle was answered with two
+species after **15,647 ms**, and a 660-amine chain was refused after **48,077 ms**, both inside
+every other bound this server has. See
+`docs/decisions/D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work.md`. `describe_topology` is
+deliberately outside it and reports the site count for free, which is what the refusal points at.
+
 ## The data
 
 `src/chemclaw_mcp_chem/data/records.csv`, described and checksummed by `dataset.json` beside it.
