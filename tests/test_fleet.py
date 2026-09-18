@@ -385,7 +385,7 @@ def test_every_server_is_wired_into_the_type_gate() -> None:
 
 
 def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
-    """`make type` must check every `tests/` directory in this workspace, observed rather than read.
+    """`make type` must check every `src/` and every `tests/` directory, observed rather than read.
 
     `$(SRC)` listed the source roots and no test directory, so `mypy --strict` never read the files
     that drive every ratchet here — 153 errors in 32 files were waiting in them, and nine
@@ -397,6 +397,15 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     reason `tests/test_context_floor.py` states about itself one repository over: a basis that is
     re-derived rather than observed will agree with itself forever. A `TESTS :=` line that is
     correct and a `type:` recipe that has stopped passing it are the same failure as no variable.
+
+    **This function shipped holding that about the test half only, and the argument was true of the
+    source half too** (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`).
+    `test_every_server_is_wired_into_the_type_gate` reads `SRC :=` out of the Makefile *text* and
+    never looks at the recipe, so deleting `$(SRC)` from the invocation took 164 source files out of
+    the gate, left `make type` reporting `Success: no issues found in 141 source files`, and kept
+    **both** gate tests green — the regression that adjacent test exists to prevent, one level up.
+    So both halves are checked against the same observed command, and the source half is globbed
+    rather than listed for the reason the `TESTS` variable already is.
 
     `--explicit-package-bases` is asserted because without it the invocation does not run at all:
     ten servers ship a `tests/test_no_egress.py`, and mypy keys a module by basename by default.
@@ -423,7 +432,7 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
     expected = {"tests"}
     expected |= {
         str(directory.relative_to(ROOT))
-        for pattern in ("packages/*/tests", "servers/*/tests")
+        for pattern in ("packages/*/tests", "servers/*/tests", "packages/*/src", "servers/*/src")
         for directory in ROOT.glob(pattern)
         if directory.is_dir()
     }
