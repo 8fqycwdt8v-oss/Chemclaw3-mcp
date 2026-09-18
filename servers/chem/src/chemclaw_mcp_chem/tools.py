@@ -433,6 +433,12 @@ async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
     states (a zwitterion's doubly-ionised form, say) are reachable by calling this again on a
     result, which keeps the expansion an explicit decision rather than a silent 2^n.
 
+    **This refuses a polyelectrolyte rather than enumerating one.** A molecule with more than
+    `MAX_IONISABLE_SITES` acidic and basic sites is turned away naming the count, because walking
+    them all costs tens of seconds — longer than this connector's own request timeout — to produce
+    either a set too large to return or, where the sites are equivalent, a handful of structures.
+    `describe_topology` reports the site count for free and is the tool to ask first.
+
     Args:
         smiles: The molecule, as SMILES. Give the neutral form where there is one.
 
