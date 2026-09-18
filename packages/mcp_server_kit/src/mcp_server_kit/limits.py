@@ -17,7 +17,10 @@ without editing code):
   characters; the default is far above anything a process chemist submits.
 - **`MAX_MOLECULE_ATOMS`** — applied to `mol.GetNumAtoms()` after a successful parse and before
   canonicalisation. This is the bound that actually stops the segfault, because the recursion depth
-  scales with the atom count, not the string length.
+  scales with the atom count, not the string length. **It is the one bound here with a ceiling as
+  well as a floor**, derived from this process's own stack rather than transcribed: a knob that
+  tunes a crash guard is also an off switch for it unless something stops it being turned up past
+  what the stack survives, and nothing did — see `env_bound` and `stack_safe_atom_ceiling`.
 
 Neither of those two functions raises: they return a *worded reason* or `None`. A server that
 refuses (a chemist is waiting) raises its own `ValueError` subclass with the reason; a server that
@@ -34,11 +37,16 @@ module, and what varied between the hand-written copies was the sentence, not th
 
 from __future__ import annotations
 
+import logging
 import os
+import resource
 import threading
 from typing import NamedTuple
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
+    "ATOMS_PER_KIB_OF_STACK",
     "MAX_MOLECULE_ATOMS",
     "MAX_SMILES_CHARS",
     "Admission",
@@ -46,10 +54,13 @@ __all__ = [
     "atom_count_error",
     "env_bound",
     "smiles_length_error",
+    "stack_safe_atom_ceiling",
 ]
 
 
-def env_bound(name: str, *, default: int, minimum: int, consequence: str) -> int:
+def env_bound(
+    name: str, *, default: int, minimum: int, consequence: str, maximum: int | None = None
+) -> int:
     """One resource bound read from the environment at import, refused here if it cannot work.
 
     **The defect this exists for is a pod that starts and then refuses every request.** A bare
@@ -69,6 +80,15 @@ def env_bound(name: str, *, default: int, minimum: int, consequence: str) -> int
     model and no caller, and the only reader is an operator looking at a container log. A returned
     reason would have exactly one possible handler at every call site, which is the shape the Rule
     of Three says to inline rather than abstract.
+
+    **A bound that protects against a crash also needs a ceiling, and this had none.** `minimum`
+    stops an operator turning a bound down until it refuses everything; nothing stopped them turning
+    one *up* until it refuses nothing. That is harmless for a bound whose job is taste and load-
+    bearing for `MAX_MOLECULE_ATOMS`, whose job is to stop an uncatchable SIGSEGV: measured on this
+    container, `MCP_MAX_MOLECULE_ATOMS=999999999` is accepted at import and a 20,000-atom SMILES
+    then takes the pod down with exit 139, which is the exact denial of service the module docstring
+    above is written about. So `maximum` is optional and is passed exactly where exceeding it is a
+    crash rather than a preference — see `stack_safe_atom_ceiling`.
 
     **What stays per-site is the wording and the floor**, which is the half that genuinely varies.
     `consequence` is the server's own sentence about what the value would break, and `minimum` is
@@ -93,13 +113,18 @@ def env_bound(name: str, *, default: int, minimum: int, consequence: str) -> int
             the call site, because only the call site knows what the number measures.
         consequence: A clause completing "…: <consequence>." — what the rejected value would do to
             this server, in the operator's own vocabulary.
+        maximum: The largest value this bound may take, where exceeding it breaks the server rather
+            than merely loosening it. `None` — the usual case — means the call site has a floor and
+            no ceiling. Passed only where the ceiling is a property of something this process does
+            not control, which today is the C stack.
 
     Returns:
-        The configured value, which is at least `minimum`.
+        The configured value, which is at least `minimum` and, when one was given, at most
+        `maximum`.
 
     Raises:
-        ValueError: The variable is set to something that is not a whole number, or to a number
-            below `minimum`.
+        ValueError: The variable is set to something that is not a whole number, to a number below
+            `minimum`, or to a number above `maximum` when one was given.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -118,6 +143,12 @@ def env_bound(name: str, *, default: int, minimum: int, consequence: str) -> int
             f"'off' setting, so unset {name} for the default of {default}, or give it a value of "
             f"at least {minimum}."
         )
+    if maximum is not None and value > maximum:
+        raise ValueError(
+            f"{name}={value} is above the maximum of {maximum}: {consequence}. This ceiling is not "
+            f"a preference — above it the failure is a crash rather than a loosened bound — so "
+            f"unset {name} for the default of {default}, or give it a value of at most {maximum}."
+        )
     return value
 
 
@@ -130,13 +161,74 @@ MAX_SMILES_CHARS = env_bound(
     minimum=1,
     consequence="every structure this fleet is given would be refused before it is parsed",
 )
+#: Atoms of linear chain the canonicaliser survives per KiB of C stack, halved for margin.
+#:
+#: **Measured rather than reasoned**, on the installed RDKit, by canonicalising `"C" * n` under a
+#: reduced `ulimit -s` and reading the exit status: a 1 MiB stack survives 2,000 atoms and dies at
+#: 2,500, a 2 MiB stack dies at 4,500, an 8 MiB stack survives 18,000 and dies at 20,000. That is
+#: 2.0 to 2.4 atoms per KiB across an eightfold range of stack, so the threshold is linear in the
+#: stack and `1` is that slope with a factor of two in hand. The margin is not decoration: the
+#: constant is measured on a *linear* chain, and how deep a graph of a given atom count recurses
+#: depends on its shape.
+ATOMS_PER_KIB_OF_STACK = 1
+
+
+def stack_safe_atom_ceiling(*, floor: int) -> int:
+    """The largest `MAX_MOLECULE_ATOMS` this process's own C stack can survive.
+
+    **The ceiling on the atom bound is a property of the container, not of this repository**, so
+    transcribing a number here would be a claim about somebody else's `ulimit -s`. The process can
+    read its own: `RLIMIT_STACK`'s soft limit is what the main thread gets, and the threshold scales
+    linearly with it (`ATOMS_PER_KIB_OF_STACK` has the measurement).
+
+    Args:
+        floor: The module's own default for the bound. The derived ceiling is never returned below
+            it, because a deployment that changed nothing must not newly fail to start — but a
+            deployment where the derivation lands *under* the default is one whose default is
+            itself thin, so that case is reported at WARNING rather than clamped in silence. This is
+            the same choice Chemclaw3 makes when its compaction trigger floors.
+
+    Returns:
+        The ceiling, in atoms, always at least `floor`. An unlimited stack yields no useful
+        derivation, so `floor` is returned for that too — with nothing logged, since an unlimited
+        stack is not a thin one.
+    """
+    soft, _hard = resource.getrlimit(resource.RLIMIT_STACK)
+    if soft == resource.RLIM_INFINITY:
+        return floor
+    derived = (soft // 1024) * ATOMS_PER_KIB_OF_STACK
+    if derived < floor:
+        logger.warning(
+            "this process has a %d KiB stack, which the canonicaliser survives to about %d atoms, "
+            "below MCP_MAX_MOLECULE_ATOMS' default of %d; the default is kept so that a deployment "
+            "that changed nothing still starts, but a molecule near it may crash this pod",
+            soft // 1024,
+            derived,
+            floor,
+        )
+        return floor
+    return derived
+
+
+#: The default, named so the ceiling derivation can floor at it rather than at a second literal.
+DEFAULT_MAX_MOLECULE_ATOMS = 2000
+
 MAX_MOLECULE_ATOMS = env_bound(
     "MCP_MAX_MOLECULE_ATOMS",
-    default=2000,
+    default=DEFAULT_MAX_MOLECULE_ATOMS,
     # One atom, for the same reason: a parsed molecule always has at least one, so `0` refuses
     # every molecule that got past the parser — after the parse, which is the expensive half.
     minimum=1,
-    consequence="every molecule would be refused after it is parsed and before it is canonicalised",
+    # The one ceiling in this module, because this is the one bound whose job is to stop a crash.
+    # Raising it past what the stack survives does not loosen a limit, it re-arms the SIGSEGV the
+    # module docstring above is written about — measured, `MCP_MAX_MOLECULE_ATOMS=999999999` was
+    # accepted and a 20,000-atom SMILES then killed the pod with exit 139.
+    maximum=stack_safe_atom_ceiling(floor=DEFAULT_MAX_MOLECULE_ATOMS),
+    consequence=(
+        "below it every molecule would be refused after it is parsed and before it is "
+        "canonicalised; above it a large enough molecule overflows the C stack and kills this pod "
+        "with an uncatchable SIGSEGV, taking every other session sharing it"
+    ),
 )
 
 

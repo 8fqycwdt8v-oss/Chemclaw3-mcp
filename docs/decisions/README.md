@@ -95,6 +95,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-16-a-derivable-number-the-fleet-held-four-times](D-2026-09-16-a-derivable-number-the-fleet-held-four-times.md) | A derivable number the fleet held four times |
 | [D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing](D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing.md) | A field the author wrote is not a field that is missing |
 | [D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about](D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about.md) | A hand-rolled model cannot see a key it was not told about |
+| [D-2026-09-16-a-knob-that-tunes-a-crash-guard-is-also-an-off-switch](D-2026-09-16-a-knob-that-tunes-a-crash-guard-is-also-an-off-switch.md) | A knob that tunes a crash guard is also an off switch |
 | [D-2026-09-16-a-number-in-prose-is-a-claim-about-a-commit](D-2026-09-16-a-number-in-prose-is-a-claim-about-a-commit.md) | A number in prose is a claim about a commit |
 | [D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set](D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set.md) | A refusal set with a hole in it is not a refusal set |
 | [D-2026-09-16-a-second-belt-is-only-honest-with-something-reconciling-it](D-2026-09-16-a-second-belt-is-only-honest-with-something-reconciling-it.md) | A second belt is only honest with something reconciling it |

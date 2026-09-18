@@ -7,6 +7,9 @@ independent limits and that the refusal message never echoes the offending megas
 
 from __future__ import annotations
 
+import logging
+import resource
+
 import pytest
 from mcp_server_kit import limits
 from mcp_server_kit.limits import (
@@ -267,3 +270,99 @@ def test_this_modules_own_two_bounds_refuse_at_import(monkeypatch: pytest.Monkey
         with pytest.raises(ValueError, match=variable):
             reimported(limits)
         monkeypatch.delenv(variable)
+
+
+def test_a_bound_with_no_ceiling_accepts_anything_above_its_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`maximum` is optional and the usual case is not to pass it.
+
+    The complement of the two below: a bound whose job is taste has a floor and no ceiling, and
+    adding the parameter must not have given every call site one by accident.
+    """
+    monkeypatch.setenv("MCP_A_TASTE_BOUND", "999999999")
+    assert limits.env_bound("MCP_A_TASTE_BOUND", default=7, minimum=1, consequence="x") == 999999999
+
+
+def test_a_bound_above_its_ceiling_is_refused_naming_the_variable_the_value_and_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The half `minimum` could not reach: turning a crash guard *up* until it guards nothing.
+
+    An operator reading a crash loop has the variable, what they set, and the largest value that
+    works — the same three things the floor's refusal gives them, because the way back has to be in
+    the message rather than in this repository.
+    """
+    monkeypatch.setenv("MCP_A_CRASH_BOUND", "5000")
+    with pytest.raises(ValueError) as refusal:
+        limits.env_bound(
+            "MCP_A_CRASH_BOUND", default=100, minimum=1, maximum=4096, consequence="the pod dies"
+        )
+    message = str(refusal.value)
+    assert "MCP_A_CRASH_BOUND" in message
+    assert "5000" in message
+    assert "maximum of 4096" in message
+    assert "the pod dies" in message
+    monkeypatch.setenv("MCP_A_CRASH_BOUND", "4096")
+    assert (
+        limits.env_bound(
+            "MCP_A_CRASH_BOUND", default=100, minimum=1, maximum=4096, consequence="the pod dies"
+        )
+        == 4096
+    )
+
+
+def test_the_atom_bound_cannot_be_raised_past_what_the_stack_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defect this ceiling exists for, driven through this module's own import.
+
+    `MAX_MOLECULE_ATOMS` is the bound that stops an uncatchable SIGSEGV — the module docstring is
+    written about exactly that — and before this it had a floor and no ceiling, so the knob provided
+    to tune it was also an off switch for it. Measured on this container at the time it was added:
+    `MCP_MAX_MOLECULE_ATOMS=999999999` was accepted at import and canonicalising `"C" * 20000` then
+    killed the process with exit 139.
+
+    The refusal has to name the derived ceiling rather than a transcribed number, because the
+    ceiling is a property of the container's stack — see `stack_safe_atom_ceiling`.
+    """
+    ceiling = limits.stack_safe_atom_ceiling(floor=limits.DEFAULT_MAX_MOLECULE_ATOMS)
+    monkeypatch.setenv("MCP_MAX_MOLECULE_ATOMS", "999999999")
+    with pytest.raises(ValueError) as refusal:
+        reimported(limits)
+    assert str(ceiling) in str(refusal.value)
+    monkeypatch.setenv("MCP_MAX_MOLECULE_ATOMS", str(ceiling))
+    assert ceiling == reimported(limits).MAX_MOLECULE_ATOMS
+
+
+def test_the_ceiling_is_derived_from_this_process_s_own_stack_not_transcribed() -> None:
+    """A number in this file would be a claim about somebody else's `ulimit -s`.
+
+    The threshold is linear in the stack across an eightfold range — measured by canonicalising
+    `"C" * n` under a reduced `ulimit -s` and reading the exit status: a 1 MiB stack survives 2,000
+    atoms and dies at 2,500, a 2 MiB stack dies at 4,500, an 8 MiB stack survives 18,000 and dies at
+    20,000. `ATOMS_PER_KIB_OF_STACK` is that slope halved, so the derivation tracks the container it
+    runs in rather than the one this was written on.
+    """
+    soft, _hard = resource.getrlimit(resource.RLIMIT_STACK)
+    floor = limits.DEFAULT_MAX_MOLECULE_ATOMS
+    ceiling = limits.stack_safe_atom_ceiling(floor=floor)
+    assert ceiling >= floor, "a deployment that changed nothing must still start"
+    if soft != resource.RLIM_INFINITY:
+        assert ceiling <= max(floor, (soft // 1024) * limits.ATOMS_PER_KIB_OF_STACK)
+
+
+def test_a_stack_too_small_for_the_default_keeps_it_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Floored rather than refused, and reported at WARNING rather than clamped in silence.
+
+    A deployment that set nothing must not newly fail to start, so the derivation never returns
+    below the module's own default. But a container whose stack cannot carry that default is one
+    whose default is genuinely thin, and the only honest thing to do with that is say it where an
+    operator reading the container log will meet it. The same choice Chemclaw3 makes when its
+    compaction trigger floors.
+    """
+    with caplog.at_level(logging.WARNING, logger=limits.__name__):
+        assert limits.stack_safe_atom_ceiling(floor=10**9) == 10**9
+    assert any("may crash this pod" in record.getMessage() for record in caplog.records)

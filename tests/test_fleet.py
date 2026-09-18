@@ -2090,6 +2090,16 @@ def test_no_spelling_that_moved_a_bound_past_this_ratchet_reads_as_clean() -> No
     # mutation flipping every bound to case-insensitive left this test green until these two lines
     # existed, because a hand-built fixture asserts the matching rule and not the derivation.
     derived = numeric_env_bounds()
+    # Named rather than indexed, because the two assertions below are about a bound's *case* rule
+    # and a bare `KeyError` from the subscript would say only that a dict lacked a key — in a file
+    # whose whole standard is that a failure names what broke. A bound disappearing from the
+    # derivation is the more serious of the two failures and has to read as the more serious one.
+    for variable in ("MCP_MAX_SMILES_CHARS", "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS"):
+        assert variable in derived, (
+            f"{variable} is no longer in `numeric_env_bounds()`, so the ratchet that stops a "
+            f"Containerfile or a ConfigMap setting it outside the bound no longer covers it at "
+            f"all — which is a wider failure than the case rule these two lines assert"
+        )
     assert derived["MCP_MAX_SMILES_CHARS"].case_sensitive, (
         "an `os.environ` read is case-sensitive; marking it otherwise makes the ratchet flag an "
         "`ENV` that changes nothing"

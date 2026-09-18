@@ -679,7 +679,9 @@ def shortcut_distillation(
 
     Args:
         relative_volatility: alpha of light key over heavy key, constant, above 1.
-        light_key_in_feed: Light-key mole fraction in the feed.
+        light_key_in_feed: Light-key mole fraction in the feed. Must lie strictly between the
+            bottoms and the distillate: a feed no richer than the bottoms cannot be split into two
+            products that are both richer than it is, and the tool refuses rather than answering.
         light_key_in_distillate: Light-key mole fraction in the distillate.
         light_key_in_bottoms: Light-key mole fraction in the bottoms.
         reflux_ratio: Optional absolute reflux ratio L/D.

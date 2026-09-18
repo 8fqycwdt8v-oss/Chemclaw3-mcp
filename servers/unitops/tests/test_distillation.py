@@ -231,3 +231,53 @@ def test_a_percentage_entered_as_a_fraction_is_refused_with_the_fix_in_the_messa
         distillation.fenske_minimum_stages(
             relative_volatility=2.5, light_key_in_distillate=95.0, light_key_in_bottoms=5.0
         )
+
+
+def test_a_split_whose_overall_mass_balance_cannot_close_is_refused() -> None:
+    """The check neither Fenske nor Underwood can make, because each sees only two of the three.
+
+    Fenske compares the distillate with the bottoms; Underwood compares the distillate with the
+    feed. Between them nothing compared the *bottoms* with the feed, and `F·z = D·x_D + B·x_B` has
+    no solution in positive `D` and `B` when both products are richer in the light key than the
+    feed. Measured before the guard: alpha 2.5 with `z` 0.30, `x_D` 0.95 and `x_B` 0.50 returned
+    7.26 theoretical stages — an ordinary-looking design for a column nobody can build, which is the
+    failure `CLAUDE.md`'s "refuse rather than approximate" rule is about.
+    """
+    with pytest.raises(UnitOpsInputError, match=re.escape("F·z = D·x_D + B·x_B")):
+        distillation.shortcut_column(
+            relative_volatility=2.5,
+            light_key_in_feed=0.30,
+            light_key_in_distillate=0.95,
+            light_key_in_bottoms=0.50,
+        )
+
+
+def test_bottoms_exactly_at_the_feed_composition_are_refused_too() -> None:
+    """The boundary, where the balance needs a bottoms flow of exactly zero.
+
+    A column that sends the whole feed overhead is a total vaporiser, not a separation, and the
+    strict inequality is what keeps this from reading as a very difficult split.
+    """
+    with pytest.raises(UnitOpsInputError):
+        distillation.shortcut_column(
+            relative_volatility=2.5,
+            light_key_in_feed=0.30,
+            light_key_in_distillate=0.95,
+            light_key_in_bottoms=0.30,
+        )
+
+
+def test_an_ordinary_split_is_untouched_by_the_balance_guard() -> None:
+    """The complement: the guard must reject an impossible split, not a difficult one.
+
+    A 1% light key in the bottoms against a 40% feed is a demanding column and a perfectly
+    ordinary one — asserted beside the two above so that "refuses everything" cannot pass as
+    "has a guard".
+    """
+    column = distillation.shortcut_column(
+        relative_volatility=2.5,
+        light_key_in_feed=0.40,
+        light_key_in_distillate=0.99,
+        light_key_in_bottoms=0.01,
+    )
+    assert column.theoretical_stages > column.minimum_stages
