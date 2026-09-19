@@ -149,6 +149,30 @@ decision leaves a record behind and the row goes.
   `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/preprocessing.py`.
 
+- [ ] **A relaxation at `servers/calc`'s atom ceiling spends its budget instead of converging, and
+  the refusal one atom above it promises the opposite.** `Structure`'s refusal says a system past
+  the ceiling is "refused rather than started and abandoned";
+  `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` measured, on a contended four-core
+  box, one optimizer cycle (two gradients) at **99.17 s for 509 atoms** and 12.21 s for 239, and
+  `xtb_inline_timeout_seconds` is **780 s** — so at the 450-atom ceiling a relaxation gets on the
+  order of **eleven cycles** before `budget.Deadline` stops it, against D-100's measured **177
+  steps** to converge a 76-atom molecule. A 450-atom call is therefore started and abandoned, which
+  is the thing the refusal one atom above it says this server does not do. That ADR names it "a
+  real defect" and sets it aside on purpose, because the ceiling is chartered on *allocation* and
+  time is `xtb_inline_timeout_seconds`' to price — so it was argued and then queued nowhere.
+  **What it is not is a request to lower the ceiling**: 450 is a memory bound and lowering it for a
+  time reason would conflate the two. The decision is whether a relaxation gets a *cycle-count*
+  bound derived from the budget and the size (which needs a converged cycle count for a large
+  molecule, and nobody has one), whether the deadline's refusal should say how far it got so an
+  abandoned run is legible rather than silent, or whether the honest fix is to the refusal's own
+  wording. Any of the three needs one measurement first: a real relaxation at 400-450 atoms run to
+  the deadline, reporting cycles completed and gradient norm, which is hours of CPU and is why this
+  is a row rather than a commit.
+  **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/structure.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/budget.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/config.py`,
+  `docs/decisions/D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects.md`.
+
 - [ ] **Neither heavy server pins its inference thread width, so a slot is a core only by
   accident.** `torch.get_num_threads()` is sized from the machine's physical cores rather than from
   the container's cgroup, and neither `servers/rxnpredict/Containerfile` nor
@@ -172,10 +196,18 @@ decision leaves a record behind and the row goes.
   `readinessProbe.timeoutSeconds`, so a ceiling would not bind. What it did *not* settle is the
   other four. Measured the same day on a 1,900-atom alkane, one call each:
   `describe_topology` **615 ms**, `enumerate_tautomer_set` **400 ms**, `enumerate_stereoisomer_set`
-  **367 ms**, `enumerate_degradant_candidates` **106 ms** — all ungated, and `describe_topology`
-  sits level with the worst call the new bound admits (640 ms). Whether those four hold the
-  interpreter the way `enumerate_microstates` measurably does is **not** measured and is the first
-  thing this row owes. `render_structure` is gated at
+  **367 ms**, `enumerate_degradant_candidates` **106 ms** — all ungated. **Those four figures are a
+  linear alkane's, and that shape is the cheap case for three of them.** Re-measured 2026-09-19 on
+  a 996-atom PAMAM G4 dendrimer, a molecule a caller may now send:
+  `enumerate_tautomer_set` **2,801 ms**, `describe_topology` **2,793 ms**,
+  `enumerate_degradant_candidates` **1,823 ms**, `enumerate_stereoisomer_set` **18 ms**, against
+  `enumerate_microstates`' **587 ms** — so the one with an input bound is the *cheap* one and the
+  two dearest have none. Whether those four hold the interpreter the way `enumerate_microstates`
+  measurably does is **not** measured and is the first thing this row owes; what the re-measurement
+  settles is that "one cost band" was an artefact of the fixture, and that the worst call
+  `D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work` admits (**1,266 ms**) is a bigger
+  number for a probe-derived ceiling to divide than the 640 ms this row was written against.
+  `render_structure` is gated at
   8 while its worst *legal* depiction is 4.6 ms, which is the inversion worth resolving: either the
   band shares one ceiling derived from the probe, or `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob
   `POD_THREAD_POOL_WIDTH` already makes unreachable. The row is the decision, not the number — the

@@ -89,6 +89,17 @@ class Structure(BaseModel):
         `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` re-measured against geomeTRIC
         and corrected three of the four places the old figure appeared; this was the one it missed,
         and it is the first place a reader chasing the refusal message lands.
+
+        **One ceiling for every path, derived from the most expensive of them.** `xtb_max_atoms`
+        gates eight tools and its derivation
+        (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`) is geomeTRIC's coordinate
+        build, which only `relax_structure` and `scan_point` run: a GFN2 single point at 509 atoms
+        peaks at 312 MiB against that build's 974 MiB, so the property, Fukui, `combine_structures`
+        and CREST paths are capped on a basis 3.1x above what they cost. That is deliberate and it
+        is the safe direction — the alternative is a second per-tool ceiling for a band D-100 puts
+        outside this server's workload anyway (200-800 Da is ~120 atoms, and the ceiling is 450).
+        `xtb_hessian_max_atoms` exists because a Hessian is *tighter* than the global bound, which
+        is the direction a per-tool ceiling is worth writing in.
         """
         if len(self.positions) != len(self.elements):
             raise ValueError(f"{len(self.positions)} positions for {len(self.elements)} elements")
@@ -99,7 +110,9 @@ class Structure(BaseModel):
                 f"a structure of {len(self.elements)} atoms exceeds this server's limit of "
                 f"{settings.xtb_max_atoms}: every calculation here is at least one SCF over the "
                 "whole system and runs inside a conversation turn, so a system this size is "
-                "refused rather than started and abandoned"
+                "refused rather than started and abandoned. Run a smaller system, cut it to the "
+                "region the question is about, or raise CHEMCLAW_XTB_MAX_ATOMS on a deployment "
+                "with the memory for it — the ceiling is derived from this pod's own limit"
             )
         decimals = settings.xtb_geometry_decimals
         # `+ 0.0` normalizes the negative zero that rounding can produce, so two geometrically

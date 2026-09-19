@@ -118,5 +118,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work](D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work.md) | An output cap is not a bound on the work |
 | [D-2026-09-18-every-py-in-the-tree-or-a-named-exemption](D-2026-09-18-every-py-in-the-tree-or-a-named-exemption.md) | Every `.py` in the tree, or a named exemption |
 | [D-2026-09-18-the-last-bound-outside-the-reader-was-outside-it-by-type](D-2026-09-18-the-last-bound-outside-the-reader-was-outside-it-by-type.md) | The last bound outside the reader was outside it by type |
+| [D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work](D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work.md) | A bound on the site count prices half the work |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3
