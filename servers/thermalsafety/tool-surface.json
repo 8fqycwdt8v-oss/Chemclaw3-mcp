@@ -113,9 +113,9 @@
       "type": "number"
     },
     "reference_temperature_c": {
-      "default": 0.0,
+      "default": null,
       "required": false,
-      "type": "number"
+      "type": "number|null"
     },
     "specific_heat_kj_per_kg_k": {
       "required": true,

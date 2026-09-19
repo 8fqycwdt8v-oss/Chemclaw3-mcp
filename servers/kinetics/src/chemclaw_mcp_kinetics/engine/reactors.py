@@ -62,7 +62,13 @@ __all__ = [
 #: against a step ratio of 2.5, which is 2.5^4, so the scheme converges at the order it claims.
 #: The defect was not academic: it reported the peak accumulation **low**, 0.047856 against
 #: 0.047940, and low is the dangerous direction for a number a dose time is chosen from.
-MAX_INTEGRATION_STEPS = 2000
+MAX_INTEGRATION_STEPS = 200_000
+
+#: RK4's stability limit on the real axis: the scheme is stable for `h*|lambda| <= 2.785` and
+#: diverges above it. Classical, and the number this module needs rather than a tolerance somebody
+#: chose — see `_steps_for_stability`, which is what stops a fast reaction being reported as a safe
+#: one.
+RK4_REAL_STABILITY_LIMIT = 2.785
 
 #: What a call actually runs at, and it is a *tenth* of the cap for a reason the bug fix bought.
 #: While the feed-term discontinuity made convergence first-order, 2,000 steps was genuinely needed
@@ -74,6 +80,13 @@ MAX_INTEGRATION_STEPS = 2000
 #: is owed: at 8.1 ms it sat beside `chem`'s `render_structure`, the one tool in that server gated
 #: for exactly this reason. A defect fixed made the control unnecessary rather than the control
 #: covering for the defect.
+#:
+#: **This stays the default and is no longer the whole story, because "measured sufficient" was
+#: measured on one case.** The 6.4e-08 agreement above was taken at `k = 0.02, C_co = 0.9`, i.e.
+#: `h*lambda = 0.65` — comfortably inside RK4's stability region. The step count a stiff case needs
+#: is not a constant, so `_steps_for_stability` derives a floor from the problem and
+#: `MAX_INTEGRATION_STEPS` is now high enough to hold the realistic band. A call that would still be
+#: unstable at the ceiling is refused rather than answered.
 DEFAULT_INTEGRATION_STEPS = 200
 
 #: Conversions at or above this are refused as an input, because the time to reach them is where
@@ -355,6 +368,61 @@ class SemiBatchProfile:
     accumulation_at_end_of_dose: float
 
 
+def _steps_for_stability(
+    *,
+    rate_constant: float,
+    dose_time_seconds: float,
+    initial_coreagent_concentration: float,
+    order_in_coreagent: float,
+    requested: int,
+) -> int:
+    """The step count this dose actually needs, never fewer than `requested`.
+
+    **A fixed step count reported a fast reaction as a perfectly safe one, and the clamps hid it.**
+    The dosed-reagent ODE is pseudo-first-order with eigenvalue `lambda = k * C_co^n_co`, largest at
+    `t = 0` where the co-reagent is undiluted. RK4 diverges once `h * lambda` passes
+    `RK4_REAL_STABILITY_LIMIT`, and the divergence went *negative* — where `max(dosed, 0.0)` turned
+    it into `accumulated_fraction = 0.0`, i.e. "no unreacted dosed reagent at any instant in the
+    dose". That is the number `tools.semibatch_accumulation` calls "the material a cooling failure
+    would have to absorb all at once", so the answer said the dose was safe at any rate.
+
+    Measured on a 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60, at the old fixed
+    200
+    steps:
+
+    | `k` | `h*lambda` | reported peak | true peak |
+    | --- | --- | --- | --- |
+    | 0.005 | 5.4 | 0.00627642 | 0.00627636 |
+    | 0.02 | 21.6 | 0.00043211 | 0.00163955 |
+    | 0.05 | 54 | **0.00000000** | 0.00066222 |
+
+    The regime that failed is the one a dose time is *chosen* for: a dose is slow **because** the
+    reaction is fast. `steps` is not exposed on the tool, so a caller could not work around it.
+
+    The floor is derived rather than raised to a new constant, because the number depends on the
+    problem: a rate and a dose time somebody supplies cannot be covered by any fixed count. A call
+    that would still be unstable at `MAX_INTEGRATION_STEPS` is refused by the caller rather than
+    answered — a reaction that fast is mixing-limited, which is a regime this ideal model does not
+    describe, and saying so is better than a zero.
+
+    Args:
+        rate_constant: The rate constant, in the units the caller's concentrations imply.
+        dose_time_seconds: How long the addition takes.
+        initial_coreagent_concentration: The co-reagent concentration before the dose starts, which
+            is where the eigenvalue is largest.
+        order_in_coreagent: Its order in the rate law.
+        requested: The caller's step count, which is a floor rather than the answer.
+
+    Returns:
+        The step count to integrate with — `requested` when the problem is not stiff.
+    """
+    eigenvalue: float = rate_constant * initial_coreagent_concentration**order_in_coreagent
+    if eigenvalue <= 0.0:
+        return requested
+    needed = math.ceil(dose_time_seconds * eigenvalue / RK4_REAL_STABILITY_LIMIT)
+    return max(requested, needed)
+
+
 def semibatch_accumulation(
     *,
     rate_constant: float,
@@ -415,7 +483,32 @@ def semibatch_accumulation(
     if not 1 <= steps <= MAX_INTEGRATION_STEPS:
         raise KineticsInputError(
             f"steps must be between 1 and {MAX_INTEGRATION_STEPS}; got {steps}. The upper bound is "
-            "what this server prices; the default is measured sufficient."
+            "what this server prices."
+        )
+    # **Derived from the problem, because the old fixed count reported a fast reaction as a safe
+    # one** — see `_steps_for_stability` for the measurement. `steps` is the caller's floor, not the
+    # answer.
+    steps = _steps_for_stability(
+        rate_constant=rate_constant,
+        dose_time_seconds=dose_time_seconds,
+        initial_coreagent_concentration=initial_coreagent_concentration,
+        order_in_coreagent=order_in_coreagent,
+        requested=steps,
+    )
+    if steps > MAX_INTEGRATION_STEPS:
+        eigenvalue = rate_constant * initial_coreagent_concentration**order_in_coreagent
+        raise KineticsInputError(
+            f"this dose is too fast for this integrator to resolve: the reaction's "
+            f"pseudo-first-order"
+            f" rate is {eigenvalue:.3g} per second at the start of the dose, which would need "
+            f"{steps:,} steps over {dose_time_seconds:g} s to integrate stably and the ceiling is "
+            f"{MAX_INTEGRATION_STEPS:,}. A reaction this fast relative to the addition is "
+            "mixing-limited — the accumulation is set by how fast the feed disperses, not by the "
+            "rate law — and that is a regime this ideal, perfectly-mixed model does not describe. "
+            "Treat the accumulation as feed-rate-limited and size the dose from the heat-removal "
+            "duty instead; `thermalsafety` is the server for that question. This refusal "
+            "replaced a "
+            "reported accumulation of zero, which read as a dose that is safe at any rate."
         )
 
     feed_rate = dosed_moles / dose_time_seconds
@@ -447,8 +540,26 @@ def semibatch_accumulation(
     dosed_moles_now, coreagent_now = 0.0, coreagent_moles_0
     points: list[AccumulationPoint] = []
 
+    # **A negative mole count is a diverged integration, not a physical zero, and clamping it was
+    # what turned the divergence above into a reassuring answer.** The tolerance is relative to the
+    # whole dose and generous: RK4 round-off on a state that is legitimately at zero is many orders
+    # below it, so anything past it is the instability `_steps_for_stability` now prevents. Kept as
+    # a
+    # belt rather than deleted, because the eigenvalue bound is taken at `t = 0` and a rate law with
+    # `order_in_dosed < 1` steepens as the dosed reagent is consumed.
+    divergence_floor = -1e-9 * dosed_moles
+
     for index in range(steps + 1):
         time = index * step
+        if dosed_moles_now < divergence_floor or coreagent_now < divergence_floor:
+            raise KineticsInputError(
+                f"the integration went unstable {time:g} s into the dose (dosed reagent "
+                f"{dosed_moles_now:.3g} mol, co-reagent {coreagent_now:.3g} mol — a negative mole "
+                f"count is not a physical state). This is a stiffness the step floor did not "
+                f"catch; "
+                "it is reported rather than clamped to zero, because a clamped zero reads as no "
+                "accumulation at all and so as a dose that is safe at any rate."
+            )
         volume = volume_at(time)
         dosed_c = max(dosed_moles_now, 0.0) / volume
         coreagent_c = max(coreagent_now, 0.0) / volume
