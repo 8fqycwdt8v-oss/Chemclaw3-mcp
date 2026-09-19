@@ -75,14 +75,24 @@ class Structure(BaseModel):
         **And one way it can be right and still unaffordable.** The atom ceiling lives here rather
         than on each tool for the same reason the electron-count check does: four primitives take a
         structure and the next one will, so a per-tool check is one somebody forgets — and only
-        `compute_hessian` had one. A structure under the 1 MB body cap can carry **37,983 atoms**
-        — measured on real `tools/call` payloads at 26.3 bytes an atom — at which the optimizer's
-        coordinate system asks for terabytes and takes the whole process with it, every other
-        connected turn included. The refusal names both numbers because the caller's only options
-        are a smaller system or a deployment configured for a larger one.
+        `compute_hessian` had one. A structure under the 1 MB body cap can carry **tens of
+        thousands of atoms** — at which the optimizer's coordinate system asks for terabytes and
+        takes the whole process with it, every other connected turn included. The refusal names
+        both numbers because the caller's only options are a smaller system or a deployment
+        configured for a larger one.
 
-        **Both halves of that sentence were retired under it and this is the fourth document to be
-        corrected.** It said ~42,000 atoms, which was never measured, and named the *dense model
+        **A single figure stood here and it was not one number**
+        (`D-2026-09-19-an-atom-count-under-a-byte-cap-is-a-range-not-a-figure`). It read "37,983
+        atoms ... at 26.3 bytes an atom", which does not reconcile with its own coefficient
+        (1,000,000 / 26.3 is 38,023) and is not what a payload measures: driven against
+        `DEFAULT_MAX_REQUEST_BYTES`, the same structure is **19.3 bytes an atom at one decimal and
+        30.4 at six**, so the cap carries 51,807 atoms or 32,876 — a 1.6x spread set by nothing but
+        the caller's formatting. The conclusion is unaffected in the only way that matters: every
+        point in that range is ~70x `xtb_max_atoms`, which is why the ceiling is here at all.
+
+        **Both halves of the sentence before that were retired under it, and this is the fourth
+        document to be corrected.** It said ~42,000 atoms, which was never measured, and named the
+        *dense model
         Hessian* of the ANC preconditioner
         `D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not` deleted — so the
         module that **enforces** the bound documented a mechanism that no longer runs.

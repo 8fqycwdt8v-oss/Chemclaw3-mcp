@@ -5,7 +5,7 @@ cannot run away unpriced, a `request_timeout` stating the real budget". This ser
 the paths its shipped image actually runs, and the two gaps compound:
 
 - **No atom bound.** `compute_hessian` refused above `xtb_hessian_max_atoms`; nothing else did. A
-  `Structure` was validated for internal consistency and never for size, so a ~38,000-atom
+  `Structure` was validated for internal consistency and never for size, so a 33,000-52,000-atom
   `relax_structure` (well inside the 1 MB body cap) reached `make_calculator` with no refusal.
   Measured on the optimizer of the day — an ANC preconditioner, a dense `(3N, 3N)`
   eigendecomposition rebuilt per leg: 3.6 s at 120 atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510,
@@ -397,4 +397,61 @@ def test_an_exceeded_inline_budget_says_which_loop_spent_it(
         assert INLINE_BUDGET_EXCEEDED.labels(what)._value.get() == was + 1, (
             f"the inline-budget counter did not separate {what!r}; an operator cannot tell which "
             "budget is undersized"
+        )
+
+
+def test_the_body_cap_admits_far_more_atoms_than_the_ceiling_at_every_formatting() -> None:
+    """Why `Structure`'s atom ceiling exists at all, held as a range rather than as a figure.
+
+    The argument the ceiling rests on is that the transport bound above it does not bound this: a
+    `tools/call` body under `DEFAULT_MAX_REQUEST_BYTES` still carries orders of magnitude more atoms
+    than the optimizer can afford. Three documents stated that as a single number — "37,983 atoms,
+    measured at 26.3 bytes an atom" — which does not reconcile with its own coefficient (1,000,000 /
+    26.3 is 38,023) and is not a property of this server: driven here, the same structure costs
+    19.3 bytes an atom written to one decimal and 30.4 to six, a 1.6x spread set by nothing but the
+    caller's formatting.
+
+    So this asserts the claim rather than the digits — that every point in that range is far above
+    `xtb_max_atoms`, which is the only thing the ceiling's existence depends on. A figure would go
+    stale the first time anybody changed a field name in the payload; the inequality does not.
+    """
+    import json
+
+    from mcp_server_kit.app import DEFAULT_MAX_REQUEST_BYTES
+
+    # Deterministic rather than sampled: what is being measured is the *length* of a serialized
+    # coordinate, and a fixed cycle of magnitudes spans the same lengths a real payload does
+    # without making the assertion depend on a seed.
+    magnitudes = (-28.0, -3.5, -0.25, 0.0, 1.75, 9.5, 27.0)
+    atoms = 10_000
+    for decimals, elements in ((1, ("C",)), (3, ("C",)), (6, ("C", "N", "O", "Cl", "Fe"))):
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "relax_structure",
+                "arguments": {
+                    "structure": {
+                        "elements": [elements[i % len(elements)] for i in range(atoms)],
+                        "positions": [
+                            [
+                                round(magnitudes[(3 * i + axis) % len(magnitudes)] / 3, decimals)
+                                for axis in range(3)
+                            ]
+                            for i in range(atoms)
+                        ],
+                        "charge": 0,
+                        "multiplicity": 1,
+                    }
+                },
+            },
+        }
+        per_atom = len(json.dumps(payload, separators=(",", ":")).encode()) / atoms
+        fits = int(DEFAULT_MAX_REQUEST_BYTES // per_atom)
+        assert fits > settings.xtb_max_atoms * 10, (
+            f"a {decimals}-decimal payload costs {per_atom:.1f} bytes an atom, so the body cap "
+            f"carries {fits:,} atoms against a ceiling of {settings.xtb_max_atoms} — if that stops "
+            "being a wide margin, the transport bound has become the real ceiling and "
+            "`Structure`'s own is no longer what protects the optimizer"
         )

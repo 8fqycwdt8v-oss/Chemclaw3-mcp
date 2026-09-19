@@ -148,8 +148,9 @@ class CalcSettings(BaseSettings):
     #
     # Not a promise that a structure at the ceiling is affordable — `xtb_inline_timeout_seconds` is
     # what prices the work. This refuses the inputs whose *allocation* takes the pod down before any
-    # clock could act on it: a `tools/call` body under the 1 MB cap carries ~38,000 atoms (measured,
-    # 26.3 bytes an atom on a compact payload), and the optimizer's coordinate system is quadratic
+    # clock could act on it: a `tools/call` body under the 1 MB cap carries tens of thousands of
+    # atoms (measured, 19.3-30.4 bytes an atom — the spread is the caller's decimal places, not a
+    # property of this server), and the optimizer's coordinate system is quadratic
     # in the atom count while the body cap is linear in it.
     #
     # **The number is derived rather than chosen, and `tests/test_cost_bounds.py` performs the
