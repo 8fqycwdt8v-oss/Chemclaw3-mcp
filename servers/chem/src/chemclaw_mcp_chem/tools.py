@@ -11,8 +11,12 @@ used to say "five" outlived two additions.
 
 **The six enumerations exist so that the expensive half never has to guess its own universe.**
 Chemclaw3's `rank_species` and `survey_bond_strengths` rank a *set*; these produce the set from the
-molecular graph, for free. Its skills state the rule as *enumerate, then compute, and never the
-reverse*, and the reason is that the alternative is a model inventing plausible SMILES.
+molecular graph, for a small fraction of what ranking it costs. Its skills state the rule as
+*enumerate, then compute, and never the reverse*, and the reason is that the alternative is a model
+inventing plausible SMILES. "Free" is what that used to say, and it is the wrong word twice over:
+these are milliseconds on a drug-sized molecule and **seconds** on a large one — `describe_topology`
+measures 2,793 ms on a 996-atom dendrimer — and only `enumerate_protonation_states` has an input
+bound.
 
 **"Cheap" is relative to a DFT job, not to an event loop.** RDKit parsing, `Descriptors.MolWt` and
 especially 2D-coordinate generation plus SVG rendering are CPU-bound C++ that holds the GIL for
@@ -369,11 +373,19 @@ async def describe_sites(smiles: str) -> SiteSet:
 
 @server.tool()
 async def describe_topology(smiles: str) -> Topology:
-    """Say what the molecular graph is like, before spending anything on it.
+    """Say what the molecular graph is like, before spending an expensive search on it.
 
-    Free and structural — no calculation runs. Ask this first when you are unsure whether an
-    expensive search is worth it, because the commonest waste in this catalogue is paying for a
-    conformer search to discover the molecule was rigid.
+    Structural — no quantum calculation runs, and nothing here is a prediction. Ask this first when
+    you are unsure whether an expensive search is worth it, because the commonest waste in this
+    catalogue is paying for a conformer search to discover the molecule was rigid.
+
+    **It is not free, and on a large molecule it is the most expensive tool on this server.**
+    `tautomer_count` is an enumeration rather than a descriptor read, so this costs milliseconds on
+    a drug-sized molecule and seconds on a large one: measured, 346 ms on a 301-atom peptide,
+    839 ms on a 484-atom PAMAM G3 dendrimer and 2,793 ms on a 996-atom PAMAM G4 — where
+    `enumerate_protonation_states` on the same three costs 6 ms, 128 ms and 587 ms. It is still the
+    tool to ask first, because it answers for molecules the enumerations refuse; it is not a
+    free lookup and it is not cheaper than the call it is often used to avoid.
 
     How to read the answer:
 
@@ -403,8 +415,10 @@ async def describe_topology(smiles: str) -> Topology:
 async def enumerate_tautomers(smiles: str) -> SpeciesSet:
     """List the tautomers of a molecule — the proton-shift isomers it can exist as.
 
-    Free and structural. Pass `smiles` from the result straight to `rank_species` to find out which
-    form actually dominates; this tool says only which forms are possible.
+    Structural, and cheap only relative to ranking the set: this is an enumeration rather than a
+    descriptor read, measured at 2,801 ms on a 996-atom dendrimer. Pass `smiles` from the result
+    straight to `rank_species` to find out which form actually dominates; this tool says only which
+    forms are possible.
 
     Use it before any other calculation on a molecule with a mobile proton between heteroatoms:
     heterocyclic N-H (pyrazoles, imidazoles, triazoles, purines), 1,3-dicarbonyls, amidines,
@@ -426,18 +440,23 @@ async def enumerate_tautomers(smiles: str) -> SpeciesSet:
 async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
     """List the protonation microstates — each ionisable site toggled, one at a time.
 
-    Free and structural. The ranking that says which dominates at a given pH is `rank_species`;
-    for a single site, `predict_pka` answers directly and more cheaply.
+    Structural, and the cheapest of the enumerations on a large molecule — 587 ms on a 996-atom
+    dendrimer — because what it does per site is bounded below. The ranking that says which
+    dominates at a given pH is `rank_species`; for a single site, `predict_pka` answers directly
+    and more cheaply.
 
     Each ionisable site is toggled **singly**: the parent, plus each single ionisation. Combined
     states (a zwitterion's doubly-ionised form, say) are reachable by calling this again on a
     result, which keeps the expansion an explicit decision rather than a silent 2^n.
 
-    **This refuses a polyelectrolyte rather than enumerating one.** A molecule with more than
-    `MAX_IONISABLE_SITES` acidic and basic sites is turned away naming the count, because walking
-    them all costs tens of seconds — longer than this connector's own request timeout — to produce
-    either a set too large to return or, where the sites are equivalent, a handful of structures.
-    `describe_topology` reports the site count for free and is the tool to ask first.
+    **What this refuses is a cost, and the cost is `ionisable sites x heavy atoms`** — each site
+    is one proton shift, one sanitisation and one canonicalisation over the whole graph. A molecule
+    whose product exceeds `MAX_SITE_ATOM_PRODUCT` is turned away naming both numbers and the factor
+    by which they exceed the bound; how many microstates it would have yielded is not known at that
+    point and may well be small, so the refusal is about the work and not about the answer. Real
+    polyprotic chemistry is inside it: a PAMAM G4 dendrimer (996 heavy atoms, 126 ionisable sites)
+    is answered. The refusal names three ways on — `describe_topology`, the repeat unit of a
+    symmetric polymer, and `CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT` on the deployment.
 
     Args:
         smiles: The molecule, as SMILES. Give the neutral form where there is one.
@@ -452,9 +471,9 @@ async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
 async def enumerate_stereoisomers(smiles: str) -> SpeciesSet:
     """List the stereoisomers of a molecule at the centres its SMILES leaves *unassigned*.
 
-    Free and structural. `rank_species` on the result gives the relative free energies — which is
-    the diastereomer question; it is not the enantiomer question, since enantiomers are isoenergetic
-    and no calculation here distinguishes them.
+    Structural. `rank_species` on the result gives the relative free energies — which is the
+    diastereomer question; it is not the enantiomer question, since enantiomers are isoenergetic and
+    no calculation here distinguishes them.
 
     **Only unassigned centres are expanded.** A structure drawn with defined stereochemistry is a
     claim, and re-enumerating over it would offer the enantiomer of a compound somebody specified.
@@ -502,10 +521,10 @@ async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic"
 async def enumerate_degradants(smiles: str) -> DegradantSet:
     """Propose degradation products by applying forced-degradation transforms to the structure.
 
-    Free and structural, and **a short list rather than a ranking or a prediction**: each entry
-    says a transform *matches* the molecule's graph, not that the chemistry happens. Report it as
-    candidates to screen, and say so — a transform can match a substructure the chemistry does not
-    favour.
+    Structural (1,823 ms on a 996-atom dendrimer, milliseconds on a drug-sized molecule), and **a
+    short list rather than a ranking or a prediction**: each entry says a transform *matches* the
+    molecule's graph, not that the chemistry happens. Report it as candidates to screen, and say
+    so — a transform can match a substructure the chemistry does not favour.
 
     Each candidate names the transform that produced it, which is the half a chemist can argue
     with: "N-oxidation" can be rejected for a hindered amine, and a bare SMILES cannot.

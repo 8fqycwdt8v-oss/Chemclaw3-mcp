@@ -44,8 +44,8 @@ from chemclaw_mcp_chem.engine.chem import require_molecule
 
 __all__ = [
     "MAX_DEGRADANTS",
-    "MAX_IONISABLE_SITES",
     "MAX_MICROSTATES",
+    "MAX_SITE_ATOM_PRODUCT",
     "MAX_STEREOISOMERS",
     "MAX_TAUTOMERS",
     "Degradant",
@@ -68,46 +68,72 @@ MAX_MICROSTATES = 32
 MAX_STEREOISOMERS = 64
 MAX_DEGRADANTS = 64
 
-#: How many ionisable sites `enumerate_microstates` will walk before it refuses — a bound on the
-#: **input**, and the only one of the five that prices CPU rather than the next step.
+#: How much work `enumerate_microstates` will do before it refuses — a bound on the **input**, and
+#: the only one of the five that prices CPU rather than the next step. The quantity is
+#: `ionisable sites x heavy atoms`, because that is what the call costs.
 #:
-#: **The four caps above bound an answer; none of them bounds this tool's work, and measuring it is
-#: what found that.** Every other bound in this server stops the cost before it is paid:
-#: `MAX_MOLECULE_ATOMS` refuses a megamolecule at the parse, and `StereoEnumerationOptions`'
-#: `maxIsomers` stops the stereo enumerator one past its cap rather than materialising 2^n.
-#: `enumerate_microstates` had neither — it shifted, sanitised and canonicalised **every** site and
-#: consulted `MAX_MICROSTATES` afterwards — so the cap made the refusal certain and not cheap.
-#: Measured on this container, both cases inside every bound that existed:
+#: **The four caps above bound an answer; none of them bounds this tool's work.** Every other bound
+#: in this server stops the cost before it is paid: `MAX_MOLECULE_ATOMS` refuses a megamolecule at
+#: the parse, and `StereoEnumerationOptions`' `maxIsomers` stops the stereo enumerator one past its
+#: cap rather than materialising 2^n. `enumerate_microstates` had neither — it shifted, sanitised
+#: and canonicalised **every** site and consulted `MAX_MICROSTATES` afterwards — so the cap made the
+#: refusal certain and not cheap. Measured on this container, both cases inside every bound that
+#: existed at the time:
 #:
-#:     N + CCN*659      1,978 atoms, 660 sites  48,077 ms  then ValueError (nothing returned)
-#:     C1 + CNC*659     1,980 atoms, 660 sites  15,647 ms  then **answered**, with 2 species
+#:     N + CCN*659            1,978 atoms, 660 sites  48,077 ms  then ValueError (nothing returned)
+#:     C1 + CNC*659 + CN1     1,980 atoms, 660 sites  15,647 ms  then **answered**, with 2 species
 #:
 #: The second is the case an output cap can never reach: the sites are equivalent, every microstate
 #: collapses to one string, and the answer is inside `MAX_MICROSTATES` — so the tool burns 15 s to
 #: return two structures and no cap on the answer would have fired. The first exceeds this server's
 #: own `request_timeout` of 30 s, so the caller has gone before the refusal is written.
 #:
-#: **32 is derived twice and the two derivations agree.** By cost: at the largest molecule the parse
-#: bounds admit (1,900 atoms) the call is ~158 ms of parse and canonicalisation plus ~15 ms per
-#: site, measured at 385 ms for 16 sites, 640 ms for 32, 1,035 ms for 48 and 10,253 ms for 256 — so
-#: 32 keeps the worst legal call inside the 0.1-0.62 s band this server's four *other*
-#: enumerators already occupy at that size, and 48 puts it outside. By contract: a microstate here
-#: is one site toggled, so the answer is at most `1 + sites`, and a molecule with more sites than
-#: `MAX_MICROSTATES` can only come in under that cap by degeneracy — which is the 15 s case above.
+#: **The first bound written here priced the site count alone, and that is the wrong variable.**
+#: Each site is one `_shift`, one `SanitizeMol` and one `_canonical` over the *whole* graph, so the
+#: cost is the product — which this server's own README said in the sentence beside the bound while
+#: the bound read one factor of it. What a site-only bound of 32 did, measured on the shipped entry
+#: point: it **refused** PAMAM G3 (484 heavy atoms, 62 sites, 128 ms, 6 species) and PAMAM G4 (996
+#: atoms, 126 sites, 587 ms, 7 species) — catalogue dendrimers whose sites are symmetric, so the
+#: answer is small and cheap — while **admitting** a 1,891-atom polyamine at 31 sites for 413 ms.
+#: Degeneracy is the normal case for a symmetric real molecule, not the pathology the site-only
+#: derivation treated it as.
+#:
+#: **150,000 is derived from the cost, at the worst shape measured.** Cost per site-atom is
+#: 4.3-4.7 us on a branched dendrimer, 5.6 us on a macrocycle and up to **8.4 us** on a long-chain
+#: polyamine, so the bound prices the worst of the three. The frontier, two runs each, best of two:
+#:
+#:     PAMAM G3                 484 atoms,  62 sites     30,008     129 ms  admitted
+#:     PAMAM G4                 996 atoms, 126 sites    125,496     591 ms  admitted
+#:     macrocycle, 223 amines   669 atoms, 223 sites    149,187     841 ms  admitted
+#:     chain, 100 amines      1,500 atoms, 100 sites    150,000   1,266 ms  admitted (the worst)
+#:     macrocycle, 387 amines 1,161 atoms, 387 sites    449,307   3,146 ms  refused
+#:     chain, 660 amines      1,980 atoms, 660 sites  1,306,800  12,479 ms  refused, 8.7x over
+#:
+#: So the worst call this admits costs about **1.3 s** of one core: 2.4x inside the readiness
+#: probe's own 3 s timeout and 24x inside the manifest's 30 s `request_timeout`. That is above the
+#: 0.1-0.62 s band `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` derived the old number
+#: against, and that band does not survive being measured on anything but a linear alkane: on PAMAM
+#: G4, the four *unbounded* enumerators beside this one measure `enumerate_tautomer_set` 2,801 ms,
+#: `describe_molecule` 2,793 ms, `enumerate_degradant_candidates` 1,823 ms and
+#: `enumerate_stereoisomer_set` 18 ms. 1.3 s does not make this the expensive one.
+#:
+#: 150,000 is also 75 sites at the largest molecule `MAX_MOLECULE_ATOMS` admits, and 19.5% above
+#: PAMAM G4 — which is the largest PAMAM this server can see at all, since G5 is 2,004 heavy atoms
+#: and the parse bound refuses it.
 #:
 #: Overridable, because a bound nobody can loosen for a real polyelectrolyte is one somebody edits
 #: code around; `env_bound` refuses a value that would make the tool refuse everything.
-MAX_IONISABLE_SITES = env_bound(
-    "CHEMCLAW_CHEM_MAX_IONISABLE_SITES",
-    default=32,
-    # One site, because the bound refuses anything *above* it: at 0 every ionisable molecule would
-    # be refused and the tool would answer only for molecules it has nothing to say about.
-    minimum=1,
+MAX_SITE_ATOM_PRODUCT = env_bound(
+    "CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT",
+    default=150_000,
+    # Glycine is 5 heavy atoms and 2 ionisable sites, so 10 is the product of the smallest
+    # ionisable molecule anybody asks about: below it this tool answers for nothing at all.
+    minimum=10,
     consequence=(
-        "below it every ionisable molecule would be refused and enumerate_microstates would "
-        "answer only for molecules that have no protonation microstates; far above it one call "
-        "can hold this pod's interpreter for tens of seconds, past the request timeout its caller "
-        "is waiting on"
+        "below it even glycine — 5 heavy atoms, 2 ionisable sites — would be refused and "
+        "enumerate_protonation_states would answer only for molecules that have no protonation "
+        "microstates; far above it one call can hold this pod's interpreter for tens of seconds, "
+        "past the request timeout its caller is waiting on"
     ),
 )
 
@@ -267,27 +293,36 @@ def _refuse_past(count: int, cap: int, what: str, smiles: str) -> None:
         )
 
 
-def _refuse_past_site_count(sites: int, smiles: str) -> None:
-    """Raise when a molecule carries more ionisable sites than one call may walk.
+def _refuse_past_enumeration_cost(sites: int, atoms: int, smiles: str) -> None:
+    """Raise when walking a molecule's ionisable sites would cost more than one call may spend.
 
     Separate from `_refuse_past` rather than a fifth caller of it, because the two refusals are
     about different things and a caller acts on them differently. That one says *the answer would
     be too large to be useful*, and its remedy is to narrow the question. This one says *finding
-    out would cost more than the answer is worth*, and its remedy is to ask about a fragment —
-    which is advice the other message does not give and which is the whole reason this check
-    exists. The wording therefore names the site count, not the species count, since a caller
-    reading "660 microstates" for a molecule that yields two would be told something untrue.
+    out would cost more than one call here may spend*, and its remedies are a different tool, a
+    smaller question or a deployment that allows more — none of which the other message gives.
+
+    **The wording names the two numbers the bound is actually made of and the factor by which they
+    exceed it, and no seconds.** The sentence this replaces told every refused caller that
+    enumerating "would hold this server for tens of seconds ... to produce a set this tool would
+    then refuse as too large": measured on PAMAM G3, which that bound refused, the truth was 128 ms
+    and six structures. A refusal that states a cost it has never timed for the molecule in front
+    of it is the defect `CLAUDE.md`'s "docstrings are the prompt" rule is about, one message over. A
+    *factor* is exact for every input, needs no wall clock, and does not go stale on a faster pod.
 
     A `ValueError`, so `connector_app` passes the wording through to the model verbatim.
     """
-    if sites > MAX_IONISABLE_SITES:
+    product = sites * atoms
+    if product > MAX_SITE_ATOM_PRODUCT:
         raise ValueError(
-            f"{smiles!r} has {sites} ionisable sites, above the limit of {MAX_IONISABLE_SITES}. "
-            f"Each one is toggled, sanitised and canonicalised separately, so enumerating them "
-            f"all would hold this server for tens of seconds — past the timeout you are waiting "
-            f"on — to produce a set this tool would then refuse as too large, or a handful of "
-            f"structures if the sites are equivalent. Ask about the fragment whose protonation "
-            f"you care about, or resolve the ionisation you already know."
+            f"{smiles!r} has {sites} ionisable sites on {atoms} heavy atoms. Each site is toggled, "
+            f"sanitised and canonicalised over the whole graph, so the work is the product of "
+            f"those two numbers — {product:,} here, {product / MAX_SITE_ATOM_PRODUCT:.1f}x the "
+            f"{MAX_SITE_ATOM_PRODUCT:,} one call on this server may spend. How many microstates "
+            f"that would yield is not known and may well be small; this refuses the cost, not the "
+            f"answer. Three ways on: describe_topology reports the site count without moving a "
+            f"proton, ask about the repeat unit where the sites repeat by symmetry, or raise "
+            f"CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT on this deployment."
         )
 
 
@@ -371,7 +406,7 @@ def _compiled(smarts: str) -> Chem.Mol | None:
 
     **The saving is a constant rather than a factor, and that is the thing to read off it**: it is
     ~250 µs per call whatever the molecule, so it is a third of a small call and nothing at all in
-    a large one — at the largest molecule `MAX_IONISABLE_SITES` admits (1,891 atoms, 31 sites) the
+    a large one — at a molecule near what `MAX_SITE_ATOM_PRODUCT` admits (1,891 atoms, 31 sites) the
     two forms measure 580 ms and 595 ms, inside each other's noise. Which is why the bound above is
     the half of this commit that matters and this is the half that was asked for.
 
@@ -381,8 +416,18 @@ def _compiled(smarts: str) -> Chem.Mol | None:
     a module-scope parse of eleven patterns would be a second thing that can fail in an import.
     `@cache` is unbounded and bounded in fact: the keys are the literals in `_ACIDIC` and `_BASIC`.
 
-    Sharing one compiled query across calls is safe because `GetSubstructMatches` does not mutate
-    it, which is what lets the two tables be module constants in the first place.
+    **Why sharing one compiled query is safe, which is not the reason this docstring first gave.**
+    It said `GetSubstructMatches` "does not mutate" the query. That is false for a *recursive*
+    SMARTS — two of the eleven patterns here are one, the aliphatic-amine pattern with its four
+    `!$(...)` guards and the pyridine-type one — because RDKit caches the match set of a recursive
+    query against the current target **on the query object**, which is precisely why RDKit has a
+    `RDK_BUILD_THREADSAFE_SSS` build flag to put a mutex around it. What makes the sharing safe is
+    therefore that flag, and it is load-bearing rather than incidental: every tool body here runs
+    in `asyncio.to_thread`, so two concurrent calls match against one shared query by construction.
+    `rdBase._multithreadedEnabled` is what reports it, it is `True` in the wheel this lockfile
+    resolves, and `tests/test_microstate_bound.py` is what now asserts it instead of leaving the
+    cache resting on a sentence — measured beside it, 16 threads x 400 matches over the shared
+    queries give zero wrong answers.
     """
     return Chem.MolFromSmarts(smarts)
 
@@ -443,20 +488,21 @@ def enumerate_microstates(smiles: str) -> SpeciesSet:
     the parent and each single ionisation. Combined states are reachable by calling this on a
     result, which makes the expansion the caller's explicit decision rather than a silent 2^n.
 
-    **The site count is checked before any proton is moved**, which is the other bound and the one
-    that prices the call. See `MAX_IONISABLE_SITES` for what that costs when it is missing; the
-    check itself is the two `_sites` passes this function already made, so it is free.
+    **The cost is checked before any proton is moved**, which is the other bound and the one that
+    prices the call. That cost is `sites x heavy atoms`, not the site count — see
+    `MAX_SITE_ATOM_PRODUCT` for what each of those two mistakes costs. The check itself is the two
+    `_sites` passes this function already made plus one descriptor read, so it is free.
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
-        ValueError: more ionisable sites than `MAX_IONISABLE_SITES`, or more microstates than
-            `MAX_MICROSTATES`.
+        ValueError: more `sites x heavy atoms` than `MAX_SITE_ATOM_PRODUCT`, or more microstates
+            than `MAX_MICROSTATES`.
     """
     mol = require_molecule(smiles)
     parent = _canonical(mol)
     acidic = _sites(mol, _ACIDIC)
     basic = _sites(mol, _BASIC)
-    _refuse_past_site_count(len(acidic) + len(basic), smiles)
+    _refuse_past_enumeration_cost(len(acidic) + len(basic), mol.GetNumHeavyAtoms(), smiles)
     species: list[str] = []
     labels: list[str] = []
     for name, index in acidic:
@@ -622,10 +668,17 @@ def describe_molecule(smiles: str) -> Topology:
     # Perceived once each and counted three times. This read `_sites(mol, _ACIDIC)` twice and
     # `_sites(mol, _BASIC)` twice — four passes over the graph for three numbers, two of which are
     # the other two added up. **`describe_molecule` is deliberately *not* bounded by
-    # `MAX_IONISABLE_SITES`**: it is the free, total tool a caller consults to decide whether an
+    # `MAX_SITE_ATOM_PRODUCT`**: it is the total tool a caller consults to decide whether an
     # enumeration is worth asking for, so "this molecule has 660 ionisable sites" is precisely the
-    # answer that should reach them rather than a refusal. Perceiving them costs 7.4 ms at 660
+    # answer that should reach them rather than a refusal. Perceiving the sites costs 7.4 ms at 660
     # sites and 1,978 atoms, measured; walking them is what costs 48 s.
+    #
+    # **It is not free, and it is routinely the more expensive of the two.** The `tautomers` field
+    # below enumerates, which is unbounded in a way the site counts are not: measured, this
+    # function costs 839 ms on PAMAM G3 against `enumerate_microstates`' 128 ms, and 2,793 ms on
+    # PAMAM G4 against 587 ms. It is still the right tool to ask first — it answers for a molecule
+    # the enumeration refuses — but "free" was a claim about the site counts that the tautomer
+    # enumeration beside them does not honour. `docs/BACKLOG.md` carries the ceiling question.
     acidic = _sites(mol, _ACIDIC)
     basic = _sites(mol, _BASIC)
     try:
