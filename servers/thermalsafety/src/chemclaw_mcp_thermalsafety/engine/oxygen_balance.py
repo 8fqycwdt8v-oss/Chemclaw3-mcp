@@ -89,7 +89,30 @@ ATOMIC_WEIGHTS: dict[str, float] = {
 #: The -200/-80/-40/+40 boundaries are the conventional screening bands (Bretherick's *Handbook of
 #: Reactive Chemical Hazards*, 8th ed., §2.3.3); they are a triage convention rather than a physical
 #: threshold, and the interpretation strings say so.
+#:
+#: **All four boundaries are floors here, and the +40 one was missing.** This tuple held three, so
+#: the top band had no upper bound and everything above -40 landed in it — measured, `KClO4`
+#: (+40.42%), `H2O2` (+47.04%) and even `O2` (+100.00%) were returned as *near-balanced* under an
+#: interpretation reading "this is the range nitroglycerine (+3.5%) and ammonium nitrate (+20%) sit
+#: in". A strongly oxygen-rich oxidiser is a different hazard with a different action — the question
+#: is what it will do to a fuel it is mixed with or contaminated by, not what it does alone — and
+#: the convention's fourth boundary exists to say so.
+#:
+#: **Every percentage quoted in an interpretation is this module's own arithmetic**, and one was
+#: not: the `oxygen-deficient` band cited "toluene is -302%" where this module computes -312.57%,
+#: at which toluene is in the band *below* the one citing it. `tests/test_oxygen_balance.py`
+#: recomputes every
+#: cited figure from its formula, so a quoted number cannot drift from the code again.
 _BAND_FLOORS: tuple[tuple[float, str, str], ...] = (
+    (
+        40.0,
+        "oxygen-rich",
+        "Carries more oxygen than it needs to burn itself completely, so on this screen it is an "
+        "oxidiser rather than a self-sufficient energetic (KClO4 is +40%, H2O2 +47%). The question "
+        "it raises is a different one: what this will do to a fuel it is mixed with, contaminated "
+        "by or spilled onto — incompatibility, not self-decomposition. Review the segregation and "
+        "the materials of construction, and do not read a positive balance as a clearance.",
+    ),
     (
         -40.0,
         "near-balanced",
@@ -107,8 +130,8 @@ _BAND_FLOORS: tuple[tuple[float, str, str], ...] = (
     (
         -200.0,
         "oxygen-deficient",
-        "Far from balanced. Most ordinary organic compounds are here (toluene is -302%, glucose "
-        "-107%), so this band carries almost no information on its own and must not be read as a "
+        "Far from balanced. Many ordinary organic compounds are here (glucose is -107%, sucrose "
+        "-112%), so this band carries almost no information on its own and must not be read as a "
         "clearance: an energetic group in the structure still decides the hazard.",
     ),
 )
@@ -116,9 +139,10 @@ _BAND_FLOORS: tuple[tuple[float, str, str], ...] = (
 #: What a value below the lowest band floor means.
 _VERY_DEFICIENT = (
     "strongly oxygen-deficient",
-    "Typical of a hydrocarbon or a simple organic with no oxidiser in it. On this screen alone "
-    "there is nothing to pursue — but the screen sees stoichiometry only, so a structural hazard "
-    "alert or a known-unstable functional group overrides it entirely.",
+    "Typical of a hydrocarbon or a simple organic with no oxidiser in it (toluene is -313%, "
+    "methane -399%). On this screen alone there is nothing to pursue — but the screen sees "
+    "stoichiometry only, so a structural hazard alert or a known-unstable functional group "
+    "overrides it entirely.",
 )
 
 

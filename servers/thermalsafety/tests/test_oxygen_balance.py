@@ -12,6 +12,7 @@ read wrongly moves both numbers and is caught twice.
 from __future__ import annotations
 
 import pytest
+from chemclaw_mcp_thermalsafety.engine import oxygen_balance as oxygen_balance_module
 from chemclaw_mcp_thermalsafety.engine import selftest
 from chemclaw_mcp_thermalsafety.engine.oxygen_balance import (
     ALLOWED_ELEMENTS,
@@ -315,3 +316,98 @@ def test_an_isotope_symbol_is_named_rather_than_silently_weighed() -> None:
     """
     with pytest.raises(FormulaError, match="2H"):
         parse_formula("D2O")
+
+
+#: `(formula, the token an interpretation string quotes, the band that string belongs to)`.
+#:
+#: **Every percentage a band's interpretation quotes is a claim about this module's own
+#: arithmetic**, and one of them was wrong in both halves at once: the `oxygen-deficient` band read
+#: "toluene is
+#: -302%" where the code computes -312.57%, and at -312.57% toluene is in the band *below* the one
+#: citing it. So this table holds the two directions that defect needed: the token must still be a
+#: substring of that band's text, and recomputing the formula must land inside the band and round to
+#: the token.
+QUOTED_IN_INTERPRETATIONS = (
+    ("KClO4", "+40%", "oxygen-rich"),
+    ("H2O2", "+47%", "oxygen-rich"),
+    ("C3H5N3O9", "+3.5%", "near-balanced"),
+    ("N2H4O3", "+20%", "near-balanced"),
+    ("C7H5N3O6", "-74%", "moderately oxygen-deficient"),
+    ("C6H12O6", "-107%", "oxygen-deficient"),
+    ("C12H22O11", "-112%", "oxygen-deficient"),
+    ("C7H8", "-313%", "strongly oxygen-deficient"),
+    ("CH4", "-399%", "strongly oxygen-deficient"),
+)
+
+
+@pytest.mark.parametrize(("formula", "token", "band"), QUOTED_IN_INTERPRETATIONS)
+def test_a_compound_an_interpretation_quotes_lands_in_the_band_that_quotes_it(
+    formula: str, token: str, band: str
+) -> None:
+    """A number in a returned string is arithmetic, not prose, so it is recomputed here.
+
+    The tolerance is half the last quoted digit, derived from the token rather than chosen: "-107%"
+    has to hold to ±0.5 and "+3.5%" to ±0.05. That is what makes this catch a drift of a few points
+    as well as the ten-point one that was there, and it is why the token is stored as written rather
+    than as a float — the substring check is the half that fails when the *string* moves instead.
+    """
+    quoted = float(token.rstrip("%"))
+    places = len(token.rstrip("%").split(".")[1]) if "." in token else 0
+    tolerance = 0.5 * 10.0**-places
+
+    result = oxygen_balance(formula)
+    assert result.band == band, (
+        f"{formula} computes to {result.oxygen_balance_percent:+.2f}%, which this build classifies "
+        f"as {result.band!r} — but it is quoted in the {band!r} interpretation, so a reader is "
+        "told it is an example of a band it is not in"
+    )
+    assert result.oxygen_balance_percent == pytest.approx(quoted, abs=tolerance), (
+        f"the {band!r} interpretation quotes {formula} at {token}, and this build computes "
+        f"{result.oxygen_balance_percent:+.2f}%"
+    )
+    assert token in result.interpretation, (
+        f"{token} is no longer the spelling the {band!r} interpretation uses, so this table and "
+        f"the string it checks have come apart: {result.interpretation!r}"
+    )
+
+
+def test_every_band_is_bounded_above_and_an_oxidiser_is_not_called_near_balanced() -> None:
+    """The +40 boundary the module's own comment declared and the band table did not implement.
+
+    `_BAND_FLOORS` held three floors, so the top band had no upper bound: measured, `KClO4`
+    (+40.42%), `H2O2` (+47.04%) and `O2` (+100.00%) all came back as *near-balanced* under an
+    interpretation reading "this is the range nitroglycerine (+3.5%) and ammonium nitrate (+20%) sit
+    in". Nitroglycerine and an oxygen cylinder are not one screening answer.
+
+    Asserted as the structural property rather than as three spot values, because a fifth band would
+    otherwise re-open the same hole at its own top: every band must be bounded above by the floor of
+    the band above it, and every interpretation must name at least one compound.
+    """
+    floors = [floor for floor, _, _ in oxygen_balance_module._BAND_FLOORS]
+    assert floors == sorted(floors, reverse=True), (
+        f"the band floors are matched top-down by the first `percent >= floor`, so they must "
+        f"descend: {floors}"
+    )
+    assert floors[0] > 0.0, (
+        "the highest band floor is not positive, so a compound carrying surplus oxygen shares a "
+        f"band with a balanced one: {floors}"
+    )
+
+    named = {band for _, _, band in QUOTED_IN_INTERPRETATIONS}
+    declared = {name for _, name, _ in oxygen_balance_module._BAND_FLOORS}
+    declared.add(oxygen_balance_module._VERY_DEFICIENT[0])
+    assert named == declared, (
+        f"a band nobody quotes a compound in is a band nothing recomputes: {declared - named} have "
+        f"no example, {named - declared} are quoted for a band that no longer exists"
+    )
+
+    for formula in ("KClO4", "H2O2", "O2"):
+        result = oxygen_balance(formula)
+        assert result.band != "near-balanced", (
+            f"{formula} at {result.oxygen_balance_percent:+.2f}% is classified {result.band!r}; an "
+            "oxidiser well above the +40 boundary must not be read as balanced"
+        )
+        assert "nitroglycerine" not in result.interpretation, (
+            f"{formula} is returned with the interpretation that names nitroglycerine and ammonium "
+            "nitrate as the compounds sharing its band"
+        )

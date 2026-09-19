@@ -31,9 +31,23 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: chemclaw
+        # **Both names, because the documented target platform uses the second one.** Plain
+        # Kubernetes with kube-prometheus-stack scrapes from `monitoring`; OpenShift's
+        # user-workload Prometheus lives in `openshift-user-workload-monitoring`, which is the
+        # namespace Chemclaw3's own chart names and which `docs/integration.md` heads its
+        # deployment section with. Admitting only `monitoring` meant every ServiceMonitor in this
+        # fleet resolved a target whose own ingress rule dropped the scrape — losing
+        # `chemclaw_mcp_egress_refused_total`, `chemclaw_mcp_degraded_total` and the session-ceiling
+        # gauges as silence, which is indistinguishable from a healthy server nobody is calling.
+        # An `In` list rather than a second peer, so "whichever of the two this platform uses" is
+        # one statement; `tests/test_deploy_shape.py` holds it fleet-wide.
         - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: monitoring
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - monitoring
+                  - openshift-user-workload-monitoring
       ports:
         - protocol: TCP
           port: 8850

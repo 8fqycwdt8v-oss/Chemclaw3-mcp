@@ -843,6 +843,129 @@ def test_no_prose_here_counts_this_fleet_s_servers_without_naming_them() -> None
     )
 
 
+#: A sentence in these documents that tells a reader where a probe points. Deliberately narrow: what
+#: rots is an instruction, and an instruction names a route. The route literals are transcribed here
+#: rather than imported from `mcp_server_kit`, the same choice
+#: `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` makes and for the
+#: same reason — a kubelet reads the manifests, so a test that derived the routes from this
+#: repository's Python would agree with a rename that broke every probe in the cluster.
+_PROBE_ROUTES = re.compile(r"`?(readinessProbe|livenessProbe)`?[^.\n]{0,160}?`?(/healthz|/livez)`?")
+
+#: Phrases that claim the two probes share one route. Each is text that was in this repository while
+#: all eleven Deployments pointed them at different ones.
+_ONE_ROUTE = re.compile(
+    r"livenessProbe`? on the same route"
+    r"|`?readinessProbe`? and `?livenessProbe`? at the same"
+    r"|both probes? (?:at|to) `?/healthz",
+    re.IGNORECASE,
+)
+
+
+def test_no_prose_here_sends_an_operator_to_the_probe_route_the_tree_forbids() -> None:
+    """Two documents told an operator to point liveness at `/healthz`, which a test forbids.
+
+    `docs/delivery.md` said the images ship "no readiness probe and no liveness probe at all" and
+    that the operator has to wire `livenessProbe` "on the same route, on a longer period";
+    `docs/adding-a-server.md` said "every `deploy/deployment.yaml` here points `readinessProbe` and
+    `livenessProbe` at the same `/healthz`". Both were true before the split landed and false for
+    all
+    eleven after it, and `tests/test_deploy_shape.py::
+    test_liveness_and_readiness_do_not_share_a_route` had been holding the tree to the opposite the
+    whole time. Nothing reconciled the two, so an operator following the prose recreated the ~90 s
+    kill that `D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` was written for.
+
+    **The count rule one test up was the reason to write this one.** That test holds a *number* in
+    these documents against the tree, which is the subject this repository had been burned by. A
+    route is the same kind of claim with a worse consequence — a stale digit misleads a reader, a
+    stale route kills a pod — and two independent documents drifted the same way with nothing
+    catching either. So this widens the reconciliation from counts to the other claim these
+    documents make about the deployment.
+
+    Two clauses, because a document can be wrong in two ways: it can pair a probe with the wrong
+    route, or it can say in words that the two share one. A document that mentions neither probe is
+    not the subject; `docs/decisions/` is out of scope for the reason the count rule gives — a
+    merged
+    record is a claim about the day it was written.
+    """
+    expected = {"readinessProbe": "/healthz", "livenessProbe": "/livez"}
+    offences: list[str] = []
+    for document in _prose_documents():
+        text = document.read_text(encoding="utf-8")
+        for paragraph in re.split(r"\n\s*\n", text):
+            # A paragraph that is explicitly *about* the stale claim quotes it in order to correct
+            # it, and both fixes do. What distinguishes a correction from an instruction is that it
+            # says so, so a quotation marked as one is allowed and an unmarked one is not. The
+            # markers are the past tense: without them this test passed on `docs/delivery.md`'s
+            # correction only because a stray quote character sat between two words the pattern
+            # wanted adjacent, which is not a reason anybody could rely on.
+            corrected = "used to" in paragraph or "previously said" in paragraph
+            for match in _ONE_ROUTE.finditer(paragraph):
+                if not corrected:
+                    offences.append(f"{document.relative_to(ROOT)}: {match.group(0)!r}")
+            for probe, route in _PROBE_ROUTES.findall(paragraph):
+                if route != expected[probe] and not corrected:
+                    offences.append(
+                        f"{document.relative_to(ROOT)}: {probe} paired with {route} "
+                        f"(the tree points it at {expected[probe]})"
+                    )
+    assert not offences, (
+        "prose pointing a probe at the route the manifests do not use: "
+        f"{offences}. Readiness is /healthz and sheds traffic; liveness is /livez and kills the "
+        "container. tests/test_deploy_shape.py::"
+        "test_liveness_and_readiness_do_not_share_a_route is what every Deployment is held to"
+    )
+
+
+#: A Kubernetes Service address in prose, split into its parts. A bare `host:port` is
+#: same-namespace;
+#: anything with a dot before the port names another namespace.
+_SERVICE_ADDRESS = re.compile(r"http://(chemclaw[a-z0-9-]*)((?:\.[a-z0-9-]+)*):(\d{4})")
+
+
+def test_no_prose_here_publishes_an_address_this_fleet_s_own_ingress_would_drop() -> None:
+    """An address a reader copies, checked against the policy that decides whether it carries.
+
+    `docs/integration.md` published `http://chemclaw-mcp-props.chemclaw-tools.svc:8850/mcp` as the
+    value a Chemclaw3 operator sets. Every `servers/*/deploy/networkpolicy.yaml` here admits its
+    caller with a peer that has a `podSelector` and **no** `namespaceSelector`, and such a peer
+    selects pods in the policy's own namespace — so that address resolves in DNS and is then dropped
+    by the server's own ingress rule. Chemclaw3 measured exactly this and its chart therefore ships
+    bare short names (`D-2026-09-07-a-seam-that-stops-at-the-chart-is-not-a-seam`); the instruction
+    an operator of *this* repository read still showed the cross-namespace form.
+
+    **Both halves come off the filesystem, which is what makes this a reconciliation rather than a
+    second declaration.** If a policy grows a `namespaceSelector` beside its caller peer, a
+    qualified
+    address becomes correct and this test stops objecting to it — the prose is checked against the
+    posture, not against a literal somebody typed here.
+
+    Not observed against an API server, because there is none in this environment: the premise is
+    `NetworkPolicyPeer`'s documented semantics for a peer with no `namespaceSelector`.
+    """
+    callers_are_same_namespace_only = True
+    for server in server_dirs():
+        policy = yaml.safe_load((server / "deploy" / "networkpolicy.yaml").read_text())
+        for rule in policy["spec"].get("ingress") or []:
+            for peer in rule.get("from") or []:
+                if "podSelector" in peer and "namespaceSelector" in peer:
+                    callers_are_same_namespace_only = False
+
+    offences: list[str] = []
+    for document in _prose_documents():
+        text = document.read_text(encoding="utf-8")
+        for paragraph in re.split(r"\n\s*\n", text):
+            corrected = "used to" in paragraph
+            for _host, qualifier, port in _SERVICE_ADDRESS.findall(paragraph):
+                if qualifier and callers_are_same_namespace_only and not corrected:
+                    offences.append(f"{document.relative_to(ROOT)}: ...{qualifier}:{port}")
+    assert not offences, (
+        "prose publishing a cross-namespace address while every ingress peer here is "
+        f"same-namespace: {offences}. Either ship a `namespaceSelector` beside the caller "
+        "`podSelector` in every policy, or publish the short name — a qualified address resolves "
+        "and is then dropped, which reads as a connector that is configured and times out"
+    )
+
+
 def test_the_two_tables_that_both_hold_densities_agree() -> None:
     """`props` and `chem` both record ambient densities. They must not disagree about a solvent.
 
@@ -3073,6 +3196,74 @@ def test_claude_md_claims_no_interception_the_guard_does_not_make() -> None:
     assert not phantom, (
         f"`CLAUDE.md` §1 names {phantom} as intercepted; `arm()` rebinds {sorted(rebound)}. Either "
         "the guard lost a call or the prose grew one — the module is the declaration"
+    )
+
+
+#: The modules `CLAUDE.md` §1 names as instances of the channels outside the runtime guard. Each is
+#: a name a *reader* is told something was driven through, so each has to be importable here for
+#: the word "measured" beside it to mean anything.
+_CHANNEL_INSTANCES = ("grpc", "ctypes", "_socket")
+
+#: The words §1 uses when it is reporting a run rather than reasoning from construction. A sentence
+#: carrying one of these and a module name is making a claim somebody can be asked to reproduce.
+_A_MEASUREMENT = re.compile(r"\bmeasured\b|\bdriven\b", re.IGNORECASE)
+
+
+def test_claude_md_does_not_claim_a_measurement_on_a_module_this_workspace_cannot_import() -> None:
+    """A "measured" beside a module name is a claim; a claim nobody can re-run is the port table.
+
+    §1 said `grpc` was "the **instance** of the fourth [channel] that this lockfile actually reaches
+    — measured opening a real connection to a non-loopback address with the guard armed and the
+    refusal counter flat". Driven: `import grpc` raises `ModuleNotFoundError` in this workspace's
+    venv. `grpcio` **is** at `uv.lock:1426`, but only as a transitive dependency of `tensorboard`
+    behind an optional extra, and `uv export --frozen` — the 322 lines every `Containerfile`
+    installs with `--require-hashes`
+    (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`) — does not contain it. So
+    the one named piece of evidence for the compiled-extension channel could not be reproduced in
+    the dev venv or in any image this repository builds, while the three beside it could.
+
+    The section's own argument is that **a re-enumeration drifts**, which is why the intercepted set
+    lives in `arm()` and not in prose. This is that argument applied to the other half of the same
+    paragraph: the prose may reason from construction about a channel nobody can open, and it may
+    report a measurement on a module that imports, and it may not do the second about the first.
+
+    Deliberately *not* a ban on naming `grpc`: the paragraph still names it as the shape a compiled
+    extension takes and as an entry on layer 2's list, and both are true of a module that is not
+    installed. What is checked is the pairing — a measurement word and an unimportable module in one
+    sentence. So the way to restore the old claim is to make it re-runnable: put `grpcio` where a
+    `uv sync` installs it, and this test stops objecting on its own.
+    """
+    import importlib.util
+
+    document = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    start = document.index("1. **The runtime guard**")
+    layer_one = document[start : document.index("\n2. **The static scan**", start)]
+
+    unimportable = sorted(
+        name for name in _CHANNEL_INSTANCES if importlib.util.find_spec(name) is None
+    )
+    assert unimportable, (
+        "every channel instance `CLAUDE.md` §1 names is importable here, so this test has nothing "
+        f"to hold. It was written because `grpc` was not: {_CHANNEL_INSTANCES}"
+    )
+
+    offences: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", layer_one):
+        if not _A_MEASUREMENT.search(sentence):
+            continue
+        # A sentence that is *about* the claim being unrunnable has to be able to say so, and both
+        # halves of that sentence name the module and the word. The marker is the past tense, the
+        # same device the probe-route test above uses.
+        if "cannot be re-run" in sentence or "never from a measurement" in sentence:
+            continue
+        for name in unimportable:
+            if f"`{name}`" in sentence:
+                offences.append(f"{name}: {sentence.strip()[:120]}")
+    assert not offences, (
+        "`CLAUDE.md` §1 reports a measurement on a module this workspace cannot import "
+        f"{unimportable}: {offences}. Either install it where a `uv sync` picks it up — `uv.lock` "
+        "alone is not enough, since `uv export --frozen` is what the images install — or say the "
+        "channel is named from its construction rather than from a run"
     )
 
 

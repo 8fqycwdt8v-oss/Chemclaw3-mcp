@@ -276,10 +276,25 @@ independent layers because a rule that lives in one place rots:
    the C type it inherits from), and any syscall from a **compiled extension**.
 
    Which of the other layers reaches which is worth getting right, because this paragraph had it
-   wrong in both directions: it counted `grpc` as one of the four, and it said layer 2 sees two of
-   them. `grpc` is not a channel, it is the **instance** of the fourth that this lockfile actually
-   reaches — measured opening a real connection to a non-loopback address with the guard armed and
-   the refusal counter flat. And what layer 2 sees is an **import**, which is a different object
+   wrong in three directions. It counted `grpc` as one of the four; it said layer 2 sees two of
+   them; and it called `grpc` "the **instance** of the fourth that this lockfile actually reaches —
+   measured opening a real connection to a non-loopback address", which **cannot be re-run in this
+   workspace or in any image it builds**. `grpcio` is in `uv.lock` only as a transitive dependency of
+   `tensorboard`, behind an optional extra, and it is absent from `uv export --frozen`'s output —
+   which is what every `Containerfile` installs with `--require-hashes`
+   (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`). So `import grpc` fails in
+   the dev venv, and the compiled-extension channel has **no installed instance anywhere in this
+   fleet**: it is outside the guard *by construction* and named from that, never from a measurement.
+   The three channels that *are* open were driven with the guard armed — a **child process**, a
+   **`ctypes` call into `libc`** and the private **`_socket.socket`** C type each completed with
+   `chemclaw_mcp_egress_refused_total` flat, against a python `socket.socket`, a `getaddrinfo` and a
+   UDP `sendto` that were refused and counted. `tests/test_fleet.py::
+   test_claude_md_does_not_claim_a_measurement_on_a_module_this_workspace_cannot_import` is what
+   keeps this paragraph from re-acquiring an unrunnable measurement, and it is the thing to change
+   first if somebody wants the old claim back: put `grpcio` where a `uv sync` installs it, and the
+   test permits the sentence.
+
+   And what layer 2 sees is an **import**, which is a different object
    from a channel: three of the four arrive as one (`ctypes`, `_socket`, and a named compiled
    extension such as `grpc`), and layer 2 refuses two of those three. `_socket` and `grpc` are on
    its list; `ctypes` is off it on purpose, for the reason `no_egress.py` gives in the paragraph

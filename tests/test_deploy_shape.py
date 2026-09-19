@@ -341,3 +341,72 @@ def test_the_egress_policy_denies_and_selects_the_workload(server: Path) -> None
         f"{server.name}'s NetworkPolicy selects {selector!r} and its Deployment labels the pod "
         f"{pod_label!r}: the policy binds to no workload, which denies nothing"
     )
+
+
+#: The namespaces a Prometheus in this family actually scrapes from, and the whole reason this is a
+#: list. Plain Kubernetes with kube-prometheus-stack runs it in `monitoring`; OpenShift's
+#: user-workload Prometheus runs in `openshift-user-workload-monitoring`, which is the namespace
+#: Chemclaw3's chart names and the platform `docs/integration.md` heads its deployment section with.
+#: Written here as literals rather than read from the manifests, because a test that derived the
+#: expected set from the files it checks would agree with any set those files happened to hold.
+SCRAPER_NAMESPACES = frozenset({"monitoring", "openshift-user-workload-monitoring"})
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_scrape_hole_admits_the_namespace_this_platform_runs_prometheus_in(
+    server: Path,
+) -> None:
+    """A ServiceMonitor is wiring; the NetworkPolicy is whether the wiring carries anything.
+
+    Every policy here admitted `monitoring` and nothing else. On the documented target that is the
+    wrong namespace: OpenShift's user-workload Prometheus is in
+    `openshift-user-workload-monitoring`, so all eleven ServiceMonitors resolved targets whose own
+    ingress rule dropped the scrape. The failure is **silence**, which `servers/props/tests/
+    test_deploy.py` already names as indistinguishable from a healthy server nobody is calling — and
+    what would have gone silent is the fleet's own evidence: `chemclaw_mcp_egress_refused_total`,
+    `chemclaw_mcp_degraded_total` and the session-ceiling gauges.
+
+    Held fleet-wide rather than per server for the reason
+    `test_the_egress_policy_denies_and_selects_the_workload` gives: the per-server files each assert
+    the Service-to-ServiceMonitor *port name*, which is a number that belongs to one server, and
+    none of them is owed by a twelfth server that has no file yet. Both directions, because a policy
+    that admitted every namespace would satisfy "the platform's namespace is admitted" while
+    admitting the internet's sidecar as well.
+
+    **Not observed against an API server**, because there is none in this environment. It rests on
+    `NetworkPolicyPeer`'s documented semantics — a peer with a `namespaceSelector` selects pods in
+    the namespaces that selector matches — which is the same rule
+    `D-2026-09-07-a-seam-that-stops-at-the-chart-is-not-a-seam` relies on one repository over.
+    """
+    ingress = _network_policy(server)["spec"]["ingress"]
+    selectors = [
+        peer["namespaceSelector"]
+        for rule in ingress
+        for peer in rule.get("from", [])
+        if "namespaceSelector" in peer
+    ]
+    assert selectors, (
+        f"{server.name}'s NetworkPolicy admits no namespace at all, so its ServiceMonitor resolves "
+        "a target whose pod drops the scrape and every metric this server publishes is silence"
+    )
+
+    admitted: set[str] = set()
+    for selector in selectors:
+        for key, value in (selector.get("matchLabels") or {}).items():
+            assert key == "kubernetes.io/metadata.name", (
+                f"{server.name} admits a namespace by {key!r}; the scrape peer is selected by name"
+            )
+            admitted.add(value)
+        for expression in selector.get("matchExpressions") or []:
+            assert expression["key"] == "kubernetes.io/metadata.name", expression
+            assert expression["operator"] == "In", (
+                f"{server.name} selects the scraper's namespace with {expression['operator']!r}; "
+                "only an `In` list names which namespaces are admitted where a reader can see them"
+            )
+            admitted.update(expression["values"])
+
+    assert admitted == SCRAPER_NAMESPACES, (
+        f"{server.name} admits {sorted(admitted)} where this family's Prometheus runs in "
+        f"{sorted(SCRAPER_NAMESPACES)}. A missing one is a scrape that is dropped and reads as a "
+        "server nobody calls; an extra one is a namespace nobody argued for."
+    )

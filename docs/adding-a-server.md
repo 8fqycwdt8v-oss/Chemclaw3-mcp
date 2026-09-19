@@ -212,11 +212,17 @@ What a *new server* still owes:
    that checks a component *constructed*, or that a version string could be *derived*, passes a
    component that builds and then fails on every call.
 
-   **And decide what is permanent before you refuse.** Every `deploy/deployment.yaml` here points
-   `readinessProbe` and `livenessProbe` at the same `/healthz`, so an unready answer restarts the
-   pod rather than shedding load — a signal that flips under memory pressure turns one busy minute
-   into a fleet-wide restart loop. Refuse only for `mcp_server_kit.degradation.PERMANENT_CAUSES`;
-   count the rest.
+   **And decide what is permanent before you refuse.** This paragraph used to read "every
+   `deploy/deployment.yaml` here points `readinessProbe` and `livenessProbe` at the same `/healthz`,
+   so an unready answer restarts the pod" — which was true when it was written and is false for all
+   eleven now: readiness is `/healthz` and liveness is `/livez`, which
+   `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` holds in both
+   directions and in their inequality. The reason it matters is the same either way. An unready
+   answer sheds traffic and is undone by the next passing probe; only `/livez` can kill the
+   container, and it consults nothing. A signal that flips under memory pressure must not reach
+   either one as a refusal: refuse only for `mcp_server_kit.degradation.PERMANENT_CAUSES`, count the
+   rest, and answer 200 with `degraded` naming a transient cause
+   (`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe`).
 2. **A metric for every way this server can answer with less than it was built to answer with.**
    `mcp_server_kit.degradation` is the fleet-wide one: `record(server=..., component=..., cause=...)`
    on any path that catches an exception and returns an answer anyway, with `classify(exc)` for the

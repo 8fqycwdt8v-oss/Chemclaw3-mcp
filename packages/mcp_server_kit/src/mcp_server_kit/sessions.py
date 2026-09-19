@@ -153,7 +153,7 @@ DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS = 60.0
 _REASSERTED = "_chemclaw_hold_reasserted"
 
 # Marks a session that has had at least one request of its own, so the short first lease
-# `_bound_a_new_sessions_first_lease` applies at mint is never applied over an active one.
+# `_settle_a_minted_session` applies at mint is never applied over an active one.
 _USED = "_chemclaw_session_used"
 
 
@@ -443,7 +443,7 @@ async def _discard_an_unusable_session(server: FastMCP, session_id: str) -> None
     instances.pop(session_id, None)
 
 
-def _bound_a_new_sessions_first_lease(server: FastMCP, *, unused: float) -> None:
+def _settle_a_minted_session(server: FastMCP, *, unused: float | None) -> None:
     """Give a just-minted session a short lease, and discard one that was minted by mistake.
 
     **A handshake is not a conversation.** The idle timeout is 1,800 s because that is the right
@@ -459,6 +459,18 @@ def _bound_a_new_sessions_first_lease(server: FastMCP, *, unused: float) -> None
     So this wrapper does two things to a minting request, both decided from the response upstream
     wrote: if it was an error, the session it minted is unusable and is discarded on the spot; if
     it was served, the session starts on the short lease and upstream's own push promotes it.
+
+    **`unused=None` asks for the discard alone, and that is not a convenience.** This wrapper was
+    installed only from inside `apply_session_idle_timeout`'s reaping branch, so
+    `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0` — which `apply_session_ceiling`'s own docstring calls a
+    *supported* configuration — installed neither half. A session upstream mints for a request it
+    then answers 400 is unusable whether or not anything is reaping, and it is not `is_terminated`,
+    so the ceiling's own sweep cannot see it either. Driven on `servers/props` with the timeout off
+    and `MCP_MAX_SESSIONS=8`: seven bare `DELETE /mcp` left `live = 7`, one real handshake took the
+    eighth slot, and every handshake after that was **503 for the life of the process** — with
+    `/healthz` and `/livez` both answering 200, so nothing restarts the pod. There is no lease to
+    shorten when nothing reaps, which is why the second half stays off rather than being given a
+    number it cannot enforce.
 
     A session that has received any request at all is marked, and the short lease is never applied
     to a marked one — that is not decoration, it is what closes the window between the mint
@@ -489,7 +501,7 @@ def _bound_a_new_sessions_first_lease(server: FastMCP, *, unused: float) -> None
         for session_id, status in minted:
             if status >= 400:
                 await _discard_an_unusable_session(server, session_id)
-            else:
+            elif unused is not None:
                 _start_the_short_lease(server, session_id, unused=unused)
 
     manager.handle_request = handle_request  # type: ignore[method-assign]
@@ -748,15 +760,24 @@ def apply_session_idle_timeout(server: FastMCP) -> float | None:
     transport keeps no session to expire. No server in this fleet is stateless today.
 
     Returns:
-        The timeout applied, or `None` if reaping is off or the server is stateless.
+        The timeout applied, or `None` if reaping is off or the server is stateless. `None` no
+        longer means nothing was installed: with reaping off, the discard of sessions upstream mints
+        for requests it refuses still is, because that is a correctness fix rather than a reaping
+        policy.
     """
+    if server.settings.stateless_http:  # pragma: no cover - no stateless server in this fleet
+        return None
     timeout = session_idle_timeout()
     if timeout is None:
-        return None
-    if server.settings.stateless_http:  # pragma: no cover - no stateless server in this fleet
+        # **Reaping off is not "install nothing", and it used to be.** The discard of a session
+        # upstream minted for a request it then refused is not a reaping policy — that session can
+        # never be used by anybody and is not `is_terminated`, so neither the idle deadline nor
+        # `apply_session_ceiling`'s sweep would ever reach it. See `_settle_a_minted_session`, which
+        # carries the measurement: seven bare `DELETE /mcp` wedged an eight-session pod permanently.
+        _settle_a_minted_session(server, unused=None)
         return None
     server.session_manager.session_idle_timeout = timeout
     _hold_open_during_tool_calls(server, timeout=timeout)
     _reclaim_after_every_request(server)
-    _bound_a_new_sessions_first_lease(server, unused=session_unused_timeout(timeout))
+    _settle_a_minted_session(server, unused=session_unused_timeout(timeout))
     return timeout

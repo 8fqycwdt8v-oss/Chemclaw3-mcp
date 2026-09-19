@@ -88,6 +88,22 @@ UNKEYED_BY_DESIGN: dict[str, str] = {
     "calc_version wherever the binary exists, unmeasurable where it does not",
     "crest_binary": "selects the program `CrestSpec.calc_version` reads a version from; the same "
     "case as xtb_binary",
+    # The same case as `xtb_binary`, and it *used* to look measurable here for a reason that was
+    # itself the defect. Selecting `xtb` routes to the CLI, whose real version enters `calc_version`
+    # — so on a deployment holding the binary this setting is keyed through it, exactly as
+    # `xtb_binary` is. This suite ships no `xtb`, so before
+    # `_refuse_a_key_naming_a_program_this_image_lacks` the perturbation "moved" the key only by
+    # substituting the literal `xtb-absent` into it: a well-formed key naming a program the pod
+    # cannot run, which is the thing that refusal now prevents. The measurement below excludes it
+    # under its own stated rule — "a refusal is not a key" — so what is left is unmeasurable from
+    # here rather than unkeyed. Measured on `relax_structure` over water with a binary simulated
+    # present: `tblite` gives params_hash 5e9dada5819590e9 against `xtb`'s 6f5a0168eb3e9a1c, and
+    # calc_version moves with it (`+tblite+tblite-0.7.0` against `+xtb+xtb-6.7.1`) — so both halves
+    # of the key move where the program exists. On this image `tblite` and `auto` key normally and
+    # `xtb` refuses, which is the whole of what is unmeasurable.
+    "xtb_engine": "selects the backend whose version `calc_version` reads: keyed through it "
+    "wherever the binary exists, and refused rather than keyed where it does not, which "
+    "`test_no_tool_keys_a_program_this_image_lacks_under_an_explicit_engine_setting` holds",
     # Budgets. `config.py` states this rule itself: they decide whether an answer comes back, not
     # what it is, and keying on one would fork the cache every time a deployment gave itself more
     # time.

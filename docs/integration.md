@@ -251,12 +251,23 @@ On Chemclaw3's side, one value says the server is hosted elsewhere and gives the
 connectors:
   props:
     enabled: true
-    url: http://chemclaw-mcp-props.chemclaw-tools.svc:8850/mcp
+    url: http://chemclaw-mcp-props:8850/mcp
 ```
 
 Presence of `url` is the flag — there is no separate `external: true`, deliberately, because a
 boolean and an address are two declarations of one fact that can disagree. That bundle then gets no
 app Deployment and no Service from Chemclaw3's chart.
+
+**A bare short name, and this line used to publish a cross-namespace one**
+(`http://chemclaw-mcp-props.chemclaw-tools.svc:8850/mcp`). Every
+`servers/*/deploy/networkpolicy.yaml` here admits its caller with a bare `podSelector`, and a peer
+with a `podSelector` and no `namespaceSelector` selects pods **in the policy's own namespace** — so a
+qualified address resolves in DNS and is then dropped by the server's own ingress rule, which is the
+failure `D-2026-09-07-a-seam-that-stops-at-the-chart-is-not-a-seam` records over in Chemclaw3 and the
+reason that chart ships short names. Same namespace is also what the Secret bullet below assumes:
+one token mounted into *both* pods. Running the fleet in its own namespace is a change **here**
+first — a `namespaceSelector` peer per policy — and then an address there; doing it in the other
+order gets a connector that is configured, resolves, and times out.
 
 On this side, each server ships:
 

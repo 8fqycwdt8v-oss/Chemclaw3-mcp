@@ -72,6 +72,29 @@ ZWIETERING_EXPONENTS = {
     "impeller_diameter": -0.85,
 }
 
+#: The bands Zwietering's own experiments covered, as `(low, high)` in this module's own units.
+#:
+#: **The docstring below referred to "the loading range it was fitted over" without naming it, and
+#: nothing checked an input against it.** Driven on the slurry `engine/selftest.py` uses — 200 µm of
+#: a 2500 kg/m³ solid in water on a 1/3 m impeller — a 10 wt% loading entered as `0.10` instead of
+#: `10` returns `N_js` **45.05% low** (236.81 → 130.14 rpm) and the P/V that follows from it
+#: **83.40% low** (1611.5 → 267.4 W/m³). That is an under-agitated vessel, which is the unsafe
+#: direction: the answer is a speed somebody sets a drive to. `X^0.13` is a weak exponent, so the
+#: number stays plausible — there is nothing in it to see.
+#:
+#: These are literature bands rather than measurements made here: nothing in this repository holds
+#: the 1958 dataset, the same footing the ±10% accuracy figure in `just_suspended_speed` is on. They
+#: are as commonly quoted for Zwietering's sand and sodium-chloride runs — 0.2 to 20 percent solids
+#: on a liquid mass basis, and 125 to 850 µm particles. What is *not* a literature judgement is what
+#: this module does with them: an input outside a band is reported rather than refused, because the
+#: correlation is routinely used a little outside its regression and a refusal would be this module
+#: deciding a chemist's question for them. `turbulent` is the precedent — a flag beside the number,
+#: not an error instead of it.
+ZWIETERING_FITTED_RANGES: dict[str, tuple[float, float]] = {
+    "solids_loading_percent": (0.2, 20.0),
+    "particle_diameter_m": (1.25e-4, 8.5e-4),
+}
+
 
 @dataclass(frozen=True)
 class AgitationDuty:
@@ -223,6 +246,59 @@ class JustSuspended:
     power_per_volume_w_per_m3: float
     reynolds_number: float
     turbulent: bool
+    #: Whether every input this module has a fitted band for sits inside it. False does not make the
+    #: number useless — the correlation is routinely used a little outside its regression — but it
+    #: is the difference between a prediction and an extrapolation, and a reader cannot see it in
+    #: `N_js`.
+    within_fitted_range: bool
+    #: One sentence per input outside its band, naming the input, its value and the band. Empty when
+    #: `within_fitted_range` is true, so the two cannot disagree.
+    outside_fitted_range: tuple[str, ...]
+
+
+def _outside_the_fitted_bands(
+    *, solids_loading_percent: float, particle_diameter_m: float
+) -> tuple[str, ...]:
+    """Which inputs sit outside the band Zwietering regressed them over, named one per sentence.
+
+    Separate from `just_suspended_speed` because the correlation and the statement about its domain
+    are two things, and because this is what a test can drive at a boundary without also driving the
+    arithmetic.
+
+    Args:
+        solids_loading_percent: `X`, 100 x (mass solids / mass liquid).
+        particle_diameter_m: `d_p`, in metres.
+
+    Returns:
+        One sentence per out-of-band input, in the order `ZWIETERING_FITTED_RANGES` declares them;
+        empty when every input is inside its band.
+    """
+    values = {
+        "solids_loading_percent": (
+            solids_loading_percent,
+            "X, percent solids on a liquid basis",
+            "A loading given as a mass fraction where this percentage is asked for lands below the "
+            "band and returns a speed that is too low: measured, 10 wt% entered as 0.10 gives an "
+            "N_js 45.05% low and a P/V 83.40% low, which is an under-agitated vessel.",
+        ),
+        "particle_diameter_m": (
+            particle_diameter_m,
+            "d_p, the particle diameter in metres",
+            "A size given in micrometres or millimetres where metres are asked for lands outside "
+            "the band by three orders of magnitude.",
+        ),
+    }
+    notes: list[str] = []
+    for name, (low, high) in ZWIETERING_FITTED_RANGES.items():
+        value, described, hint = values[name]
+        if not low <= value <= high:
+            side = "below" if value < low else "above"
+            notes.append(
+                f"{described} is {value:g}, {side} the {low:g} to {high:g} band Zwietering's own "
+                f"experiments covered, so N_js here is an extrapolation rather than a prediction. "
+                f"{hint}"
+            )
+    return tuple(notes)
 
 
 def just_suspended_speed(
@@ -247,6 +323,15 @@ def just_suspended_speed(
     repository holds the original dataset — and it is the *best* case: a dished base, a cohesive
     or a needle-shaped solid, or a slurry outside the loading range it was fitted over can put
     a real vessel well outside it.
+
+    **That loading range is now named and checked rather than alluded to.**
+    `ZWIETERING_FITTED_RANGES` holds it, and the result carries `within_fitted_range` plus one
+    sentence per out-of-band input — the same shape as `turbulent`, and for the same reason:
+    `X^0.13` is a
+    weak exponent, so an input off by a factor of 100 returns a plausible number. Measured on
+    `engine/selftest.py`'s slurry, a 10 wt% loading entered as `0.10` gives an `N_js` **45.05% low**
+    and a P/V **83.40% low**, which is an under-agitated vessel. Reported and not refused, because
+    the correlation is routinely used a little outside its regression.
 
     Args:
         impeller_diameter_m: Impeller diameter `D`, in metres.
@@ -315,6 +400,9 @@ def just_suspended_speed(
         density_kg_per_m3=liquid_density_kg_per_m3,
         viscosity_pa_s=liquid_viscosity_pa_s,
     )
+    outside = _outside_the_fitted_bands(
+        solids_loading_percent=solids_loading_percent, particle_diameter_m=particle_diameter_m
+    )
     return JustSuspended(
         speed_rpm=duty.speed_rpm,
         speed_rev_per_s=speed,
@@ -323,4 +411,6 @@ def just_suspended_speed(
         power_per_volume_w_per_m3=duty.power_per_volume_w_per_m3,
         reynolds_number=duty.reynolds_number,
         turbulent=duty.turbulent,
+        within_fitted_range=not outside,
+        outside_fitted_range=outside,
     )

@@ -255,3 +255,73 @@ def test_a_missing_geometry_constant_cannot_be_defaulted() -> None:
     del inputs["zwietering_constant"]
     with pytest.raises(TypeError):
         mixing.just_suspended_speed(**inputs)
+
+
+def test_a_loading_outside_zwieterings_fitted_band_is_flagged_rather_than_answered_bare() -> None:
+    """The half `turbulent` already had for the power number, and `N_js` did not have at all.
+
+    **`X^0.13` is a weak exponent, so a loading wrong by a factor of 100 returns a plausible
+    number.** Driven on this file's own `SLURRY`, a 10 wt% loading entered as `0.10` — the
+    fraction/percentage confusion the argument's own description warns about in capitals — gives
+    `N_js` 49.36 rpm against 89.82, **45.05% low**, and the P/V that follows from it 54.2 W/m³
+    against 326.9, **83.40% low**. Both ratios are fixture-independent, because `X` enters the
+    correlation as a bare factor: on `engine/selftest.py`'s slurry the same mistake gives 130.14 rpm
+    against 236.81 and 267.4 W/m³ against 1611.5. That is an under-agitated vessel, and it is a
+    speed somebody sets a drive to.
+    Before this there was no refusal and no flag, and the docstring referred to "the loading range
+    it was fitted over" without naming it.
+
+    Reported rather than refused because the correlation is routinely used a little outside its
+    regression; `within_fitted_range` is the same shape as `turbulent` for the same reason.
+    """
+    inside = mixing.just_suspended_speed(**{**SLURRY, "solids_loading_percent": 10.0})
+    mistaken = mixing.just_suspended_speed(**{**SLURRY, "solids_loading_percent": 0.10})
+
+    assert inside.within_fitted_range, "the fixture's own 10 wt% loading must be inside the band"
+    assert inside.outside_fitted_range == (), "an in-band answer must carry no caveat"
+
+    assert not mistaken.within_fitted_range, (
+        f"a loading of 0.10 sits below the "
+        f"{mixing.ZWIETERING_FITTED_RANGES['solids_loading_percent']} band and returned N_js = "
+        f"{mistaken.speed_rpm:.2f} rpm with no flag at all"
+    )
+    assert len(mistaken.outside_fitted_range) == 1
+    note = mistaken.outside_fitted_range[0]
+    assert "below" in note and "0.1" in note, (
+        f"the caveat does not name the input or the side: {note}"
+    )
+
+    # The measurement the docstring quotes, asserted rather than asserted-about.
+    assert mistaken.speed_rpm / inside.speed_rpm == pytest.approx(1.0 - 0.4505, abs=5e-4), (
+        "the understatement this flag exists for is not the one measured; if the correlation "
+        "moved, the figures in the docstring moved with it"
+    )
+
+
+def test_a_particle_size_outside_the_fitted_band_is_flagged_on_its_own_axis() -> None:
+    """The second band, because a flag that only ever fires on one input is one input's flag.
+
+    `d_p` is in **metres** and a 200 µm crystal is `2.0e-4`, so the realistic mistake is entering
+    `200` or `0.2`. Both land above the band. The in-band pair is checked at both ends as well, so a
+    band accidentally narrowed to nothing would fail here rather than flag every call.
+    """
+    low, high = mixing.ZWIETERING_FITTED_RANGES["particle_diameter_m"]
+    for diameter in (low, high, math.sqrt(low * high)):
+        result = mixing.just_suspended_speed(**{**SLURRY, "particle_diameter_m": diameter})
+        assert result.within_fitted_range, (
+            f"d_p = {diameter:g} m is inside the band and was flagged"
+        )
+
+    for diameter in (0.2, high * 1.0001, low * 0.9999):
+        result = mixing.just_suspended_speed(**{**SLURRY, "particle_diameter_m": diameter})
+        assert not result.within_fitted_range, (
+            f"d_p = {diameter:g} m is outside the band, unflagged"
+        )
+        note = next(one for one in result.outside_fitted_range if "d_p" in one)
+        # Which side, because a caveat that says "below" for a value above the band sends a reader
+        # to look for the wrong mistake — and 4-M6 of this guard's mutation set was exactly that.
+        side = "below" if diameter < low else "above"
+        wrong = "above" if side == "below" else "below"
+        assert side in note and wrong not in note, (
+            f"d_p = {diameter:g} m is {side} the band and the caveat says otherwise: {note}"
+        )
