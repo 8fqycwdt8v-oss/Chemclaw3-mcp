@@ -109,13 +109,29 @@ MAX_DEGRADANTS = 64
 #:     macrocycle, 387 amines 1,161 atoms, 387 sites    449,307   3,146 ms  refused
 #:     chain, 660 amines      1,980 atoms, 660 sites  1,306,800  12,479 ms  refused, 8.7x over
 #:
-#: So the worst call this admits costs about **1.3 s** of one core: 2.4x inside the readiness
-#: probe's own 3 s timeout and 24x inside the manifest's 30 s `request_timeout`. That is above the
+#: **"The worst of the three" is not "the worst", and a fourth ordinary shape is 1.6x dearer**
+#: (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`). All three fixtures above are
+#: aliphatic. A poly(pyridine) at the same product — every site in a ring, so each toggle re-runs
+#: aromaticity perception over the whole conjugated graph — measures **13.26 us** per site-atom,
+#: and unlike the three it is *super-linear in the product*: 10.75, 11.97, 13.26 us at n = 100, 130
+#: and 158, so `sites x atoms` under-prices an aromatic molecule by more the closer it gets to this
+#: bound. Re-measured on one container, the three aliphatic figures reproducing to within a few
+#: percent, which is what makes the fourth comparable:
+#:
+#:     oligopyridine n=158      948 atoms, 158 sites    149,784   1,986 ms  admitted (the worst)
+#:
+#: **The bound is unchanged and that is a decision.** Lowering it to price this shape at the old
+#: 1.3 s would mean ~98,000, which refuses the 223-amine macrocycle and the 100-amine chain this
+#: derivation deliberately admits — a real regression for real polyelectrolytes, to make a sentence
+#: true. The sentence is what was wrong.
+#:
+#: So the worst call this admits costs about **2.0 s** of one core: 1.5x inside the readiness
+#: probe's own 3 s timeout and 15x inside the manifest's 30 s `request_timeout`. That is above the
 #: 0.1-0.62 s band `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` derived the old number
 #: against, and that band does not survive being measured on anything but a linear alkane: on PAMAM
 #: G4, the four *unbounded* enumerators beside this one measure `enumerate_tautomer_set` 2,801 ms,
 #: `describe_molecule` 2,793 ms, `enumerate_degradant_candidates` 1,823 ms and
-#: `enumerate_stereoisomer_set` 18 ms. 1.3 s does not make this the expensive one.
+#: `enumerate_stereoisomer_set` 18 ms. 2.0 s does not make this the expensive one.
 #:
 #: 150,000 is also 75 sites at the largest molecule `MAX_MOLECULE_ATOMS` admits, and 19.5% above
 #: PAMAM G4 — which is the largest PAMAM this server can see at all, since G5 is 2,004 heavy atoms

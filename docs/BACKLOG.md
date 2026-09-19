@@ -205,8 +205,14 @@ decision leaves a record behind and the row goes.
   two dearest have none. Whether those four hold the interpreter the way `enumerate_microstates`
   measurably does is **not** measured and is the first thing this row owes; what the re-measurement
   settles is that "one cost band" was an artefact of the fixture, and that the worst call
-  `D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work` admits (**1,266 ms**) is a bigger
-  number for a probe-derived ceiling to divide than the 640 ms this row was written against.
+  `D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work` admits is a bigger number for a
+  probe-derived ceiling to divide than the 640 ms this row was written against. **That figure was
+  itself a fixture artefact and is now 1,986 ms**
+  (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`): the 1,266 ms it read was the
+  worst *aliphatic* shape, and a poly(pyridine) at the same product costs 13.26 us per site-atom
+  against the chain's 8.52, super-linearly in the product. So whatever ceiling this row settles on
+  divides 2.0 s, not 1.3 — and the tool that measurably holds the interpreter is still the one the
+  derivation calls cheap.
   `render_structure` is gated at
   8 while its worst *legal* depiction is 4.6 ms, which is the inversion worth resolving: either the
   band shares one ceiling derived from the probe, or `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob

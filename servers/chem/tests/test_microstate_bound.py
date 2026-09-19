@@ -89,6 +89,17 @@ def distinct_sites(count: int, atoms: int = 1900) -> str:
     return (segment + "N") * count
 
 
+def aromatic_sites(rings: int) -> str:
+    """A poly(pyridine) chain: `rings` basic nitrogens on an aromatic backbone.
+
+    The shape the cost derivation did not price. Every site sits in a ring, so each toggle re-runs
+    aromaticity perception over the whole conjugated graph rather than over a chain segment — which
+    is why it costs more per site-atom than any aliphatic shape, and why that cost *grows* with the
+    product instead of staying flat.
+    """
+    return "c1ccncc1" * rings
+
+
 def equivalent_sites(count: int) -> str:
     """A macrocycle whose `count` amines are all equivalent, so every microstate collapses to one.
 
@@ -266,25 +277,45 @@ class TestTheSiteBound:
         assert found.smiles[0] == found.parent
 
     def test_the_worst_call_the_bound_admits_stays_inside_the_probe_budget(self) -> None:
-        """The bound's cost derivation, driven rather than transcribed.
+        """The bound's cost derivation, driven rather than transcribed — on every shape, not three.
 
-        Cost per site-atom is not flat across shapes — 4.3-4.7 us on a dendrimer, 5.6 us on a
-        macrocycle, up to 8.4 us on a long chain — so the worst admitted call is the *chain* at the
-        product, not the biggest molecule. Measured at 1,266 ms on this container (1,500 atoms,
-        100 sites) against `PROBE_TIMEOUT_SECONDS` of 3. The assertion is the probe budget itself
-        rather than that figure, so a slower runner does not red the gate while a bound raised past
-        what this server can afford does.
+        **This drove one shape and named it the worst.** The derivation priced three aliphatic
+        molecules — 4.3-4.7 us per site-atom on a dendrimer, 5.6 on a macrocycle, up to 8.4 on a
+        long chain — and concluded "the bound prices the worst of the three", which is true and is
+        not the same sentence as "the bound prices the worst". Re-measured on this container with a
+        fourth ordinary shape, a poly(pyridine) at the same product:
+
+            branched dendrimer        367 at, 123 si,  45,141     197 ms    4.37 us/site-atom
+            chain, 100 amines       1,401 at, 100 si, 140,100   1,194 ms    8.52 us/site-atom
+            macrocycle, 223 amines    670 at, 223 si, 149,410   1,483 ms    9.92 us/site-atom
+            oligopyridine n=158       948 at, 158 si, 149,784   1,986 ms   13.26 us/site-atom
+
+        The three aliphatic figures reproduce the derivation's to within a few percent, which is
+        what makes the fourth comparable: it is **1.6x** the shape called the worst, and its cost
+        per site-atom *rises* with the product (10.75, 11.97, 13.26 us at n=100, 130, 158), so
+        `sites x atoms` under-prices an aromatic molecule by more the closer it gets to the bound.
+
+        Both shapes are driven here, and neither is named the worst — the assertion is the probe
+        budget, which is what the bound has to respect. A test that drives the shape its own
+        docstring calls worst can only ever confirm that choice.
         """
         sites = 100
-        smiles = distinct_sites(sites, atoms=MAX_SITE_ATOM_PRODUCT // sites)
-        started = time.perf_counter()
-        with pytest.raises(ValueError, match="protonation microstates"):
-            enumerate_microstates(smiles)
-        elapsed = time.perf_counter() - started
-        assert elapsed < PROBE_TIMEOUT_SECONDS, (
-            f"the worst call the bounds admit took {elapsed:.2f} s, longer than the readiness "
-            f"probe's own timeout of {PROBE_TIMEOUT_SECONDS} s"
-        )
+        worst = {
+            "aliphatic chain": distinct_sites(sites, atoms=MAX_SITE_ATOM_PRODUCT // sites),
+            # Six atoms and one site per ring, so `6n x n` is the product and `sqrt(bound / 6)`
+            # is the ring count that sits just under it — derived, so raising the bound moves this
+            # fixture to the new frontier instead of leaving it at the old one.
+            "aromatic backbone": aromatic_sites(int((MAX_SITE_ATOM_PRODUCT / 6) ** 0.5)),
+        }
+        for shape, smiles in worst.items():
+            started = time.perf_counter()
+            with pytest.raises(ValueError, match="protonation microstates"):
+                enumerate_microstates(smiles)
+            elapsed = time.perf_counter() - started
+            assert elapsed < PROBE_TIMEOUT_SECONDS, (
+                f"the worst call the bounds admit on an {shape} took {elapsed:.2f} s, longer than "
+                f"the readiness probe's own timeout of {PROBE_TIMEOUT_SECONDS} s"
+            )
 
     def test_the_topology_tool_is_not_the_cheap_substitute_its_docstring_claimed(self) -> None:
         """`describe_topology` is outside the bound and is **not** free, which it was advertised as.
