@@ -28,6 +28,8 @@ from mcp_server_kit import degradation
 from mcp_server_kit.limits import atom_count_error
 from rdkit import Chem
 
+from chemclaw_mcp_rxnlabel.engine import construction
+
 logger = logging.getLogger(__name__)
 
 SERVER = "rxnlabel"
@@ -42,7 +44,7 @@ degradation.register_components(COMPONENT)
 # are ~50 MB and several seconds, so retrying per call would be a second way to exhaust the thing
 # that failed; a minute is the same window `readiness.VERDICT_TTL_SECONDS` uses, so at most one
 # retry happens per probe.
-CONSTRUCTION_RETRY_SECONDS = 60.0
+CONSTRUCTION_RETRY_SECONDS = construction.RETRY_SECONDS
 
 _LOCK = threading.Lock()
 _MAPPER: Any | None = None
@@ -266,9 +268,12 @@ def _mapper() -> Any | None:
 
 
 def _retry_due() -> bool:
-    """Whether a failed construction may be attempted again. Called under `_LOCK`."""
-    if _FAILURE is None or _FAILURE in degradation.PERMANENT_CAUSES:
-        return False
-    return _ATTEMPTED_AT is not None and (
-        time.monotonic() - _ATTEMPTED_AT >= CONSTRUCTION_RETRY_SECONDS
+    """Whether a failed construction may be attempted again. Called under `_LOCK`.
+
+    The predicate moved to `engine/construction.py` when `naming` needed the same one: it was stated
+    here and only *asserted* there, and the module that asserted it latched for ever on a transient
+    failure. This wrapper stays so the retry window is still a module attribute a test can shorten.
+    """
+    return construction.retry_due(
+        failure=_FAILURE, attempted_at=_ATTEMPTED_AT, window_seconds=CONSTRUCTION_RETRY_SECONDS
     )

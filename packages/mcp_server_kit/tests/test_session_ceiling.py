@@ -405,6 +405,64 @@ async def test_the_ceiling_reclaims_goodbyes_even_with_the_idle_reaper_turned_of
         )
 
 
+async def test_a_refused_request_leaves_no_session_behind_even_with_the_idle_reaper_off(
+    monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
+) -> None:
+    """The other half of `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0`, and the one nothing covered.
+
+    Upstream mints a session on the *absence* of the session-id header and nothing else, so a bare
+    `DELETE /mcp` is answered **400** with a fully registered session behind it. That session can
+    never be used by anybody, and it is **not** `is_terminated` — so neither an idle deadline nor
+    `apply_session_ceiling`'s own sweep can reach it. `_settle_a_minted_session` discards it, and it
+    was installed only from inside the reaping branch, so with reaping off nothing did.
+
+    Driven on `servers/props` before this: with the timeout off and `MCP_MAX_SESSIONS=8`, seven bare
+    `DELETE /mcp` left `live = 7`, one real handshake took the eighth slot, and every later
+    handshake was 503 **for the life of the process** — `/healthz` and `/livez` both answering 200,
+    so
+    Kubernetes never restarts it. The cheapest request anybody can construct, and no clock that
+    undoes it.
+
+    The arm above this one covers a *polite* goodbye with the reaper off; that session is terminated
+    and the ceiling's sweep finds it. This one is the request the pod refused, which is a different
+    object in `_server_instances` and needed a different control.
+    """
+    monkeypatch.setenv("MCP_SESSION_IDLE_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
+    server = _probe_server("refused-mints")
+    app = connector_app(server, name="refused-mints", token_env=TOKEN_ENV)
+    with serving(app) as base:
+        for attempt in range(PROBE_CEILING * 2):
+            # ASYNC210: uvicorn runs in its own thread with its own loop (see `running_server`), so
+            # a blocking call here cannot stall the server being driven.
+            refused = httpx.delete(  # noqa: ASYNC210
+                f"{base}/mcp",
+                headers={
+                    "Authorization": f"Bearer {TOKEN}",
+                    "MCP-Protocol-Version": PROTOCOL_VERSION,
+                },
+                timeout=10.0,
+            )
+            assert refused.status_code >= 400, (
+                f"a bare DELETE with no session id was served {refused.status_code}; this probe "
+                "depends on it being refused"
+            )
+            assert refused.headers.get("mcp-session-id") is not None, (
+                "upstream no longer names the session it minted on the refusal, so the discard has "
+                "nothing exact to act on — see `_discard_an_unusable_session`"
+            )
+            live = len(server.session_manager._server_instances)
+            assert live == 0, (
+                f"{attempt + 1} refused requests have left {live} unusable session(s) registered; "
+                f"at {PROBE_CEILING} of them this pod refuses every real handshake for the life of "
+                "the process, and /healthz and /livez both answer 200"
+            )
+
+        assert _handshake(base).status_code == 200, (
+            "after twice the ceiling in refused requests the pod would not admit a real handshake"
+        )
+
+
 def test_with_the_ceiling_off_the_pod_admits_past_it(
     monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
 ) -> None:

@@ -24,7 +24,10 @@ spends on its own uvicorn.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import sys
+import types
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -47,11 +50,13 @@ def fresh_verdict(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """
     monkeypatch.setattr("mcp_server_kit.app.READINESS_FAILURE_TTL_SECONDS", 0.0)
     saved = (mapping._MAPPER, mapping._TRIED, mapping._FAILURE, mapping._ATTEMPTED_AT)
+    saved_namer = (naming._NAMER, naming._TRIED, naming._FAILURE, naming._ATTEMPTED_AT)
     readiness.forget_verdict()
     try:
         yield
     finally:
         mapping._MAPPER, mapping._TRIED, mapping._FAILURE, mapping._ATTEMPTED_AT = saved
+        naming._NAMER, naming._TRIED, naming._FAILURE, naming._ATTEMPTED_AT = saved_namer
         readiness.forget_verdict()
 
 
@@ -168,6 +173,139 @@ def test_a_permanent_construction_failure_is_not_retried(
         f"a permanent cause was re-attempted {len(attempts)} times; the retry window is for a "
         "cause that can improve"
     )
+
+
+def test_the_namer_retries_a_transient_construction_failure_like_the_mapper_does() -> None:
+    """The half of the claimed symmetry that was not implemented.
+
+    `naming.py`'s own header said the two modules were "symmetric with `mapping` deliberately", and
+    the *classification* was — both call `degradation.classify` and both count. The *recovery* was
+    not: `naming._TRIED` latched unconditionally, with no `_ATTEMPTED_AT` and no retry window, so a
+    `MemoryError` or an `EMFILE` while importing `rxn_insight` — which the shipped image installs —
+    took the namer out for the life of the process. Driven before this: the first `_namer()` call
+    failed transiently and the second made **no second import attempt at all**, `_FAILURE` pinned to
+    `resource_exhausted` and `available()` false with nothing able to change its mind.
+
+    The retry predicate itself is `engine/construction.py`'s, shared with `mapping`, so the symmetry
+    is now structural rather than asserted.
+    """
+    attempts: list[str] = []
+
+    def reaction_class() -> object:
+        """Fail once the way a pod under memory pressure does, then succeed."""
+        attempts.append("tried")
+        if len(attempts) == 1:
+            raise MemoryError("Unable to allocate 48.0 MiB for an array")
+        return object
+
+    with _rxn_insight(reaction_class, retry_seconds=0.0):
+        assert naming._namer() is None
+        assert naming._FAILURE == degradation.CAUSE_RESOURCE_EXHAUSTED
+        assert naming._namer() is not None, (
+            "a transient import failure that is never retried makes the namer absent for the life "
+            "of the process, and only a restart can clear it"
+        )
+        assert attempts == ["tried", "tried"]
+        assert naming._FAILURE is None, "the cause was not cleared by the attempt that succeeded"
+        assert naming.available()
+
+
+def test_the_namer_does_not_retry_a_permanent_cause_or_an_absent_extra() -> None:
+    """The two counterfactuals, because a retry that fires on everything is a busy loop.
+
+    A rule table that will not parse reads the same on the tenth attempt as on the first, and an
+    extra that is simply not installed is a deployment's decision rather than a failure — which is
+    why the `ImportError` branch leaves `_FAILURE` at `None` and `construction.retry_due` reads that
+    as nothing to improve.
+    """
+    permanent: list[str] = []
+
+    def truncated() -> object:
+        permanent.append("tried")
+        raise RuntimeError("the SMIRKS table is truncated")
+
+    with _rxn_insight(truncated, retry_seconds=0.0):
+        for _ in range(3):
+            assert naming._namer() is None
+        assert naming._FAILURE == degradation.CAUSE_FAILED
+        assert permanent == ["tried"], (
+            f"a permanent cause was re-attempted {len(permanent)} times; the retry window is for a "
+            "cause that can improve"
+        )
+
+    absent: list[str] = []
+
+    def not_installed() -> object:
+        absent.append("tried")
+        raise ImportError("No module named 'rxn_insight.reaction'")
+
+    with _rxn_insight(not_installed, retry_seconds=0.0):
+        for _ in range(3):
+            assert naming._namer() is None
+        assert naming._FAILURE is None, "an extra that is not installed is not a failure"
+        assert absent == ["tried"], "an absent extra was re-imported, which learns nothing"
+
+    # And the window is a window. Every other arm here shortens it to zero, so a retry gate that
+    # ignored `window_seconds` entirely would pass all of them — and constructing this component
+    # loads a rule table, so retrying it on the next request rather than in a minute is a CPU loop
+    # rather than a recovery. Mutation 6-M5 of this guard was exactly that.
+    busy: list[str] = []
+
+    def transient() -> object:
+        busy.append("tried")
+        raise MemoryError("Unable to allocate 48.0 MiB for an array")
+
+    with _rxn_insight(transient, retry_seconds=3600.0):
+        for _ in range(3):
+            assert naming._namer() is None
+        assert naming._FAILURE == degradation.CAUSE_RESOURCE_EXHAUSTED
+        assert busy == ["tried"], (
+            f"a transient cause was re-attempted {len(busy)} times inside a 3600 s window, so the "
+            "retry is a per-call loop rather than a bounded one"
+        )
+
+
+@contextmanager
+def _rxn_insight(reaction_class: Callable[[], object], *, retry_seconds: float) -> Iterator[None]:
+    """Stand a fake `rxn_insight.reaction` in front of `naming._namer`, and clear the latch.
+
+    `reaction_class` is called on each *attempt*, which is what lets a test count attempts and make
+    one of them fail: `naming._namer` reaches the name through `from ... import Reaction`, so the
+    attribute lookup on the module is the seam.
+    """
+
+    def attribute(_self: types.ModuleType, name: str) -> object:
+        """`Reaction` is the one name `_namer` reaches for; anything else is the import machinery.
+
+        The machinery asks for `__path__` on the way in, so intercepting every name would count two
+        extra attempts per import and make the attempt count meaningless.
+        """
+        if name != "Reaction":
+            raise AttributeError(name)
+        return reaction_class()
+
+    module = types.ModuleType("rxn_insight")
+    reaction = types.ModuleType("rxn_insight.reaction")
+    reaction.__class__ = type(
+        "AttemptCountingModule", (types.ModuleType,), {"__getattr__": attribute}
+    )
+    saved_window = naming.CONSTRUCTION_RETRY_SECONDS
+    saved_modules = {
+        name: sys.modules.get(name) for name in ("rxn_insight", "rxn_insight.reaction")
+    }
+    sys.modules["rxn_insight"] = module
+    sys.modules["rxn_insight.reaction"] = reaction
+    naming.CONSTRUCTION_RETRY_SECONDS = retry_seconds
+    naming._NAMER, naming._TRIED, naming._FAILURE, naming._ATTEMPTED_AT = None, False, None, None
+    try:
+        yield
+    finally:
+        naming.CONSTRUCTION_RETRY_SECONDS = saved_window
+        for name, was in saved_modules.items():
+            if was is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = was
 
 
 def _install_rxnmapper(monkeypatch: pytest.MonkeyPatch, build: object) -> None:

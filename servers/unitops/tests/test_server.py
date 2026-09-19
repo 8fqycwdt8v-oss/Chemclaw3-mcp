@@ -12,6 +12,7 @@ So it runs uvicorn on a loopback port and talks to it the way the agent will.
 
 from __future__ import annotations
 
+import math
 import socket
 import threading
 import time
@@ -302,3 +303,43 @@ async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server:
         )
         assert flat_curve.isError is True
         assert "anti-solvent" in str(flat_curve.content)
+
+
+def test_the_readiness_probe_refuses_when_fenskes_logarithm_base_is_wrong() -> None:
+    """The gap `_check_total_reflux_reduces_to_fenske` left, driven before it was closed.
+
+    That check computes `N_min` from `fenske_minimum_stages` and asserts `gilliland_stages` at ten
+    million times the minimum reflux gives it back — which Molokanov's form does for whatever number
+    it is handed, so it holds Molokanov and says nothing about Fenske. Driven with `ln alpha`
+    transcribed as `log10 alpha`, `N_min` on the worked column moved from 6.426866 to 14.798406
+    stages and `verify()` still returned its dataset, so `/healthz` answered 200 on a pod whose
+    minimum stage count was wrong by a factor of 2.303.
+
+    `log10` rather than a sign flip because that is what the mistake looks like: the published form
+    is usually written with `log`, which means base 10 in some texts and natural in others, and the
+    resulting stage count is a perfectly plausible number.
+    """
+    if selftest.verify() is None:  # pragma: no cover - verify returns a list or raises
+        pytest.fail("the probe must pass on an unmodified build")
+
+    original = distillation.fenske_minimum_stages
+
+    def base_ten(
+        *,
+        relative_volatility: float,
+        light_key_in_distillate: float,
+        light_key_in_bottoms: float,
+    ) -> float:
+        """`ln alpha` in the denominator read as `log10 alpha`."""
+        top, bottom = light_key_in_distillate, light_key_in_bottoms
+        ratio = (top / (1.0 - top)) * ((1.0 - bottom) / bottom)
+        return math.log(ratio) / math.log10(relative_volatility)
+
+    distillation.fenske_minimum_stages = base_ten
+    try:
+        with pytest.raises(selftest.SelfTestFailed, match="minimum stages"):
+            selftest.verify()
+    finally:
+        distillation.fenske_minimum_stages = original
+
+    assert selftest.verify(), "the probe must recover once the logarithm is restored"

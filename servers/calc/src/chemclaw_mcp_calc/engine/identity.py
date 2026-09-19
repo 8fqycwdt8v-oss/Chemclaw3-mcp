@@ -97,6 +97,7 @@ from chemclaw_mcp_calc.engine import (
     solubility,
     xtb,
     xtb_atomic,
+    xtb_cli,
     xtb_props,
 )
 from chemclaw_mcp_calc.engine.chem import require_canonical_smiles
@@ -446,4 +447,51 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
     subject = "structure" if "structure" in accepts else "smiles"
     if subject not in arguments:
         raise ValueError(f"{tool} requires a {subject!r} argument")
-    return derive(arguments)
+    return _refuse_a_key_naming_a_program_this_image_lacks(tool, derive(arguments))
+
+
+def _refuse_a_key_naming_a_program_this_image_lacks(
+    tool: str, derived: CalculationIdentity
+) -> CalculationIdentity:
+    """The invariant this module's docstring states, enforced once rather than per tool.
+
+    **It held for 14 of the 17.** `_atomic_descriptors` and `_surface_potential` call
+    `require_binary_backend`, and the two CREST derivations call `require_crest`, so those four
+    refuse where the calculation would. Nothing checked the rest, and three of them resolve to the
+    binary: `optimize_geometry`, `relax_structure` and `compute_hessian` are not in
+    `_FIXED_BACKEND`, so under `CHEMCLAW_XTB_ENGINE=xtb` they take the preference — and
+    `resolve_backend` honours that
+    without asking `is_available()`. Driven on an image with no `xtb` on `PATH`, all three minted a
+    well-formed key ending `GFN2-xTB+xtb+xtb-absent/...`, and so did **`predict_pka` and
+    `predict_logd`**, whose versions fold the optimisation's in. Five tools, not three.
+
+    Checked here, on the derived identity, rather than added to each derivation, because a per-tool
+    guard is what was already in place and what already had three holes in it: a new compute tool
+    inherits this one with nothing to write. `tests/test_calculation_key.py` drives every entry in
+    `COMPUTE_TOOLS` in that configuration, so the table is what owes the proof.
+
+    The pod is separately 503 for this configuration (`app._readiness`), so the reachable case is a
+    caller talking to the pod outside its Service — which is exactly when a fabricated ledger key is
+    least likely to be noticed.
+
+    Args:
+        tool: The tool whose identity was derived, for the message.
+        derived: What the derivation returned.
+
+    Returns:
+        `derived`, unchanged, when the version names only programs this image has.
+
+    Raises:
+        ValueError: The version names the xtb binary and this image has none.
+    """
+    if xtb_cli.ABSENT_XTB_VERSION in (derived.calc_version or ""):
+        raise ValueError(
+            f"{tool} cannot be keyed on this pod: its calculation resolves to the xtb binary and "
+            f"this image has none on PATH, so the version would read "
+            f"{derived.calc_version!r} — a Chemclaw3 cache and calibration-ledger key naming a "
+            "program that never ran, and one that becomes unreachable the moment the binary "
+            "arrives and the key moves. A well-formed key naming a program the pod lacks is worse "
+            "than no key. Install xtb in the image, or unset CHEMCLAW_XTB_ENGINE to fall back to "
+            "tblite; this pod is already answering 503 on /healthz for the same reason."
+        )
+    return derived

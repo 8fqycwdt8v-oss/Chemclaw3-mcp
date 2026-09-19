@@ -29,10 +29,13 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from mcp_server_kit import degradation
+
+from chemclaw_mcp_rxnlabel.engine import construction
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +45,31 @@ SERVER = "rxnlabel"
 COMPONENT = "reaction_namer"
 degradation.register_components(COMPONENT)
 
+#: How long a transient construction failure waits before it is tried again. Aliased from
+#: `engine/construction.py` rather than written here, so the two optional components cannot drift to
+#: two windows; kept as a module attribute because that is what a test shortens.
+CONSTRUCTION_RETRY_SECONDS = construction.RETRY_SECONDS
+
 _LOCK = threading.Lock()
 _NAMER: Any | None = None
 _TRIED = False
+#: When the last construction attempt ran. **This is the half of the symmetry with `mapping` that
+#: was claimed and not implemented.** `_TRIED` latched unconditionally, so a `MemoryError` or an
+#: `EMFILE` while importing `rxn_insight` — which the shipped image installs — took the namer out
+#: for the life of the process: driven, a transient failure on the first `_namer()` call left the
+#: second
+#: making no second import attempt at all, `_FAILURE` pinned to `resource_exhausted`, and
+#: `available()` false with nothing able to change its mind. A *permanent* cause still latches, and
+#: an absent extra is not a failure at all, so neither is retried.
+_ATTEMPTED_AT: float | None = None
 # The cause the last construction attempt failed with, read by `readiness._probe`. **Symmetric with
 # `mapping` deliberately**: this module caught only `ImportError` around the import, so a
 # distribution that is present and whose import raises anything else — a broken shared library, say
 # — propagated out of `available()` into whatever happened to call it, counted nowhere, while the
 # same failure one module over was classified and counted. Two components behind one probe cannot
-# report differently about the same kind of fault.
+# report differently about the same kind of fault. **The classification was made symmetric and the
+# recovery was not** — see `_ATTEMPTED_AT` above and `engine/construction.py`, which is where the
+# retry predicate now lives so the symmetry is structural rather than asserted.
 _FAILURE: str | None = None
 
 # What Rxn-INSIGHT answers when no SMIRKS matched. Mapped to `None` rather than stored, because a
@@ -150,11 +169,12 @@ def _namer() -> Any | None:
     stable is that a `Reaction` exposes a dictionary of what it worked out. Pinning that one call
     here keeps the version drift in one function instead of in every caller.
     """
-    global _NAMER, _TRIED, _FAILURE
+    global _NAMER, _TRIED, _ATTEMPTED_AT, _FAILURE
     with _LOCK:
-        if _TRIED:
+        if _NAMER is not None or (_TRIED and not _retry_due()):
             return _NAMER
         _TRIED = True
+        _ATTEMPTED_AT = time.monotonic()
         try:
             from rxn_insight.reaction import Reaction
         except ImportError:
@@ -162,6 +182,8 @@ def _namer() -> Any | None:
                 "rxn-insight is not installed; reactions will be labelled without a name, and "
                 "`labeller_version` records that so the rows re-label when it arrives"
             )
+            # Deliberately not a retry: `_FAILURE` stays `None`, which `_retry_due` reads as
+            # nothing-to-improve. Re-importing an absent distribution every minute learns nothing.
             return None
         except Exception as exc:
             # Not reachable by an absent extra — that is the branch above — but by a distribution
@@ -171,7 +193,12 @@ def _namer() -> Any | None:
             # propagated out of `available()` into whichever caller happened to ask first.
             _FAILURE = degradation.classify(exc)
             degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
-            logger.exception("rxn-insight is installed but could not be imported (%s)", _FAILURE)
+            logger.exception(
+                "rxn-insight is installed but could not be imported (%s); it will be retried in "
+                "%.0fs if that cause is transient",
+                _FAILURE,
+                CONSTRUCTION_RETRY_SECONDS,
+            )
             return None
 
         def call(reaction_smiles: str) -> dict[str, Any]:
@@ -179,4 +206,17 @@ def _namer() -> Any | None:
             return info
 
         _NAMER = call
+        _FAILURE = None
         return _NAMER
+
+
+def _retry_due() -> bool:
+    """Whether a failed construction may be attempted again. Called under `_LOCK`.
+
+    The same wrapper `mapping` carries, over the same predicate, for the reason
+    `engine/construction.py` opens with: the rule was stated in one module and asserted in the
+    other.
+    """
+    return construction.retry_due(
+        failure=_FAILURE, attempted_at=_ATTEMPTED_AT, window_seconds=CONSTRUCTION_RETRY_SECONDS
+    )

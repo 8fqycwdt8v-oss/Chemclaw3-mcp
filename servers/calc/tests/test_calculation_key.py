@@ -440,3 +440,82 @@ async def test_a_bad_input_is_refused_here_exactly_as_the_compute_tool_refuses_i
         await tools.calculation_key(
             "optimize_geometry", {"smiles": "CCO", "solvent": "2-methyltetrahydrofuran"}
         )
+
+
+def test_no_tool_keys_a_program_this_image_lacks_under_an_explicit_engine_setting() -> None:
+    """The sweep above, run in the configuration that defeats it.
+
+    `test_the_tools_that_need_a_binary_refuse_rather_than_key` already asserts `"absent" not in
+    calc_version` for every tool outside `NEEDS_A_BINARY` — under the **ambient** configuration,
+    where `xtb_engine` is `auto` and `resolve_backend()` therefore answers `tblite` on an image with
+    no binary. Under the explicit `CHEMCLAW_XTB_ENGINE=xtb` that branch is skipped:
+    `resolve_backend` honours the preference without asking `is_available()`.
+
+    Driven that way on this checkout, five tools minted a well-formed key naming a program that is
+    not here — `optimize_geometry`, `relax_structure` and `compute_hessian`, which
+    `xtb_spec._FIXED_BACKEND` does not pin, plus `predict_pka` and `predict_logd`, whose versions
+    fold the optimisation's in. The invariant `engine/identity.py` states held for 14 of 17.
+
+    Written as the invariant over the whole table rather than as a second `NEEDS_A_BINARY` list,
+    because a per-tool list is what already had three holes in it: every entry must either refuse in
+    words or answer a version naming only programs that are here, and a new tool owes the same proof
+    with nothing to add here.
+    """
+    if xtb_cli.is_available():
+        pytest.skip("this image carries the xtb binary, so no version can name it as absent")
+
+    from chemclaw_mcp_calc.engine import config
+    from chemclaw_mcp_calc.engine.structure import structure_from_smiles
+
+    geometry = structure_from_smiles("CC(=O)O", optimize=True).model_dump()
+    original = config.settings.xtb_engine
+    config.settings.xtb_engine = "xtb"
+    try:
+        for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
+            arguments = sweep_arguments(tool, accepts, geometry)
+            try:
+                identity = calculation_identity(tool, arguments)
+            except ValueError as refused:
+                assert "binary" in str(refused), (
+                    f"{tool} refused without saying a binary is what is missing: {refused}"
+                )
+                continue
+            assert xtb_cli.ABSENT_XTB_VERSION not in (identity.calc_version or ""), (
+                f"{tool} derived {identity.calc_version!r} under CHEMCLAW_XTB_ENGINE=xtb on an "
+                "image with no binary: a well-formed Chemclaw3 cache and calibration-ledger key "
+                "naming a program that never ran, addressing a row nothing will ever write"
+            )
+    finally:
+        config.settings.xtb_engine = original
+
+
+def test_a_missing_binary_reaches_the_model_as_words_rather_than_an_error_id() -> None:
+    """A deployment-configuration fault is not an infrastructure fault, and both were `CliError`.
+
+    `CliError` is a `RuntimeError` on purpose — it carries a subprocess's stderr tail, which is
+    internal state — so `connector_app._sanitize_tool_errors` replaces it with `an internal error
+    occurred (error id ...)`. That is right for a run that started and failed. It was also what a
+    caller got for "this image has no xtb", which is a fault nothing about the molecule or the
+    request can change and which the model can act on: it can say which tools still answer and stop
+    asking for the ones that cannot.
+
+    `engine/xtb_atomic.require_binary` already raised a worded `ValueError` for the identical cause
+    and argues the case in its own docstring; this holds the same shape one layer down, where the
+    two `run` paths are.
+    """
+    if xtb_cli.is_available():
+        pytest.skip("this image carries the xtb binary, so the refusal path is unreachable here")
+
+    with pytest.raises(ValueError) as refused:
+        xtb_cli.require_binary_path()
+    assert not isinstance(refused.value, xtb_cli.CliError), (
+        "a missing binary is raised as a CliError, which `connector_app` replaces with an opaque "
+        "error id — the model is told nothing it can act on"
+    )
+    message = str(refused.value)
+    assert "not installed in this deployment" in message, message
+    # And it says what still works, because "nothing works" and "the binary-backed half does not"
+    # are different answers and only one of them is true.
+    assert "compute_xtb_energy" in message, (
+        f"the refusal does not name a tool that still answers on this pod: {message}"
+    )

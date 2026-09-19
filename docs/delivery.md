@@ -39,25 +39,41 @@ started with no credential and pass by refusing everything.
 
 **The `HEALTHCHECK` line in every `Containerfile` is Docker-only.** Kubernetes and OpenShift ignore
 it entirely — they read `readinessProbe` and `livenessProbe` off the Pod spec and nothing else — so
-in the target deployment these images ship with **no readiness probe and no liveness probe at all**,
-and a `docker run` locally is the only place that line has ever executed. It is kept because it is
-right for the local case and costs nothing; it must not be read as the cluster's probe.
+a `docker run` locally is the only place that line has ever executed. It is kept because it is right
+for the local case and costs nothing; it must not be read as the cluster's probe.
 
-So the Deployment an operator creates has to wire, per server:
+**The Pod spec is not the operator's to write any more, and these four lines said it was.** Every
+server ships `deploy/deployment.yaml`, `deploy/hpa.yaml` and `deploy/pdb.yaml` beside the `Service`
+and the `ServiceMonitor` — `docs/adding-a-server.md` lists all six as required and
+`tests/test_fleet.py::test_a_server_ships_the_whole_set` is what requires them. This section
+previously said the images ship "no readiness probe and no liveness probe at all" and told an
+operator to wire `livenessProbe` "on the same route, on a longer period", which is the exact shape
+`tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` forbids: on
+`/healthz`, a broken *optional* component is a kill after `periodSeconds x failureThreshold` rather
+than a pod leaving its Service, and a restart cannot recreate a missing checkpoint. So the
+instruction recreated the `CrashLoopBackOff` that
+`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` was written for.
 
-- `readinessProbe` on `GET /healthz`. It is a real check now rather than a constant 200: a server
-  with a `readiness` callable answers **503 with the reason** when its corpus, rule table or backend
-  will not load, and the body lists the corpora it did verify as `name@version`. A pod that is not
-  ready must not be sent traffic: an unready `safety` pod fails every screen it is asked for, and
-  a screen that errors is a control the answer gets written without.
-- `livenessProbe` on the same route, on a longer period.
-- The `Service` and `ServiceMonitor` in each server's `deploy/`, which this repository does ship.
-  They are what tells Prometheus to scrape `/metrics`; the NetworkPolicy has always admitted the
-  monitoring namespace, and until those files existed nothing was told to go through the hole.
+What the shipped Deployment wires, per server, and what an operator therefore does not:
 
-The same `BACKLOG.md` row as the chart, over in Chemclaw3: the servers here differ only in name,
-port and token env, so the probes belong in one template rather than in a hand-written Deployment
-per server.
+- `readinessProbe` on `GET /healthz`. A real check rather than a constant 200: a server with a
+  `readiness` callable answers **503 with the reason** when its corpus, rule table or backend will
+  not load, and the body lists the corpora it did verify as `name@version`. A pod that is not ready
+  must not be sent traffic: an unready `safety` pod fails every screen it is asked for, and a screen
+  that errors is a control the answer gets written without. Only a
+  `mcp_server_kit.degradation.PERMANENT_CAUSES` failure answers unready; a transient one answers 200
+  with `degraded` naming it.
+- `livenessProbe` on **`GET /livez`**, which is a different route because the two answers differ. It
+  consults nothing and proves only that the process still serves HTTP, which is the one fault a
+  restart fixes.
+- the `Service` and the `ServiceMonitor`, which are what tells Prometheus to scrape `/metrics`, and
+  the `HorizontalPodAutoscaler` and `PodDisruptionBudget` that make a rollout or a node drain
+  something other than a total outage of that capability.
+
+What is still an operator's is applying those manifests and driving the *release*: see below. Six
+near-identical files per server is what a chart would replace, and this document does not say what
+the `BACKLOG.md` row over in Chemclaw3 currently reads, because nothing here can re-read it
+(`D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it`).
 
 ## Where the rollout is
 

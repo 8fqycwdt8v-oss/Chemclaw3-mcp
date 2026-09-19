@@ -9,10 +9,16 @@ satisfy by agreeing with itself.**
 Every check below is a relation written nowhere in the module it tests — the list is not counted
 here, because `verify()` is what runs them and a number in prose is a claim about an afternoon:
 
-- **A column at total reflux must reduce to Fenske.** Gilliland's correlation and Fenske's algebra
-  are separately derived and share no line of code, and the only thing tying them together is the
-  physics: as `R → ∞` the stage count must fall to `N_min`. A sign error in Molokanov's exponent
-  breaks it; nothing internal would.
+- **A column at total reflux must reduce to Fenske.** As `R → ∞` Molokanov's form must give back
+  the minimum stage count it was handed. That holds *Molokanov*, and it is all it holds: the check
+  passes Fenske's own answer in and asserts it comes back, which the correlation does for whatever
+  number it is given. Driven on this build, `ln alpha` transcribed as `log10 alpha` moved `N_min`
+  from 6.426866 to 14.798406 — a factor of 2.303 — and the probe still passed.
+- **So Fenske is checked separately, against a stage-by-stage descent at total reflux** that
+  contains no logarithm: `y_{n+1} = x_n` for the operating line and `y = alpha·x/(1 + (alpha-1)·x)`
+  for equilibrium. Stepping `m` stages down from the distillate lands on a composition Fenske must
+  report as exactly `m` stages from it, and nothing inside `distillation.py` can satisfy that by
+  agreeing with itself.
 - **Underwood's root, found by bisection, must reproduce the closed-form binary minimum reflux.**
   `R_min = [x_D/z - alpha(1-x_D)/(1-z)]/(alpha-1)` for a saturated liquid feed is *not* in
   `distillation.py`: that module solves the θ-equation numerically and evaluates the second
@@ -92,6 +98,12 @@ _UNDERWOOD_TOLERANCE = 1.0e-9
 #: filtration rate against a finite difference of its own time curve, measured at **1.4e-10**.
 _EXPONENT_STEP = 1.0e-5
 _EXPONENT_TOLERANCE = 1.0e-6
+
+#: How many stages the total-reflux descent below steps before it stops. Eight is what keeps the
+#: worked column's composition inside `(0, 1)` with room to spare at both relative volatilities the
+#: check uses: at alpha = 2.5 the eighth stage sits at x = 0.0050 and at alpha = 1.8 at x = 0.4745.
+#: The check is an exact identity at every stage, so the count buys redundancy rather than reach.
+_FENSKE_DESCENT_STAGES = 8
 
 #: Everything else is an identity between two closed forms, so the only error is floating point.
 #: Measured worst case across the five: **1.1e-16** relative. 1e-10 is the threshold.
@@ -173,6 +185,51 @@ def _check_total_reflux_reduces_to_fenske() -> None:
             f"{minimum_stages:.6f} — a relative gap of {gap:.2e}. A column at total reflux is a "
             "Fenske column by definition, so one of the two has moved."
         )
+
+
+def _check_fenske_against_a_stage_by_stage_descent() -> None:
+    """Fenske's `N_min` against a descent it shares no line of code with.
+
+    **The total-reflux check above cannot see a wrong `N_min`, and read as though it could.** It
+    takes Fenske's own answer, hands it to `gilliland_stages` at ten million times the minimum
+    reflux, and asserts the correlation gives it back — which Molokanov's form does for *whatever*
+    number it is given. Driven on this build with `ln alpha` transcribed as `log10 alpha`, `N_min`
+    on the worked column moved from 6.426866 to 14.798406 stages, a factor of 2.303, and `verify()`
+    still returned its dataset: `/healthz` answered 200 on a pod whose minimum stage count was
+    wrong by a factor. The other three servers' probes catch an equivalent corruption and answer
+    503 naming it.
+
+    What this check contains instead is a McCabe-Thiele descent at total reflux, which is two
+    relations and no logarithm: the operating line is `y_{n+1} = x_n`, and equilibrium at constant
+    relative volatility is `y = alpha*x / (1 + (alpha - 1)*x)`. Eliminating `y` gives
+    `x_{n+1} = x_n / (alpha - (alpha - 1)*x_n)`, so stepping `m` stages down from the distillate
+    composition lands on a composition that Fenske must report as exactly `m` stages away from it.
+    A wrong logarithm base, a wrong sign or an inverted ratio breaks that; nothing internal to
+    `distillation.py` can satisfy it, because the descent is written here and the logarithm is not.
+
+    Raises:
+        SelfTestFailed: If Fenske disagrees with the descent at any stage.
+    """
+    for alpha, distillate in (
+        (_COLUMN["relative_volatility"], _COLUMN["light_key_in_distillate"]),
+        (1.8, 0.99),
+    ):
+        composition = distillate
+        for stages_down in range(1, _FENSKE_DESCENT_STAGES + 1):
+            composition = composition / (alpha - (alpha - 1.0) * composition)
+            reported = distillation.fenske_minimum_stages(
+                relative_volatility=alpha,
+                light_key_in_distillate=distillate,
+                light_key_in_bottoms=composition,
+            )
+            if _relative(reported, float(stages_down)) > _IDENTITY_TOLERANCE:
+                raise SelfTestFailed(
+                    f"stepping {stages_down} stage(s) down from x = {distillate} at total reflux "
+                    f"with alpha = {alpha} reaches x = {composition:.12f}, and Fenske reports that "
+                    f"pair as {reported:.12f} minimum stages rather than {stages_down}. The "
+                    "descent is the equilibrium curve and the y = x operating line and holds no "
+                    "logarithm, so it is the minimum-stage algebra that has moved."
+                )
 
 
 def _check_underwood_against_its_closed_form() -> None:
@@ -476,6 +533,7 @@ def verify() -> list[Dataset]:
             `/healthz` naming the reason.
     """
     _check_total_reflux_reduces_to_fenske()
+    _check_fenske_against_a_stage_by_stage_descent()
     _check_underwood_against_its_closed_form()
     _check_gilliland_is_monotonic_and_bounded_below_by_fenske()
     _check_the_minimum_reflux_is_a_floor()
@@ -501,7 +559,8 @@ def verify() -> list[Dataset]:
             description=(
                 "The unit-operation correlations this server computes with. Verified on every "
                 "probe against relations the implementation does not contain: a column at total "
-                "reflux reducing to Fenske, Underwood's numeric root against the closed-form "
+                "reflux reducing to Fenske, Fenske's minimum stages against a stage-by-stage "
+                "descent at total reflux, Underwood's numeric root against the closed-form "
                 "binary minimum reflux, a crystallisation yield against the saturated-charge "
                 "closed form, the 63.2% first-order approach, the geometric-similarity scale-up "
                 "rule, Zwietering's dimensional homogeneity, a parabolic filtration reporting its "

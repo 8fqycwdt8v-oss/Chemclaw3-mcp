@@ -98,7 +98,20 @@ from chemclaw_mcp_calc.engine.xtb_engine import ANGSTROM_TO_BOHR, HARTREE_TO_KCA
 
 logger = logging.getLogger(__name__)
 
+#: What `binary_version` answers where there is no binary. Named rather than spelled out at each
+#: site because `engine/identity.py` has to be able to recognise it: a `calc_version` containing it
+#: is a Chemclaw3 cache and ledger key naming a program that never ran, and that key must never be
+#: minted. See `ABSENT_XTB_VERSION` below for the form it takes inside a version string.
+ABSENT = "absent"
+
+#: The exact substring a `calc_version` carries when the binary was selected and is not there —
+#: `backend_version("xtb")` builds `f"xtb-{binary_version()}"`. One definition, because the check in
+#: `engine/identity.py` and the string this module produces have to be the same string.
+ABSENT_XTB_VERSION = f"xtb-{ABSENT}"
+
 __all__ = [
+    "ABSENT",
+    "ABSENT_XTB_VERSION",
     "METHOD_FLAGS",
     "AtomicRow",
     "CliError",
@@ -108,6 +121,7 @@ __all__ = [
     "binary_path",
     "binary_version",
     "is_available",
+    "require_binary_path",
     "run",
     "run_isolated",
     "scratch_dir",
@@ -303,7 +317,45 @@ class CliError(RuntimeError):
     model verbatim, and a subprocess's stderr tail is internal state rather than a caller-safe
     explanation. It is logged and replaced with a generic notice, which is the correct handling for
     an infrastructure fault.
+
+    **An absent binary is no longer one of these, and it used to be.** `run` and `run_esp` raised
+    `CliError("the 'xtb' binary is not installed")` for it, so a *deployment configuration* fault —
+    the image does not carry the program — reached the model as `an internal error occurred (error
+    id ...)`, with nothing in it the model or the chemist could act on. `engine/xtb_atomic.py`
+    raises a worded `ValueError` for the identical cause and argues why in
+    `xtb_atomic.require_binary`. `require_binary_path` below is that argument applied here; what is
+    left in this class is a run that started and failed, which is what a stderr tail describes.
     """
+
+
+def require_binary_path() -> str:
+    """The resolved `xtb` path, or a worded refusal naming the deployment fault.
+
+    A `ValueError` rather than a `CliError`, and the distinction is which of two different faults a
+    caller is being told about. A run that timed out or exited non-zero is infrastructure: it
+    carries a stderr tail, which is internal state, and `connector_app` is right to replace it with
+    an `error_id` an operator can grep. An image with no `xtb` on `PATH` is a *configuration* fault
+    that every call will hit until somebody changes the deployment, and the model can act on that —
+    it can say which tools still work, and it can stop asking. Driven: the `CliError` form reached
+    the model as `an internal error occurred (error id ...)` and nothing else.
+
+    Returns:
+        The absolute path to the binary.
+
+    Raises:
+        ValueError: There is no `xtb` on `PATH`.
+    """
+    path = binary_path()
+    if path is None:
+        raise ValueError(
+            f"the {settings.xtb_binary!r} binary is not installed in this deployment, so no "
+            "calculation that needs it can run here. This is a deployment's configuration rather "
+            "than anything about the molecule: the same question will fail the same way until xtb "
+            "is in the image. The tblite-backed tools — compute_xtb_energy, "
+            "compute_electronic_properties, predict_site_reactivity, compute_properties_at and "
+            "compute_fukui_at — need no binary and still answer."
+        )
+    return path
 
 
 class AtomicRow(BaseModel):
@@ -409,7 +461,7 @@ def binary_version() -> str:
     """
     path = binary_path()
     if path is None:
-        return "absent"
+        return ABSENT
     # S603: `path` is the resolved binary and `--version` is a literal; nothing here is a caller's.
     output = subprocess.run(  # noqa: S603
         [path, "--version"], capture_output=True, text=True, timeout=30, check=False
@@ -577,12 +629,10 @@ def run(
         The energy, plus the optimized geometry and/or Hessian the task produced.
 
     Raises:
-        CliError: the binary is absent, timed out, or exited non-zero.
-        ValueError: the method is not one this backend supports.
+        CliError: the run timed out or exited non-zero.
+        ValueError: the binary is absent, or the method is not one this backend supports.
     """
-    path = binary_path()
-    if path is None:
-        raise CliError(f"the {settings.xtb_binary!r} binary is not installed")
+    path = require_binary_path()
     if not supports(method):
         raise ValueError(f"the xtb backend does not support method {method!r}")
 
@@ -699,11 +749,10 @@ def run_surface_potential(
     both named the setting.
 
     Raises:
-        CliError: the binary is absent, timed out, or produced no grid.
+        CliError: the run timed out or produced no grid.
+        ValueError: the binary is absent, or the method is not one this backend supports.
     """
-    path = binary_path()
-    if path is None:
-        raise CliError(f"the {settings.xtb_binary!r} binary is not installed")
+    path = require_binary_path()
     if not supports(method):
         raise ValueError(f"the xtb backend does not support method {method!r}")
 

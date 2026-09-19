@@ -109,6 +109,18 @@ class JustSuspendedResult(BaseModel):
     power_per_volume_w_per_m3: float = Field(description="P/V at N_js, in W/m3.")
     reynolds_number: float
     turbulent: bool
+    within_fitted_range: bool = Field(
+        description=(
+            "Whether the solids loading and particle size sit inside the bands Zwietering "
+            "regressed over. False means N_js is an extrapolation; see within_fitted_range_notes."
+        )
+    )
+    within_fitted_range_notes: list[str] = Field(
+        description=(
+            "One sentence per input outside its fitted band, naming the input, its value and the "
+            "band. Empty when within_fitted_range is true."
+        )
+    )
     basis: str
 
 
@@ -417,6 +429,13 @@ def just_suspended_speed(
     cohesive or needle-shaped solid, a wide size distribution, or a loading outside the fitted
     range can put a real vessel well outside that.
 
+    **So the fitted range is checked and reported.** `within_fitted_range` is false, with a sentence
+    naming the input, whenever the solids loading or the particle size is outside the band the
+    correlation was regressed over. `X^0.13` is a weak exponent, so a loading entered as a fraction
+    where a percentage is asked for returns a perfectly plausible speed: measured, 10 wt% entered as
+    0.10 gives an N_js 45.05% low and a P/V 83.40% low, which is an under-agitated vessel. Reported
+    rather than refused, because the correlation is routinely used a little outside its regression.
+
     **Just-suspended is not homogeneous.** `N_js` is the speed at which nothing sits still on the
     bottom; it is not the speed at which the slurry is uniform up the vessel, and a sample taken
     from a side port at `N_js` will be lean. If the question is about a representative sample or an
@@ -463,6 +482,8 @@ def just_suspended_speed(
         power_per_volume_w_per_m3=found.power_per_volume_w_per_m3,
         reynolds_number=found.reynolds_number,
         turbulent=found.turbulent,
+        within_fitted_range=found.within_fitted_range,
+        within_fitted_range_notes=list(found.outside_fitted_range),
         basis=(
             "Zwietering (1958) N_js = S*nu^0.1*d_p^0.2*(g*drho/rho)^0.45*X^0.13/D^0.85, an "
             "empirical correlation with a fitted geometry constant, regressed on sand and salt in "
