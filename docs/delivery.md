@@ -55,9 +55,9 @@ So the Deployment an operator creates has to wire, per server:
   They are what tells Prometheus to scrape `/metrics`; the NetworkPolicy has always admitted the
   monitoring namespace, and until those files existed nothing was told to go through the hole.
 
-The same `BACKLOG.md` row as the chart, over in Chemclaw3: the seven servers differ only in name,
-port and token env, so the probes belong in one template rather than in seven hand-written
-Deployments.
+The same `BACKLOG.md` row as the chart, over in Chemclaw3: the servers here differ only in name,
+port and token env, so the probes belong in one template rather than in a hand-written Deployment
+per server.
 
 ## Where the rollout is
 
@@ -67,5 +67,5 @@ Deployment an operator created, driven from the Chemclaw3 checkout by
 `deploy/jenkins/README.md`, and `D-2026-08-26-a-release-is-a-descriptor-and-a-target` for why the
 fleet is rolled out **before** the core that dials it.
 
-A chart for the fleet — the seven servers differ only in name, port and token env — is a
+A chart for the fleet — the servers differ only in name, port and token env — is a
 `BACKLOG.md` row over there. Until it exists, a release can change a server's bytes and nothing else.

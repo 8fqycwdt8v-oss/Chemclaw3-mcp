@@ -63,55 +63,102 @@ def manifest_of(server: Path) -> dict[str, object]:
     return loaded
 
 
+# The files a server is not deployable or reviewable without. Hoisted out of the test below so the
+# checklist a new server is written from can be held against it — `docs/adding-a-server.md` is the
+# one declaration of this set in prose, and `test_the_required_file_set_is_declared_once` is what
+# keeps the two from drifting. A second copy stood in `CLAUDE.md` for months listing barely half of
+# these, which is the failure this constant exists to make impossible to repeat quietly.
+REQUIRED_SERVER_FILES = (
+    "connector.yaml",
+    "pyproject.toml",
+    "Containerfile",
+    "README.md",
+    "deploy/networkpolicy.yaml",
+    # The two files that make `/metrics` reachable by a scrape. Listed here rather than left to
+    # each server's own `test_deploy.py`, because the failure they prevent is a *new* server
+    # shipping without them — which its own tests, if it copied a directory that had none,
+    # would never notice. `deploy/` held only the NetworkPolicy on every server in this fleet
+    # while every one of those policies admitted the monitoring namespace: the hole was open
+    # and nothing was told to go through it.
+    "deploy/service.yaml",
+    "deploy/servicemonitor.yaml",
+    # The workload itself, and the file that carries every pod-hardening field — runAsNonRoot,
+    # dropped capabilities, seccomp, resource limits, no service-account token. `deploy/` used
+    # to ship the NetworkPolicy/Service/ServiceMonitor but *no* Deployment, so nothing
+    # in-cluster set any of those and each defaulted to the cluster's — root, all capabilities,
+    # unconfined, unbounded. A new server copying a directory without one would inherit that
+    # gap silently, which is why the requirement lives here rather than only in each
+    # `test_deploy.py`.
+    "deploy/deployment.yaml",
+    # The two objects that decide whether a capability survives a rollout and whether it has a
+    # capacity lever at all. Same argument as the Deployment above, one round later: every
+    # server here shipped `replicas: 1` with neither, so a drain took the capability to zero
+    # and a full pod had no second pod to overflow into — and because all seven were identical,
+    # no server's own tests could see it. `tests/test_deploy_shape.py` checks what is *in*
+    # them; this is what checks they exist for a server that copied a directory predating them.
+    "deploy/hpa.yaml",
+    "deploy/pdb.yaml",
+    "tests/test_no_egress.py",
+    "tests/test_server.py",
+    # The per-server half of layer 4. The fleet-wide half —
+    # `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload` —
+    # is what actually closes the hole this line was missing from: until it existed, a server
+    # could ship a NetworkPolicy permitting all outbound traffic and no `test_deploy.py`, and
+    # the whole suite stayed green. This entry is the *other* half and is not redundant with
+    # it: a server's own file is where its port, its ingress peers and the Service-to-
+    # ServiceMonitor port *name* are held, and those are numbers and strings belonging to one
+    # server that no fleet-wide reader can derive. Listed here for the same reason
+    # `deploy/deployment.yaml` and `deploy/hpa.yaml` are: the failure is a *new* server copying
+    # a directory that predates the file, whose own tests then cannot notice what it does not
+    # have.
+    "tests/test_deploy.py",
+)
+
+
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_a_server_ships_the_whole_set(server: Path) -> None:
     """A server is not just code: without any one of these it cannot be deployed or reviewed."""
-    for required in (
-        "connector.yaml",
-        "pyproject.toml",
-        "Containerfile",
-        "README.md",
-        "deploy/networkpolicy.yaml",
-        # The two files that make `/metrics` reachable by a scrape. Listed here rather than left to
-        # each server's own `test_deploy.py`, because the failure they prevent is a *new* server
-        # shipping without them — which its own tests, if it copied a directory that had none,
-        # would never notice. `deploy/` held only the NetworkPolicy on every server in this fleet
-        # while every one of those policies admitted the monitoring namespace: the hole was open
-        # and nothing was told to go through it.
-        "deploy/service.yaml",
-        "deploy/servicemonitor.yaml",
-        # The workload itself, and the file that carries every pod-hardening field — runAsNonRoot,
-        # dropped capabilities, seccomp, resource limits, no service-account token. `deploy/` used
-        # to ship the NetworkPolicy/Service/ServiceMonitor but *no* Deployment, so nothing
-        # in-cluster set any of those and each defaulted to the cluster's — root, all capabilities,
-        # unconfined, unbounded. A new server copying a directory without one would inherit that
-        # gap silently, which is why the requirement lives here rather than only in each
-        # `test_deploy.py`.
-        "deploy/deployment.yaml",
-        # The two objects that decide whether a capability survives a rollout and whether it has a
-        # capacity lever at all. Same argument as the Deployment above, one round later: every
-        # server here shipped `replicas: 1` with neither, so a drain took the capability to zero
-        # and a full pod had no second pod to overflow into — and because all seven were identical,
-        # no server's own tests could see it. `tests/test_deploy_shape.py` checks what is *in*
-        # them; this is what checks they exist for a server that copied a directory predating them.
-        "deploy/hpa.yaml",
-        "deploy/pdb.yaml",
-        "tests/test_no_egress.py",
-        "tests/test_server.py",
-        # The per-server half of layer 4. The fleet-wide half —
-        # `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload` —
-        # is what actually closes the hole this line was missing from: until it existed, a server
-        # could ship a NetworkPolicy permitting all outbound traffic and no `test_deploy.py`, and
-        # the whole suite stayed green. This entry is the *other* half and is not redundant with
-        # it: a server's own file is where its port, its ingress peers and the Service-to-
-        # ServiceMonitor port *name* are held, and those are numbers and strings belonging to one
-        # server that no fleet-wide reader can derive. Listed here for the same reason
-        # `deploy/deployment.yaml` and `deploy/hpa.yaml` are: the failure is a *new* server copying
-        # a directory that predates the file, whose own tests then cannot notice what it does not
-        # have.
-        "tests/test_deploy.py",
-    ):
+    for required in REQUIRED_SERVER_FILES:
         assert (server / required).exists(), f"{server.name} is missing {required}"
+
+
+def test_the_required_file_set_is_declared_once() -> None:
+    """The checklist lists every file the suite requires, and `CLAUDE.md` does not list them twice.
+
+    `CLAUDE.md` carried its own `servers/<name>/` tree naming a little over half of
+    `REQUIRED_SERVER_FILES` — no Deployment, no HPA, no PDB, none of the three `tests/` files — and
+    it is the document a new contributor reads *first*. Copying it produced a server that fails
+    `test_a_server_ships_the_whole_set` on the first `make check`, with two documents disagreeing
+    and neither of them wrong about itself. That is the deleted port table's shape with filenames
+    instead of numbers, so the tree lives in `docs/adding-a-server.md` alone and this is what holds
+    it against the requirement.
+
+    Matched on the **basename**, because the checklist is a nested tree: `deploy/hpa.yaml` appears
+    there as `hpa.yaml` under a `deploy/` line, and `tests/test_server.py` as `test_server.py` under
+    a `tests/` line. Every basename in the required set is distinct, so a basename match is exact
+    here and reads the way a human reads the tree.
+    """
+    checklist = (ROOT / "docs/adding-a-server.md").read_text(encoding="utf-8")
+    names = [Path(required).name for required in REQUIRED_SERVER_FILES]
+    assert len(set(names)) == len(names), "two required files share a basename; match on the path"
+    missing = [name for name in names if name not in checklist]
+    assert not missing, (
+        f"docs/adding-a-server.md does not list {missing}, which `REQUIRED_SERVER_FILES` demands "
+        "of every server; a contributor copying that tree fails the suite on their first run"
+    )
+
+    guidance = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    # Not "does `CLAUDE.md` mention `networkpolicy.yaml`" — it does, and should: that file is one of
+    # the four independent no-egress layers and is named as such. What is forbidden is a second
+    # *tree*, which is what a reader copies. Both halves of one are checked, because the root line
+    # without the branches is still a list somebody completes by hand.
+    assert "servers/<name>/" not in guidance, (
+        "CLAUDE.md has grown a `servers/<name>/` tree again; the file set is declared in "
+        "docs/adding-a-server.md and drifted for months the last time there were two of them"
+    )
+    branches = ("\u251c\u2500", "\u2514\u2500")
+    drawn = [line for line in guidance.splitlines() if line.lstrip().startswith(branches)]
+    assert not drawn, f"CLAUDE.md draws a file tree at {drawn}; the checklist is the declaration"
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -728,6 +775,72 @@ def test_claude_md_holds_no_second_port_registry() -> None:
             f"CLAUDE.md pairs {server.name} with port {port.group(1)}; MODULES.md is the registry "
             "and the only file tests/test_fleet.py checks, so a second copy here goes stale"
         )
+
+
+# The documents this rule covers: the prose a contributor reads. `docs/decisions/` is deliberately
+# out — a merged record is never edited and is a claim about the day it was written, which is the
+# one place a stale figure is *correct*.
+def _prose_documents() -> list[Path]:
+    """`CLAUDE.md`, `README.md` and the guides beside them — not the decision records."""
+    return [ROOT / "CLAUDE.md", ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+
+
+_A_NUMBER = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)"
+_SERVER_COUNT = re.compile(rf"\b{_A_NUMBER}\s+servers\b", re.IGNORECASE)
+_SPELLED = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+
+def test_no_prose_here_counts_this_fleet_s_servers_without_naming_them() -> None:
+    """A count of servers in prose either names the servers it counts, or it is a stale digit.
+
+    `CLAUDE.md`, `docs/adding-a-server.md` and `docs/delivery.md` all said "seven servers" in the
+    present tense over a fleet that had grown well past that, while this same repository refused a
+    count of its own ports and of its own backlog rows for exactly that reason. The
+    rule was applied to the subjects somebody had been burned by and not to the subject it came
+    from, which is the argument of
+    `D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it`.
+
+    **The rule is not "never write a number"**, because "`calc` and `rxnlabel` are the two servers
+    Chemclaw3 must not discover" is exact, self-verifying and worth writing: a reader checks it by
+    reading the two names in the same breath. What rots is a number that stands *for* the fleet,
+    with nothing beside it to check it against. So a count passes here when the paragraph around it
+    names at least that many of this fleet's servers, and fails when it does not.
+
+    `docs/decisions/` is out of scope on purpose: a merged record is a claim about the day it was
+    written and is never edited, so a figure there is correct precisely by being historical.
+    """
+    known = {server.name for server in server_dirs()}
+    offences: list[str] = []
+    for document in _prose_documents():
+        text = document.read_text(encoding="utf-8")
+        for paragraph in re.split(r"\n\s*\n", text):
+            named = {name for name in known if f"`{name}`" in paragraph}
+            for match in _SERVER_COUNT.finditer(paragraph):
+                word = match.group(0).split()[0].lower()
+                counted = _SPELLED.get(word, int(word) if word.isdigit() else 0)
+                if len(named) < counted:
+                    offences.append(
+                        f"{document.relative_to(ROOT)}: {match.group(0)!r} beside "
+                        f"{sorted(named) or 'no server name'}"
+                    )
+    assert not offences, (
+        "prose counting this fleet's servers without naming them: "
+        f"{offences}. Either name the servers the sentence is about, or write the sentence without "
+        "the number — `tests/test_fleet.py` and `MODULES.md` are what answer 'how many'"
+    )
 
 
 def test_the_two_tables_that_both_hold_densities_agree() -> None:
@@ -2909,6 +3022,57 @@ def test_claude_md_and_the_guard_name_the_same_channels_as_outside_it() -> None:
     assert "ctypes" not in FORBIDDEN_MODULES, (
         "`CLAUDE.md` §1 and `no_egress.py` both argue `ctypes` is off layer 2's list on purpose; "
         "it is on the list now, so both paragraphs are wrong and the argument needs rewriting"
+    )
+
+
+# Socket entry points `CLAUDE.md` §1 may name without thereby claiming the guard intercepts them:
+# the serving side (an armed process still answers requests), and the private C type whose methods
+# `arm()` provably cannot reach, which §1 names precisely to say so.
+_NOT_A_CLAIM_OF_INTERCEPTION = frozenset({"bind", "listen", "accept", "close", "socket", "_socket"})
+
+
+def _rebound_by_arm() -> frozenset[str]:
+    """The calls `arm()` actually replaces, read out of its own assignments."""
+    guard = (ROOT / "packages/mcp_server_kit/src/mcp_server_kit/egress.py").read_text(
+        encoding="utf-8"
+    )
+    body = guard[guard.index("def arm(") : guard.index("def disarm(")]
+    return frozenset(re.findall(r"^\s*socket(?:\.socket)?\.(\w+) = ", body, re.MULTILINE))
+
+
+def test_claude_md_claims_no_interception_the_guard_does_not_make() -> None:
+    """Every socket call `CLAUDE.md` §1 names is one `arm()` rebinds, or one it names as uncovered.
+
+    §1 opened by enumerating the intercepted set and named six of nine: the reverse-lookup pair and
+    `gethostbyname_ex` were added to the guard and never carried back into the prose. That direction
+    is merely incomplete. The dangerous direction is the other one — a call named here that `arm()`
+    stops rebinding leaves a reader believing in an interception that is not made, which is this
+    repository's deleted port table with a function name instead of a number.
+
+    So the document no longer holds the list at all; the module does. What is checked is that
+    nothing §1 does name is a phantom. Matched against the real `socket` surface rather than a
+    transcribed vocabulary, so a call this test has never heard of is still checked.
+    """
+    import socket as socket_module
+
+    readme = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    start = readme.index("1. **The runtime guard**")
+    layer_one = readme[start : readme.index("\n2. **The static scan**", start)]
+
+    surface = set(dir(socket_module)) | set(dir(socket_module.socket))
+    rebound = _rebound_by_arm()
+    assert rebound, "no rebindings found in `arm()`; has the guard been rewritten?"
+
+    phantom = sorted(
+        {
+            name
+            for name in re.findall(r"`([a-z_]+)`", layer_one)
+            if name in surface and name not in _NOT_A_CLAIM_OF_INTERCEPTION and name not in rebound
+        }
+    )
+    assert not phantom, (
+        f"`CLAUDE.md` §1 names {phantom} as intercepted; `arm()` rebinds {sorted(rebound)}. Either "
+        "the guard lost a call or the prose grew one — the module is the declaration"
     )
 
 

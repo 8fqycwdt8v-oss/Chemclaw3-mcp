@@ -45,22 +45,15 @@ The name is one string, used four times, and they must match: the directory unde
 package suffix (`chemclaw_mcp_<name>`), the manifest's `name:`, and the key Chemclaw3 addresses it
 by in `CHEMCLAW_CONNECTOR_URLS`.
 
-```
-servers/<name>/
-├── connector.yaml                   # the manifest Chemclaw3 reads (symlinked from manifests/)
-├── pyproject.toml                   # this server's dependency closure, and nobody else's
-├── Containerfile                    # one rootless image per server
-├── README.md                        # what it serves, what data it reads, who refreshes it
-├── deploy/networkpolicy.yaml        # default-deny egress
-├── deploy/service.yaml              # one port, named `http`
-├── deploy/servicemonitor.yaml       # what tells Prometheus to scrape /metrics
-├── src/chemclaw_mcp_<name>/
-│   ├── engine/                      # pure computation — no FastAPI, no MCP, no network
-│   ├── tools.py                     # the FastMCP surface; the docstrings are the prompt
-│   ├── app.py                       # `app = connector_app(server, name=..., token_env=...)`
-│   └── data/                        # records + dataset.json (licence, sha256, retrieved_from)
-└── tests/
-```
+**What a server ships is declared once, in [`docs/adding-a-server.md`](docs/adding-a-server.md#the-files)**,
+and `tests/test_fleet.py::test_a_server_ships_the_whole_set` is what requires it. A copy of that
+tree used to stand here and had drifted to well under what the test demands — the Deployment, the
+HPA, the PDB and every one of the `tests/` files were missing from it — so a reader who copied this
+file's version failed their first `make check` and could not tell which of the two documents was
+wrong. That is the deleted port table two sections down, with filenames instead of numbers: a second
+declaration nothing reconciles is read, believed and stale.
+`tests/test_fleet.py::test_the_required_file_set_is_declared_once` now holds the checklist against
+the requirement, and holds this file to not growing a second copy.
 
 ## Servers hosted in another repository
 
@@ -156,7 +149,8 @@ that helper are non-obvious, and each is quiet when wrong:
   operator as `CrashLoopBackOff` plus a container log rather than as a 503 body.
   `tests/test_fleet.py::test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error`
   holds it for every server that vendors a corpus, derived from the corpora on disk.
-  **Passing one is not the same as the check working, and the gap was three of seven**
+  **Passing one is not the same as the check working, and when it was measured several of the
+  fleet's probes passed with a real dependency broken**
   (`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`): a probe
   that checks a component *constructed*, or that a version string could be *derived*, passes a
   component that builds and then fails on every call — so a probe runs the thing, on a fixture, and
@@ -164,7 +158,7 @@ that helper are non-obvious, and each is quiet when wrong:
   probe must **not** act on: only `mcp_server_kit.degradation.PERMANENT_CAUSES` may produce an
   unready answer, and a transient resource exhaustion is counted and left alone. **That rule is
   `connector_app`'s, not each callable's** — stated per callable it was read in exactly two places
-  across seven servers, so every other raise went out as an unconditional 503
+  across the whole fleet, so every other raise went out as an unconditional 503
   (`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe`). A probe failure whose
   cause is transient answers **200** with `degraded` naming it.
 - **`/livez` is liveness, and it is a different route because the two answers differ.** A readiness
@@ -223,9 +217,15 @@ an outbound call at request time.** Production is air-gapped, and this is enforc
 independent layers because a rule that lives in one place rots:
 
 1. **The runtime guard** (`mcp_server_kit/egress.py`), armed on import. A non-loopback
-   `connect`/`connect_ex`, a UDP `sendto`/`sendmsg`, or a DNS lookup
-   (`getaddrinfo`/`gethostbyname`) is logged at ERROR with the host, counted on
-   `chemclaw_mcp_egress_refused_total`, and raises `EgressForbidden`. **The log and the counter are
+   `connect`, a datagram send, or a forward or reverse name lookup is logged at ERROR with the
+   host, counted on `chemclaw_mcp_egress_refused_total`, and raises `EgressForbidden`. **Exactly
+   which calls is `arm()`'s set of rebindings, and is not restated here**: this sentence enumerated
+   six while the guard patched nine, and the three it never mentioned — the reverse-lookup pair and
+   the second forward one — were added to the module without being carried back into the prose.
+   That is the deleted port table's defect with a function name instead of a number, so the module
+   is the declaration and
+   `tests/test_fleet.py::test_claude_md_claims_no_interception_the_guard_does_not_make` is what
+   stops a re-enumeration drifting again. **The log and the counter are
    load-bearing rather than decorative**: `EgressForbidden` subclasses `OSError`, so what a refusal
    looks like from outside depends on who catches it — `calc` reports it as "could not resolve the
    xTB backend", and any library's own `except OSError: retry` swallows it whole. `rxnpredict` used
@@ -430,7 +430,7 @@ tool in `servers/chem` that needs a ceiling.
 the same pull request that adds the server; `tests/test_fleet.py` checks it against every manifest
 in both directions and reads no other file.
 
-There used to be a second table here. It listed five servers when seven were built, and advertised
+There used to be a second table here. It listed fewer servers than were built, and advertised
 "8861+ compound identity & data" and "8890+ spectra & analytics" as free over ports 8865 and 8899
 that `rxnlabel` and `pyexec` already held — so a session that read this file first would have
 claimed a taken port, and the collision would have surfaced only when both pods were scheduled. A
@@ -449,12 +449,26 @@ same defect as the port table this section replaced, one repository further out,
 become safe because the subject is somebody else's number.
 
 So the clearance is recorded as the *reason the block starts at 8850*, with the date it was last
-checked, rather than as a boundary anybody may rely on. Observed on 2026-08-27 against the
-repositories in the family: Chemclaw3's connector manifests claim 8811 (`molfp`), 8812 (`rxnfp`),
-8815 (`calc`) and 8816 (`bo`), plus 8810 for the dev process that mounts every bundle by name; its
-runbook additionally names 8000 for the front door and 8820 for a mock OpenAI-compatible LLM; and
-`Chemclaw3_mock` serves 8090 and 8091. Everything observed is below 8850, which is why the block
-begins there and why it is fifty ports wide.
+checked, rather than as a boundary anybody may rely on — and checking it means **re-reading that
+repository**, which is the only thing that can confirm or refute a sentence about a checkout no
+test here can open.
+
+Re-read on 2026-09-19 against the repositories in the family. Chemclaw3's connector bundles are
+what claim ports there, and one of them — `results` — declares no `endpoint:` at all, so it claims
+none. The bundles whose servers that repository runs itself sit below this block: `molfp`, `rxnfp`,
+`calc` and `bo`, plus 8810 for the dev process that mounts every bundle by name. Its runbook
+additionally names 8000 for the front door and 8820 for a mock OpenAI-compatible LLM, and
+`Chemclaw3_mock` serves 8090 and 8091.
+
+**Three of Chemclaw3's endpoints are inside 8850–8899, and that is the seam working rather than a
+collision.** They belong to the bundles that declare an endpoint for a server *this* repository
+hosts — `chem`, `rxnpredict` and `safety` — so the numbers in them are this fleet's own, and they
+are not restated here for the reason no port is: `MODULES.md` is the registry, the manifests are
+what it is checked against, and a second copy goes stale. What this paragraph said until today was
+"everything observed is below 8850", observed on 2026-08-27; it was already false when it was
+written, and read to anybody checking like a range this fleet had walked into. The block still
+begins at 8850 and is still fifty ports wide, because nothing that is *not* one of this fleet's own
+servers was found inside it.
 
 A collision with one of those would surface in a local full-stack run, not in this repository's
 suite. If you find one, move **this** block — renumbering a served port here is a `MODULES.md`
@@ -473,8 +487,21 @@ question — the failure its own `connectors/README.md` records as two live defi
 | Bayesian optimisation, screening designs, campaign progress | `bo` |
 | ECFP4/DRFP similarity and substructure search | `molfp`, `rxnfp` |
 | ~~Structural hazard alerts, genotoxic alerts, ICH Q3C/Q3D impurity limits~~ | now `servers/safety/` |
-| Knowledge graph read/write, the PR-gate | core |
+| Knowledge graph read/write | core |
 | ELN and ORD ingestion | `ingest/sources` |
+| Publishing a computed result to an external result store, and re-queueing what a destination refused | `results` |
+
+**The table was re-read against Chemclaw3 on 2026-09-19 and two things in it were wrong.** The
+knowledge row used to end "and the PR-gate"; there is no PR-gate —
+`D-2026-09-05-the-gate-follows-behaviour-not-knowledge` deleted it and every module behind it, and
+`src/chemclaw/kg/git_writer.py` opens by saying so. A capability named in this table as a reason not
+to build something here has to still exist, or the table is refusing a server on a ground that has
+gone. The `results` row is the opposite correction: that bundle is a capability this table never
+listed. It is the one Chemclaw3 bundle with **no `endpoint:`** — jobs only, because a write is not
+an agent-facing tool there — so nothing in this fleet dials it and nothing here could have noticed
+it existed. It belongs in the table for the ordinary reason: a server here that delivered results to
+somebody's database would be a second answer to one question, and it would need an outbound call at
+request time, which this fleet does not make.
 
 **There is no DFT row any more, and its absence is a constraint rather than an opening.** Chemclaw3
 deleted its `qm` bundle, the Nextflow/HPC launcher behind it and `compute_dft_energy` itself
@@ -491,8 +518,13 @@ Before proposing a tool, check `MODULES.md` and the table above. Overlap that is
 argued in the server's README — `rxnsearch` is scoped to *aggregate condition statistics* precisely
 because per-record ORD retrieval is already `eln-ord` plus `rxnfp`.
 
-**Two rows of that table have left it outright: `chem` is now `servers/chem/` and `safety` is now
-`servers/safety/`.** A capability moving out of Chemclaw3 is the one sanctioned way off this list,
+**Rows that have left the table outright: `chem` is now `servers/chem/`, and `safety` is now
+`servers/safety/`.** There is a third bundle over there of the same *shape* — `rxnpredict`, whose
+manifest calls itself exactly that — and it is **not** a row that left, because it was never a
+Chemclaw3 capability: the server was built here and that repository gained a declaration for it,
+which is the seam run in the other direction. The distinction is worth keeping because only the
+first kind needs the paragraph below; a capability that never moved cannot leave two live
+definitions behind it. A capability moving out of Chemclaw3 is the one sanctioned way off this list,
 and it is only sanctioned when the move is a *replacement*: same manifest `name`, same tools, same
 arguments, so exactly one of the two can be addressed (`CHEMCLAW_CONNECTOR_URLS` is keyed by name,
 and `CHEMCLAW_CONNECTORS_DIR` gives the first directory the collision). A port that renamed itself
