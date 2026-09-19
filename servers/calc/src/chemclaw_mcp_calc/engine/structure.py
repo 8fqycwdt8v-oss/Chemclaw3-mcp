@@ -75,10 +75,20 @@ class Structure(BaseModel):
         **And one way it can be right and still unaffordable.** The atom ceiling lives here rather
         than on each tool for the same reason the electron-count check does: four primitives take a
         structure and the next one will, so a per-tool check is one somebody forgets — and only
-        `compute_hessian` had one. A structure under the 1 MB body cap can carry ~42,000 atoms, at
-        which the optimizer's dense model Hessian asks for 127 GB and takes the whole process with
-        it, every other connected turn included. The refusal names both numbers because the caller's
-        only options are a smaller system or a deployment configured for a larger one.
+        `compute_hessian` had one. A structure under the 1 MB body cap can carry **37,983 atoms**
+        — measured on real `tools/call` payloads at 26.3 bytes an atom — at which the optimizer's
+        coordinate system asks for terabytes and takes the whole process with it, every other
+        connected turn included. The refusal names both numbers because the caller's only options
+        are a smaller system or a deployment configured for a larger one.
+
+        **Both halves of that sentence were retired under it and this is the fourth document to be
+        corrected.** It said ~42,000 atoms, which was never measured, and named the *dense model
+        Hessian* of the ANC preconditioner
+        `D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not` deleted — so the
+        module that **enforces** the bound documented a mechanism that no longer runs.
+        `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` re-measured against geomeTRIC
+        and corrected three of the four places the old figure appeared; this was the one it missed,
+        and it is the first place a reader chasing the refusal message lands.
         """
         if len(self.positions) != len(self.elements):
             raise ValueError(f"{len(self.positions)} positions for {len(self.elements)} elements")
