@@ -241,34 +241,28 @@ decision leaves a record behind and the row goes.
   `get_reaction_info()` dict by the sibling
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`. That dict carries
   `CLASS` from 527 curated SMIRKS against ten hand-written rules here.
-  **Three things make it a row rather than a commit, and the third is why it was not done in the
-  2026-09-16 wave.** (1) `ALL_CLASSES` is a wire contract against the vendored `trust_priors.json`
-  (`servers/rxnpredict/tests/test_dataset.py` checks the priors against it), so adopting Rxn-INSIGHT means writing and
-  arguing a mapping from its class vocabulary onto those ten keys — a new declaration, not a
-  deletion. (2) The SMARTS path has to **stay** as the no-extra fallback: `rxn_insight` is behind an
-  extra the core install does not carry, and `classify_reaction` is a served tool that must answer
-  without it. (3) A different class changes `effective_prior`, `consensus_score` and the candidate
-  rank order, so the change cannot land without measuring that on the probe corpus — and measuring
-  it needs `rxnmapper`, which means torch, transformers and a model checkpoint in a test
-  environment that carries none of them. The measurement is the work.
-  **That third reason is false, measured 2026-09-18.** `uv pip install
-  "rxn-insight>=0.1.2"` resolves in this family's container and pulls its whole
-  stack — `rxn-insight` 0.1.3, `rxnmapper` 0.4.3, `torch` 2.14.0, `transformers`
-  4.57.6, 6.0 GB — and `Reaction('CC(=O)O.CCO>>CC(=O)OCC.O').get_reaction_info()`
-  answers `CLASS: Acylation`, `NAME: Esterification of Carboxylic Acids`, with no
-  separate checkpoint step. So the measurement is available to whoever wants it,
-  and the first two reasons are the whole of what stands.
-  **What a partial measurement then said, and why it is not a verdict.** Over one
-  corpus the *incumbent* SMARTS table led, **97.1% to 91.3%**. That run stopped
-  before the arm that could overturn it — reactions where a spectator or
-  substituent carries the diagnostic group of a different class, which is the
-  false-positive mode a mapping-free table is structurally prone to and an
-  atom-mapped classifier is not — and the session that ran it recorded that its
-  corpus so far favoured SMARTS. Two numbers on a favourable corpus are evidence
-  about that corpus. They are written here because the row had none at all, and
-  because they point the opposite way from the row's framing: this may be a swap
-  not worth making, and the next session should expect to find that rather than
-  assume the curated table wins.
+  **Two things make it a row rather than a commit.** (1) `ALL_CLASSES` is a wire contract against
+  the vendored `trust_priors.json` (`servers/rxnpredict/tests/test_dataset.py` checks the priors
+  against it), so adopting Rxn-INSIGHT means writing and arguing a mapping from its class vocabulary
+  onto those ten keys — a new declaration, not a deletion. (2) The SMARTS path has to **stay** as
+  the no-extra fallback: `rxn_insight` is behind an extra the core install does not carry, and
+  `classify_reaction` is a served tool that must answer without it.
+  **The environment is not a blocker and the measurement is available.** Measured 2026-09-18:
+  `uv pip install "rxn-insight>=0.1.2"` resolves in this family's container and pulls the whole
+  stack — `rxn-insight` 0.1.3, `rxnmapper` 0.4.3, `torch` 2.14.0, `transformers` 4.57.6, 6.0 GB —
+  and `Reaction('CC(=O)O.CCO>>CC(=O)OCC.O').get_reaction_info()` answers `CLASS: Acylation`,
+  `NAME: Esterification of Carboxylic Acids`, with no separate checkpoint step. So whoever works
+  this row can run the comparison the change needs: a different class moves `effective_prior`,
+  `consensus_score` and the candidate rank order, and that has to be measured on the probe corpus
+  before anything lands.
+  **Start from the expectation that the incumbent wins.** Over one corpus the *incumbent* SMARTS
+  table led, **97.1% to 91.3%**. That run stopped before the arm that could overturn it — reactions
+  where a spectator or substituent carries the diagnostic group of a different class, which is the
+  false-positive mode a mapping-free table is structurally prone to and an atom-mapped classifier is
+  not — so two numbers on a corpus that favoured SMARTS is evidence about that corpus and not a
+  verdict. They are here because they point the opposite way from this row's framing: this may be a
+  swap not worth making, and the next session should expect to find that rather than assume the
+  curated table wins.
   **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/conditions/rxn_insight.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
@@ -398,9 +392,7 @@ decision leaves a record behind and the row goes.
   the first entry in the catalogue that needs one.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
 
-## 7 — The coverage floor, and what it is a floor over
-
-## 8 — Correlations that need data nobody here has
+## 7 — Correlations that need data nobody here has
 
 - [ ] **`unitops` models an incompressible cake, and real organic cakes compress.** A filtration
   time from `filtration_time` takes a single specific cake resistance and assumes it is independent

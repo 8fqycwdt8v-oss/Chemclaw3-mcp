@@ -70,9 +70,9 @@ variance between servers should be in what they compute, not in how they are sha
      says so.
 
      **Deciding you need no ceiling is an answer this checklist now collects**, because it used to
-     be one nobody asked for: five of seven servers shipped `engine/admission.py` and the other two
-     were exempt by judgement in prose, so an eighth arrived with that same shape and passed every
-     test here. `tests/test_fleet.py::test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not`
+     be one nobody asked for: most of the servers then built shipped `engine/admission.py` and the
+     rest were exempt by judgement in prose, so a new one arrived with that same shape and passed
+     every test here. `tests/test_fleet.py::test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not`
      is what asks; the exemption goes in `CEILING_IS_ARGUED_ABSENT` beside it, carrying the
      measurement rather than the adjective, and a second test deletes it the day the server grows a
      ceiling after all. See
@@ -173,10 +173,10 @@ before falling back to "it was reviewed once".
 ## Observability
 
 **This section exists because its absence was the cause.** The checklist you are reading never
-mentioned logging, metrics or monitoring, and the result was measurable: seven servers, ten metric
-series (all ten `prometheus_client` built-ins), 26 log call sites in the whole repository and not
-one of them recording a tool name, a duration or an outcome. Four servers contained no log
-statement at all. Nobody skipped a step; there was no step.
+mentioned logging, metrics or monitoring, and the result was measurable: across the whole fleet as
+it then stood, ten metric series (all ten `prometheus_client` built-ins), 26 log call sites in the
+whole repository and not one of them recording a tool name, a duration or an outcome. Several
+servers contained no log statement at all. Nobody skipped a step; there was no step.
 
 Most of it you get for free and must not re-implement:
 
@@ -206,8 +206,8 @@ What a *new server* still owes:
    is a constant 200, which is how a pod with a corpus that failed its checksum passes the kubelet
    probe, takes traffic and fails every call.
 
-   **Run the thing, do not merely name it**, and prove that by breaking it: all seven servers had a
-   `readiness` callable and three of them still answered 200 with a real dependency broken
+   **Run the thing, do not merely name it**, and prove that by breaking it: every server then built
+   had a `readiness` callable and several of them still answered 200 with a real dependency broken
    (`D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check`). A probe
    that checks a component *constructed*, or that a version string could be *derived*, passes a
    component that builds and then fails on every call.
@@ -285,4 +285,9 @@ notices that it does not. Copy the call from any existing server — it needs th
 manifest and the token the fixture put in the environment, and it drives the anonymous caller, a
 wrong token, a wrong scheme, the credential serving, and the declared variable unset.
 
-Finally, update `MODULES.md`'s status row and the port table in `CLAUDE.md` if a block changed.
+Finally, update `MODULES.md`'s status row. **There is nothing to update in `CLAUDE.md`**, and this
+line used to say there was: it named "the port table in `CLAUDE.md`", a table deleted for publishing
+two taken ports as free, and `tests/test_fleet.py::test_claude_md_holds_no_second_port_registry`
+reds the moment anybody follows the instruction. A checklist whose last step is refused by the suite
+is worse than a missing step — it is read as authority, and the failure arrives after the work.
+`MODULES.md` is the registry and the only file the port tests read.

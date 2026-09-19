@@ -16,7 +16,7 @@ enforced rather than requested.
 
 | | |
 | --- | --- |
-| [`MODULES.md`](MODULES.md) | The catalogue — 19 servers across five tranches, their tools, their data, and the port registry. |
+| [`MODULES.md`](MODULES.md) | The catalogue — every server this fleet has built or proposed, grouped in tranches, with their tools, their data, and the port registry. |
 | [`CLAUDE.md`](CLAUDE.md) | The conventions every server follows, and the reasons behind them. |
 | [`servers/props/`](servers/props/) | The reference server: solvent and pure-component properties. Copy this one. |
 | [`packages/mcp_server_kit/`](packages/mcp_server_kit/) | The shared shape: FastAPI transport, bearer auth, identity logging, vendored datasets, the egress guard. |
