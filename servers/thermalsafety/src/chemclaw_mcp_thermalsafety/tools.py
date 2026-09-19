@@ -279,12 +279,14 @@ def tmr_ad(
         float, Field(description="Specific heat capacity of the reaction mass, kJ/(kg·K).")
     ],
     reference_temperature_c: Annotated[
-        float,
+        float | None,
         Field(
             description="The temperature in °C at which `heat_release_rate_w_per_kg` was measured. "
-            "Defaults to `temperature_c`, i.e. the rate was read at the temperature asked about."
+            "Omit it when the rate was read at the temperature asked about. **0 means 0 °C** — an "
+            "ice-bath isothermal is an ordinary reference for a peroxide or a diazo compound, and "
+            "it is not the same statement as omitting this."
         ),
-    ] = 0.0,
+    ] = None,
     target_hours: Annotated[
         float,
         Field(
@@ -312,7 +314,24 @@ def tmr_ad(
     **Adiabatic means no cooling at all.** For a package that does lose heat to its surroundings,
     the question is a Semenov one and `semenov_critical_ambient` is the tool.
     """
-    reference = reference_temperature_c if reference_temperature_c else temperature_c
+    # **`is None`, not truthiness, and truthiness discarded a stated 0 °C.** This field defaulted to
+    # `0.0` and was read with `if reference_temperature_c else temperature_c`, so a caller who said
+    # "the rate was measured at 0 °C" — an ice-bath isothermal, the ordinary reference for a
+    # peroxide
+    # or a diazo compound — had that replaced by `temperature_c`, skipping the Arrhenius
+    # extrapolation entirely and using q(0 °C) as though it were q(T_asked).
+    #
+    # Driven at q = 1 W/kg, E_a = 100 kJ/mol, c_p = 1.8 kJ/(kg·K), asked at 150 °C: a stated
+    # reference of **0.0 °C** gave TMR_ad = 7.44 h and T_D24 = +132 °C, while **0.001 °C** gave
+    # 1.24e-06 h and -12.7 °C. A thousandth of a degree moved the answer by a factor of six
+    # million, because q(150 °C) is 6.0e6 W/kg and the tool was using 1. Carried into
+    # `stoessel_criticality_class`, which names this tool at `target_hours=24` as its source, that
+    # is
+    # **class 2** ("a cooling failure reaches neither barrier") against **class 5** ("the scenario
+    # has
+    # to be eliminated by process design") — the reassuring end of the scale instead of the one that
+    # stops a process. The only trace was `basis` naming a temperature the caller had not written.
+    reference = temperature_c if reference_temperature_c is None else reference_temperature_c
     hours = runaway.time_to_maximum_rate_hours(
         temperature_c=temperature_c,
         heat_release_rate_w_per_kg=_rate_at(

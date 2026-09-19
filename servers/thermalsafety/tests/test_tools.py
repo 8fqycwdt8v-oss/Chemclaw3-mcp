@@ -140,6 +140,57 @@ def test_tmr_defaults_its_reference_to_the_temperature_asked_about() -> None:
     assert implicit.tmr_ad_hours == pytest.approx(explicit.tmr_ad_hours)
 
 
+def test_a_stated_reference_of_zero_celsius_is_a_reference_and_not_an_omission() -> None:
+    """The sentinel this field is read through, and truthiness discarded a real input.
+
+    **`reference_temperature_c` defaulted to `0.0` and was read with `if ... else temperature_c`**,
+    so
+    a caller who stated "the rate was measured at 0 °C" — an ice-bath isothermal, the ordinary
+    reference for a peroxide or a diazo compound — had that silently replaced by `temperature_c`.
+    The Arrhenius extrapolation was then skipped and q(0 °C) used as though it were q(T_asked).
+
+    Measured at q = 1 W/kg, E_a = 100 kJ/mol, c_p = 1.8 kJ/(kg·K), asked at 150 °C: a stated
+    reference of **0.0** gave TMR_ad = 7.44 h where **0.001** gave 1.24e-06 h. A thousandth of a
+    degree moved the answer by a factor of six million, because q(150 °C) is 6.0e6 W/kg and the tool
+    was using 1. Carried into `stoessel_criticality_class`, which names this tool at
+    `target_hours=24` as its source, that is class 2 — "a cooling failure reaches neither barrier" —
+    against class 5, "the scenario has to be eliminated by process design".
+
+    So this asserts CONTINUITY rather than a spot value: 0.0 must sit between its neighbours, which
+    no
+    sentinel reading can satisfy by accident. The test above still holds the omitted case, and the
+    two
+    together are what make the field's two meanings distinguishable.
+    """
+    common = {
+        "temperature_c": 150.0,
+        "heat_release_rate_w_per_kg": 1.0,
+        "activation_energy_kj_per_mol": 100.0,
+        "specific_heat_kj_per_kg_k": 1.8,
+    }
+    below = tmr_ad(**common, reference_temperature_c=-0.001).tmr_ad_hours
+    at_zero = tmr_ad(**common, reference_temperature_c=0.0).tmr_ad_hours
+    above = tmr_ad(**common, reference_temperature_c=0.001).tmr_ad_hours
+
+    # Increasing in the reference, because a *lower* reference means the given rate is extrapolated
+    # further *up* to `temperature_c` — a larger q, so a shorter time to runaway.
+    assert below < at_zero < above, (
+        f"TMR_ad at a stated 0 °C ({at_zero:g} h) is not between its neighbours "
+        f"({below:g} h at -0.001 °C, {above:g} h at +0.001 °C) — the value is being discarded and "
+        "`temperature_c` substituted, which reports a runaway milliseconds away as hours away"
+    )
+    assert at_zero == pytest.approx(above, rel=1e-3), (
+        "a thousandth of a degree changes the answer, so the two spellings are not one function"
+    )
+    # And the omitted case is still the identity the test above asserts, not 0 °C.
+    omitted = tmr_ad(**common).tmr_ad_hours
+    assert omitted == pytest.approx(tmr_ad(**common, reference_temperature_c=150.0).tmr_ad_hours)
+    assert omitted != pytest.approx(at_zero), (
+        "omitting the reference and stating 0 °C give the same answer, so the field cannot express "
+        "an ice-bath reference at all"
+    )
+
+
 def test_tmr_extrapolates_the_rate_when_the_reference_is_a_different_temperature() -> None:
     """The half the default hides: a rate measured hot, asked about cold, must be attenuated.
 

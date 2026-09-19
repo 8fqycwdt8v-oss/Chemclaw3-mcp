@@ -44,6 +44,23 @@ decision leaves a record behind and the row goes.
 
 ## 1 — The no-egress posture, where it stops
 
+- [ ] **`servers/kinetics` can now spend ~1.2 s in one tool call, and the argument that it owes no
+  concurrency ceiling was made at 0.83 ms.** `engine/reactors.DEFAULT_INTEGRATION_STEPS`' own comment
+  reasons that dropping from 2,000 steps to 200 is "also what keeps this server out of the band where
+  a concurrency ceiling is owed: at 8.1 ms it sat beside `chem`'s `render_structure`, the one tool in
+  that server gated for exactly this reason". That is still true of a non-stiff dose. It is no longer
+  true of every dose: `_steps_for_stability` now derives the step count from the problem, because a
+  fixed 200 reported a fast reaction's accumulation as **exactly zero** — the divergence clamped by
+  `max(dosed, 0.0)` — and `MAX_INTEGRATION_STEPS` rose to 200,000 to hold the realistic band.
+  Measured on the worked case: 23 ms at `k = 0.05` (3,878 steps), 238 ms at `k = 0.5` (38,780), and
+  the ceiling is ~1.2 s. `CLAUDE.md`'s rule is that the ceiling counts what the *pod* spends rather
+  than calls, and this one is single-threaded arithmetic, so the shape is `engine/admission.py`'s
+  rather than `calc`'s thread accounting. Decide whether `semibatch_accumulation` gets one, or whether
+  a cheaper stable scheme (an exponentially-fitted step for the linear part, or an implicit method)
+  puts the cost back under the band — the second would also lift the refusal that a dose past the
+  ceiling now gets. Do not close this by lowering the ceiling: that reinstates a safety number that is
+  wrong in the reassuring direction.
+
 - [ ] **A dynamic import whose name is computed from a *value* is outside the static scan, and
   always will be.** `importlib.import_module("gr" + "pc")` is folded to `grpc` since 2026-09-12, but
   `import_module(name)` cannot be resolved by any static reader, and `servers/rxnpredict` loads its

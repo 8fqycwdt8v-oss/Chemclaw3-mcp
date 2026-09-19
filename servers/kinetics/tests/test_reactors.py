@@ -174,12 +174,55 @@ def test_an_instant_reaction_accumulates_nothing_and_an_inert_one_accumulates_ev
 
     A reaction fast enough to consume the feed as it arrives leaves nothing to accumulate; one slow
     enough to be inert leaves the whole dose. Anything outside that range is a sign error.
+
+    **The fast arm asserted `approx(0.0, abs=1e-6)` at `k = 50`, and the physics contradicts it.**
+    The true peak there is `3.22e-05` — thirty times the tolerance. The assertion passed because at
+    the old fixed 200 steps `h*lambda` was 1,620, RK4 diverged, and `max(dosed, 0.0)` clamped the
+    negative excursion to exactly zero. So the test was satisfied by the integrator failing, not by
+    the limit: it would have passed just as well if the function had returned nothing at all, and at
+    the same fixture's own `k = 1` (an entirely ordinary rate) the reported peak was `0.000408`
+    against a true `0.001572` — 3.85x low, which is the dangerous direction for a number a dose time
+    is chosen from.
+
+    So the limit is asserted as the limit rather than as a zero: the peak *falls monotonically* as
+    the reaction gets faster, and at `k = 50` it is the small number it actually is. `_dose` no
+    longer needs a step count for this — `_steps_for_stability` derives one.
     """
-    instant = _dose(rate_constant=50.0)
-    assert instant.peak_accumulation_fraction == pytest.approx(0.0, abs=1e-6)
+    peaks = [_dose(rate_constant=k).peak_accumulation_fraction for k in (0.02, 1.0, 5.0, 50.0)]
+    assert peaks == sorted(peaks, reverse=True), (
+        f"a faster reaction accumulated more, which is a sign error: {peaks}"
+    )
+    assert peaks[-1] == pytest.approx(3.2205e-05, rel=1e-3), (
+        "the fast limit is not the value an independent fine-grid integration gives; a zero "
+        "here is "
+        "the integrator diverging and being clamped, which reads as a dose that is safe at any rate"
+    )
+    assert peaks[-1] < peaks[0] / 1000, "the fast limit is not small relative to the slow one"
 
     inert = _dose(rate_constant=1e-9)
     assert inert.peak_accumulation_fraction == pytest.approx(1.0, abs=1e-3)
+
+
+def test_a_dose_too_fast_to_integrate_is_refused_rather_than_reported_as_zero() -> None:
+    """The complement of the limit above, and the reason it is a refusal and not a small number.
+
+    Past `MAX_INTEGRATION_STEPS` the scheme cannot be made stable by taking more steps, and the old
+    code's answer was `accumulated_fraction = 0.0` at every point, `peak_at_seconds = 0.0`, and a
+    `basis` that said nothing was wrong — i.e. "no unreacted dosed reagent at any instant", which is
+    the number `tools.semibatch_accumulation` calls the material a cooling failure would have to
+    absorb. A reaction that fast relative to its addition is mixing-limited, which this ideal
+    perfectly-mixed model does not describe, so the refusal says that and names the server that
+    does.
+    """
+    with pytest.raises(reactors.KineticsInputError) as refused:
+        _dose(rate_constant=200.0)
+
+    message = str(refused.value)
+    assert "mixing-limited" in message, f"the refusal does not say what regime this is: {message}"
+    assert "thermalsafety" in message, "the refusal does not name where the question does belong"
+    assert str(reactors.MAX_INTEGRATION_STEPS) in message.replace(",", ""), (
+        "the refusal does not say what ceiling it hit"
+    )
 
 
 def test_a_slower_dose_accumulates_less_which_is_the_whole_reason_to_dose_slowly() -> None:
