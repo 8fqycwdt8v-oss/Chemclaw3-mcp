@@ -71,6 +71,26 @@ def test_a_structure_larger_than_the_ceiling_is_refused_before_any_engine_sees_i
     assert len(at_the_limit.elements) == settings.xtb_max_atoms
 
 
+def test_the_ceiling_s_refusal_names_the_way_forward_its_own_docstring_states() -> None:
+    """A refusal that leaves the caller nowhere is a refusal they cannot act on.
+
+    `Structure._normalize_and_validate`'s docstring already said what the options are — "a smaller
+    system or a deployment configured for a larger one" — and the message named neither, while this
+    server's other deliberately worded refusal names three ("run a smaller system, relax it first,
+    or raise CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS"). `connector_app` passes a `ValueError` to the
+    model verbatim, so the message is the whole of what the agent and the chemist ever see: the
+    docstring is not in the loop.
+
+    The environment variable is asserted by name because it is the only one of the two remedies the
+    caller cannot guess.
+    """
+    with pytest.raises(ValueError) as raised:
+        a_structure_of(settings.xtb_max_atoms + 1)
+    message = str(raised.value)
+    assert "CHEMCLAW_XTB_MAX_ATOMS" in message
+    assert "smaller system" in message
+
+
 #: This server's own Deployment, which is where the memory the ceiling is derived from is declared.
 _DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 

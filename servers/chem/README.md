@@ -66,15 +66,24 @@ tool result at 60,000 characters divided by the width of the batch it was called
 draws nothing, so an oversized depiction is refused whole, the way every enumeration on this server
 refuses past its bound rather than returning a partial answer.
 
-`CHEMCLAW_CHEM_MAX_IONISABLE_SITES` (default 32) is the one bound here that prices CPU rather than
-the step after it. `enumerate_protonation_states` toggles, sanitises and canonicalises each
-ionisable site separately, so the cost is the site count times the molecule size — and the cap on
-what it *returns* could not see that, because a molecule whose sites are all equivalent comes in
-under the cap after burning the whole time: measured, a 660-amine macrocycle was answered with two
-species after **15,647 ms**, and a 660-amine chain was refused after **48,077 ms**, both inside
-every other bound this server has. See
-`docs/decisions/D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work.md`. `describe_topology` is
-deliberately outside it and reports the site count for free, which is what the refusal points at.
+`CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT` (default 150,000) is the one bound here that prices CPU
+rather than the step after it. `enumerate_protonation_states` toggles, sanitises and canonicalises
+each ionisable site separately, so the cost is the site count **times the molecule size** — and the
+cap on what it *returns* could not see that, because a molecule whose sites are all equivalent
+comes in under the cap after burning the whole time: measured, a 660-amine macrocycle was answered
+with two species after **15,647 ms**, and a 660-amine chain was refused after **48,077 ms**, both
+inside every other bound this server has. See
+`docs/decisions/D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work.md`.
+
+The bound that closed it first priced the **site count alone**, which this paragraph's own sentence
+already said was half of it — so it refused a PAMAM G3 dendrimer (484 heavy atoms, 62 sites) that
+costs 128 ms and yields six structures while admitting a 1,891-atom polyamine at 31 sites that
+costs 413 ms. It now prices the product, the worst call it admits measures **1,266 ms**, and PAMAM
+G4 (996 atoms, 126 sites, 587 ms) is answered. See
+`docs/decisions/D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work.md`.
+`describe_topology` is deliberately outside the bound — it is the tool that answers for a molecule
+the enumeration refuses — but it is **not** free and is usually the dearer of the two: 2,793 ms on
+PAMAM G4 against the enumeration's 587 ms, because it enumerates tautomers.
 
 ## The data
 
