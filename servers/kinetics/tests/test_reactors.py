@@ -214,7 +214,7 @@ def test_a_dose_too_fast_to_integrate_is_refused_rather_than_reported_as_zero() 
     perfectly-mixed model does not describe, so the refusal says that and names the server that
     does.
     """
-    with pytest.raises(reactors.KineticsInputError) as refused:
+    with pytest.raises(KineticsInputError) as refused:
         _dose(rate_constant=200.0)
 
     message = str(refused.value)
