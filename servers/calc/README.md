@@ -396,8 +396,8 @@ What that buys and what it costs:
   refusal here ("run a smaller system, relax it first, or raise
   CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS") was unreachable in production, with the pod left computing
   for a request nobody was waiting for. The margin is 120 s because `budget.Deadline` is checked
-  *between* single points and never inside one, and one single point at the 500-atom ceiling is
-  **81 s** measured here (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s,
+  *between* single points and never inside one, and one single point measured **81 s** here **at
+  493 atoms** (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s,
   493 atoms 81.1 s). It costs each tier 120 s of affordable calculation — 13% of the inline budget,
   under 1% of the sampling one. `tests/test_cost_bounds.py` holds the ordering rather than the
   numbers, because the numbers are a deployment's to change and the ordering is not.
