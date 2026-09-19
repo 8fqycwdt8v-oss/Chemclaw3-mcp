@@ -373,8 +373,9 @@ What that buys and what it costs:
   - `CHEMCLAW_XTB_MAX_ATOMS` (450) bounds **every** structure, on `Structure` itself so each
     primitive inherits it. The optimizer is the other quadratic one: geomeTRIC eigendecomposes an
     (`nprim`, `nprim`) G matrix whose `nprim` is linear in the atom count, while the 1 MB body cap
-    is linear in it too — so at the ~38,000 atoms a compact `tools/call` body can carry (measured,
-    26.3 bytes an atom) the allocation takes the process down with every other connected turn.
+    is linear in it too — so at the tens of thousands of atoms a `tools/call` body can carry
+    (measured, 19.3-30.4 bytes an atom; the spread is how many decimals the caller writes) the
+    allocation takes the process down with every other connected turn.
     **The number is derived rather than chosen**: one whole relaxation of 509 atoms peaks at
     978.9 MiB, and what the ceiling has to satisfy is that `calc_max_concurrent_requests` of those
     fit inside `deploy/deployment.yaml`'s memory limit alongside the server's resident set and the
@@ -396,9 +397,15 @@ What that buys and what it costs:
   refusal here ("run a smaller system, relax it first, or raise
   CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS") was unreachable in production, with the pod left computing
   for a request nobody was waiting for. The margin is 120 s because `budget.Deadline` is checked
-  *between* single points and never inside one, and one single point measured **81 s** here **at
-  493 atoms** (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s,
-  493 atoms 81.1 s). It costs each tier 120 s of affordable calculation — 13% of the inline budget,
+  *between* single points and never inside one, and one single point at the largest structure this
+  server admits measured **62.7 s** here **at 453 atoms** (53 atoms 0.20 s, 153 atoms 2.43 s,
+  303 atoms 19.8 s, 453 atoms 62.7 s). The 81.1 s reading at 493 atoms in the same sweep is not the
+  figure the margin rests on and this sentence used to quote it: `xtb_max_atoms` is 450, so
+  `Structure` refuses 493 before any of this is reached, and a margin derived from a size the
+  server does not accept is derived from nothing. 120 s is still the margin — it is 62.7 s plus
+  most of itself again, which is the direction to round a bound that exists because a deadline is
+  not checked inside a single point. It costs each tier 120 s of affordable calculation — 13% of
+  the inline budget,
   under 1% of the sampling one. `tests/test_cost_bounds.py` holds the ordering rather than the
   numbers, because the numbers are a deployment's to change and the ordering is not.
 - **Nothing is cached in this process**, deliberately. That is what `calculation_key` is for: the
