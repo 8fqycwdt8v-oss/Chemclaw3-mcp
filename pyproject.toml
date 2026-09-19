@@ -211,6 +211,12 @@ module = [
     "geometric.*",
     # Predictor dependencies, each behind its own extra and none installed here.
     "dgl.*",
+    # The hub client, reached only by `servers/rxnpredict/scripts/fetch_models.py` — the one script
+    # in the fleet that is *meant* to reach a network, in a throw-away builder stage. It arrives
+    # transitively with the `reaction_t5` extra and is not installed in this workspace, which is why
+    # gating that script reported `import-not-found` and nothing else. It ships `py.typed`, so this
+    # entry covers the *absent* case only: an environment that installs the extra type-checks it.
+    "huggingface_hub.*",
     "onmt.*",
     "rxn_insight.*",
     "rxnmapper.*",
