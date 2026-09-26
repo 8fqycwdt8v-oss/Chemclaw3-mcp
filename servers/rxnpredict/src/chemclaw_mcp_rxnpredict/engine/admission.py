@@ -53,8 +53,9 @@ being told its chemistry was the problem.
 not stop the worker thread, so a per-call wall clock returns an error to a caller who has gone
 while the CPU burn continues. Refusing before any work starts is the other thing entirely.
 
-The shape is copied from `servers/calc/engine/admission.py` rather than imported — one server never
-imports another, and the refusal has to name this server's own tool and knob.
+The shape is copied from `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` rather than
+imported — one server never imports another, and the refusal has to name this server's own tool and
+knob.
 """
 
 from __future__ import annotations
