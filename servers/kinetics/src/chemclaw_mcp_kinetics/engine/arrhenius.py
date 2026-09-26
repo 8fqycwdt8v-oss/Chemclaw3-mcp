@@ -33,6 +33,7 @@ processes, and a tool that accepted either would let one be quoted as the other.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "activation_energy_from_two_points",
     "kelvin",
     "rate_constant_at",
+    "representable",
 ]
 
 #: J/(mol·K). Written here rather than imported from `scipy` so this server's dependency closure
@@ -66,6 +68,43 @@ class KineticsInputError(ValueError):
     `ValueError` deliberately: `mcp_server_kit` passes this family through to the model verbatim,
     so the message is written for a chemist reading it in a chat rather than for a log.
     """
+
+
+def representable(what: str, compute: Callable[[], float]) -> float:
+    """Evaluate one closed-form expression, refusing by name a result a double cannot hold.
+
+    **Every input guard here is about finiteness, not magnitude**, and finite inputs still reach
+    an unrepresentable answer: a float `**` or `math.exp` *raises* `OverflowError` — which is not a
+    `ValueError`, so `connector_app` hands the model an opaque `error_id` — while a float `*` or
+    `/` quietly returns infinity, and `inf / inf` returns NaN. Measured: a CSTR at order 3 with
+    `C0 = 1e200`, a batch reactor at order 200 with `C0 = 1e-5`, and an Arrhenius extrapolation from
+    -273 °C each raised, and two points 1e-9 K apart returned an infinite activation energy.
+
+    Caught at the expression rather than by an input ceiling, for the reason `_rate` in
+    `reactors.semibatch_accumulation` gives: no magnitude bound on the inputs is physical, and a
+    number that cannot be represented is the refusal the caller needs to read.
+
+    Args:
+        what: The quantity being computed, as a chemist would name it in the refusal.
+        compute: The expression, deferred so its own `OverflowError` lands here.
+
+    Returns:
+        The value, finite.
+
+    Raises:
+        KineticsInputError: If the expression overflows, divides by zero, or is not finite.
+    """
+    try:
+        value = float(compute())
+    except (OverflowError, ZeroDivisionError):
+        value = math.inf
+    if not math.isfinite(value):
+        raise KineticsInputError(
+            f"{what} overflows a double for these inputs, so there is no finite number to report "
+            "and no real reaction sits there. Check the units of the concentrations, the rate "
+            "constant and the temperatures."
+        )
+    return value
 
 
 def kelvin(celsius: float) -> float:
@@ -182,10 +221,12 @@ def rate_constant_at(
         / GAS_CONSTANT_J_PER_MOL_K
         * (1.0 / target_k - 1.0 / reference_k)
     )
-    ratio = math.exp(exponent)
+    ratio = representable("the rate ratio k(T)/k(T_ref)", lambda: math.exp(exponent))
     gap = target_k - reference_k
     return RateConstant(
-        rate_constant=reference_rate_constant * ratio,
+        rate_constant=representable(
+            "the extrapolated rate constant", lambda: reference_rate_constant * ratio
+        ),
         temperature_c=target_temperature_c,
         extrapolated_by_k=gap,
         far_from_the_measurement=abs(gap) > _EXTRAPOLATION_NOTICE_K,
@@ -244,18 +285,23 @@ def activation_energy_from_two_points(
         )
 
     reciprocal_gap = 1.0 / lower_k - 1.0 / upper_k
-    energy_j = (
-        GAS_CONSTANT_J_PER_MOL_K
-        * math.log(upper_rate_constant / lower_rate_constant)
-        / (reciprocal_gap)
+    energy_j = representable(
+        "the activation energy",
+        lambda: (
+            GAS_CONSTANT_J_PER_MOL_K
+            * math.log(upper_rate_constant / lower_rate_constant)
+            / reciprocal_gap
+        ),
     )
     span = upper_k - lower_k
     return ArrheniusPair(
         activation_energy_kj_per_mol=energy_j / 1000.0,
         # ln A = ln k + E_a/(R·T), taken at the lower point; either point gives the same answer,
         # because the line passes through both by construction.
-        ln_pre_exponential=math.log(lower_rate_constant)
-        + energy_j / (GAS_CONSTANT_J_PER_MOL_K * lower_k),
+        ln_pre_exponential=representable(
+            "ln A",
+            lambda: math.log(lower_rate_constant) + energy_j / (GAS_CONSTANT_J_PER_MOL_K * lower_k),
+        ),
         lower_temperature_c=lower_temperature_c,
         upper_temperature_c=upper_temperature_c,
         span_k=span,

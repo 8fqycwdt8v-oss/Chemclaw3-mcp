@@ -8,6 +8,7 @@ inverse that must round-trip, and a convergence *order* — which is the one tha
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 from chemclaw_mcp_kinetics.engine import reactors
@@ -496,3 +497,62 @@ def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: fl
             order_in_dosed=order_in_dosed,
             order_in_coreagent=2.0,
         )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1e200,
+                residence_time_seconds=1.0,
+                order=3.0,
+            ),
+            id="cstr-power-overflow",
+        ),
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1e200,
+                initial_concentration=1.0,
+                residence_time_seconds=1e200,
+                order=1.0,
+            ),
+            id="cstr-first-order-nan",
+        ),
+        pytest.param(
+            lambda: reactors.batch_conversion(
+                rate_constant=1.0, initial_concentration=1e-5, time_seconds=1.0, order=200.0
+            ),
+            id="batch",
+        ),
+        pytest.param(
+            lambda: reactors.pfr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1e-5,
+                residence_time_seconds=1.0,
+                order=200.0,
+            ),
+            id="pfr",
+        ),
+        pytest.param(
+            lambda: reactors.time_for_batch_conversion(
+                rate_constant=1.0, initial_concentration=1e-5, conversion=0.5, order=200.0
+            ),
+            id="batch-time",
+        ),
+        pytest.param(
+            lambda: reactors.time_for_batch_conversion(
+                rate_constant=1e-320, initial_concentration=1.0, conversion=0.5, order=1.0
+            ),
+            id="batch-time-first-order-inf",
+        ),
+    ],
+)
+def test_a_closed_form_that_overflows_is_refused_by_name(call: Callable[[], float]) -> None:
+    """Finite inputs the field bounds admit (`order >= 0`, `C0 > 0`, `k > 0`) reached a float `**`
+    that raised `OverflowError` — not a `ValueError`, so `connector_app` handed the model an opaque
+    `error_id` — or a `*`/`/` that quietly returned `inf` or `nan` as the answer.
+    """
+    with pytest.raises(KineticsInputError, match="overflows a double"):
+        call()

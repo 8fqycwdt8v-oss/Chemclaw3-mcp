@@ -36,6 +36,7 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp_server_kit import Dataset
 from mcp_server_kit.app import connector_app
+from prometheus_client.parser import text_string_to_metric_families
 
 TOKEN = "test-token-for-the-kit"
 TOKEN_ENV = "MCP_KIT_PROBE_TOKEN"
@@ -349,11 +350,22 @@ async def test_metrics_is_open_and_carries_no_identity(
             "labelled metric on this endpoint must never take an actor, a session, a correlation "
             "id or a tool argument as a label, whatever that label is named"
         )
-    lowered = exposition.lower()
-    for forbidden in ("actor", "session_id", "correlation", "smiles", "authorization", "bearer"):
-        assert forbidden not in lowered, (
-            f"/metrics is unauthenticated and published {forbidden!r}; a labelled metric on this "
-            "endpoint must never carry an actor, a session, a correlation id or a tool argument"
+    # The label *names*, parsed — never a substring of the whole exposition. The registry is the
+    # process's, so once another server's tests have run it holds that server's tool names as
+    # label values, and `tool="continuous_reactor_conversion"` contains "actor": a substring scan
+    # failed on the order the suite happened to run in, for a label that is allowed.
+    label_names = {
+        name.lower()
+        for family in text_string_to_metric_families(exposition)
+        for sample in family.samples
+        for name in sample.labels
+    }
+    for forbidden in ("actor", "session", "correlation", "smiles", "authorization", "bearer"):
+        named = sorted(name for name in label_names if forbidden in name)
+        assert not named, (
+            f"/metrics is unauthenticated and labels a series by {named}; a labelled metric on "
+            "this endpoint must never carry an actor, a session, a correlation id or a tool "
+            "argument"
         )
 
 

@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from chemclaw_mcp_kinetics.engine.arrhenius import KineticsInputError
+from chemclaw_mcp_kinetics.engine.arrhenius import KineticsInputError, representable
 
 __all__ = [
     "DEFAULT_INTEGRATION_STEPS",
@@ -84,10 +84,12 @@ QUASI_STEADY_MARGIN = 10.0
 #: rate. With the discontinuity gone, **200 steps agrees with a hundredfold finer grid to 6.4e-08**,
 #: eight significant figures on a number reported to four, and costs 0.83 ms of CPU against 8.1 ms.
 #:
-#: That tenfold saving is also what keeps this server out of the band where a concurrency ceiling
-#: is owed: at 8.1 ms it sat beside `chem`'s `render_structure`, the one tool in that server gated
-#: for exactly this reason. A defect fixed made the control unnecessary rather than the control
-#: covering for the defect.
+#: 200 is the default for a *non-stiff* dose, and it is a floor rather than a cost: the stability
+#: floor below raises the step count per call, up to `MAX_INTEGRATION_STEPS`, from the caller's own
+#: rate constant. That caller-set cost is why this server does carry a concurrency ceiling after
+#: all — `engine/admission.py`, and
+#: `D-2026-09-26-a-cost-the-caller-sets-is-a-cost-that-needs-a-ceiling` for why — so the tenfold
+#: saving made the common case cheap, not the worst case.
 #:
 #: **This stays the default and is no longer the whole story, because "measured sufficient" was
 #: measured on one case.** The 6.4e-08 agreement above was taken at `k = 0.02, C_co = 0.9`, i.e.
@@ -205,15 +207,18 @@ def batch_conversion(
         return 1.0 - math.exp(-rate_constant * time_seconds)
 
     exponent = 1.0 - order
-    remaining_powered = initial_concentration**exponent + (order - 1.0) * rate_constant * (
-        time_seconds
+    remaining_powered = representable(
+        "C^(1-n), the integrated rate law's state",
+        lambda: initial_concentration**exponent + (order - 1.0) * rate_constant * time_seconds,
     )
     if remaining_powered <= 0.0:
         # For n < 1 the concentration reaches exactly zero in finite time — a real property of a
         # zero- or half-order rate law, not a numerical failure, so it is reported as complete
         # rather than raised.
         return 1.0
-    remaining = float(remaining_powered ** (1.0 / exponent))
+    remaining = representable(
+        "the remaining concentration", lambda: remaining_powered ** (1.0 / exponent)
+    )
     return 1.0 - min(remaining / initial_concentration, 1.0)
 
 
@@ -250,12 +255,16 @@ def time_for_batch_conversion(
         return 0.0
 
     if math.isclose(order, 1.0):
-        return -math.log(1.0 - conversion) / rate_constant
+        return representable("the batch time", lambda: -math.log(1.0 - conversion) / rate_constant)
 
     remaining = initial_concentration * (1.0 - conversion)
     exponent = 1.0 - order
-    return float(
-        (remaining**exponent - initial_concentration**exponent) / ((order - 1.0) * rate_constant)
+    return representable(
+        "the batch time",
+        lambda: (
+            (remaining**exponent - initial_concentration**exponent)
+            / ((order - 1.0) * rate_constant)
+        ),
     )
 
 
@@ -337,7 +346,9 @@ def cstr_conversion(
         return 0.0
 
     if math.isclose(order, 1.0):
-        product = rate_constant * residence_time_seconds
+        product = representable(
+            "k·τ, the Damköhler number", lambda: rate_constant * residence_time_seconds
+        )
         return product / (1.0 + product)
 
     if math.isclose(order, 0.0):
@@ -348,10 +359,13 @@ def cstr_conversion(
     # as C → 0 it tends to C₀ > 0. So a bisection on (0, C₀] always brackets the root, with no
     # bracket-widening and no failure mode to report.
     def residual(concentration: float) -> float:
-        return float(
-            initial_concentration
-            - concentration
-            - residence_time_seconds * rate_constant * concentration**order
+        return representable(
+            "the CSTR balance C₀ - C - τ·k·Cⁿ",
+            lambda: (
+                initial_concentration
+                - concentration
+                - residence_time_seconds * rate_constant * concentration**order
+            ),
         )
 
     low, high = 0.0, initial_concentration

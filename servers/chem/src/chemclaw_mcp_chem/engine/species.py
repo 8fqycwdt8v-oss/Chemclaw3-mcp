@@ -130,10 +130,11 @@ MAX_DEGRADANTS = 64
 #: So the worst call this admits costs about **2.0 s** of one core: 1.5x inside the readiness
 #: probe's own 3 s timeout and 15x inside the manifest's 30 s `request_timeout`. That is above the
 #: 0.1-0.62 s band `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` derived the old number
-#: against, and that band does not survive being measured on anything but a linear alkane: on PAMAM
-#: G4, the four *unbounded* enumerators beside this one measure `enumerate_tautomer_set` 2,801 ms,
-#: `describe_molecule` 2,793 ms, `enumerate_degradant_candidates` 1,823 ms and
-#: `enumerate_stereoisomer_set` 18 ms. 2.0 s does not make this the expensive one.
+#: against, and that band does not survive being measured on anything but a linear alkane. The
+#: tautomer and degradant enumerators beside this one are bounded by their own cost now —
+#: `MAX_TAUTOMER_HEAVY_ATOMS` and `MAX_DEGRADANT_MATCH_ATOM_PRODUCT` below, each with its frontier
+#: table, held by `tests/test_enumeration_cost_bounds.py` — and a molecule the size of PAMAM G4 is
+#: refused by both before it runs, so their G4 timings are not a comparison for this one.
 #:
 #: 150,000 is also 75 sites at the largest molecule `MAX_MOLECULE_ATOMS` admits, and 19.5% above
 #: PAMAM G4 — which is the largest PAMAM this server can see at all, since G5 is 2,004 heavy atoms
@@ -823,12 +824,11 @@ def describe_molecule(smiles: str) -> Topology:
     # answer that should reach them rather than a refusal. Perceiving the sites costs 7.4 ms at 660
     # sites and 1,978 atoms, measured; walking them is what costs 48 s.
     #
-    # **It is not free, and it is routinely the more expensive of the two.** The `tautomers` field
-    # below enumerates, which is unbounded in a way the site counts are not: measured, this
-    # function costs 839 ms on PAMAM G3 against `enumerate_microstates`' 128 ms, and 2,793 ms on
-    # PAMAM G4 against 587 ms. It is still the right tool to ask first — it answers for a molecule
-    # the enumeration refuses — but "free" was a claim about the site counts that the tautomer
-    # enumeration beside them does not honour. `docs/BACKLOG.md` carries the ceiling question.
+    # **It is not free.** The `tautomers` field below enumerates, which costs what the site counts
+    # do not: measured, 839 ms on PAMAM G3 against `enumerate_microstates`' 128 ms. That
+    # enumeration is bounded by `MAX_TAUTOMER_HEAVY_ATOMS`, and past it the field is null with
+    # `tautomer_count_computed` false rather than a refusal, so this stays the tool to ask first —
+    # it answers for a molecule the enumeration refuses.
     acidic = _sites(mol, _ACIDIC)
     basic = _sites(mol, _BASIC)
     computed = True
