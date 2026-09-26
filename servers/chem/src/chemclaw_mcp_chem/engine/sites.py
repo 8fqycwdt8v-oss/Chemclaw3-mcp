@@ -453,7 +453,16 @@ def _hydrogen_indices(with_hydrogens: Chem.Mol) -> dict[int, list[int]]:
 
 
 def _matched_atoms(mol: Chem.Mol, pattern: str) -> set[int]:
-    """The atoms this SMARTS puts in position zero — the site the pattern is about."""
+    """The atoms this SMARTS puts in position zero — the site the pattern is about.
+
+    **Compiled per call on purpose, after measuring it.** The twenty-one `_KINDS` patterns cost
+    0.2-1.2 ms to parse against a whole `describe_atom_sites` of 3.9-11 ms on tyrosine and 13-46 ms
+    on imatinib (`cc3-gate`, RDKit 2026.03.5): **2-11%**, falling as the molecule grows, and inside
+    the run-to-run noise of the call itself. A shared compiled query also puts two recursive
+    patterns under the `RDK_BUILD_THREADSAFE_SSS` dependency `species.py::_compiled` documents,
+    which is a real cost for a saving this size. The decision and the other four tables' numbers are
+    `D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter`.
+    """
     query = Chem.MolFromSmarts(pattern)
     return {match[0] for match in mol.GetSubstructMatches(query)}
 

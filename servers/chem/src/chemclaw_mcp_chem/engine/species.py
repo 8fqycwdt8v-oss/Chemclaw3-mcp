@@ -33,7 +33,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Literal
 
-from mcp_server_kit.limits import env_bound
+from mcp_server_kit.limits import echo, env_bound
 from pydantic import BaseModel, Field
 from rdkit import Chem
 from rdkit.Chem import rdChemReactions, rdMolDescriptors
@@ -303,7 +303,8 @@ def _refuse_past(count: int, cap: int, what: str, smiles: str) -> None:
     """
     if count > cap:
         raise ValueError(
-            f"{smiles!r} has {count} {what}, above the limit of {cap}. Returning the first {cap} "
+            f"{echo(smiles)!r} has {count} {what}, above the limit of {cap}. Returning the "
+            f"first {cap} "
             f"would make the set look complete while a ranking normalized populations over a "
             f"fraction of it. Narrow the molecule, or assign the ambiguous centres and ask again."
         )
@@ -331,7 +332,8 @@ def _refuse_past_enumeration_cost(sites: int, atoms: int, smiles: str) -> None:
     product = sites * atoms
     if product > MAX_SITE_ATOM_PRODUCT:
         raise ValueError(
-            f"{smiles!r} has {sites} ionisable sites on {atoms} heavy atoms. Each site is toggled, "
+            f"{echo(smiles)!r} has {sites} ionisable sites on {atoms} heavy atoms. Each site is "
+            "toggled, "
             f"sanitised and canonicalised over the whole graph, so the work is the product of "
             f"those two numbers — {product:,} here, {product / MAX_SITE_ATOM_PRODUCT:.1f}x the "
             f"{MAX_SITE_ATOM_PRODUCT:,} one call on this server may spend. How many microstates "
@@ -408,10 +410,10 @@ def _compiled(smarts: str) -> Chem.Mol | None:
     `classifier.py::_compiled` is the same shape one server over.
 
     **It is not the last one in the fleet, and this docstring said it was.** Grepping after the
-    measurement found four more constant tables compiled per call — `_TRANSFORMS` fifty lines
-    below, `sites.py::_matched_atoms`, `torsions.py::_matched_pairs` and `rxnlabel`'s two — none of
-    which was measured here, so none is claimed either way. `docs/BACKLOG.md` carries them as the
-    row they are.
+    measurement found four more constant tables compiled per call. Each was then measured on its
+    own (`D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter`):
+    `_TRANSFORMS` below and `rxnlabel`'s `agents.py` are cached, `sites.py` and `torsions.py` are
+    not, and `rxnlabel`'s `species.py` had been compiling at import all along.
 
     **What it is worth, measured here against the exact code this replaced rather than transcribed
     from the row that asked for it.** On tyrosine, over five runs of 2,000 iterations: both tables
@@ -622,6 +624,44 @@ _TRANSFORMS: tuple[tuple[DegradationCondition, str, str], ...] = (
 )
 
 
+#: One `_TRANSFORMS` row with its SMARTS compiled: condition, transform name, reaction.
+_CompiledTransform = tuple[DegradationCondition, str, rdChemReactions.ChemicalReaction]
+
+
+@cache
+def _compiled_transforms() -> tuple[_CompiledTransform, ...]:
+    """`_TRANSFORMS`, each reaction SMARTS compiled and initialised once per process.
+
+    **Measured before it was cached, which is the whole of the backlog row this closes.** The
+    eleven reaction SMARTS were re-parsed on every `enumerate_degradant_candidates` call. In the
+    `cc3-gate` Linux image (RDKit 2026.03.5), best of repeated runs: compiling the table costs
+    0.4-2.1 ms per call against a whole call of 2.4-4.2 ms on tyrosine (**32-50%**) and 5.8-17 ms
+    on imatinib (**7-12%**). Measured again in one process, cache cleared per call against warm,
+    the whole call goes 1,588 → 1,262 µs on tyrosine (**1.26x**) and 4,578 → 3,970 µs on imatinib
+    (**1.15x**) — the same constant-not-factor shape `_compiled` above records. The host was under
+    heavy unrelated load throughout, so the ranges are wide and only the in-process ratio compares
+    like with like.
+
+    `Initialize()` here rather than on first use: `RunReactants` initialises an uninitialised
+    reaction lazily, which is a write to the shared object inside a call that may be running in
+    two worker threads at once. Done once, under `@cache`, every later `RunReactants` only reads.
+    Three of the eleven reactant templates are recursive SMARTS, so the same
+    `RDK_BUILD_THREADSAFE_SSS` argument `_compiled` makes applies here too, and
+    `tests/test_species.py` drives the shared reactions from threads rather than assume it.
+
+    A pattern RDKit will not parse is dropped rather than raised on, exactly as before — a malformed
+    constant is a review failure, and `tests/test_species.py` asserts all eleven compile.
+    """
+    compiled: list[_CompiledTransform] = []
+    for condition, name, smarts in _TRANSFORMS:
+        reaction = rdChemReactions.ReactionFromSmarts(smarts)
+        if reaction is None:  # pragma: no cover - a malformed constant would fail every call
+            continue
+        reaction.Initialize()
+        compiled.append((condition, name, reaction))
+    return tuple(compiled)
+
+
 def enumerate_degradant_candidates(smiles: str) -> DegradantSet:
     """Structures a forced-degradation transform reaches from `smiles`.
 
@@ -639,10 +679,7 @@ def enumerate_degradant_candidates(smiles: str) -> DegradantSet:
     parent = _canonical(mol)
     seen: set[str] = {parent}
     degradants: list[Degradant] = []
-    for condition, name, smarts in _TRANSFORMS:
-        reaction = rdChemReactions.ReactionFromSmarts(smarts)
-        if reaction is None:  # pragma: no cover - a malformed constant would fail every call
-            continue
+    for condition, name, reaction in _compiled_transforms():
         for products in reaction.RunReactants((mol,)):
             for product in products:
                 try:

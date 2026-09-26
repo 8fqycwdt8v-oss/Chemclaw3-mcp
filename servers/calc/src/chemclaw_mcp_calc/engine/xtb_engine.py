@@ -19,6 +19,7 @@ from importlib.metadata import version
 from typing import Any
 
 import numpy as np
+from mcp_server_kit.limits import echo
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from scipy import constants
@@ -148,7 +149,7 @@ def parse_molecule(smiles: str) -> Chem.Mol:
     """Parse a SMILES into a molecule with explicit hydrogens, or raise."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"invalid SMILES: {smiles!r}")
+        raise ValueError(f"invalid SMILES: {echo(smiles)!r}")
     return Chem.AddHs(mol)
 
 
@@ -289,7 +290,7 @@ def make_calculator(
             # name at construction, so one reaching here came through a direct engine call. The two
             # share one shortlist so they cannot disagree about what the method supports.
             raise ValueError(
-                f"unknown ALPB solvent {solvent!r}; common valid names are "
+                f"unknown ALPB solvent {echo(solvent)!r}; common valid names are "
                 f"{', '.join(SUGGESTED_SOLVENTS)}"
             ) from error
     return calc

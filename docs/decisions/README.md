@@ -122,5 +122,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it](D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it.md) | A claim about another repository is checked by re-reading it, and a count in prose is the same defect wherever it appears |
 | [D-2026-09-19-an-atom-count-under-a-byte-cap-is-a-range-not-a-figure](D-2026-09-19-an-atom-count-under-a-byte-cap-is-a-range-not-a-figure.md) | An atom count under a byte cap is a range, not a figure, and a margin derived from a refused size is derived from nothing |
 | [D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape](D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape.md) | The worst of three shapes is not the worst shape |
+| [D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter](D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter.md) | A constant table is cached where its compile is measured to matter, and not on the strength of the pattern looking familiar |
+| [D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it](D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it.md) | One echo bound, and the refusals that bypassed the four copies of it |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Literal
 
 from mcp_server_kit import Dataset, load_dataset, read_records
+from mcp_server_kit.limits import echo
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -182,7 +183,7 @@ def require(name: str) -> Solvent:
         return found
     known = ", ".join(sorted(solvent.name for solvent in all_solvents())[:8])
     raise ValueError(
-        f"{name!r} is not in the vendored solvent table ({len(all_solvents())} solvents; "
+        f"{echo(name)!r} is not in the vendored solvent table ({len(all_solvents())} solvents; "
         f"e.g. {known}, ...). Call list_solvents to see the full set — this server answers from a "
         "fixed corpus and cannot look a solvent up anywhere else."
     )

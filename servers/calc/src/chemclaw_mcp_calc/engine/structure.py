@@ -27,6 +27,7 @@ Coordinates are in **Angstrom** — the interchange unit of RDKit, XYZ files, an
 from __future__ import annotations
 
 import numpy as np
+from mcp_server_kit.limits import echo
 from pydantic import BaseModel, Field, computed_field, model_validator
 from rdkit import Chem
 
@@ -264,7 +265,7 @@ def structure_from_smiles(
     elif charge != formal_charge:
         raise ValueError(
             f"declared charge {charge} does not match the formal charge "
-            f"{formal_charge} of {smiles!r}"
+            f"{formal_charge} of {echo(smiles)!r}"
         )
     return structure_from_mol(
         mol,

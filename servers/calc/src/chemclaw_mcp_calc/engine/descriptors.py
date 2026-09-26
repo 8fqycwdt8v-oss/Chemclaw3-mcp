@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from importlib.metadata import version
 
+from mcp_server_kit.limits import echo
 from pydantic import BaseModel
 from rdkit import Chem
 from rdkit.Chem import QED, Crippen, Descriptors, rdMolDescriptors
@@ -98,7 +99,7 @@ def compute_descriptor_profile(job: DescriptorInput) -> DescriptorProfile:
     canonical = require_canonical_smiles(job.smiles)
     mol = Chem.MolFromSmiles(canonical)
     if mol is None:  # pragma: no cover - `require_canonical_smiles` already proved it parses
-        raise ValueError(f"invalid SMILES: {job.smiles!r}")
+        raise ValueError(f"invalid SMILES: {echo(job.smiles)!r}")
 
     # Three `type: ignore`s here and one below, all the same rdkit-stubs gap: the descriptor
     # functions are assigned as lambdas at import and `QED.qed` carries no annotations.

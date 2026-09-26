@@ -118,6 +118,23 @@ def test_every_role_smarts_compiles(pattern: str) -> None:
     assert Chem.MolFromSmarts(pattern) is not None
 
 
+def test_each_role_smarts_is_compiled_once_per_process() -> None:
+    """Both tables were re-parsed on every `is_ligand`/`is_base`; the cache's own counters say not.
+
+    Water matches no rule, so every call walks both whole tables — the worst case for the old
+    per-call parse, and the one where a regression to it would show as a miss per pattern per call.
+    """
+    agents._compiled.cache_clear()
+    patterns = {*agents._LIGAND_SMARTS, *agents._BASE_SMARTS}
+    for _ in range(5):
+        assert not agents.is_ligand("O", WITH_METAL)
+        assert not agents.is_base("O")
+    info = agents._compiled.cache_info()
+    assert info.misses == len(patterns), f"{info.misses} compiles for {len(patterns)} patterns"
+    assert info.currsize == len(patterns)
+    assert info.hits == 4 * len(patterns)
+
+
 @pytest.mark.parametrize(("name", "smiles"), BASES_THE_RULES_NAME, ids=lambda v: str(v))
 def test_every_base_rule_recognises_the_reagent_its_comment_names(name: str, smiles: str) -> None:
     """The bicarbonate defect, generalised to every row of the table.

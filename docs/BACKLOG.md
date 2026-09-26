@@ -141,31 +141,6 @@ decision leaves a record behind and the row goes.
   **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
 
-- [ ] **A refusal's echo is bounded in four engines by a constant each of them declares, and most
-  refusals do not go through it.** `chem`, `calc`, `safety` and `rxnpredict` each define their own
-  120-character `_MAX_ECHO_CHARS` and an `_echo`/`truncate_echo` beside it, and the reason is
-  recorded at `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`: `connector_app` passes a
-  `ValueError` to the model verbatim, so an unbounded echo is unbounded caller-influenced text in
-  the context window of the turn that asked. Most refusal sites interpolate the structure directly
-  instead. Re-derive the list with
-
-  ```sh
-  grep -rnE '\{[a-z_]*\.?smiles[^}]*!r\}' servers/*/src packages/*/src | grep -v '_echo\|truncate'
-  ```
-
-  The ceiling above them is not the echo bound but `mcp_server_kit.limits.MAX_SMILES_CHARS`, which
-  is 4000 — so these are bounded, at roughly thirty times the bound the four engines chose.
-  Measured 2026-09-12: `predict_pka` on `"C" * 1500` (inside both structural bounds, so it is an
-  ordinary accepted call) raises a **1,587-character** refusal where `_echo` would have produced
-  about two hundred. Two things to decide together, and that is why they are queued here as a pair: whether the
-  truncation belongs in `mcp_server_kit.limits` beside the bounds it pairs with rather than
-  copied per server, and whether a ratchet can tell a caller-derived echo from a corpus-derived
-  one — `servers/chem/src/chemclaw_mcp_chem/engine/reagents.py` quotes a *table's* own SMILES in a
-  duplicate-name error, which is not caller-influenced and needs no bound.
-  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
-  `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/preprocessing.py`.
-
 - [ ] **A relaxation at `servers/calc`'s atom ceiling spends its budget instead of converging, and
   the refusal one atom above it promises the opposite.** `Structure`'s refusal says a system past
   the ceiling is "refused rather than started and abandoned";
@@ -237,23 +212,6 @@ decision leaves a record behind and the row goes.
   numbers above are what it is to be decided against.
   **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
   `servers/chem/tests/test_microstate_bound.py`, `servers/chem/tests/test_depiction_bound.py`.
-
-- [ ] **Four more constant SMARTS tables in this fleet are compiled on every call, and "that was
-  the last one" has now been said twice.** `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work`
-  cached `servers/chem`'s `_ACIDIC`/`_BASIC` and its docstring claimed to be the third and last
-  such fix; grepping `MolFromSmarts`/`ReactionFromSmarts` across `servers/*/src` in the same
-  session found four more, each over a table that is a module constant:
-  `species.py::enumerate_degradant_candidates` rebuilding all eleven `_TRANSFORMS` reaction SMARTS,
-  `chem`'s `sites.py::_matched_atoms` and `torsions.py::_matched_pairs`, and `rxnlabel`'s
-  `agents.py` and `species.py`. **None of them is measured**, which is the whole row: the one that
-  was measured turned out to be worth 1.4x on a real molecule and nothing at all on a large one, so
-  the useful output here is four numbers and then four `@cache`s or a note saying they are not
-  worth one — not four caches applied on the strength of the pattern looking familiar.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py::enumerate_degradant_candidates`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/sites.py::_matched_atoms`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/torsions.py::_matched_pairs`,
-  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/agents.py`,
-  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/species.py`.
 
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**
