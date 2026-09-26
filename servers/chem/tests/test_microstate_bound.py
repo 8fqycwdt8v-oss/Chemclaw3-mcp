@@ -31,13 +31,13 @@ call. Measured against a 0.1 s event-loop tick beside bursts of the worst molecu
     n=8  wall 5.23 s   loop lateness p50  70.1 ms  max 384.2 ms
 
 and one *unbounded* 14 s call left the tick 46.0 ms late at worst. The probe's `timeoutSeconds` is
-3, so nothing here comes near it, and the "N x worst-call" arithmetic that derives
-`DEFAULT_MAX_CONCURRENT_RENDERS` is conservative by an order of magnitude for this shape. A ceiling
-would also be the wrong instrument: the harm measured above is *one* call burning 48 s of
-uncancellable CPU past its caller's timeout, and a ceiling bounds how many run, never how long one
-runs. Only an input bound prices that. The open question this leaves — whether the five enumerators
-should share one ceiling — is a `docs/BACKLOG.md` row with these numbers in it, not a knob added
-here on the strength of a measurement that says it would not bind.
+3, so nothing here comes near it. A ceiling would also be the wrong instrument: the harm measured
+above is *one* call burning 48 s of uncancellable CPU past its caller's timeout, and a ceiling
+bounds how many run, never how long one runs. Only an input bound prices that. (The five species
+tools now share one ceiling with the depiction anyway —
+`D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` — derived from the pod's
+thread pool rather than from this tool's cost, because two of its neighbours measurably hold the
+interpreter where this one does not.)
 
 **The first bound written here priced the site count alone, and that is the wrong variable.** Each
 site is one `_shift`, one `SanitizeMol` and one `_canonical` over the whole graph, so the cost is

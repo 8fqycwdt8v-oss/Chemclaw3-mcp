@@ -101,4 +101,5 @@ except Exception as exc:  # noqa: BLE001
         "conditions",
         f"askcos suite not importable (install askcos-core from MIT's repo): {exc!r}",
         exc=exc,
+        optional=("askcos",),
     )

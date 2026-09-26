@@ -1,7 +1,7 @@
-"""How many depictions this pod accepts at once, and what it does with the call that arrives full.
+"""How many heavy calls this pod accepts at once, and what it does with the call that arrives full.
 
-`test_depiction_bound.py` is about the *arithmetic*: where `DEFAULT_MAX_CONCURRENT_RENDERS` comes
-from, and how it relates to the probe budget and the pod's thread pool. It covers the ceiling only
+`test_depiction_bound.py` is about the *arithmetic*: where `DEFAULT_MAX_CONCURRENT_HEAVY_CALLS`
+comes from, and how it relates to the pod's thread pool. It covers the ceiling only
 indirectly — through the numbers, not through the gate — so the gate itself had no test at all in
 the one server where it shipped first.
 
@@ -13,10 +13,10 @@ This file drives it. Four properties, each with its own failure:
 - **The slot outlives a caller that gave up.** Cancelling the awaiting coroutine does not stop the
   worker thread, so releasing on cancellation would hand the freed slot to a retry while the
   original layout was still holding the GIL.
-- **Every other tool stays answerable.** A render is the only heavy thing here, and refusing a
+- **Every ungated tool stays answerable.** The ceiling covers the heavy band, and refusing a
   compound lookup because the pod is drawing would turn a CPU bound into an outage.
 - **The gate and the number it enforces are the same object.** The ceiling is read once, at import,
-  from `CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS`.
+  from `CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS`.
 
 The gated set is checked against the *served* surface rather than a list kept here, for the reason
 this repository keeps relearning: the thing that must not be forgotten is exactly the thing a
@@ -37,7 +37,10 @@ import pytest
 from chemclaw_mcp_chem import tools
 from chemclaw_mcp_chem.engine.admission import (
     ADMISSION_MARKER,
-    DEFAULT_MAX_CONCURRENT_RENDERS,
+    DEFAULT_MAX_CONCURRENT_HEAVY_CALLS,
+    GATED_TOOLS,
+    RETIRED_VARIABLE,
+    VARIABLE,
     Admission,
 )
 from mcp_server_kit.testing import reimported
@@ -92,8 +95,8 @@ def one_slot(monkeypatch: pytest.MonkeyPatch) -> Iterator[Admission]:
 
 
 def test_a_ceiling_below_one_is_refused_at_construction() -> None:
-    """A ceiling of zero would refuse every depiction, which is a misconfiguration."""
-    with pytest.raises(ValueError, match="would refuse every depiction"):
+    """A ceiling of zero would refuse every heavy call, which is a misconfiguration."""
+    with pytest.raises(ValueError, match="would refuse every heavy call"):
         Admission(0)
 
 
@@ -103,7 +106,7 @@ def test_the_gate_refuses_once_the_ceiling_is_reached_and_reopens_when_one_finis
     gate.acquire("a render_structure")
     gate.acquire("a render_structure")
     assert gate.in_flight == 2
-    with pytest.raises(ValueError, match="already rendering 2 structures"):
+    with pytest.raises(ValueError, match="already running 2 depictions"):
         gate.acquire("a render_structure")
     gate.release()
     gate.acquire("a render_structure")
@@ -118,7 +121,7 @@ def test_a_double_release_cannot_open_the_gate() -> None:
     gate.release()
     assert gate.in_flight == 0
     gate.acquire("a render_structure")
-    with pytest.raises(ValueError, match="already rendering 1 structures"):
+    with pytest.raises(ValueError, match="already running 1 depictions"):
         gate.acquire("a render_structure")
 
 
@@ -140,7 +143,7 @@ async def test_a_full_pod_refuses_the_next_render_before_starting_it(
     assert one_slot.in_flight == 1
 
     started = time.perf_counter()
-    with pytest.raises(ValueError, match="already rendering 1 structures"):
+    with pytest.raises(ValueError, match="already running 1 depictions"):
         await tools.render_structure("CCN")
     refusal = time.perf_counter() - started
     assert refusal < BLOCK_SECONDS * MAX_REFUSAL_FRACTION, (
@@ -192,7 +195,7 @@ async def test_the_slot_is_held_until_the_render_finishes_not_until_the_caller_g
     assert one_slot.in_flight == 1, (
         "the slot came back when the caller gave up, while the worker thread was still drawing"
     )
-    with pytest.raises(ValueError, match="already rendering 1 structures"):
+    with pytest.raises(ValueError, match="already running 1 depictions"):
         await tools.render_structure("CCN")
 
     blocking.finish.set()
@@ -206,7 +209,7 @@ async def test_the_slot_is_held_until_the_render_finishes_not_until_the_caller_g
 async def test_every_other_tool_stays_answerable_while_the_pod_is_rendering(
     one_slot: Admission, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A render is the only heavy tool here; the rest must not be refused because of it."""
+    """The ungated tools must not be refused because the heavy band is full."""
     blocking = _BlockingRender()
     monkeypatch.setattr(tools, "render_svg", blocking)
 
@@ -221,22 +224,18 @@ async def test_every_other_tool_stays_answerable_while_the_pod_is_rendering(
     await _settle()
 
 
-#: The one gated tool, named here because it is the whole set — and asserted against the served
-#: surface below rather than trusted, so a second heavy tool cannot arrive ungated.
-GATED = {"render_structure"}
-
-
-def test_only_the_depiction_is_gated_and_it_is_gated() -> None:
+def test_the_band_is_gated_and_nothing_else_is() -> None:
     """Derived from the served surface, so a heavy tool added next year is gated or this fails.
 
     Deliberately *not* derived from the manifest's `state_changing` list, which is how
-    `servers/calc` checks the same thing: `render_structure` is `read_only` there and correctly so.
-    Cost and mutability are different axes, and reusing one list for both would either gate the
-    enumerations (which change nothing and cost nothing) or ungate the one tool that lays out a
-    molecule and holds the interpreter while it does — milliseconds rather than microseconds, and
-    the only tool here that holds it at all. No figure is transcribed: this sentence shipped saying
-    97 ms, which is a molecule `MAX_DEPICTION_CHARS` refuses outright. What the ceiling is derived
-    from is `test_depiction_bound.py`'s `WORST_LEGAL_MOLECULE`, measured there.
+    `servers/calc` checks the same thing: every tool here is `read_only`, correctly. Cost and
+    mutability are different axes.
+
+    **This asserted `{"render_structure"}` — the one tool whose worst legal call is 4.6 ms — while
+    five species tools that measure seconds, two of them holding the interpreter for all of it, went
+    ungated.** `engine/admission.py` has the measurement. The tools left out are argued there too:
+    a compound lookup, a charge table, green metrics, and three graph walks measured at most 0.55 s
+    on the worst 1,990-atom shapes.
     """
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
@@ -245,10 +244,35 @@ def test_only_the_depiction_is_gated_and_it_is_gated() -> None:
         for name in served
         if getattr(getattr(manager.get_tool(name), "fn", None), ADMISSION_MARKER, False)
     }
-    assert gated == GATED, (
-        f"ungated tools that this file expects to be gated: {sorted(GATED - gated)}; "
-        f"newly gated tools: {sorted(gated - GATED)}"
+    assert gated == GATED_TOOLS, (
+        f"ungated tools the band expects to be gated: {sorted(GATED_TOOLS - gated)}; "
+        f"gated tools the band does not name: {sorted(gated - GATED_TOOLS)}"
     )
+
+
+async def test_a_species_enumeration_and_a_depiction_share_one_ceiling(
+    one_slot: Admission, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The inversion this closes: the dear tools were ungated beside the cheap gated one.
+
+    One slot, held by a depiction; a tautomer enumeration is then refused before it starts. The
+    same interpreter serves both, so a second gate per tool would admit twice the work onto it.
+    """
+    blocking = _BlockingRender()
+    monkeypatch.setattr(tools, "render_svg", blocking)
+    started: list[str] = []
+    monkeypatch.setattr(tools, "enumerate_tautomer_set", lambda smiles: started.append(smiles))
+
+    running = asyncio.ensure_future(tools.render_structure("CCO"))
+    await asyncio.to_thread(blocking.started.wait, 30)
+    with pytest.raises(ValueError, match="already running 1 depictions or species enumerations"):
+        await tools.enumerate_tautomers("O=C1CCCCC1")
+    assert started == [], "the refused enumeration reached its engine function"
+
+    blocking.finish.set()
+    await running
+    await _settle()
+    assert one_slot.in_flight == 0
 
 
 def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
@@ -262,10 +286,38 @@ def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     shape that left `servers/rxnlabel` able to hardcode its batch bound with 209 tests green.
     `tests/test_fleet.py` is what then refuses a shipped file that moves the variable.
     """
-    monkeypatch.delenv("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", raising=False)
-    assert reimported(tools)._admission.limit == DEFAULT_MAX_CONCURRENT_RENDERS
-    monkeypatch.setenv("CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS", "3")
+    monkeypatch.delenv(VARIABLE, raising=False)
+    monkeypatch.delenv(RETIRED_VARIABLE, raising=False)
+    assert reimported(tools)._admission.limit == DEFAULT_MAX_CONCURRENT_HEAVY_CALLS
+    monkeypatch.setenv(VARIABLE, "3")
     assert reimported(tools)._admission.limit == 3
+
+
+def test_the_retired_variable_is_refused_rather_than_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment that set the old name must not run on the default while believing its number."""
+    monkeypatch.delenv(VARIABLE, raising=False)
+    monkeypatch.setenv(RETIRED_VARIABLE, "8")
+    with pytest.raises(ValueError, match=VARIABLE):
+        reimported(tools)
+
+
+def test_the_variable_the_gate_reads_is_the_one_the_refusal_names() -> None:
+    """`tools.py` writes the name as a literal for the fleet's bound scan; this holds it to the
+    constant the refusal and the retirement message quote."""
+    import ast
+    import inspect
+
+    literals = {
+        node.args[0].value
+        for node in ast.walk(ast.parse(inspect.getsource(tools)))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") == "env_bound"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+    }
+    assert literals == {VARIABLE}
 
 
 def test_the_shipped_gate_enforces_the_shipped_default() -> None:
@@ -275,7 +327,7 @@ def test_the_shipped_gate_enforces_the_shipped_default() -> None:
     about the real gate rather than about an `Admission` the tests built for themselves.
     """
     assert isinstance(tools._admission, Admission)
-    assert tools._admission.limit == DEFAULT_MAX_CONCURRENT_RENDERS
+    assert tools._admission.limit == DEFAULT_MAX_CONCURRENT_HEAVY_CALLS
 
 
 def test_a_gated_tool_still_advertises_its_real_signature() -> None:

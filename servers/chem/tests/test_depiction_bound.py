@@ -6,11 +6,12 @@ protect the pod — a per-call atom ceiling (`MAX_DEPICTION_ATOMS`) and a concur
 (`Admission`). These pin both, and that the refusal is *fast* rather than a hang.
 
 **A third bound exists that this server does not own**: the process's default `to_thread` pool,
-which `mcp_server_kit` sizes from the pod's cgroup and which is *narrower* than the admission
-ceiling. `engine/admission.py` argues why that is sound and why neither number moves; the last
-three tests here are what stop the two drifting apart, by re-deriving the pool's width from the
-Deployment through the kit's own arithmetic rather than trusting a comment that says they agree.
-Both numbers already carried a comment, which is exactly why a comment is not the check.
+which `mcp_server_kit` sizes from the pod's cgroup. It used to be *narrower* than the admission
+ceiling (5 threads under a ceiling of 8), which `engine/admission.py` argued was harmless while
+only depictions were gated and stopped being once the species tools joined them. The ceiling is
+now derived from it — the pool less one — and the pool tests here are what stop the two drifting
+apart, by re-deriving the width from the Deployment through the kit's own arithmetic rather than
+trusting a comment that says they agree.
 """
 
 from __future__ import annotations
@@ -26,9 +27,8 @@ import pytest
 import yaml
 from chemclaw_mcp_chem.engine import depiction
 from chemclaw_mcp_chem.engine.admission import (
-    DEFAULT_MAX_CONCURRENT_RENDERS,
+    DEFAULT_MAX_CONCURRENT_HEAVY_CALLS,
     POD_THREAD_POOL_WIDTH,
-    PROBE_TIMEOUT_SECONDS,
     WORST_RENDER_SECONDS,
     Admission,
 )
@@ -44,9 +44,8 @@ from mcp_server_kit.testing import reimported
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 
-#: The two files the pod's thread pool is decided by, read rather than transcribed.
+#: The file the pod's thread pool is decided by, read rather than transcribed.
 DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
-MANIFEST = Path(__file__).resolve().parents[1] / "connector.yaml"
 
 #: The worst case for `Compute2DCoords` that is **legal under both bounds**: a 76-atom polypeptide.
 #: Shape rather than size is what costs — a 249-atom alkane draws in 22 ms and a 201-atom macrocycle
@@ -59,10 +58,9 @@ MANIFEST = Path(__file__).resolve().parents[1] / "connector.yaml"
 #: the real worst legal depiction is this one — measured at **4.6 ms against the 97 ms the 241-atom
 #: peptide cost**.
 #:
-#: `WORST_RENDER_SECONDS` is deliberately left at 0.1 s rather than lowered to match. It is now
-#: conservative by roughly 20x, and the admission ceiling derived from it is conservative in the
-#: same direction, which is the safe one — but a *later* reader should know the slack is there and
-#: where it came from, rather than re-deriving a tighter ceiling from a number that has moved.
+#: `WORST_RENDER_SECONDS` is deliberately left at 0.1 s rather than lowered to match. It no longer
+#: derives the admission ceiling — the pool does, see `engine/admission.py` — and is kept as the
+#: yardstick a depiction that got an order of magnitude slower is caught against.
 WORST_LEGAL_MOLECULE = "NC(C)C(=O)" + "NC(C)C(=O)" * 14 + "O"
 
 
@@ -104,7 +102,7 @@ def test_admission_refuses_past_the_ceiling() -> None:
     gate = Admission(limit=1)
     gate.acquire("render_structure")
     assert gate.in_flight == 1
-    with pytest.raises(ValueError, match=r"already rendering 1 structures"):
+    with pytest.raises(ValueError, match=r"already running 1 depictions"):
         gate.acquire("render_structure")
     gate.release()
     assert gate.in_flight == 0
@@ -159,26 +157,8 @@ def test_a_depiction_holds_the_gil_so_threads_buy_no_throughput() -> None:
     )
 
 
-def test_the_ceiling_leaves_the_readiness_probe_its_budget() -> None:
-    """Why the ceiling is 8, now that "one core each" is not the reason.
-
-    A render holds the GIL, so admitted renders delay *everything else in this process* — including
-    the kubelet's `/healthz` probe, whose `timeoutSeconds` is 3. N of them can hold the interpreter
-    for N x the worst legal render, and a probe that times out three times takes the pod out of
-    service, which is the outage the gate exists to prevent rather than cause.
-
-    A third of the probe's budget, so two thirds are left for the probe's own work and for whatever
-    else the loop owes. That gives a ceiling of 10; the shipped 8 is inside it.
-    """
-    held = DEFAULT_MAX_CONCURRENT_RENDERS * WORST_RENDER_SECONDS
-    assert held <= PROBE_TIMEOUT_SECONDS / 3, (
-        f"{DEFAULT_MAX_CONCURRENT_RENDERS} renders can hold this interpreter for {held:.2f}s "
-        f"against a {PROBE_TIMEOUT_SECONDS}s probe timeout"
-    )
-
-
 def test_the_worst_legal_depiction_still_costs_what_the_ceiling_was_derived_from() -> None:
-    """`WORST_RENDER_SECONDS` is an input to the ceiling, so a regression in it moves the ceiling.
+    """`WORST_RENDER_SECONDS` is the yardstick a depiction regression is caught against.
 
     Checked with 4x headroom rather than tightly: this runs on whatever CI box it is given, and the
     failure worth catching is an algorithmic one — a depiction that got an order of magnitude
@@ -190,7 +170,8 @@ def test_the_worst_legal_depiction_still_costs_what_the_ceiling_was_derived_from
     elapsed = time.perf_counter() - started
     assert elapsed <= 4 * WORST_RENDER_SECONDS, (
         f"the worst legal depiction now costs {elapsed * 1000:.0f} ms against the "
-        f"{WORST_RENDER_SECONDS * 1000:.0f} ms the admission ceiling was derived from"
+        f"{WORST_RENDER_SECONDS * 1000:.0f} ms yardstick; a depiction that slow belongs in "
+        "engine/admission.py's measurement before it belongs in the gated band"
     )
 
 
@@ -234,8 +215,8 @@ def test_the_pod_pool_is_the_width_the_ceiling_was_argued_against(
 ) -> None:
     """`POD_THREAD_POOL_WIDTH` is a claim about a pod, so it is re-derived from that pod.
 
-    The two ceilings — 8 admitted renders, 5 offload threads — were each written with a comment
-    saying what the other one was, and nothing checked either. This is the check: the width comes
+    The ceiling is derived from this width, so the width is the one number the derivation rests on
+    and it is re-derived from the pod rather than trusted. The width comes
     from the Deployment's `limits.cpu` through `mcp_server_kit`'s own `thread_pool_size()`, so a
     change to the CPU limit, to the kit's headroom, or an `MCP_THREAD_POOL_SIZE` added to the pod
     lands here rather than in a paragraph that goes on describing the old arrangement.
@@ -243,9 +224,9 @@ def test_the_pod_pool_is_the_width_the_ceiling_was_argued_against(
     width = _pod_thread_pool_width(tmp_path, monkeypatch)
     assert width == POD_THREAD_POOL_WIDTH, (
         f"this pod's to_thread pool is {width} threads, not the {POD_THREAD_POOL_WIDTH} that "
-        "engine/admission.py's argument for a ceiling of "
-        f"{DEFAULT_MAX_CONCURRENT_RENDERS} was measured against. Re-derive that argument before "
-        "moving the constant: it is what says the ceiling may exceed the pool"
+        "engine/admission.py derives the ceiling of "
+        f"{DEFAULT_MAX_CONCURRENT_HEAVY_CALLS} from. Re-derive that argument before moving the "
+        "constant"
     )
 
 
@@ -270,31 +251,26 @@ def test_threads_are_never_scarcer_than_the_cpu_this_pod_may_spend(
     )
 
 
-def test_a_render_the_pool_makes_wait_still_answers_inside_the_callers_budget(
+def test_every_admitted_call_has_a_worker_and_the_ungated_tools_keep_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """What the ceiling exceeding the pool actually costs, held against the caller's own budget.
+    """Admitted and running are the same set, which is what "refused rather than queued" means.
 
-    With a pool narrower than the ceiling, the last few admitted renders wait for a worker thread
-    rather than for the CPU — queued, which is the one thing this gate promises it never does. The
-    wait is bounded by the same product the ceiling was derived from, because nothing else runs
-    while a render holds the interpreter, so the whole burst is answered within
-    `DEFAULT_MAX_CONCURRENT_RENDERS x WORST_RENDER_SECONDS` whichever of the two a caller is
-    waiting on. That has to stay inside `connector.yaml`'s `request_timeout` — a queued render that
-    comes back after the caller has stopped waiting is precisely the outcome refusing exists to
-    avoid, and it is the ceiling, not the pool, that would take it there.
+    **This used to hold the opposite arrangement to a budget.** With 8 admitted renders over a
+    5-wide pool, three were admitted and then waited for a worker — queued — and the test argued the
+    wait was bounded by `8 x WORST_RENDER_SECONDS`. That bound assumed every admitted call was a
+    render. With the species tools in the band a waiting call can sit behind four that each hold the
+    interpreter for seconds (`engine/admission.py` has the measurement), so no budget covers it and
+    the ceiling moved under the pool instead. One thread is left over for the ungated tools, so a
+    compound lookup is not queued behind a full band either.
     """
     width = _pod_thread_pool_width(tmp_path, monkeypatch)
-    queued = max(0, DEFAULT_MAX_CONCURRENT_RENDERS - width)
-    manifest = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
-    budget = float(manifest["endpoint"]["request_timeout"])
-    worst_wait = DEFAULT_MAX_CONCURRENT_RENDERS * WORST_RENDER_SECONDS
-    assert worst_wait <= budget, (
-        f"{queued} of {DEFAULT_MAX_CONCURRENT_RENDERS} admitted renders wait for one of {width} "
-        f"worker threads, and the burst takes {worst_wait:.1f}s against a {budget:.0f}s "
-        "request_timeout. Past that, the gate admits work whose answer nobody is still waiting "
-        "for — lower the ceiling or raise the pool, and say in engine/admission.py which"
+    assert width >= DEFAULT_MAX_CONCURRENT_HEAVY_CALLS + 1, (
+        f"a ceiling of {DEFAULT_MAX_CONCURRENT_HEAVY_CALLS} over a {width}-thread pool admits "
+        "calls that then wait for a worker, or leaves the ungated tools none — queueing behind "
+        "a gate that promises not to queue"
     )
+    assert DEFAULT_MAX_CONCURRENT_HEAVY_CALLS >= 1
 
 
 # --- The output bound -------------------------------------------------------------------------

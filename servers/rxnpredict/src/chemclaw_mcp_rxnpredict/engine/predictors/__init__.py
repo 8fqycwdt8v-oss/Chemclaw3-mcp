@@ -72,7 +72,12 @@ def register_conditions(predictor: BaseConditionsPredictor) -> None:
 
 
 def mark_unavailable(
-    name: str, kind: str, reason: str, *, exc: BaseException | None = None
+    name: str,
+    kind: str,
+    reason: str,
+    *,
+    exc: BaseException | None = None,
+    optional: tuple[str, ...] | None = None,
 ) -> None:
     """Record — and count — that this deployment will answer without `name`.
 
@@ -85,8 +90,20 @@ def mark_unavailable(
         exc: What actually went wrong, so the cause is classified rather than guessed from the
             reason text. Omitted only where there is no exception — a predictor excluded by an
             `ENABLED_*_MODELS` allow-list is a deployment's decision and is `not_installed`.
+        optional: The top-level modules the module's guard imports — the extra itself. **This is
+            the third declaration the extra's *name* could not supply**: `extras_install` names a
+            `pyproject` extra, which is not a module anything raises about, and without this a
+            `ModuleNotFoundError` for a dependency *of* an installed extra (a broken image) and one
+            for the extra itself (a deployment's choice) were one cause. A module-level guard
+            passes the modules its own `import` lines name, and
+            `tests/test_readiness.py::test_every_guard_declares_the_modules_it_imports` holds the
+            two equal. `None` — the catch-all's case — takes a `ModuleNotFoundError` at its word.
     """
-    cause = degradation.classify(exc) if exc is not None else degradation.CAUSE_NOT_INSTALLED
+    cause = (
+        degradation.classify(exc, optional=optional)
+        if exc is not None
+        else degradation.CAUSE_NOT_INSTALLED
+    )
     _UNAVAILABLE[name] = Unavailable(kind, reason, cause)
     degradation.record(server=SERVER, component=name, cause=cause)
     logger.warning("Predictor %s (%s) unavailable [%s]: %s", name, kind, cause, reason)

@@ -102,4 +102,5 @@ except Exception as exc:  # noqa: BLE001
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[megan]` and the "
         f"molecule-one/megan repo + checkpoint): {exc!r}",
         exc=exc,
+        optional=("dgl", "torch"),
     )

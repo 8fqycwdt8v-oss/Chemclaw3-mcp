@@ -167,9 +167,11 @@ def _probe() -> tuple[Dataset, ...] | str:
         if module.available() or version._installed(distribution) == "absent":
             continue
         cause = module.construction_failure()
+        detail = module.construction_detail()
         return (
             f"the {component} is installed in this image ({distribution}) and could not be "
-            f"constructed ({cause or 'cause not recorded'}), so every reaction would be "
+            f"constructed ({cause or 'cause not recorded'}"
+            f"{f': {detail}' if detail else ''}), so every reaction would be "
             f"labelled as though no {component} existed — indistinguishable from a deployment "
             "that chose not to install one. Check the checkpoint mount and the container logs."
         )
