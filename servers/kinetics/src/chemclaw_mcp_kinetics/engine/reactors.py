@@ -76,10 +76,9 @@ RK4_REAL_STABILITY_LIMIT = 2.785
 #: rate. With the discontinuity gone, **200 steps agrees with a hundredfold finer grid to 6.4e-08**,
 #: eight significant figures on a number reported to four, and costs 0.83 ms of CPU against 8.1 ms.
 #:
-#: That tenfold saving is also what keeps this server out of the band where a concurrency ceiling
-#: is owed: at 8.1 ms it sat beside `chem`'s `render_structure`, the one tool in that server gated
-#: for exactly this reason. A defect fixed made the control unnecessary rather than the control
-#: covering for the defect.
+#: That tenfold saving was once the argument that this server owed no concurrency ceiling. It held
+#: only while the count was fixed: `_steps_for_stability` below makes the cost the caller's, the
+#: worst legal call is seconds, and `engine/admission.py` is the ceiling it now has.
 #:
 #: **This stays the default and is no longer the whole story, because "measured sufficient" was
 #: measured on one case.** The 6.4e-08 agreement above was taken at `k = 0.02, C_co = 0.9`, i.e.

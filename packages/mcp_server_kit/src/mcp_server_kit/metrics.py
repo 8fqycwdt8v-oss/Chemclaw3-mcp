@@ -17,8 +17,8 @@ judgement Chemclaw3 makes for `chemclaw_repeated_tool_calls_total{tool}`.
 anything it does not have, so an unclamped counter mints a series per string a confused model or a
 hostile caller sends. Measured in the audit's prototype: a probe calling `nope` minted
 `tool="nope"`. `app.py` therefore resolves every name against the manager's own registry and folds
-anything else into `UNKNOWN_TOOL`, and `tests/test_metrics.py` drives a real unknown-tool call to
-prove it.
+anything else into `UNKNOWN_TOOL`, and `packages/mcp_server_kit/tests/test_connector_app.py` drives
+a real unknown-tool call to prove it.
 
 The same rule is why `chemclaw_mcp_egress_refused_total` carries **no** label at all: the
 destination host of a refused connection is attacker-influenced and unbounded, and `rate(...) > 0`

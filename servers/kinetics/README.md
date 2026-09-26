@@ -106,8 +106,11 @@ significant figures, so no absolute tolerance would have caught it. Only the rat
 
 ## Concurrency
 
-No `engine/admission.py`, and the exemption is argued with its measurement in
-`tests/test_fleet.py::CEILING_IS_ARGUED_ABSENT`. Five tools are closed-form microseconds; the
-integrator is the only one that does real work, and its cost is bounded by a fixed step count
-(`MAX_INTEGRATION_STEPS`) rather than by an adaptive controller — a bound on the input, which is a
-different thing from a concurrency ceiling and the one this server actually needs.
+`semibatch_accumulation_profile` is gated by `engine/admission.py`
+(`CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`, default 3) and runs off the event loop. This
+section used to argue the server out of a ceiling at 836 µs per call, which held while the step
+count was fixed; once `_steps_for_stability` derived it from the caller's rate and dose time the
+worst legal call became seconds of pure-Python CPU, and the tool was also running *on* the event
+loop, stalling `/healthz` for as long as it ran. The five closed-form tools stay ungated.
+`D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` has the measurement and why the
+integrator was not replaced instead.

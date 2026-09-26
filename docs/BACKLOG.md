@@ -44,23 +44,6 @@ decision leaves a record behind and the row goes.
 
 ## 1 — The no-egress posture, where it stops
 
-- [ ] **`servers/kinetics` can now spend ~1.2 s in one tool call, and the argument that it owes no
-  concurrency ceiling was made at 0.83 ms.** `engine/reactors.DEFAULT_INTEGRATION_STEPS`' own comment
-  reasons that dropping from 2,000 steps to 200 is "also what keeps this server out of the band where
-  a concurrency ceiling is owed: at 8.1 ms it sat beside `chem`'s `render_structure`, the one tool in
-  that server gated for exactly this reason". That is still true of a non-stiff dose. It is no longer
-  true of every dose: `_steps_for_stability` now derives the step count from the problem, because a
-  fixed 200 reported a fast reaction's accumulation as **exactly zero** — the divergence clamped by
-  `max(dosed, 0.0)` — and `MAX_INTEGRATION_STEPS` rose to 200,000 to hold the realistic band.
-  Measured on the worked case: 23 ms at `k = 0.05` (3,878 steps), 238 ms at `k = 0.5` (38,780), and
-  the ceiling is ~1.2 s. `CLAUDE.md`'s rule is that the ceiling counts what the *pod* spends rather
-  than calls, and this one is single-threaded arithmetic, so the shape is `engine/admission.py`'s
-  rather than `calc`'s thread accounting. Decide whether `semibatch_accumulation` gets one, or whether
-  a cheaper stable scheme (an exponentially-fitted step for the linear part, or an implicit method)
-  puts the cost back under the band — the second would also lift the refusal that a dose past the
-  ceiling now gets. Do not close this by lowering the ceiling: that reinstates a safety number that is
-  wrong in the reassuring direction.
-
 - [ ] **A dynamic import whose name is computed from a *value* is outside the static scan, and
   always will be.** `importlib.import_module("gr" + "pc")` is folded to `grpc` since 2026-09-12, but
   `import_module(name)` cannot be resolved by any static reader, and `servers/rxnpredict` loads its
@@ -72,22 +55,6 @@ decision leaves a record behind and the row goes.
   names it may load, which *is* statically checkable.
   **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors`.
-
-- [ ] **A path cited in a module docstring is checked by nothing, and the check that would do it is
-  not the one `CLAUDE.md` gets.** Until 2026-09-12
-  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py` named the pyexec sandbox at a path
-  missing its `src/<package>` segment, in two places, both copied rather than opened — the failure
-  `test_every_path_claude_md_cites_under_a_real_directory_resolves` exists to stop, one document
-  over. Extending that test to first-party source prose was measured the same day and is **not** a
-  one-liner: of 86 rooted path tokens under `packages/*/src` and `servers/*/src`, 52 do not resolve
-  from the repository root — a server's docstrings name their own tests directory *server-relatively*
-  and the fleet writes a sibling server's engine module with the `src/<package>` segment elided. So
-  the row is the resolution rule rather than the glob: decide whether a citation inside a server's
-  own source resolves against that server first, and whether the elided form is spelled out or
-  taught to the checker.
-  **Anchors:** `tests/test_fleet.py::test_every_path_claude_md_cites_under_a_real_directory_resolves`,
-  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
-  `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
 ## 2 — The resource-bound ratchet, where it stops
 
@@ -108,20 +75,6 @@ decision leaves a record behind and the row goes.
   false when it was written: the other two were parsed as setting nothing at all.)
   **Anchors:** `tests/test_fleet.py::_bound_offences`, `servers/calc/deploy/deployment.yaml`,
   `packages/mcp_server_kit/src/mcp_server_kit/app.py`.
-
-- [ ] **The derived bound set covers scalar settings fields only, and one real container-typed field
-  is env-settable.** `_numeric_settings_fields` takes `int`/`float` annotations (and `X | None`),
-  deliberately: a number inside `dict[str, float]` is not a bound the ratchet could compare. But
-  `servers/rxnpredict`'s `model_trust_priors` is a `dict[str, float]` with a `mode="before"`
-  validator that parses a JSON string, under `env_prefix="CHEMCLAW_RXNPREDICT_"` — so it is
-  environment-settable, and measured on 2026-09-12 the env value **replaces the whole table** rather
-  than merging into it: `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS='{"parrot": 9.9}'` leaves the
-  aggregator with one prior and every other predictor unweighted. That is a scientific behaviour
-  change by environment variable, which is the class the calc constants are protected as. Decide
-  whether the ratchet covers container annotations whose validator accepts a string, or whether this
-  field is argued in the register instead.
-  **Anchors:** `tests/test_fleet.py::_numeric_settings_fields`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
 
 - [ ] **The bound derivation reads two configuration mechanisms and three shapes past them are
   invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
@@ -248,6 +201,27 @@ decision leaves a record behind and the row goes.
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/conditions/rxn_insight.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
   `servers/rxnpredict/tests/test_dataset.py`.
+
+- [ ] **`kinetics` refuses a semi-batch dose past `MAX_INTEGRATION_STEPS`, and a stable scheme
+  would answer it.** `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` gave
+  `semibatch_accumulation_profile` an admission ceiling rather than a new integrator, because a
+  gate was owed either way. What the ceiling does not change is the refusal: a dose whose
+  `k·C_co^n·t_dose` needs more than 200,000 explicit RK4 steps is turned away as mixing-limited. An
+  implicit or exponentially-fitted step for the linear part would be stable at any step and would
+  answer it, at the price of re-measuring the convergence order the current scheme was proven at.
+  Decide whether the stiff band is worth that, and do not close it by lowering the step ceiling.
+  **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py`,
+  `servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`.
+
+- [ ] **`rxnpredict`'s per-class prior override still replaces the vendored corpus whole.**
+  `D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it` made
+  `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS` an adjustment; `model_trust_priors_by_class` is left as
+  its documented override, so one class named in `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS_BY_CLASS`
+  drops every other class's calibrated weights from `data/trust_priors.json`, and nothing validates
+  its class labels against `classifier.ALL_CLASSES` or its predictor ids. Decide whether it merges
+  onto the corpus like the global table, or stays a whole replacement that at least validates.
+  **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py`.
 
 ## 3 — Readiness, where it still stops
 

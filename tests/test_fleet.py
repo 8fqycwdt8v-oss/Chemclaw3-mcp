@@ -3323,6 +3323,111 @@ def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
     )
 
 
+_CITED_PATH = re.compile(r"`([A-Za-z0-9_./*-]+\.(?:py|yaml|yml|json|md|toml))`")
+
+# Citations in first-party source that are paths in **another repository**, which no check here can
+# open — the same treatment `docs/BACKLOG.md` gives a row marked `**Other repository:**`. Keyed by
+# the citing file and the token, and held in both directions below: an entry whose citation has
+# gone, or that has started resolving here, is stale.
+_OTHER_REPOSITORY_CITATIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Chemclaw3's side of the at-capacity marker contract; "here ... there" in the sentence.
+        ("servers/calc/src/chemclaw_mcp_calc/engine/admission.py", "tests/test_calc_remote.py"),
+        # Chemclaw3's template that passes `smiles` into `rank_species`, quoted for its comment.
+        (
+            "servers/chem/src/chemclaw_mcp_chem/engine/species.py",
+            "data/templates/tautomer-resolution.yaml",
+        ),
+    }
+)
+
+
+def _citation_bases(source: Path) -> list[Path]:
+    """Where a path cited in `source` may be rooted, most local first.
+
+    The component (`servers/<name>` or `packages/<name>`) first, because a server's docstrings name
+    their own `tests/` and `deploy/` server-relatively; then the package directory, for `engine/…`;
+    then its `src/`, for `mcp_server_kit/egress.py`; then the repository root.
+    """
+    parts = source.relative_to(ROOT).parts
+    component = ROOT / parts[0] / parts[1]
+    return [component, component / "src" / parts[3], component / "src", ROOT]
+
+
+def source_path_citations() -> list[tuple[str, int, str, bool]]:
+    """Every rooted path cited in first-party source: `(file, line, token, resolves)`.
+
+    A token counts as a path when its first segment is an entry of one of `_citation_bases`, the
+    same self-rooting trick as the `CLAUDE.md` check above, and it resolves when it exists under at
+    least one base where that first segment does. Single-segment tokens are left out: a bare
+    `tools.py` or `connector.yaml` is shorthand for "the one in this server", and is self-rooting.
+    """
+    found: list[tuple[str, int, str, bool]] = []
+    roots = sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src"))
+    for root in roots:
+        for source in sorted(root.rglob("*.py")):
+            text = source.read_text(encoding="utf-8")
+            bases = _citation_bases(source)
+            for match in _CITED_PATH.finditer(text):
+                token = match.group(1)
+                if "/" not in token:
+                    continue
+                first = token.split("/")[0]
+                rooted = [base for base in bases if (base / first).exists()]
+                if not rooted:
+                    continue
+                resolves = any(
+                    sorted(base.glob(token)) if "*" in token else (base / token).exists()
+                    for base in rooted
+                )
+                line = text.count("\n", 0, match.start()) + 1
+                found.append((str(source.relative_to(ROOT)), line, token, resolves))
+    return found
+
+
+def test_every_path_first_party_source_cites_resolves() -> None:
+    """A docstring or comment that names a file must name one that exists.
+
+    The `CLAUDE.md` check above did not reach source prose, and the prose had drifted:
+    `mcp_server_kit/no_egress.py` had named the pyexec sandbox without its `src/<package>` segment,
+    and when this test was first run it found thirteen more broken citations and two that belong to
+    Chemclaw3. Six wrote a sibling server's `engine/admission.py` with that segment elided;
+    `egress.py` sent a reader to `servers/calc/tools.py` and `servers/rxnpredict/tools.py`, neither
+    of which has ever existed; `metrics.py` cited a `tests/test_metrics.py` the kit does not have;
+    and `species.py` wrote calc's `engine/pka.py` so that it read as chem's own, which has none.
+
+    **The resolution rule is the part that needed deciding**, because the backlog row that queued
+    this measured a naive extension failing 52 of 86 citations that were fine: a citation resolves
+    server-relative first (`_citation_bases`), and the elided `servers/<name>/engine/…` form is
+    *spelled out* in the source rather than taught to the checker — a reader following the path by
+    hand meets the same missing segment the checker would have had to invent.
+    """
+    citations = source_path_citations()
+    assert len(citations) > 50, "the citation scan found almost nothing; has the style changed?"
+    broken = [
+        f"{file}:{line}: {token}"
+        for file, line, token, resolves in citations
+        if not resolves and (file, token) not in _OTHER_REPOSITORY_CITATIONS
+    ]
+    assert not broken, (
+        "first-party source cites paths that do not resolve (server-relative, package-relative or "
+        "from the repository root). Spell the full path out; if it is another repository's, add "
+        "it to `_OTHER_REPOSITORY_CITATIONS`:\n  " + "\n  ".join(broken)
+    )
+
+
+def test_every_other_repository_citation_is_still_cited_and_still_not_here() -> None:
+    """The allowlist is held to the tree, so it cannot grow into a place broken paths hide."""
+    unresolved = {
+        (file, token) for file, _, token, resolves in source_path_citations() if not resolves
+    }
+    stale = sorted(_OTHER_REPOSITORY_CITATIONS - unresolved)
+    assert not stale, (
+        f"these entries no longer match an unresolved citation — removed, or now resolving here: "
+        f"{stale}"
+    )
+
+
 # The modules whose *product* is an assertion failure. Both are imported by tests and by nothing
 # else — `testing.assert_manifest_matches`, `testing.assert_bearer_is_enforced` and
 # `no_egress.assert_no_egress_sources` exist to fail a test — so an `assert` there is the verdict
@@ -3948,17 +4053,6 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 # what is measured; the transport each call also pays is the same for every server in this fleet
 # and is what the millisecond figures were mostly made of.
 CEILING_IS_ARGUED_ABSENT = {
-    # Five closed-form tools at 1.4 µs to 31.7 µs (the widest being a second-order CSTR's 200-step
-    # bisection), and one integrator at **836 µs** — the heaviest tool argued out of a ceiling in
-    # this table, and the one that had to earn it. At its first default of 2,000 RK4 steps it cost
-    # 8.1 ms, which is `chem`'s `render_structure` band, the one tool in that server gated for
-    # exactly this reason. That default was set while a feed-term discontinuity held the integrator
-    # to first-order convergence, where 2,000 steps really were needed. With the discontinuity gone
-    # the scheme converges at fourth order and 200 steps agrees with a hundredfold finer grid to
-    # 6.4e-08 — eight significant figures on a number reported to four. So a defect fixed made the
-    # control unnecessary, rather than a control covering for a defect. `MAX_INTEGRATION_STEPS`
-    # caps what a caller may ask for, so the cost cannot run away unpriced.
-    "kinetics": "closed-form algebra plus one bounded integrator, measured at 836 µs at its widest",
     # A dict lookup and a bisection over a 44-row vendored table: 0.7 µs for the lookup, 1.8 µs for
     # `vapour_pressure`, and 10.3 µs for a Hansen sweep across the whole table — which is the
     # largest single call `MAX_COMPARED_SOLVENTS` permits, since that bound *is* the table's size.

@@ -458,7 +458,7 @@ def connector_app(
         server: The `FastMCP` instance holding this capability's tools. Everything it serves is
             reachable by anything that can open a socket to this process, so the served set is not
             a free surface — it must equal the `tools:` list in the server's `connector.yaml`, and
-            each server's `tests/test_server.py` is what holds those two together.
+            `servers/*/tests/test_server.py` is what holds those two together.
         name: The server's name. Must match the directory, the package suffix, and the manifest's
             `name`, because Chemclaw3 addresses it by that one string.
         token_env: The environment variable holding the bearer token this server requires, or

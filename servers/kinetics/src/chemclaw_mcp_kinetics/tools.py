@@ -26,22 +26,79 @@ about different processes, and keeping the tools apart is what stops one being q
 
 Every answer carries `basis`: the equation it came out of and the assumption that equation makes.
 
-The tools are synchronous and cheap. The five closed-form ones are microseconds; the integrator is
-the only one that does real work, and its cost is bounded by a fixed step count rather than by an
-adaptive controller — a bound on the input, which `docs/adding-a-server.md` asks of every tool
-whose cost could otherwise run away.
+The five closed-form tools are synchronous and cost microseconds. The integrator is the one that
+does real work, and its cost is set by the caller's rate constant and dose time: the step count is
+derived from the problem up to `reactors.MAX_INTEGRATION_STEPS`, so the worst legal call is seconds
+of pure-Python CPU. It therefore owes what `CLAUDE.md` says a slow tool owes — a bound on its input
+(that step ceiling), an offload so it does not run on the event loop, and a ceiling on how many run
+at once. `engine/admission.py` has the measurement and the derivation.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+import asyncio
+import functools
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Annotated, Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit.limits import env_bound
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_kinetics.engine import arrhenius, reactors
+from chemclaw_mcp_kinetics.engine.admission import (
+    ADMISSION_MARKER,
+    DEFAULT_MAX_CONCURRENT_INTEGRATIONS,
+    Admission,
+)
 
 server = FastMCP("kinetics")
+
+# The pod's ceiling on concurrent integrations, built at import; a test that needs a different
+# ceiling replaces this attribute. `env_bound` so a value below one fails naming the variable.
+_admission = Admission(
+    env_bound(
+        "CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS",
+        default=DEFAULT_MAX_CONCURRENT_INTEGRATIONS,
+        minimum=1,
+        consequence="this pod would refuse every semi-batch integration it is asked for",
+    )
+)
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _release_slot(task: asyncio.Task[Any]) -> None:
+    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
+
+    Retrieving the exception keeps asyncio from logging "exception was never retrieved" for a
+    shielded task whose awaiter was cancelled and so has nobody left to receive its failure.
+    """
+    _admission.release()
+    if not task.cancelled():
+        task.exception()
+
+
+def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how many integrations run at once, refusing promptly when the pod is full.
+
+    The same shape as `servers/chem`'s gate: stamped with `ADMISSION_MARKER` so a test checks the
+    gated set against the served surface, and `asyncio.shield` so the slot is released when the
+    worker thread finishes rather than when the caller stops waiting. `functools.wraps` is what lets
+    FastMCP read the real signature through `__wrapped__` for the tool's argument schema.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        _admission.acquire(work.__name__)
+        task = asyncio.ensure_future(work(*args, **kwargs))
+        task.add_done_callback(_release_slot)
+        return await asyncio.shield(task)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
+
 
 #: The most profile points a semi-batch answer will return. The integrator runs at
 #: `DEFAULT_INTEGRATION_STEPS` regardless; this bounds what crosses the wire, because a 201-point
@@ -469,7 +526,8 @@ def continuous_reactor_conversion(
 
 
 @server.tool()
-def semibatch_accumulation_profile(
+@_admitted
+async def semibatch_accumulation_profile(
     rate_constant: Annotated[
         float,
         Field(
@@ -549,9 +607,14 @@ def semibatch_accumulation_profile(
         profile.
 
     Raises:
-        ValueError: If a value is not positive or an order is negative.
+        ValueError: If a value is not positive or an order is negative, if the dose is too fast
+            for the integrator to resolve, or if this pod is already running its ceiling of
+            integrations — that last one is transient, and the identical call may be retried.
     """
-    profile = reactors.semibatch_accumulation(
+    # Off the event loop: FastMCP 1.x calls a synchronous tool on the loop itself, and the worst
+    # legal integration is seconds of CPU — every other call and `/healthz` would wait behind it.
+    profile = await asyncio.to_thread(
+        reactors.semibatch_accumulation,
         rate_constant=rate_constant,
         dose_time_seconds=dose_time_seconds,
         initial_volume=initial_volume,

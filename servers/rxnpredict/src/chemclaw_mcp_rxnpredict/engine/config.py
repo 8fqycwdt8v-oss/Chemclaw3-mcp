@@ -20,13 +20,37 @@ year later.
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
+from mcp_server_kit.limits import echo
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+#: Per-model trust priors, seeded from the benchmarks each predictor's own paper reports. A
+#: read-only view so the one table every `Settings` starts from cannot be edited in place.
+DEFAULT_MODEL_TRUST_PRIORS: Mapping[str, float] = MappingProxyType(
+    {
+        # Forward
+        "reaction_t5_v2": 1.00,  # ~97.5% top-1 USPTO-MIT (Sagawa 2024)
+        "molecular_transformer": 0.90,  # ~90% top-1
+        "t5chem": 0.92,
+        "chemformer": 0.85,
+        "megan": 0.80,
+        "graphrxn": 0.80,
+        # Conditions
+        "parrot": 0.95,  # +13.44% top-3 over the Coley baseline
+        "rxn_insight": 0.70,  # rule-based: fast, coarse
+        "two_stage_dnn": 0.90,  # 73% top-10 exact match
+        "reagents_mt": 0.80,
+        "askcos_condition": 0.85,
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -72,24 +96,11 @@ class Settings(BaseSettings):
         description="Use per-reaction-class trust priors in the aggregator when available.",
     )
 
-    # Per-model trust priors used by the aggregator. Higher = more weight in voting. Seeded from
-    # the benchmarks each predictor's own paper reports; overridable as a JSON env value.
+    # Per-model trust priors used by the aggregator. Higher = more weight in voting. The table is
+    # `DEFAULT_MODEL_TRUST_PRIORS`; a JSON env value **adjusts named entries of it** rather than
+    # replacing it — see `_merge_priors`.
     model_trust_priors: dict[str, float] = Field(
-        default_factory=lambda: {
-            # Forward
-            "reaction_t5_v2": 1.00,  # ~97.5% top-1 USPTO-MIT (Sagawa 2024)
-            "molecular_transformer": 0.90,  # ~90% top-1
-            "t5chem": 0.92,
-            "chemformer": 0.85,
-            "megan": 0.80,
-            "graphrxn": 0.80,
-            # Conditions
-            "parrot": 0.95,  # +13.44% top-3 over the Coley baseline
-            "rxn_insight": 0.70,  # rule-based: fast, coarse
-            "two_stage_dnn": 0.90,  # 73% top-10 exact match
-            "reagents_mt": 0.80,
-            "askcos_condition": 0.85,
-        }
+        default_factory=lambda: dict(DEFAULT_MODEL_TRUST_PRIORS)
     )
 
     # Per-reaction-class priors, as an explicit JSON env override and nothing else. Empty is the
@@ -100,9 +111,51 @@ class Settings(BaseSettings):
 
     @field_validator("model_trust_priors", mode="before")
     @classmethod
-    def _parse_priors(cls, value: Any) -> Any:
-        """Accept the priors as a JSON string, which is how an env var can carry a mapping."""
-        return json.loads(value) if isinstance(value, str) else value
+    def _merge_priors(cls, value: Any) -> Any:
+        """Overlay a supplied table onto `DEFAULT_MODEL_TRUST_PRIORS`, refusing what it cannot mean.
+
+        **An environment value used to replace the whole table.** Measured on 2026-09-12,
+        `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS='{"parrot": 9.9}'` left the aggregator with one
+        prior, so every other predictor fell to `effective_prior`'s unweighted default of 0.5 —
+        `reaction_t5_v2` halved from 1.00, with no error and nothing in the answer to say so. The
+        operator asked to change one weight and changed eleven. So a supplied table is an
+        *adjustment*: the entries it names replace those defaults and the rest stand. A full
+        replacement is still expressible by naming every predictor.
+
+        Two more things a JSON string can carry and the aggregator cannot mean are refused rather
+        than absorbed: a key that is not a predictor this table weights — a typo would otherwise
+        set nothing and read as done — and a weight that is not finite and positive, since zero
+        silences a predictor that still reports having voted (`DISABLED_MODELS` is the switch for
+        that) and a negative one inverts its vote.
+
+        Accepts a JSON string as well as a mapping, which is how an env var can carry one.
+        """
+        supplied = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(supplied, dict):
+            raise ValueError(
+                "model_trust_priors must be a JSON object of predictor id to weight, "
+                f"not {type(supplied).__name__}"
+            )
+        unknown = sorted(set(supplied) - set(DEFAULT_MODEL_TRUST_PRIORS))
+        if unknown:
+            raise ValueError(
+                f"model_trust_priors names {echo(repr(unknown))}, which this server does not "
+                f"weight; the predictors it does are {sorted(DEFAULT_MODEL_TRUST_PRIORS)}"
+            )
+        merged = dict(DEFAULT_MODEL_TRUST_PRIORS)
+        for name, weight in supplied.items():
+            if isinstance(weight, bool) or not isinstance(weight, int | float):
+                raise ValueError(
+                    f"model_trust_priors[{echo(name)!r}] must be a number, not {echo(repr(weight))}"
+                )
+            if not (math.isfinite(weight) and weight > 0):
+                raise ValueError(
+                    f"model_trust_priors[{echo(name)!r}] must be finite and above zero, "
+                    f"not {weight!r}; "
+                    "to stop a predictor voting, name it in CHEMCLAW_RXNPREDICT_DISABLED_MODELS"
+                )
+            merged[name] = float(weight)
+        return merged
 
     @field_validator("model_trust_priors_by_class", mode="before")
     @classmethod

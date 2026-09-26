@@ -92,10 +92,10 @@ queue comes back after `connector.yaml`'s `request_timeout` has expired, compute
 one somebody is still waiting for. A `ValueError` is the family `connector_app` passes to the caller
 verbatim, so the refusal is a number Chemclaw3 can back off on.
 
-This mirrors `servers/calc/engine/admission.py` deliberately: the two servers share no code (one
-server never imports another), so the shape is copied, not imported. The bound worth copying is the
-design — refuse, do not queue — not the wording: this server's refusal names a replica where
-`calc`'s names a knob, because on `calc` a slot really is a core and here it is not.
+This mirrors `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` deliberately: the two servers
+share no code (one server never imports another), so the shape is copied, not imported. The bound
+worth copying is the design — refuse, do not queue — not the wording: this server's refusal names a
+replica where `calc`'s names a knob, because on `calc` a slot really is a core and here it is not.
 """
 
 from __future__ import annotations

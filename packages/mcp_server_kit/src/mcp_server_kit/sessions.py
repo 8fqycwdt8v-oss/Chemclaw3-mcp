@@ -79,11 +79,11 @@ long enough to reap.
 
 So `MCP_MAX_SESSIONS` is a ceiling on how many sessions exist at once, enforced on the request that
 would mint one, and a pod at its ceiling refuses **promptly** rather than queueing — the same
-argument `servers/calc/engine/admission.py` makes for a calculation, one layer down. It belongs
-here rather than beside that one because a session is the *transport's* object: every server in
-this fleet has the same one, pays the same 56.6 kB for it, and none of them can see it from a tool
-body. An admission ceiling on calls and a ceiling on sessions are not the same bound and neither
-implies the other — `props` gates no call at all and still holds sessions.
+argument `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` makes for a calculation, one layer
+down. It belongs here rather than beside that one because a session is the *transport's* object:
+every server in this fleet has the same one, pays the same 56.6 kB for it, and none of them can see
+it from a tool body. An admission ceiling on calls and a ceiling on sessions are not the same bound
+and neither implies the other — `props` gates no call at all and still holds sessions.
 
 **The refusal is an HTTP status, not a worded string, and that is the difference from the tool
 path.** `servers/calc` needs `AT_CAPACITY_MARKER` because a refused *tool call* has no channel but
@@ -639,11 +639,12 @@ def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
 
     So an admitted handshake takes a *reservation* — an integer this function owns, incremented
     under a `threading.Lock` with no `await` between the read and the increment, the same shape
-    `servers/calc/engine/admission.py` uses one layer down — and the reservation is handed over to
-    `_server_instances` the moment upstream sends the response, because upstream registers the
-    transport strictly before it can write a byte. `send` is watched for that handover rather than
-    the request's return, so a request that holds its connection open (a sessionless `GET`, which
-    upstream mints for) does not hold a second slot for the life of the stream.
+    `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` uses one layer down — and the
+    reservation is handed over to `_server_instances` the moment upstream sends the response,
+    because upstream registers the transport strictly before it can write a byte. `send` is watched
+    for that handover rather than the request's return, so a request that holds its connection open
+    (a sessionless `GET`, which upstream mints for) does not hold a second slot for the life of the
+    stream.
 
     **The count stays derived from the map, and that is what keeps a reservation from leaking.**
     The reservation covers only the window between the check and the registration — it is released

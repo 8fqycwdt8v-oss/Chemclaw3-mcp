@@ -202,7 +202,8 @@ def geometry(mol: Chem.Mol, seed: int, optimize: bool = False) -> tuple[np.ndarr
     work = Chem.Mol(mol)  # copy so the caller's molecule gets no conformer
     # `type: ignore` on each `AllChem` call below is `rdkit-stubs`' doing rather than a claim
     # about the calls: `AllChem` re-exports its C++ symbols dynamically, so the stub package
-    # declares almost none of them. Same convention as `servers/chem/engine/chem.py`.
+    # declares almost none of them. Same convention as
+    # `servers/chem/src/chemclaw_mcp_chem/engine/chem.py`.
     if (
         AllChem.EmbedMolecule(work, randomSeed=seed) != 0  # type: ignore[attr-defined]
         and AllChem.EmbedMolecule(  # type: ignore[attr-defined]
