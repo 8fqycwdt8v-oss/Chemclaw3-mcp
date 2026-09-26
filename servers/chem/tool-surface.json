@@ -40,6 +40,22 @@
       "type": "string"
     }
   },
+  "enumerate_substitutions": {
+    "mode": {
+      "default": "move",
+      "required": false,
+      "type": "string"
+    },
+    "smiles": {
+      "required": true,
+      "type": "string"
+    },
+    "substituent": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    }
+  },
   "enumerate_tautomers": {
     "smiles": {
       "required": true,

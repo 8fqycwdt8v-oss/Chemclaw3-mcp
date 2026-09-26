@@ -445,9 +445,9 @@ things about the CPU half generalise less than they look, and both are in
 `D-2026-09-12-one-tool-call-is-not-one-thread`: one tool *call* may be many threads — `rxnpredict`'s
 consensus tools fan out over every enabled predictor, measured at six at once — and **whether a tool
 is gated is not the manifest's `read_only`/`state_changing` split**, which is how `servers/calc`
-derives it and which does not carry: every `servers/chem` tool is `read_only`, correctly, and six
-of them — the depiction and the species enumerations, which cost up to seconds of CPU each on
-a legal molecule — share a ceiling.
+derives it and which does not carry: every `servers/chem` tool is `read_only`, correctly, and the
+depiction and the species enumerations among them — which cost up to seconds of CPU each on a legal
+molecule — share a ceiling.
 
 ## Ports
 

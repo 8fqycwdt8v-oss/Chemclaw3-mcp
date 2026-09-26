@@ -81,6 +81,16 @@ costs 128 ms and yields six structures while admitting a 1,891-atom polyamine at
 costs 413 ms. It now prices the product, the worst call it admits measures **1,266 ms**, and PAMAM
 G4 (996 atoms, 126 sites, 587 ms) is answered. See
 `docs/decisions/D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work.md`.
+`enumerate_substitutions` — the regioisomers of an aromatic substitution series, for "which
+position" questions: every substituent moved round its ring (`mode="move"`, the input included) or
+one named group put on each aromatic C-H (`mode="add"`, the input excluded) — has two bounds, both
+priced before any product is built. `CHEMCLAW_CHEM_MAX_SUBSTITUTION_HEAVY_ATOMS` (default 250)
+refuses a molecule whose positions cost too much to *name*, since that and canonicalising each
+product grow faster than the molecule; `CHEMCLAW_CHEM_MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT`
+(default 20,000) prices `candidates x heavy atoms`, the degradant enumerator's shape. The frontier
+both were derived from is in `engine/substitution.py`. A ranking of the set is a *thermodynamic*
+order, and the tool's docstring says why that is not a regioselectivity.
+
 `describe_topology` is deliberately outside the bound — it is the tool that answers for a molecule
 the enumeration refuses — but it is **not** free and is usually the dearer of the two: 2,793 ms on
 PAMAM G4 against the enumeration's 587 ms, because it enumerates tautomers.

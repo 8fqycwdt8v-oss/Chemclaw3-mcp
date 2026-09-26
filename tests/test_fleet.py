@@ -4522,7 +4522,7 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 #
 # It cannot be derived from the manifest. `D-2026-09-12-one-tool-call-is-not-one-thread` measured
 # that the `read_only`/`state_changing` split does not carry, because every `chem` tool is
-# `read_only`, correctly, and six of them share a ceiling. So the rule is the same
+# `read_only`, correctly, and the heavy band of them shares a ceiling. So the rule is the same
 # shape as `BLIND_ANSWER_IS_ARGUED`: present, or argued here, and checked in both directions.
 #
 # Each argument below is a measurement rather than an adjective, because "it is fast" is what every
