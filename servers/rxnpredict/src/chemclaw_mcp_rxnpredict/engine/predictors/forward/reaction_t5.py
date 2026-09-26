@@ -137,4 +137,5 @@ except Exception as exc:  # noqa: BLE001
         "forward",
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[reaction_t5]`): {exc!r}",
         exc=exc,
+        optional=("transformers",),
     )

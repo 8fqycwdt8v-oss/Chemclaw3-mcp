@@ -177,4 +177,5 @@ except Exception as exc:  # noqa: BLE001
         "and download MIT_mixed_augm_model_average.pt to "
         f"$MOLECULAR_TRANSFORMER_MODEL_PATH): {exc!r}",
         exc=exc,
+        optional=("onmt",),
     )

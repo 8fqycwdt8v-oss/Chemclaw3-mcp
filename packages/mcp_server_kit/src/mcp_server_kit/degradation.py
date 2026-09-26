@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import errno
 import logging
+from collections.abc import Collection
 
 from prometheus_client import Counter
 
@@ -58,6 +59,7 @@ __all__ = [
     "PERMANENT_CAUSES",
     "UNKNOWN_COMPONENT",
     "classify",
+    "is_not_installed",
     "record",
     "register_components",
     "registered_components",
@@ -73,7 +75,9 @@ CAUSE_EGRESS_REFUSED = "egress_refused"
 CAUSE_RESOURCE_EXHAUSTED = "resource_exhausted"
 
 # The component's distribution is not in this image. A deployment's decision, not a fault: this
-# fleet's optional components are optional by design and say so in the answer.
+# fleet's optional components are optional by design and say so in the answer. **Only a
+# `ModuleNotFoundError` earns it** — an installed module that fails to load is a broken image and is
+# `CAUSE_FAILED`; see `is_not_installed`.
 CAUSE_NOT_INSTALLED = "not_installed"
 
 # Everything else: a checkpoint that will not parse, a corrupt table, a library raising on an input
@@ -138,8 +142,17 @@ DEGRADED = Counter(
 )
 
 
-def classify(exc: BaseException) -> str:
+def classify(exc: BaseException, *, optional: Collection[str] | None = None) -> str:
     """Which `CAUSES` member `exc` is, checked most specific first.
+
+    **`not_installed` is a `ModuleNotFoundError` and nothing else.** A plain `ImportError` means a
+    module was found and would not load — a missing shared library, a symbol an installed
+    dependency no longer exports — and is `failed`, because the distribution is in the image and
+    broken. Where the caller knows which modules it tolerates the absence of, it passes them as
+    `optional`, and a `ModuleNotFoundError` for anything else (an installed extra missing one of
+    its own dependencies) is `failed` too; see `is_not_installed`. Without `optional` a
+    `ModuleNotFoundError` is still taken at its word, because a call site that cannot say what it
+    imported cannot say more.
 
     `EgressForbidden` is tested before anything else deliberately: it is an `OSError`, so any
     branch that sorted `OSError` first would bury the one cause this fleet most needs to see. The
@@ -158,6 +171,8 @@ def classify(exc: BaseException) -> str:
 
     Args:
         exc: The exception a component raised.
+        optional: The top-level modules whose absence is a deployment's decision, or `None` where
+            the caller cannot say.
 
     Returns:
         One of `CAUSES`.
@@ -168,9 +183,53 @@ def classify(exc: BaseException) -> str:
         return CAUSE_RESOURCE_EXHAUSTED
     if isinstance(exc, OSError) and exc.errno in _RESOURCE_ERRNOS:
         return CAUSE_RESOURCE_EXHAUSTED
-    if isinstance(exc, ImportError):
+    if isinstance(exc, ModuleNotFoundError) and (
+        optional is None or is_not_installed(exc, optional)
+    ):
         return CAUSE_NOT_INSTALLED
     return CAUSE_FAILED
+
+
+def is_not_installed(exc: BaseException, optional: Collection[str]) -> bool:
+    """Whether `exc` says one of the `optional` top-level modules is simply absent from this image.
+
+    **The type is the half of this that `classify` used to skip, and the name is the other half.**
+    Every `ImportError` was sorted `not_installed`, which is right for exactly one of the shapes an
+    import can fail in:
+
+        ModuleNotFoundError(name="rxnmapper")      the extra is not installed   -> a decision
+        ModuleNotFoundError(name="transformers")   the extra is installed and   -> a broken image
+                                                   one of *its* dependencies
+                                                   is missing
+        ImportError("libcudart.so.11: cannot       the module was found and     -> a broken image
+        open shared object file")                  its compiled half would
+                                                   not load
+
+    The second and third read as "an extra nobody installed" to every probe in this fleet, which is
+    the one verdict that keeps a pod whose image is broken in service. Neither needs the message
+    read — the thing `classify`'s docstring refuses to do: `ModuleNotFoundError` is the interpreter
+    saying *no finder located the module*, and a plain `ImportError` is it saying *one was located
+    and loading it failed*, which is never an absent distribution. What only the caller knows is
+    which module's absence it chose to tolerate, so `exc.name` — set by the import system on every
+    real `ModuleNotFoundError` — is compared against that. **Exactly, not by prefix**: importing
+    `a.b` with `a` absent reports `name="a"`, so a `name` of `a.b` means `a` is installed and its
+    submodule is missing — an incompatible version, which is a broken image too.
+
+    A `ModuleNotFoundError` constructed without a `name` answers `False` here: a real import always
+    sets it, so one without it is a library raising the type by hand, and "absent" is not something
+    this can conclude from a type a library chose.
+
+    Args:
+        exc: What the guarded import raised.
+        optional: The top-level module names whose absence is a deployment's decision — the ones
+            the guard's own `import` statements name.
+
+    Returns:
+        `True` only for a `ModuleNotFoundError` naming one of `optional` itself.
+    """
+    if not isinstance(exc, ModuleNotFoundError) or not exc.name:
+        return False
+    return exc.name in optional
 
 
 def register_components(*names: str) -> None:

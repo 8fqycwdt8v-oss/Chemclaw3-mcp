@@ -111,4 +111,5 @@ except Exception as exc:  # noqa: BLE001
         "conditions",
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[rxn_insight]`): {exc!r}",
         exc=exc,
+        optional=("rxn_insight",),
     )

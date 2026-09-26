@@ -89,4 +89,5 @@ except Exception as exc:  # noqa: BLE001
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[two_stage_dnn]` and place "
         f"checkpoints at $TWO_STAGE_DNN_MODEL_PATH): {exc!r}",
         exc=exc,
+        optional=("torch",),
     )

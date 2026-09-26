@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mcp_server_kit import degradation
+from mcp_server_kit.limits import echo
 
 from chemclaw_mcp_rxnlabel.engine import construction
 
@@ -71,6 +72,11 @@ _ATTEMPTED_AT: float | None = None
 # recovery was not** — see `_ATTEMPTED_AT` above and `engine/construction.py`, which is where the
 # retry predicate now lives so the symmetry is structural rather than asserted.
 _FAILURE: str | None = None
+# The exception behind `_FAILURE`, bounded for quoting — see `mapping._FAILURE_DETAIL`.
+_FAILURE_DETAIL: str | None = None
+
+# The top-level module whose absence is a deployment's decision; see `mapping._OPTIONAL_MODULES`.
+_OPTIONAL_MODULES = ("rxn_insight",)
 
 # What Rxn-INSIGHT answers when no SMIRKS matched. Mapped to `None` rather than stored, because a
 # frequency table with "OtherReaction" at the top is a table whose largest row means "we do not
@@ -102,6 +108,11 @@ def available() -> bool:
 def construction_failure() -> str | None:
     """The `degradation` cause the last construction attempt failed with, or `None`."""
     return _FAILURE
+
+
+def construction_detail() -> str | None:
+    """The exception the last failed construction raised, bounded for quoting, or `None`."""
+    return _FAILURE_DETAIL
 
 
 def name(reaction_smiles: str) -> Naming:
@@ -169,7 +180,7 @@ def _namer() -> Any | None:
     stable is that a `Reaction` exposes a dictionary of what it worked out. Pinning that one call
     here keeps the version drift in one function instead of in every caller.
     """
-    global _NAMER, _TRIED, _ATTEMPTED_AT, _FAILURE
+    global _NAMER, _TRIED, _ATTEMPTED_AT, _FAILURE, _FAILURE_DETAIL
     with _LOCK:
         if _NAMER is not None or (_TRIED and not _retry_due()):
             return _NAMER
@@ -177,21 +188,25 @@ def _namer() -> Any | None:
         _ATTEMPTED_AT = time.monotonic()
         try:
             from rxn_insight.reaction import Reaction
-        except ImportError:
-            logger.info(
-                "rxn-insight is not installed; reactions will be labelled without a name, and "
-                "`labeller_version` records that so the rows re-label when it arrives"
-            )
-            # Deliberately not a retry: `_FAILURE` stays `None`, which `_retry_due` reads as
-            # nothing-to-improve. Re-importing an absent distribution every minute learns nothing.
-            return None
         except Exception as exc:
-            # Not reachable by an absent extra — that is the branch above — but by a distribution
-            # that *is* installed and whose import raises: a broken shared library, a version of a
-            # dependency it cannot use. `readiness` treats installed-and-unbuilt as a pod to
-            # take out of rotation, and it can only do that if this is recorded rather than
-            # propagated out of `available()` into whichever caller happened to ask first.
-            _FAILURE = degradation.classify(exc)
+            if degradation.is_not_installed(exc, _OPTIONAL_MODULES):
+                logger.info(
+                    "rxn-insight is not installed; reactions will be labelled without a name, and "
+                    "`labeller_version` records that so the rows re-label when it arrives"
+                )
+                # Deliberately not a retry: `_FAILURE` stays `None`, which `_retry_due` reads as
+                # nothing-to-improve. Re-importing an absent distribution every minute learns
+                # nothing.
+                return None
+            # Not an absent extra but a distribution that *is* installed and whose import raises:
+            # a broken shared library, a dependency of it that is missing, a version of one it
+            # cannot use. **This used to start one arm later**, below an `except ImportError` that
+            # took the first two of those for an extra nobody installed. `readiness` treats
+            # installed-and-unbuilt as a pod to take out of rotation, and it can only do that if
+            # this is recorded rather than propagated out of `available()` into whichever caller
+            # happened to ask first.
+            _FAILURE = degradation.classify(exc, optional=_OPTIONAL_MODULES)
+            _FAILURE_DETAIL = echo(repr(exc))
             degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
             logger.exception(
                 "rxn-insight is installed but could not be imported (%s); it will be retried in "
@@ -207,6 +222,7 @@ def _namer() -> Any | None:
 
         _NAMER = call
         _FAILURE = None
+        _FAILURE_DETAIL = None
         return _NAMER
 
 

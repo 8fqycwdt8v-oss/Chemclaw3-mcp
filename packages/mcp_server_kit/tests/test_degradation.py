@@ -106,6 +106,49 @@ def test_a_missing_distribution_is_not_a_fault() -> None:
     assert degradation.CAUSE_NOT_INSTALLED not in degradation.PERMANENT_CAUSES
 
 
+def test_an_installed_module_that_will_not_load_is_broken_not_absent() -> None:
+    """The row this closes: a missing shared library was counted as an extra nobody installed.
+
+    Every `ImportError` classified `not_installed`, so an installed distribution whose compiled half
+    would not load — the realistic broken image — read to every probe in the fleet as a deployment's
+    choice, and `not_installed` is the one cause that keeps a pod in service. The type separates
+    them without reading a message: `ModuleNotFoundError` is *no finder located it*, a plain
+    `ImportError` is *located and would not load*.
+    """
+    broken = ImportError("libcudart.so.11.0: cannot open shared object file: No such file")
+    assert degradation.classify(broken) == degradation.CAUSE_FAILED
+    assert degradation.classify(broken, optional=("torch",)) == degradation.CAUSE_FAILED
+    assert degradation.CAUSE_FAILED in degradation.PERMANENT_CAUSES
+    # The OSError a `ctypes.CDLL` of the same library raises was already `failed`; asserted so the
+    # two spellings of one fault cannot drift into different buckets.
+    dlopen = OSError("libcudart.so.11.0: cannot open shared object file: No such file or directory")
+    assert degradation.classify(dlopen) == degradation.CAUSE_FAILED
+
+
+def test_a_missing_dependency_of_an_installed_extra_is_broken_not_absent() -> None:
+    """The same type, told apart by the one thing only the importing module knows.
+
+    `import transformers` succeeding and then `transformers` failing to find `tokenizers` raises the
+    very `ModuleNotFoundError` an absent `transformers` does. `exc.name` is the difference — set by
+    the import system on every real one — and `optional` is the caller's declaration of which
+    names it tolerates the absence of.
+    """
+    absent = ModuleNotFoundError("No module named 'rxnmapper'", name="rxnmapper")
+    submodule = ModuleNotFoundError("No module named 'rxn_insight.x'", name="rxn_insight.x")
+    transitive = ModuleNotFoundError("No module named 'tokenizers'", name="tokenizers")
+    nameless = ModuleNotFoundError("raised by hand")
+
+    assert degradation.classify(absent, optional=("rxnmapper",)) == degradation.CAUSE_NOT_INSTALLED
+    # A missing *submodule* means the package is there and is not the version this code expects.
+    assert degradation.classify(submodule, optional=("rxn_insight",)) == degradation.CAUSE_FAILED
+    assert degradation.classify(transitive, optional=("rxnmapper",)) == degradation.CAUSE_FAILED
+    assert degradation.classify(nameless, optional=("rxnmapper",)) == degradation.CAUSE_FAILED
+    # And without a declaration the type is taken at its word, which is the old behaviour for the
+    # one shape it was right about.
+    assert degradation.classify(transitive) == degradation.CAUSE_NOT_INSTALLED
+    assert not degradation.is_not_installed(ImportError("x", name="rxnmapper"), ("rxnmapper",))
+
+
 def test_a_resource_errno_is_not_a_broken_checkpoint() -> None:
     """The four errno values that mean the same thing `MemoryError` does.
 

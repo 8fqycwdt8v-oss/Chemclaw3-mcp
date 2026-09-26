@@ -426,14 +426,56 @@ def test_every_record_says_what_keeps_it_true() -> None:
         )
 
 
+# A test a merged record cites, whose *claim* a later decision made false, and what replaced it.
+#
+# The allowlist `test_every_test_a_record_names_still_exists` anticipated: a merged record is never
+# edited, so a citation to a test that was renamed for a reason other than tidiness either keeps a
+# name that now lies or dangles. The first entry is the case: `servers/chem` gated one tool, a test
+# asserted exactly that, and
+# `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated six — so "only
+# the depiction is gated" could not survive as a name. Each entry names the test that now holds the
+# ground, which `test_every_retired_citation_names_a_live_replacement` resolves, and the record
+# that retired it.
+_RETIRED_CITATIONS: dict[str, tuple[str, str]] = {
+    "test_only_the_depiction_is_gated_and_it_is_gated": (
+        "servers/chem/tests/test_admission.py::test_the_band_is_gated_and_nothing_else_is",
+        "D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe",
+    ),
+}
+
+
+def test_every_retired_citation_names_a_live_replacement() -> None:
+    """The allowlist above, held in both directions so it cannot become a place names go to die.
+
+    A retired name must really be gone (or it is not retired), still be cited by some record (or
+    the entry is dead weight), and name a replacement that resolves in the file it names, retired
+    by a record that exists.
+    """
+    defined = _test_definitions()
+    cited = {
+        name
+        for path in _records()
+        for name in _TEST_CITATION.findall(path.read_text(encoding="utf-8"))
+    }
+    records = {path.stem for path in _records()}
+    for retired, (replacement, record) in _RETIRED_CITATIONS.items():
+        assert retired not in defined, f"{retired} still exists, so it is not retired"
+        assert retired in cited, f"no record cites {retired}; delete its allowlist entry"
+        where, _, name = replacement.partition("::")
+        assert any(fnmatch.fnmatch(real, where) for real in defined.get(name, set())), (
+            f"{retired}'s replacement {replacement} does not resolve"
+        )
+        assert record in records, f"{retired} names {record}, which is not a record"
+
+
 def test_every_test_a_record_names_still_exists() -> None:
     """A guard a record cites by name resolves against the suite.
 
     A citation that resolves to nothing looks identical to one that resolves: it reads as
     authoritative while pointing at nothing, which is `CLAUDE.md`'s deleted port table one level in.
     A merged record is never edited, so when a rename genuinely retires a citation the fix is to
-    rename the test back — or, if it is really gone, to add the allowlist this file deliberately
-    does not carry yet, with the line saying what replaced it. There is nothing to exempt today.
+    rename the test back — or, if it is really gone, an entry in `_RETIRED_CITATIONS` saying what
+    replaced it and which record retired it.
 
     **This half reads the function name only.** The file half is
     `test_a_record_names_the_file_its_test_lives_in`, which is a separate test because the two fail
@@ -445,7 +487,7 @@ def test_every_test_a_record_names_still_exists() -> None:
             name
             for path in _records()
             for name in _TEST_CITATION.findall(path.read_text(encoding="utf-8"))
-            if name not in defined
+            if name not in defined and name not in _RETIRED_CITATIONS
         }
     )
     assert not dangling, (

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mcp_server_kit import degradation
-from mcp_server_kit.limits import atom_count_error
+from mcp_server_kit.limits import atom_count_error, echo
 from rdkit import Chem
 
 from chemclaw_mcp_rxnlabel.engine import construction
@@ -56,6 +56,13 @@ _TRIED = False
 # pod permanently unready with nothing able to change its mind.
 _ATTEMPTED_AT: float | None = None
 _FAILURE: str | None = None
+# The exception behind `_FAILURE`, bounded for quoting, so a refusal can say *what* broke — the
+# missing shared library's own sentence — rather than only which bucket it fell in.
+_FAILURE_DETAIL: str | None = None
+
+# The top-level module whose absence is a deployment's decision. Anything else an import of it
+# cannot find is a dependency *of* an installed mapper, which is a broken image.
+_OPTIONAL_MODULES = ("rxnmapper",)
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,11 @@ def construction_failure() -> str | None:
     that needs a moment.
     """
     return _FAILURE
+
+
+def construction_detail() -> str | None:
+    """The exception the last failed construction raised, bounded for quoting, or `None`."""
+    return _FAILURE_DETAIL
 
 
 def map_reaction(reaction_smiles: str) -> MapResult:
@@ -228,7 +240,7 @@ def _mapper() -> Any | None:
     its whole life, answering 503 that only a restart could clear. A permanent cause still latches,
     because re-parsing a corrupt checkpoint every minute spends seconds of CPU to learn nothing.
     """
-    global _MAPPER, _TRIED, _ATTEMPTED_AT, _FAILURE
+    global _MAPPER, _TRIED, _ATTEMPTED_AT, _FAILURE, _FAILURE_DETAIL
     with _LOCK:
         if _MAPPER is not None or (_TRIED and not _retry_due()):
             return _MAPPER
@@ -236,15 +248,20 @@ def _mapper() -> Any | None:
         _ATTEMPTED_AT = time.monotonic()
         try:
             from rxnmapper import RXNMapper
-        except ImportError:
-            logger.info(
-                "rxnmapper is not installed; reactions will be labelled without an atom map, and "
-                "`labeller_version` records that so the rows re-label when it arrives"
-            )
-            return None
-        try:
+
             _MAPPER = RXNMapper()
         except Exception as exc:
+            # **Only a `ModuleNotFoundError` naming `rxnmapper` itself is an absent extra.** This
+            # branch used to be `except ImportError`, which also caught an installed `rxnmapper`
+            # whose `transformers` was missing or whose torch could not load its shared library —
+            # a broken image, sorted as a deployment's choice, with nothing recorded for
+            # `readiness` to refuse on beyond "cause not recorded".
+            if degradation.is_not_installed(exc, _OPTIONAL_MODULES):
+                logger.info(
+                    "rxnmapper is not installed; reactions will be labelled without an atom map, "
+                    "and `labeller_version` records that so the rows re-label when it arrives"
+                )
+                return None
             # Constructing it downloads or loads weights. In this fleet the image bakes them at
             # build time, so a failure here means a broken image rather than a missing network —
             # and the server must still start and still assign roles.
@@ -254,16 +271,18 @@ def _mapper() -> Any | None:
             # reached for the hub raises `EgressForbidden` here. `readiness.verify_labeller` already
             # refuses to take traffic in both cases; the counter is what makes the difference
             # visible from a scrape rather than from a pod's first log lines.
-            _FAILURE = degradation.classify(exc)
+            _FAILURE = degradation.classify(exc, optional=_OPTIONAL_MODULES)
+            _FAILURE_DETAIL = echo(repr(exc))
             degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
             logger.exception(
-                "rxnmapper is installed but could not be constructed (%s); it will be retried in "
-                "%.0fs if that cause is transient",
+                "rxnmapper is installed but could not be imported or constructed (%s); it will be "
+                "retried in %.0fs if that cause is transient",
                 _FAILURE,
                 CONSTRUCTION_RETRY_SECONDS,
             )
             return None
         _FAILURE = None
+        _FAILURE_DETAIL = None
         return _MAPPER
 
 

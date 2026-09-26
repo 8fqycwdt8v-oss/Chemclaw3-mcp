@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import os
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, ParamSpec, TypeVar
 
@@ -48,7 +49,9 @@ from mcp_server_kit.limits import env_bound
 from chemclaw_mcp_chem.engine import stoichiometry
 from chemclaw_mcp_chem.engine.admission import (
     ADMISSION_MARKER,
-    DEFAULT_MAX_CONCURRENT_RENDERS,
+    DEFAULT_MAX_CONCURRENT_HEAVY_CALLS,
+    RETIRED_VARIABLE,
+    VARIABLE,
     Admission,
 )
 from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
@@ -69,20 +72,29 @@ from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candida
 
 server = FastMCP("chem")
 
-# The pod's ceiling on concurrent depictions. Built at import; a test that needs a different ceiling
+# The pod's ceiling on concurrent heavy calls — the depiction and the five species tools, one gate
+# because they spend one interpreter. Built at import; a test that needs a different ceiling
 # replaces this attribute, so the number a gate enforces is the number it was built from. The
 # default and its derivation live in `engine/admission.py`, beside the measurement they rest on.
 #
 # `env_bound` rather than a bare `int(os.environ.get(...))` because `Admission` refuses a ceiling
-# below 1 with a message naming the *ceiling* — "an admission ceiling of 0 would refuse every
-# depiction" — which leaves an operator a CrashLoopBackOff and a number whose source they have to
-# guess. The variable's own name is the one thing they can act on.
+# below 1 with a message naming the *ceiling* — which leaves an operator a CrashLoopBackOff and a
+# number whose source they have to guess. The variable's own name is the one thing they can act on.
+# It is written out rather than passed as `VARIABLE` because the fleet's bound scan reads the
+# literal; `tests/test_admission.py` holds the two spellings equal.
+if os.environ.get(RETIRED_VARIABLE, "").strip():
+    raise ValueError(
+        f"{RETIRED_VARIABLE} was renamed {VARIABLE} when the ceiling grew from depictions to every "
+        f"heavy chem tool; set {VARIABLE} instead, or unset both for the default of "
+        f"{DEFAULT_MAX_CONCURRENT_HEAVY_CALLS}. It is refused rather than ignored so a deployment "
+        "does not run on the default while believing its own number."
+    )
 _admission = Admission(
     env_bound(
-        "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS",
-        default=DEFAULT_MAX_CONCURRENT_RENDERS,
+        "CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS",
+        default=DEFAULT_MAX_CONCURRENT_HEAVY_CALLS,
         minimum=1,
-        consequence="this pod would refuse every depiction it is asked for",
+        consequence="this pod would refuse every depiction and species enumeration it is asked for",
     )
 )
 
@@ -103,13 +115,13 @@ def _release_slot(task: asyncio.Task[Any]) -> None:
 
 
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
-    """Bound how many depictions run at once, refusing promptly when the pod is full.
+    """Bound how many heavy calls run at once, refusing promptly when the pod is full.
 
     Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
     `ADMISSION_MARKER` so a coverage test can check the gated set rather than a second hand-kept
     list. `asyncio.shield` releases the slot when the work finishes rather than when the caller
     stops waiting: cancelling the awaiting coroutine does not stop the worker thread, so releasing
-    on cancellation would hand a slot to a retry while the original render kept burning a core.
+    on cancellation would hand a slot to a retry while the original call kept burning a core.
 
     `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
     from `inspect.signature`, which follows `__wrapped__` back to the real signature. Without it the
@@ -372,6 +384,7 @@ async def describe_sites(smiles: str) -> SiteSet:
 
 
 @server.tool()
+@_admitted
 async def describe_topology(smiles: str) -> Topology:
     """Say what the molecular graph is like, before spending an expensive search on it.
 
@@ -412,6 +425,7 @@ async def describe_topology(smiles: str) -> Topology:
 
 
 @server.tool()
+@_admitted
 async def enumerate_tautomers(smiles: str) -> SpeciesSet:
     """List the tautomers of a molecule — the proton-shift isomers it can exist as.
 
@@ -437,6 +451,7 @@ async def enumerate_tautomers(smiles: str) -> SpeciesSet:
 
 
 @server.tool()
+@_admitted
 async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
     """List the protonation microstates — each ionisable site toggled, one at a time.
 
@@ -468,6 +483,7 @@ async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
 
 
 @server.tool()
+@_admitted
 async def enumerate_stereoisomers(smiles: str) -> SpeciesSet:
     """List the stereoisomers of a molecule at the centres its SMILES leaves *unassigned*.
 
@@ -518,6 +534,7 @@ async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic"
 
 
 @server.tool()
+@_admitted
 async def enumerate_degradants(smiles: str) -> DegradantSet:
     """Propose degradation products by applying forced-degradation transforms to the structure.
 

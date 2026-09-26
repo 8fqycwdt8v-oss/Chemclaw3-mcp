@@ -76,24 +76,6 @@ decision leaves a record behind and the row goes.
   **Anchors:** `tests/test_fleet.py::_bound_offences`, `servers/calc/deploy/deployment.yaml`,
   `packages/mcp_server_kit/src/mcp_server_kit/app.py`.
 
-- [ ] **The bound derivation reads two configuration mechanisms and three shapes past them are
-  invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
-  of these three exists in `src/` today and each would enter it as an ordinary line: a settings
-  class inheriting from a `BaseSettings` *subclass* (the `env_prefix` is on the parent), a nested
-  `BaseModel` reached through `env_nested_delimiter`, and `Field(4, validation_alias="REAL_NAME")` —
-  the last being worse than absent, because the bound is found under the prefixed field name rather
-  than under the alias the environment actually reads, so the ratchet would refuse the wrong
-  variable and wave the real one through. `os.getenv` and `Annotated[int, …]` were in this list and
-  are closed. So was **a read through a helper**, differently and only for one helper:
-  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put eleven bounds behind
-  `mcp_server_kit.limits.env_bound`, and `_BOUND_HELPERS` follows that one *by name* — measured, the
-  derived set fell 45→34 without it. A helper the scan does not know by name is still invisible,
-  and that is the part left standing here. Decide whether following an alias and a parent class is
-  worth the AST, or whether the honest arrangement is the floor that already exists
-  (`_BOUND_ANCHORS`) plus this row.
-  **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
-
 - [ ] **A relaxation at `servers/calc`'s atom ceiling spends its budget instead of converging, and
   the refusal one atom above it promises the opposite.** `Structure`'s refusal says a system past
   the ceiling is "refused rather than started and abandoned";
@@ -133,38 +115,22 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
-- [ ] **`servers/chem` has five enumerators in one cost band and a ceiling on none of them, and
-  the measurement that would decide whether they need one has been taken.**
-  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` bounded
-  `enumerate_microstates`' input and deliberately added no admission ceiling, on a driven result:
-  eight concurrent worst-legal calls left the event loop 384 ms late at worst against a 3 s
-  `readinessProbe.timeoutSeconds`, so a ceiling would not bind. What it did *not* settle is the
-  other four. Measured the same day on a 1,900-atom alkane, one call each:
-  `describe_topology` **615 ms**, `enumerate_tautomer_set` **400 ms**, `enumerate_stereoisomer_set`
-  **367 ms**, `enumerate_degradant_candidates` **106 ms** — all ungated. **Those four figures are a
-  linear alkane's, and that shape is the cheap case for three of them.** Re-measured 2026-09-19 on
-  a 996-atom PAMAM G4 dendrimer, a molecule a caller may now send:
-  `enumerate_tautomer_set` **2,801 ms**, `describe_topology` **2,793 ms**,
-  `enumerate_degradant_candidates` **1,823 ms**, `enumerate_stereoisomer_set` **18 ms**, against
-  `enumerate_microstates`' **587 ms** — so the one with an input bound is the *cheap* one and the
-  two dearest have none. Whether those four hold the interpreter the way `enumerate_microstates`
-  measurably does is **not** measured and is the first thing this row owes; what the re-measurement
-  settles is that "one cost band" was an artefact of the fixture, and that the worst call
-  `D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work` admits is a bigger number for a
-  probe-derived ceiling to divide than the 640 ms this row was written against. **That figure was
-  itself a fixture artefact and is now 1,986 ms**
-  (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`): the 1,266 ms it read was the
-  worst *aliphatic* shape, and a poly(pyridine) at the same product costs 13.26 us per site-atom
-  against the chain's 8.52, super-linearly in the product. So whatever ceiling this row settles on
-  divides 2.0 s, not 1.3 — and the tool that measurably holds the interpreter is still the one the
-  derivation calls cheap.
-  `render_structure` is gated at
-  8 while its worst *legal* depiction is 4.6 ms, which is the inversion worth resolving: either the
-  band shares one ceiling derived from the probe, or `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob
-  `POD_THREAD_POOL_WIDTH` already makes unreachable. The row is the decision, not the number — the
-  numbers above are what it is to be decided against.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
-  `servers/chem/tests/test_microstate_bound.py`, `servers/chem/tests/test_depiction_bound.py`.
+- [ ] **Four of `servers/chem`'s species tools have no input bound, and one call of two of them
+  holds the interpreter past the readiness probe.**
+  `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated them on one ceiling
+  and measured what a ceiling cannot fix, in the `cc3-gate` image, engine CPU per call on legal
+  1,990-atom shapes: `describe_topology` **18,030 ms** (polyester, answered),
+  `enumerate_tautomers` **19,351 ms**, `enumerate_stereoisomers` **10,226 ms** and
+  `enumerate_degradants` **47,572 ms** (each then refused by its output cap — the defect
+  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` fixed for `enumerate_protonation_states`
+  alone), against a 30 s `request_timeout`. The first two are single RDKit calls that hold the GIL
+  throughout: on a 996-atom PAMAM G4 one call left a 10 ms tick **2.9 s** late against a 3 s
+  `readinessProbe.timeoutSeconds`. Each needs the input bound `MAX_SITE_ATOM_PRODUCT` is for
+  microstates — priced on the variable that drives its cost, which is the shape and not the atom
+  count (a 1,990-atom alkane is 0.6 s) — and each derivation needs the per-tool measurement first.
+  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py`,
+  `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
+  `servers/chem/tests/test_microstate_bound.py`.
 
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**
@@ -224,21 +190,6 @@ decision leaves a record behind and the row goes.
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py`.
 
 ## 3 — Readiness, where it still stops
-
-- [ ] **An `ImportError` from a broken shared library reads as an extra nobody installed, and only
-  one of the two servers catches it.** `degradation.classify` sorts every `ImportError` as
-  `not_installed`, which is right for `ModuleNotFoundError` and wrong for
-  `ImportError("libcudart.so.11: cannot open shared object file")` — a distribution that *is*
-  installed and cannot load, which is a broken image. Distinguishing them from the exception is not
-  possible and matching the message is the control `degradation.py`'s docstring refuses to write, so
-  the only reliable test is the one `rxnlabel` already makes: `version._installed(distribution)`
-  against `available()`, where metadata saying the distribution is present and the predicate saying
-  it did not build is the fault. `rxnpredict` has no equivalent — a predictor class carries
-  `extras_install`, which is an extra's name rather than a distribution's, so the cross-check needs a
-  third declaration per predictor and that is the thing to design rather than bolt on.
-  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/degradation.py::classify`,
-  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/readiness.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/base.py`.
 
 - [ ] **A degraded `rxnlabel` row is stamped as though it were healthy, because the stamp Chemclaw3
   writes is a deployment-level string read once per drain pass.** **Other repository:** `Chemclaw3`.

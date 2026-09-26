@@ -103,4 +103,5 @@ except Exception as exc:  # noqa: BLE001
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[parrot]` and clone "
         f"wangxr0526/Parrot, with checkpoint at $PARROT_MODEL_PATH): {exc!r}",
         exc=exc,
+        optional=("torch",),
     )

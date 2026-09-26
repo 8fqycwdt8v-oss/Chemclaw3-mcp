@@ -168,7 +168,10 @@ def test_a_caller_typo_moves_no_degradation_counter() -> None:
     ("exc", "cause"),
     [
         (EgressForbidden("the guard refused a lookup"), degradation.CAUSE_EGRESS_REFUSED),
-        (ImportError("no module named rdkit"), degradation.CAUSE_NOT_INSTALLED),
+        (
+            ModuleNotFoundError("No module named 'rdkit'", name="rdkit"),
+            degradation.CAUSE_NOT_INSTALLED,
+        ),
         (MemoryError(), degradation.CAUSE_RESOURCE_EXHAUSTED),
     ],
 )
@@ -211,7 +214,10 @@ async def test_a_broken_canonicaliser_is_classified_and_counted(
     ("exc", "cause"),
     [
         (EgressForbidden("the guard refused a lookup"), degradation.CAUSE_EGRESS_REFUSED),
-        (ImportError("no module named rdkit"), degradation.CAUSE_NOT_INSTALLED),
+        (
+            ModuleNotFoundError("No module named 'rdkit'", name="rdkit"),
+            degradation.CAUSE_NOT_INSTALLED,
+        ),
     ],
 )
 async def test_a_conditions_prediction_counts_one_even_though_it_has_two_smiles(

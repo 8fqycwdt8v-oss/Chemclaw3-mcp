@@ -111,4 +111,5 @@ except Exception as exc:  # noqa: BLE001
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[t5chem]` and download weights "
         f"to $T5CHEM_MODEL_PATH): {exc!r}",
         exc=exc,
+        optional=("t5chem",),
     )
