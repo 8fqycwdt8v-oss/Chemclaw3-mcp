@@ -263,9 +263,9 @@ def _mapper() -> Any | None:
                     "and `labeller_version` records that so the rows re-label when it arrives"
                 )
                 return None
-            # Constructing it downloads or loads weights. In this fleet the image bakes them at
-            # build time, so a failure here means a broken image rather than a missing network —
-            # and the server must still start and still assign roles.
+            # Constructing it loads weights — from inside the installed package, which the image's
+            # build checks offline — so a failure here means a broken image rather than a missing
+            # network, and the server must still start and still assign roles.
             #
             # **Counted as well as logged**, and this branch is why the counter takes a cause: a
             # deployment whose weights are absent from the image raises here, and one whose loader

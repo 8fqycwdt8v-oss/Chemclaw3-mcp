@@ -301,3 +301,31 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
                 "warns and returns instead of failing — so the citations go unchecked in CI while "
                 "the run stays green"
             )
+
+
+def test_ci_builds_every_image_from_a_list_it_discovers() -> None:
+    """A workflow builds every server's image, and learns which servers from the tree.
+
+    Until this job existed nothing in CI built an image, and a `servers/rxnlabel/Containerfile`
+    whose bake ran a `chmod` over a directory its locked `rxnmapper` never creates reached a pull
+    request with every gate green: the suite reads a Containerfile as text, and only a build runs
+    it. The list is derived for the reason `test_the_pipeline_derives_its_server_list_from_the_tree`
+    gives about `Jenkinsfile` — a written list is wrong by the next server, and fails open.
+    """
+    jobs = _ci_jobs()
+    builders = {
+        name: job
+        for name, job in jobs.items()
+        if any("docker build" in str(step.get("run", "")) for step in job.get("steps", []))
+    }
+    assert builders, f"no job under {WORKFLOWS} builds an image; a Containerfile is only ever read"
+    names = sorted(path.parent.name for path in SERVERS.glob("*/Containerfile"))
+    for name, job in builders.items():
+        matrix = str((job.get("strategy") or {}).get("matrix", ""))
+        assert "fromJSON" in matrix, f"job {name!r} takes no discovered list of servers"
+        written = [server for server in names if re.search(rf"\b{server}\b", matrix)]
+        assert not written, f"job {name!r} names servers in its matrix: {written}"
+    discovery = "\n".join(
+        str(step.get("run", "")) for job in jobs.values() for step in job.get("steps", [])
+    )
+    assert "servers/*/Containerfile" in discovery, "no job discovers servers from the tree"

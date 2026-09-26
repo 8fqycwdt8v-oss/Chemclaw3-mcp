@@ -127,9 +127,9 @@ rest of the flask distinguishes them.
 *Tools:* `labeller_version`, `represent_reaction`, `name_reaction`, `represent_reactions`,
 `name_reactions` — all `read_only`. The batch pair is what a corpus-labelling drain calls: a
 multi-million-row corpus at one round trip per reaction is a multi-million round trips.
-*Offline:* RXNMapper's checkpoint is pulled during the build, and the NetworkPolicy then denies
-egress — so a failed bake degrades loudly instead of a pod reaching the internet from a cluster
-that forbids it. Rxn-INSIGHT's SMIRKS ship in its wheel; the role rules and the functional-group
+*Offline:* RXNMapper's checkpoint ships inside its hashed wheel and the build loads it with the hub
+switched off; the NetworkPolicy denies egress — so a model that is not in the image degrades
+loudly instead of a pod reaching the internet from a cluster that forbids it. Rxn-INSIGHT's SMIRKS ship in its wheel; the role rules and the functional-group
 vocabulary are source in this repository.
 *Optional by design:* both models are a `models` extra, because RXNMapper drags torch behind it and
 a developer's checkout should not pay gigabytes to run a SMARTS test. Without them the server still

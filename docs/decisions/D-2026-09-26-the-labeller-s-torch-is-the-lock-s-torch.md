@@ -35,11 +35,40 @@ CPU index's. Summed from `uv.lock`'s recorded wheel sizes for linux x86_64 / cp3
   `--no-deps` over local paths — plus the build-stage bootstrap of pip and `uv`, verbatim; any
   `--index-url`, `--extra-index-url` or `--trusted-host` is refused whatever else the line carries.
 
-Verified by building: the `rxnlabel` build stage completed on 2026-09-26 — the whole `models`
-closure, torch and the CUDA wheels included, fetched and hash-checked from the export, and both
-workspace wheels built. The runtime stage then failed with `ENOSPC` on the local Docker VM's disk
-while unpacking that closure, so the bake of the RXNMapper weights was not re-run here; CI has no
-image job.
+## What the first full build found
+
+The first version of this change was verified only as far as the build stage; the runtime stage
+ran out of disk locally, and CI built no image. A full build of that commit (4e196ab) then failed
+at `chmod -R a+rX /opt/models: No such file or directory`, and the cause was not the disk:
+
+- **RXNMapper 0.4.3 ships its checkpoint inside its wheel.** `rxnmapper/models/transformers/
+  albert_heads_8_uspto_all_1310k/` (a 3.2 MB `pytorch_model.bin`, its config and vocabulary) is in
+  the locked `py3-none-any` wheel, and `RXNMapper()` resolves `model_path` with
+  `pkg_resources.resource_filename("rxnmapper", ...)` and calls `from_pretrained` on that local
+  directory. It never touches the HuggingFace cache, so `HF_HOME=/opt/models/hf` was never created
+  and the `chmod` over it had nothing to act on. The Containerfile's account — "a transformer whose
+  library downloads its checkpoint on first use", "constructing an `RXNMapper` is what pulls the
+  checkpoint" — described a mechanism this version does not have. The weights are therefore
+  already covered by the wheel's hash in `uv.lock`, which is a stronger property than a bake had.
+- **Behind it, a second failure no build had reached:** importing `rxn_insight.reaction` failed with
+  `ImportError: libXrender.so.1`, then `libexpat.so.1`. `rxn_insight.utils` imports
+  `rdkit.Chem.Draw.rdMolDraw2D`, which the locked RDKit wheel links against `libXrender`,
+  `libXext`, `libX11` and `libexpat`; `python:3.11-slim` has none of them.
+
+So the bake became a **load check** and the image gained three Debian packages:
+
+- `HF_HOME` and the `chmod` are gone. `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` are set
+  *before* the check, which constructs the mapper, requires that `model_path` lies inside the
+  installed `rxnmapper` package, and maps one reaction. A release that moved its weights back to
+  the hub fails that build, not a pod's startup.
+- `libxrender1 libxext6 libexpat1` are installed at the top of the runtime stage (the set taken
+  from `ldd` over every shared object in `rdkit/` and `rdkit.libs/`), and the existing
+  `rxn_insight` import check now passes. `servers/rxnpredict` installs the same `rxn-insight` from
+  the same lock and had no import check at all, so it gained the same packages and the same check;
+  it did not share the `chmod` defect, because its `fetch_models.py` really does write `HF_HOME`.
+- CI now builds every image on pull requests (`images` in `.github/workflows/ci.yml`, servers
+  discovered from the tree), because the suite reads Containerfiles as text and only a build runs
+  them.
 
 ## What keeps it true
 
@@ -47,3 +76,4 @@ image job.
 - `tests/test_fleet.py::test_the_unhashed_install_check_refuses_the_shapes_it_was_written_for`
 - `tests/test_fleet.py::test_every_image_installs_the_closure_the_audit_read`
 - `tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read`
+- `tests/test_delivery.py::test_ci_builds_every_image_from_a_list_it_discovers`

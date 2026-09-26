@@ -80,6 +80,21 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
     && rm -rf /wheels
 
+# **Three system libraries, because Rxn-INSIGHT imports RDKit's drawing module**, and the import
+# check after them. `rxn_insight.utils` does `from rdkit.Chem.Draw import rdMolDraw2D` at import
+# time, and the locked RDKit wheel links that extension against `libXrender.so.1`, `libXext.so.6`,
+# `libX11.so.6` and `libexpat.so.1`, none of which `python:3.11-slim` carries (`libX11` arrives as a
+# dependency); `servers/rxnlabel/Containerfile` records how the set was found. Found by building `servers/rxnlabel`'s image on 2026-09-26,
+# which failed on exactly this import; this image installs the same `rxn-insight` from the same
+# lock and had no import check, so it would have built and then recorded the `rxn_insight`
+# conditions predictor as failed at startup: one predictor down among several, which
+# `engine/readiness.py` deliberately does not refuse, so the image would have served without it.
+# The check makes that a build failure instead.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxrender1 libxext6 libexpat1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "from rxn_insight.reaction import Reaction; print('rxn-insight importable')"
+
 USER ${UID}
 EXPOSE 8857
 

@@ -29,7 +29,8 @@ on:
 permissions:
   contents: read
 
-# Nothing here needs a cluster, a database, or a network. That is a property of the fleet rather
+# Nothing here needs a cluster or a database, and only `deps` and `images` need a network — one to
+# read advisories, one to fetch what an image installs. The rest is a property of the fleet rather
 # than of the workflow: every server answers from data in its own image, and `offline-check` proves
 # it by taking the network away.
 concurrency:
@@ -172,11 +173,122 @@ jobs:
   # runner had reported the fleet invariants anyway. `if: !cancelled()` on the `Types` and `Tests`
   # steps is what restores that, inside one job.
 
+  # **Every image a change touches, built and started with no network.** Nothing above builds one,
+  # and that is how a Containerfile that could not build reached a pull request with every gate
+  # green: `servers/rxnlabel`'s bake ran a `chmod` over a model cache its locked `rxnmapper` never
+  # writes, because that release ships its checkpoint inside its wheel
+  # (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`). The suite reads Containerfiles as
+  # text; only a build runs them. `Jenkinsfile` builds too, but on a controller this repository
+  # cannot see, after merge.
+  #
+  # The server list is discovered from the tree, never written here, for the reason
+  # `tests/test_delivery.py` gives about `Jenkinsfile`: a written list is wrong by the next server,
+  # and wrong in the direction that fails open. On a pull request it is narrowed to the servers the
+  # diff touches — every server when the shared inputs (`uv.lock`, the root `pyproject.toml`,
+  # `packages/`) move — because a model image installs ~2.9 GB of torch wheels and costs a runner
+  # most of its disk. The weekly schedule and a manual dispatch build them all.
+  images-discover:
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.list.outputs.servers }}
+    steps:
+      # Full history, so the pull request's base is there to diff against.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: list
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          all=$(for f in servers/*/Containerfile; do basename "$(dirname "${f}")"; done)
+          if [ -n "${BASE}" ]; then
+            changed=$(git diff --name-only "${BASE}...HEAD")
+            if printf '%s\n' "${changed}" | grep -qE '^(uv\.lock|pyproject\.toml|packages/)'; then
+              picked="${all}"
+            else
+              picked=$(for s in ${all}; do
+                printf '%s\n' "${changed}" | grep -q "^servers/${s}/" && echo "${s}"; done || true)
+            fi
+          else
+            picked="${all}"
+          fi
+          # shellcheck disable=SC2086 # splitting the newline-separated list is the point
+          servers=$(printf '%s\n' ${picked} | jq -R 'select(length > 0)' | jq -cs .)
+          echo "servers=${servers}" >> "$GITHUB_OUTPUT"
+          echo "building: ${servers}"
+
+  # Not on `push`: every push to a pull request's branch also fires `pull_request`, and this is the
+  # one job in the file whose cost is measured in gigabytes.
+  images:
+    needs: images-discover
+    if: ${{ github.event_name != 'push' && needs.images-discover.outputs.servers != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ${{ fromJSON(needs.images-discover.outputs.servers) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A hosted runner starts with ~14 GB free, and a model image holds its torch closure twice
+      # over (the build stage's wheelhouse and the runtime's install). Deleting toolchains this job
+      # never uses returns ~25 GB; best-effort, so a runner image that moved them falls through to
+      # the build rather than failing on its own housekeeping.
+      - name: Free the disk the build needs
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      # A build and nothing else: no push, no registry. The Containerfiles' own checks run as part
+      # of it — `rxnlabel` constructs RXNMapper with the hub switched off and maps a reaction.
+      - name: Build servers/${{ matrix.server }}/Containerfile
+        run: >-
+          docker build -f servers/${{ matrix.server }}/Containerfile
+          --build-arg CHEMCLAW_REVISION=${{ github.sha }}
+          -t chemclaw-mcp-${{ matrix.server }}:ci .
+
+      # **Started with no network at all**, which is the fleet's promise stated as a container
+      # flag: whatever `/healthz` needs — a corpus, a checkpoint, a constructed model — has to be
+      # in the image. The credential env comes out of the manifest, as `Jenkinsfile`'s verify
+      # stage takes it, so the server starts configured. With `--network none` there is no port to
+      # publish, so the probe runs inside the container against its own loopback; `python` is the
+      # one client every image carries. Ready means 200 and this build's revision in the body.
+      - name: Start it offline and wait for /healthz
+        env:
+          SERVER: ${{ matrix.server }}
+          REVISION: ${{ github.sha }}
+        run: |
+          port=$(grep -oE ':[0-9]{4}/mcp' "servers/${SERVER}/connector.yaml" | head -1 | tr -dc '0-9')
+          token_env=$(grep -oE 'token_env: *[A-Z0-9_]+' "servers/${SERVER}/connector.yaml" \
+            | head -1 | awk '{print $2}')
+          docker run -d --name smoke --network none -e "${token_env}=verify-token" \
+            "chemclaw-mcp-${SERVER}:ci"
+          probe="import sys, urllib.request as u
+          try:
+              r = u.urlopen('http://127.0.0.1:${port}/healthz', timeout=10)
+              print(r.status, r.read().decode()); sys.exit(0 if r.status == 200 else 1)
+          except Exception as e:
+              print(repr(e)); sys.exit(1)"
+          for _ in $(seq 1 90); do
+            if body=$(docker exec smoke python -c "${probe}" 2>&1); then break; fi
+            sleep 2
+          done
+          echo "${SERVER}: ${body}"
+          docker logs smoke 2>&1 | tail -40
+          case "${body}" in
+            "200 "*"${REVISION}"*) : ;;
+            *) echo "${SERVER}: not ready offline, or /healthz lacks this build's revision" >&2
+               exit 1 ;;
+          esac
+
   deps:
     # The supply-chain gate: `pip-audit` over the locked closure, blocking. It is a separate job
     # rather than a step in `check` because it is the one gate whose fix lives in `uv.lock` rather
-    # than in the diff under review, and because it is the only job in this file that *needs* the
-    # network — the other three prove the opposite property about this fleet.
+    # than in the diff under review, and because it needs the network — `check` and `offline`
+    # prove the opposite property about this fleet.
     runs-on: ubuntu-latest
     steps:
       # No `fetch-depth:` here, deliberately: this job runs `make deps-audit` and no test, so it
