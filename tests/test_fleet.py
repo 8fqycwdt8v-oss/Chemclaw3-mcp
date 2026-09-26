@@ -4387,8 +4387,9 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 
 # Which servers answer for their own concurrency, and which are argued not to need to.
 #
-# **A ceiling is `engine/admission.py`** — five servers ship one (`calc`, `chem`, `pyexec`,
-# `rxnlabel`, `rxnpredict`) and each is held by its own module. The absence of a sixth was held by
+# **A ceiling is `engine/admission.py`**, and each server that ships one is held by its own module.
+# `kinetics` was argued out of one at 836 µs and moved in when its integrator's step count became
+# the caller's to set. The absence of a ceiling in an eighth server was held by
 # nobody, which `docs/BACKLOG.md` recorded as "an eighth server without one passes every test here"
 # — and then an eighth server arrived (`thermalsafety`) with exactly that shape: an argued absence
 # in a README that no test reads.

@@ -35,7 +35,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from chemclaw_mcp_unitops.engine.validation import UnitOpsInputError, fraction, positive
+from chemclaw_mcp_unitops.engine.validation import UnitOpsInputError, finite, fraction, positive
 
 __all__ = [
     "UNDERWOOD_BISECTION_STEPS",
@@ -136,12 +136,15 @@ def underwood_minimum_reflux(
         interval it must lie in, and it is meaningless outside `(1, alpha)`.
 
     Raises:
-        UnitOpsInputError: If `alpha` is at or below 1, a composition is outside `(0, 1)`, or the
-            distillate is not richer in the light key than the feed.
+        UnitOpsInputError: If `alpha` is at or below 1, a composition is outside `(0, 1)`, `q` is
+            not finite, or the distillate is not richer in the light key than the feed.
     """
     alpha = _volatility(relative_volatility)
     feed = fraction(light_key_in_feed, "the light key in the feed")
     top = fraction(light_key_in_distillate, "the light key in the distillate")
+    # Checked here rather than left to the root: a NaN `q` makes every residual NaN, the bisection
+    # walks to an endpoint, and the refusal below then blames the composition and the volatility.
+    q = finite(feed_quality, "the feed quality q")
     if top <= feed:
         raise UnitOpsInputError(
             f"the distillate is given as {top} light key against a feed of {feed}, so the column "
@@ -149,7 +152,7 @@ def underwood_minimum_reflux(
         )
 
     def residual(theta: float) -> float:
-        return alpha * feed / (alpha - theta) + (1.0 - feed) / (1.0 - theta) - (1.0 - feed_quality)
+        return alpha * feed / (alpha - theta) + (1.0 - feed) / (1.0 - theta) - (1.0 - q)
 
     low, high = 1.0, alpha
     for _ in range(UNDERWOOD_BISECTION_STEPS):
@@ -201,11 +204,14 @@ def gilliland_stages(*, minimum_stages: float, minimum_reflux: float, reflux_rat
     Raises:
         UnitOpsInputError: If the reflux ratio is at or below the minimum — at `R_min` the stage
             count is infinite rather than large, and below it the split is unreachable at any stage
-            count, so there is no number to return.
+            count, so there is no number to return — or so close above it that the stage count
+            overflows a float, or if it is not finite.
     """
     positive(minimum_stages, "the minimum stage count")
     positive(minimum_reflux, "the minimum reflux ratio")
-    if reflux_ratio <= minimum_reflux:
+    # Finite first: an explicit `inf` passed `<= minimum_reflux` and came back as an infinite
+    # reflux beside NaN stage counts.
+    if positive(reflux_ratio, "the reflux ratio") <= minimum_reflux:
         raise UnitOpsInputError(
             f"the reflux ratio of {reflux_ratio:.4g} is at or below the minimum of "
             f"{minimum_reflux:.4g}. At the minimum the column needs infinitely many stages, and "
@@ -214,6 +220,17 @@ def gilliland_stages(*, minimum_stages: float, minimum_reflux: float, reflux_rat
         )
     x = (reflux_ratio - minimum_reflux) / (reflux_ratio + 1.0)
     y = 1.0 - math.exp(((1.0 + 54.4 * x) / (11.0 + 117.2 * x)) * ((x - 1.0) / math.sqrt(x)))
+    # **Above the minimum is not far enough above it.** For a small `X` the exponent is a large
+    # negative number, `exp` underflows to 0 and `Y` is exactly 1.0 — measured at `R/R_min` of
+    # 1.00001, where `(Y + N_min)/(1 - Y)` left as a bare `ZeroDivisionError`, an opaque error id
+    # rather than a refusal. The stage count there is unbounded in floating point, which is the
+    # same answer as at `R_min` itself, so it gets the same kind of sentence.
+    if not math.isfinite(y) or y >= 1.0:
+        raise UnitOpsInputError(
+            f"the reflux ratio of {reflux_ratio:.6g} is so close to the minimum of "
+            f"{minimum_reflux:.6g} that the stage count is unbounded. Design reflux is normally "
+            "1.05 to 1.5 times the minimum."
+        )
     return (y + minimum_stages) / (1.0 - y)
 
 
@@ -297,9 +314,9 @@ def shortcut_column(
     if minimum_reflux <= 0.0:
         raise UnitOpsInputError(
             f"Underwood's minimum reflux computes as {minimum_reflux:.4g}, which is not positive. "
-            "That happens when the feed is largely vapour already or the specified split is "
-            "reachable by a flash rather than by a column; a shortcut column is not the arithmetic "
-            "for it."
+            "That happens when the feed quality q puts the feed far from a saturated liquid "
+            "(largely vapour, or strongly subcooled) or the specified split is reachable by a "
+            "flash rather than by a column; a shortcut column is not the arithmetic for it."
         )
     if reflux_ratio is None:
         positive(reflux_over_minimum, "the multiple of the minimum reflux")

@@ -8,6 +8,7 @@ inverse that must round-trip, and a convergence *order* — which is the one tha
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import pytest
 from chemclaw_mcp_kinetics.engine import reactors
@@ -280,3 +281,363 @@ def test_a_sub_first_order_reaction_reaches_completion_in_finite_time() -> None:
         )
         == 1.0
     )
+
+
+#: The stiff dose the reviews drove: a 1 h dose of 5 mol into 0.1 against a co-reagent at 60.
+_STIFF_DOSE_SECONDS = 3600.0
+
+
+def _stiff(*, rate_constant: float, order_in_dosed: float = 1.0) -> reactors.SemiBatchProfile:
+    """The stiff case, named argument by argument for the reason `_dose` gives."""
+    return reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=_STIFF_DOSE_SECONDS,
+        initial_volume=0.1,
+        dosed_moles=5.0,
+        dosed_volume=0.0,
+        initial_coreagent_concentration=60.0,
+        order_in_dosed=order_in_dosed,
+    )
+
+
+def test_a_profile_keeps_a_bounded_set_of_points_whatever_the_step_count() -> None:
+    """Memory is O(samples), not O(steps), and the peak is exact rather than the nearest sample.
+
+    At `k = 2.5` the stability floor integrates ~194,000 steps; every one used to be materialised as
+    an `AccumulationPoint` to return 25.
+    """
+    profile = _stiff(rate_constant=2.5)
+    assert len(profile.points) <= reactors.PROFILE_POINTS
+    assert profile.points[0].time_seconds == 0.0
+    assert profile.points[-1].time_seconds == pytest.approx(_STIFF_DOSE_SECONDS)
+    times = [point.time_seconds for point in profile.points]
+    assert times == sorted(times)
+    assert any(
+        point.time_seconds == profile.peak_at_seconds
+        and point.accumulated_fraction == profile.peak_accumulation_fraction
+        for point in profile.points
+    ), "the peak the summary reports is not among the points it summarises"
+
+
+@pytest.mark.parametrize(("order_in_dosed", "rate_constant"), [(0.0, 0.05), (0.5, 0.5)])
+def test_an_order_below_one_that_runs_its_reagent_out_says_so_rather_than_blaming_stiffness(
+    order_in_dosed: float, rate_constant: float
+) -> None:
+    """Below first order the rate does not fall smoothly to zero, so no step floor covers it.
+
+    Before the fix both cases were reported as "went unstable … a stiffness the step floor did not
+    catch", which misstates the cause: the reaction consumes the dose as fast as it arrives.
+    """
+    with pytest.raises(KineticsInputError, match="ran out") as refused:
+        _stiff(rate_constant=rate_constant, order_in_dosed=order_in_dosed)
+    assert "feed-rate-limited" in str(refused.value)
+    assert "stiffness" not in str(refused.value)
+
+
+def test_a_slow_zero_order_dose_still_answers() -> None:
+    """The refusal above is for a reagent that runs out, not for zero order as such."""
+    profile = _stiff(rate_constant=1e-4, order_in_dosed=0.0)
+    assert 0.0 < profile.peak_accumulation_fraction < 1.0
+
+
+def test_the_stability_floor_carries_the_order_in_the_dosed_reagent() -> None:
+    """At `n_d = 2` the bound is `k*2*C_d,max*C_co`, not the dimensionally wrong `k*C_co`."""
+    bound = reactors._stiffness_bound(
+        rate_constant=1e-3,
+        max_dosed_concentration=50.0,
+        initial_coreagent_concentration=60.0,
+        order_in_dosed=2.0,
+        order_in_coreagent=1.0,
+    )
+    assert bound == pytest.approx(1e-3 * 2.0 * 50.0 * 60.0)
+    first_order = reactors._stiffness_bound(
+        rate_constant=1e-3,
+        max_dosed_concentration=50.0,
+        initial_coreagent_concentration=60.0,
+        order_in_dosed=1.0,
+        order_in_coreagent=1.0,
+    )
+    assert first_order == pytest.approx(1e-3 * 60.0), "first order must be the old bound exactly"
+
+
+def _second_order_dose(
+    *,
+    rate_constant: float,
+    dosed_moles: float,
+    initial_coreagent_concentration: float,
+    dosed_volume: float,
+    steps: int = reactors.DEFAULT_INTEGRATION_STEPS,
+) -> reactors.SemiBatchProfile:
+    """A 1 h dose into a volume of 1, second order in the dosed reagent and first in the other."""
+    return reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=3600.0,
+        initial_volume=1.0,
+        dosed_moles=dosed_moles,
+        dosed_volume=dosed_volume,
+        initial_coreagent_concentration=initial_coreagent_concentration,
+        order_in_dosed=2.0,
+        order_in_coreagent=1.0,
+        steps=steps,
+    )
+
+
+def test_a_second_order_dose_that_reacts_as_it_arrives_is_answered_rather_than_refused() -> None:
+    """The step floor bounds `C_d` by what a dose reaches, not by the whole charge unreacted.
+
+    Bounding it by `dosed_moles / initial_volume` put this dose at 2.3 million steps and refused it
+    as "too fast for this integrator", while 5,000 steps answers it to eleven figures. The reference
+    is a 20,000-step integration, which agrees with a 190,000-step one to 1e-15.
+    """
+    profile = _second_order_dose(
+        rate_constant=0.5, dosed_moles=40.0, initial_coreagent_concentration=45.0, dosed_volume=0.5
+    )
+    assert profile.peak_accumulation_fraction == pytest.approx(0.0024630155, rel=1e-6)
+
+
+def test_a_slow_second_order_dose_is_not_under_stepped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The half the bound must still catch: a dose slow enough that its reagent accumulates.
+
+    Here the co-reagent runs out halfway, so half the charge is left unreacted — exactly, which is
+    the reference. `J_d = 2*k*C_d*C_co` is then far above `k*C_co`, and the bound that ignored the
+    order in the dosed reagent took 200 steps and diverged. The second half pins that direction, so
+    the first half is evidence that the floor is doing the work rather than the default count.
+    """
+    profile = _second_order_dose(
+        rate_constant=1e-3, dosed_moles=200.0, initial_coreagent_concentration=100.0, dosed_volume=0
+    )
+    assert profile.peak_accumulation_fraction == pytest.approx(0.5, rel=1e-6)
+
+    def order_blind(**bound: float) -> float:
+        return bound["rate_constant"] * bound["initial_coreagent_concentration"]
+
+    monkeypatch.setattr(reactors, "_stiffness_bound", order_blind)
+    with pytest.raises(KineticsInputError, match="went unstable"):
+        _second_order_dose(
+            rate_constant=1e-3,
+            dosed_moles=200.0,
+            initial_coreagent_concentration=100.0,
+            dosed_volume=0,
+        )
+
+
+_FLOAT_ARGUMENTS = (
+    "rate_constant",
+    "dose_time_seconds",
+    "initial_volume",
+    "dosed_moles",
+    "dosed_volume",
+    "initial_coreagent_concentration",
+    "order_in_dosed",
+    "order_in_coreagent",
+)
+
+
+@pytest.mark.parametrize("bad", [math.inf, math.nan])
+@pytest.mark.parametrize("argument", _FLOAT_ARGUMENTS)
+def test_a_non_finite_dose_input_is_refused_by_name(argument: str, bad: float) -> None:
+    """Infinity passes `gt=0` and `value <= 0.0`, and used to leave `math.ceil` as an overflow.
+
+    `connector_app` replaces an `OverflowError` with an opaque `error_id`; a `KineticsInputError`
+    reaches the caller as a sentence.
+    """
+    values = {
+        "rate_constant": 0.02,
+        "dose_time_seconds": 3600.0,
+        "initial_volume": 1.0,
+        "dosed_moles": 40.0,
+        "dosed_volume": 0.5,
+        "initial_coreagent_concentration": 45.0,
+        "order_in_dosed": 2.0,
+        "order_in_coreagent": 1.0,
+    }
+    values[argument] = bad
+    with pytest.raises(KineticsInputError, match="finite"):
+        reactors.semibatch_accumulation(
+            rate_constant=values["rate_constant"],
+            dose_time_seconds=values["dose_time_seconds"],
+            initial_volume=values["initial_volume"],
+            dosed_moles=values["dosed_moles"],
+            dosed_volume=values["dosed_volume"],
+            initial_coreagent_concentration=values["initial_coreagent_concentration"],
+            order_in_dosed=values["order_in_dosed"],
+            order_in_coreagent=values["order_in_coreagent"],
+        )
+
+
+def test_a_stiffness_too_large_to_represent_is_the_too_fast_refusal() -> None:
+    """Finite inputs whose bound overflows a float are refused as too fast, not as an overflow."""
+    with pytest.raises(KineticsInputError, match="too fast"):
+        reactors.semibatch_accumulation(
+            rate_constant=1e300,
+            dose_time_seconds=3600.0,
+            initial_volume=1.0,
+            dosed_moles=1.0,
+            dosed_volume=0.0,
+            initial_coreagent_concentration=1e200,
+            order_in_dosed=1.0,
+            order_in_coreagent=2.0,
+        )
+
+
+@pytest.mark.parametrize("order_in_dosed", [0.0, 0.5])
+def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: float) -> None:
+    """Below first order in the dosed reagent the stiffness bound is zero, so nothing priced
+    `C_co ** n_co` before the integrator evaluated it — and a finite `1e200` squared left the rate
+    law as an `OverflowError`, which `connector_app` replaces with an opaque `error_id`.
+    """
+    with pytest.raises(KineticsInputError, match="overflows"):
+        reactors.semibatch_accumulation(
+            rate_constant=1e-3,
+            dose_time_seconds=3600.0,
+            initial_volume=1.0,
+            dosed_moles=1.0,
+            dosed_volume=0.0,
+            initial_coreagent_concentration=1e200,
+            order_in_dosed=order_in_dosed,
+            order_in_coreagent=2.0,
+        )
+
+
+@pytest.mark.parametrize("order", [0.0, 0.5, 2.0])
+def test_a_rate_constant_times_time_past_dbl_max_is_complete_conversion_at_every_order(
+    order: float,
+) -> None:
+    """`(n-1)·k·t` past DBL_MAX used to be refused as an overflow at every order but the first,
+    which answered 1.0 for the same inputs — so the outcome depended on the order. The exact answer
+    is complete conversion, and it is an ordinary double.
+    """
+    assert reactors.batch_conversion(
+        rate_constant=1e200, initial_concentration=1.0, time_seconds=1e200, order=order
+    ) == pytest.approx(1.0)
+    assert reactors.batch_conversion(
+        rate_constant=1e200, initial_concentration=1.0, time_seconds=1e200, order=1.0
+    ) == pytest.approx(1.0)
+
+
+def test_a_pfr_whose_damkohler_number_overflows_is_complete_conversion() -> None:
+    """`pfr_conversion` delegates to `batch_conversion`, so it inherited the same false refusal."""
+    assert reactors.pfr_conversion(
+        rate_constant=1e300, initial_concentration=1.0, residence_time_seconds=1e10, order=2.0
+    ) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1e120,
+                residence_time_seconds=1.0,
+                order=3.0,
+            ),
+            1.0 - 1e40 / 1e120,
+            id="cstr-power-past-dbl-max",
+        ),
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1e200,
+                residence_time_seconds=1.0,
+                order=3.0,
+            ),
+            1.0,
+            id="cstr-power-far-past-dbl-max",
+        ),
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1e200,
+                initial_concentration=1.0,
+                residence_time_seconds=1e200,
+                order=1.0,
+            ),
+            1.0,
+            id="cstr-first-order-inf-over-inf",
+        ),
+        pytest.param(
+            lambda: reactors.batch_conversion(
+                rate_constant=1.0, initial_concentration=1e-5, time_seconds=1.0, order=200.0
+            ),
+            0.0,
+            id="batch-c0-power-past-dbl-max",
+        ),
+        pytest.param(
+            lambda: reactors.pfr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1e-5,
+                residence_time_seconds=1.0,
+                order=200.0,
+            ),
+            0.0,
+            id="pfr-c0-power-past-dbl-max",
+        ),
+    ],
+)
+def test_an_intermediate_past_dbl_max_does_not_refuse_a_representable_answer(
+    call: Callable[[], float], expected: float
+) -> None:
+    """Each of these used to be refused as "no finite number to report", and each has one.
+
+    At order 200 and `C₀ = 1e-5`, `C₀^(1-n)` is 1e995 but `k·t` is 199 against it, so conversion is
+    effectively zero; a CSTR at `C₀ = 1e120`, order 3, has an outlet near 1e40 although `τ·k·C₀³`
+    overflows during the bisection.
+    """
+    assert call() == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda: reactors.time_for_batch_conversion(
+                rate_constant=1.0, initial_concentration=1e-5, conversion=0.5, order=200.0
+            ),
+            id="batch-time",
+        ),
+        pytest.param(
+            lambda: reactors.time_for_batch_conversion(
+                rate_constant=1e-320, initial_concentration=1.0, conversion=0.5, order=1.0
+            ),
+            id="batch-time-first-order-inf",
+        ),
+    ],
+)
+def test_a_closed_form_that_overflows_is_refused_by_name(call: Callable[[], float]) -> None:
+    """Finite inputs the field bounds admit (`order >= 0`, `C0 > 0`, `k > 0`) reached a float `**`
+    that raised `OverflowError` — not a `ValueError`, so `connector_app` handed the model an opaque
+    `error_id` — or a `*`/`/` that quietly returned `inf` or `nan` as the answer.
+
+    Only answers that really are past DBL_MAX belong here: at order 200 and `C₀ = 1e-5` the time to
+    half conversion is ~1e1052 s, not a false refusal of a finite one.
+    """
+    with pytest.raises(KineticsInputError, match="overflows a double"):
+        call()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda: reactors.batch_conversion(
+                rate_constant=1.0, initial_concentration=1.0, time_seconds=math.nan, order=2.0
+            ),
+            id="batch",
+        ),
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1.0,
+                residence_time_seconds=math.nan,
+                order=2.0,
+            ),
+            id="cstr",
+        ),
+    ],
+)
+def test_a_nan_time_is_refused_rather_than_answered(call: Callable[[], float]) -> None:
+    """`NaN < 0` is False, and the CSTR's log-space bisection would read a NaN comparison as "the
+    root is lower" all the way down to complete conversion — so the check is `not t >= 0`.
+    """
+    with pytest.raises(KineticsInputError, match="zero or above"):
+        call()

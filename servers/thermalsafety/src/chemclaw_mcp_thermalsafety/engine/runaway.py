@@ -42,14 +42,27 @@ class ThermalInputError(ValueError):
     """
 
 
+def _finite(value: float, *, name: str) -> float:
+    """Refuse NaN and infinity, which every comparison guard below would otherwise wave through.
+
+    **The MCP JSON parser accepts the literals `NaN` and `Infinity`**, and `value <= 0` is False
+    for both, so `adiabatic_temperature_rise` with `moles=NaN` answered `NaN` — serialised as
+    `null` — and with `moles=Infinity` answered an infinite rise, where a safety number has to be a
+    refusal or a number. Neither is ever a quantity somebody measured.
+    """
+    if not math.isfinite(value):
+        raise ThermalInputError(f"{name} must be a finite number; got {value}")
+    return value
+
+
 def _kelvin(celsius: float, *, name: str) -> float:
-    """Celsius to kelvin, refusing a temperature below absolute zero.
+    """Celsius to kelvin, refusing a temperature below absolute zero or not finite.
 
     Not a formality: a transposed sign on a sub-ambient jacket temperature (-20 read as -200) is a
     typo this catches, and every formula below divides by or squares a temperature in kelvin, where
     a negative value returns a confidently wrong number instead of failing.
     """
-    if celsius <= ABSOLUTE_ZERO_C:
+    if _finite(celsius, name=name) <= ABSOLUTE_ZERO_C:
         raise ThermalInputError(
             f"{name} is {celsius} °C, at or below absolute zero ({ABSOLUTE_ZERO_C} °C)"
         )
@@ -57,8 +70,8 @@ def _kelvin(celsius: float, *, name: str) -> float:
 
 
 def _positive(value: float, *, name: str, unit: str) -> float:
-    """A quantity that is meaningless at or below zero, refused by name."""
-    if value <= 0:
+    """A quantity that is meaningless at or below zero or not finite, refused by name."""
+    if _finite(value, name=name) <= 0:
         raise ThermalInputError(f"{name} must be greater than 0 {unit}; got {value}")
     return value
 
@@ -94,11 +107,13 @@ def adiabatic_temperature_rise(
         The adiabatic temperature rise in kelvin (a difference, so identical in °C).
 
     Raises:
-        ThermalInputError: A mass, a mole count or a heat capacity at or below zero.
+        ThermalInputError: A mass or a heat capacity at or below zero, a negative mole count, or
+            any input that is not finite.
     """
     _positive(mass_kg, name="mass_kg", unit="kg")
     _positive(specific_heat_kj_per_kg_k, name="specific_heat_kj_per_kg_k", unit="kJ/(kg·K)")
-    if moles < 0:
+    _finite(heat_of_reaction_kj_per_mol, name="heat_of_reaction_kj_per_mol")
+    if _finite(moles, name="moles") < 0:
         raise ThermalInputError(f"moles must not be negative; got {moles}")
     return abs(heat_of_reaction_kj_per_mol) * moles / (mass_kg * specific_heat_kj_per_kg_k)
 
@@ -136,7 +151,7 @@ def mtsr(
         raise ThermalInputError(
             f"accumulation_fraction is a fraction between 0 and 1; got {accumulation_fraction}"
         )
-    if adiabatic_temperature_rise_k < 0:
+    if _finite(adiabatic_temperature_rise_k, name="adiabatic_temperature_rise_k") < 0:
         raise ThermalInputError(
             f"adiabatic_temperature_rise_k must not be negative; got {adiabatic_temperature_rise_k}"
         )

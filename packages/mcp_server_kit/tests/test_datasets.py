@@ -131,21 +131,24 @@ def test_a_missing_dataset_is_named(tmp_path: Path) -> None:
 def test_a_manifest_with_a_null_tools_key_is_named(tmp_path: Path) -> None:
     """`assert_manifest_matches` raised `TypeError: 'NoneType' object is not iterable` for `tools:`.
 
-    Which defeats its own point: a manifest with a blank tool list should fail saying it declares
-    nothing while the server serves something, not with a Python type error naming a line in the
-    helper.
+    Which defeats its own point: a manifest with a blank tool list should fail naming the manifest
+    and the field, not with a Python type error naming a line in the helper. It is a *refusal* of
+    the manifest rather than a "declares []" mismatch, because the consumer refuses a bare list key
+    at its startup (`list_type`) — a stand-in that coerced it to `[]` was kinder than the model it
+    stands in for.
     """
     from mcp_server_kit.testing import assert_manifest_matches
 
     manifest = tmp_path / "connector.yaml"
     manifest.write_text(
         "name: probe\ndescription: a probe\nendpoint:\n"
+        "  transport: http\n"
         "  url: http://127.0.0.1:8850/mcp\n"
         "  auth:\n    mode: bearer\n    token_env: PROBE_TOKEN\n"
         "  tools:\n",
         encoding="utf-8",
     )
-    with pytest.raises(AssertionError, match="declares \\[\\]"):
+    with pytest.raises(ValueError, match=r"not a connector manifest(.|\n)*tools"):
         assert_manifest_matches(manifest, ["a_tool"])
 
 

@@ -69,41 +69,22 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
-def _release_slot(task: asyncio.Task[Any]) -> None:
-    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
-
-    Retrieving the exception keeps asyncio from logging "exception was never retrieved" for a
-    shielded task whose awaiter was cancelled and so has nobody left to receive its failure.
-    """
-    _admission.release()
-    if not task.cancelled():
-        task.exception()
-
-
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how many integrations run at once, refusing promptly when the pod is full.
 
     The same shape as `servers/chem`'s gate: stamped with `ADMISSION_MARKER` so a test checks the
-    gated set against the served surface, and `asyncio.shield` so the slot is released when the
-    worker thread finishes rather than when the caller stops waiting. `functools.wraps` is what lets
-    FastMCP read the real signature through `__wrapped__` for the tool's argument schema.
+    gated set against the served surface, and held through `Admission.hold` so the slot is released
+    when the worker thread finishes rather than when the caller stops waiting. `functools.wraps` is
+    what lets FastMCP read the real signature through `__wrapped__` for the tool's argument schema.
     """
 
     @functools.wraps(work)
     async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
         _admission.acquire(work.__name__)
-        task = asyncio.ensure_future(work(*args, **kwargs))
-        task.add_done_callback(_release_slot)
-        return await asyncio.shield(task)
+        return await _admission.hold(work(*args, **kwargs), 1)
 
     setattr(_guarded, ADMISSION_MARKER, True)
     return _guarded
-
-
-#: The most profile points a semi-batch answer will return. The integrator runs at
-#: `DEFAULT_INTEGRATION_STEPS` regardless; this bounds what crosses the wire, because a 201-point
-#: profile is a large tool result for a model that wants the shape and the peak.
-MAX_PROFILE_POINTS = 25
 
 
 class RateConstantResult(BaseModel):
@@ -608,8 +589,9 @@ async def semibatch_accumulation_profile(
 
     Raises:
         ValueError: If a value is not positive or an order is negative, if the dose is too fast
-            for the integrator to resolve, or if this pod is already running its ceiling of
-            integrations — that last one is transient, and the identical call may be retried.
+            for the integrator to resolve or runs a reagent out in a way it cannot follow, or if
+            this pod is already running its ceiling of integrations — that last one is transient,
+            and the identical call may be retried.
     """
     # Off the event loop: FastMCP 1.x calls a synchronous tool on the loop itself, and the worst
     # legal integration is seconds of CPU — every other call and `/healthz` would wait behind it.
@@ -634,26 +616,10 @@ async def semibatch_accumulation_profile(
                 dosed_fraction=point.dosed_fraction,
                 accumulated_fraction=point.accumulated_fraction,
             )
-            for point in _sampled(profile.points)
+            for point in profile.points
         ],
         basis=(
             "fixed-step RK4 over moles of both species with the volume rising linearly; ideal "
             "isothermal semi-batch, perfect mixing, constant dose rate, no energy balance"
         ),
     )
-
-
-def _sampled(points: tuple[reactors.AccumulationPoint, ...]) -> list[reactors.AccumulationPoint]:
-    """Thin the integrator's grid to what a model needs to see the shape.
-
-    The integration runs at its full step count regardless — this bounds only what crosses the
-    wire. The last point is always kept, because the accumulation left at the end of the dose is a
-    separate question from the peak and a stride that dropped it would silently answer neither.
-    """
-    if len(points) <= MAX_PROFILE_POINTS:
-        return list(points)
-    stride = (len(points) - 1) / (MAX_PROFILE_POINTS - 1)
-    indices = sorted(
-        {round(index * stride) for index in range(MAX_PROFILE_POINTS)} | {len(points) - 1}
-    )
-    return [points[index] for index in indices]

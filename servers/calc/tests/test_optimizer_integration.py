@@ -23,10 +23,15 @@ from __future__ import annotations
 
 import logging
 import os
+from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 import chemclaw_mcp_calc.engine.xtb_opt as xtb_opt
+import numpy as np
+import pytest
 from chemclaw_mcp_calc.engine.structure import Structure
+from chemclaw_mcp_calc.engine.xtb_engine import evaluate_point
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
 
 #: A water with one bond stretched — strained enough that the optimizer certainly runs, small enough
@@ -103,3 +108,37 @@ def test_geometric_logging_does_not_reach_the_root_logger() -> None:
         f"{len(from_geometric)} geomeTRIC record(s) reached the root logger, e.g. "
         f"{from_geometric[0].getMessage()!r}"
     )
+
+
+def test_a_relaxation_evaluates_no_geometry_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The input and the final frame are each one SCF, not two.
+
+    Measured before the fix on ethanol: 22 single points for 19 steps, because geomeTRIC's first
+    request re-evaluated the input the caller had just evaluated (identical to 3e-17 Angstrom) and
+    the convergence re-check re-evaluated geomeTRIC's last request (1.1e-9 Angstrom apart, its
+    Bohr round trip). The second of those ran outside every `Deadline.check`, so the overrun past
+    the budget could be two uninterruptible single points against a margin sized for one.
+
+    Held as "no two consecutive evaluations are the same point", which is the property, rather than
+    as a count, which would move with every geomeTRIC release.
+    """
+    seen: list[np.ndarray] = []
+    real = evaluate_point
+
+    def spy(calculator: Any, positions: np.ndarray) -> Any:
+        seen.append(np.array(positions, dtype=float))
+        return real(calculator, positions)
+
+    monkeypatch.setattr(xtb_opt, "evaluate_point", spy)
+    result = optimize_structure(OptSpec(engine="tblite"), STRAINED)
+    assert result.steps > 0, "the optimizer did not run, so this proves nothing"
+    repeats = [
+        index
+        for index, (before, after) in enumerate(pairwise(seen))
+        if np.max(np.abs(before - after)) <= 1e-6
+    ]
+    assert repeats == [], f"evaluations {repeats} repeated the geometry before them"
+    # The returned geometry is the one the last SCF was run at, not a round-tripped copy of it —
+    # compared after `Structure`'s own rounding, which is what every stored geometry goes through.
+    verified = Structure(elements=STRAINED.elements, positions=seen[-1].tolist())
+    assert result.structure.positions == verified.positions

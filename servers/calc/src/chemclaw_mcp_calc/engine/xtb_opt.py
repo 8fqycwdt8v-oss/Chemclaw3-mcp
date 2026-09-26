@@ -108,6 +108,14 @@ _UNBOUNDED_CRITERION = 1.0
 # minimized" looks like from the outside.
 _CONSTRAINT_METHOD = 1
 
+# How far geomeTRIC's reported final frame may sit from the engine's last evaluated geometry and
+# still be the *same* point, in Angstrom. The optimizer stores its frames through its own
+# Bohr-to-Angstrom constant, so one point reaches this module twice, ~1e-9 Angstrom apart (measured
+# on ethanol: 1.1e-09). Three orders of magnitude above that round trip and far below any
+# displacement a step makes (the smallest accepted step is ~1e-4), so a match is a round trip and a
+# miss is a genuinely different geometry that has to be evaluated.
+_SAME_POINT_ANGSTROM = 1e-6
+
 __all__ = [
     "OptSpec",
     "OptimizationResult",
@@ -378,23 +386,46 @@ class _TbliteEngine(Engine):  # type: ignore[misc]
     `evaluations` counts single points rather than optimizer cycles. The two differ by more than a
     constant — a rejected step costs a gradient and advances no cycle — and it is the single points
     that cost the seconds, so it is the number worth reporting when a relaxation was expensive.
+
+    **It remembers the last point it evaluated, and is seeded with the input's.** The caller has
+    already evaluated the input geometry to decide whether to optimize at all, and geomeTRIC's
+    first request is exactly that geometry; after the optimizer returns, the caller re-verifies the
+    final frame, which is exactly geomeTRIC's last request. Measured on ethanol, both were full
+    SCFs — 9 single points for 6 steps — and the verification one ran with no `Deadline.check`, so
+    the uninterruptible overrun past the budget could be two single points against a caller margin
+    sized for one. `last` answers both without a second SCF.
     """
 
-    def __init__(self, molecule: Any, calculator: Calculator, deadline: Deadline) -> None:
+    def __init__(
+        self,
+        molecule: Any,
+        calculator: Calculator,
+        deadline: Deadline,
+        start: tuple[np.ndarray, float, np.ndarray],
+    ) -> None:
         super().__init__(molecule)
         self._calculator = calculator
         self._deadline = deadline
         self.evaluations = 0
+        #: `(positions, energy, gradient)` in Angstrom and Hartree/Angstrom, as `evaluate_point`
+        #: returns them — the most recent point this engine knows the answer at.
+        self.last = start
+        self._last_bohr = np.asarray(start[0], dtype=float).ravel() * ANGSTROM_TO_BOHR
 
     def calc_new(self, coords: Any, dirname: Any) -> dict[str, Any]:
         """One single point at `coords` (Bohr), as energy and gradient in atomic units."""
-        # Per gradient rather than per cycle: `max_steps` bounds cycles, and one cycle on a large
-        # substrate is unbounded in seconds — so a check outside the optimizer is exactly the one
-        # that misses this. It is the same placement the L-BFGS-B objective used.
-        self._deadline.check("geometry optimization")
-        self.evaluations += 1
-        positions = np.asarray(coords, dtype=float).reshape(-1, 3) / ANGSTROM_TO_BOHR
-        energy, gradient, _ = evaluate_point(self._calculator, positions)
+        flat = np.asarray(coords, dtype=float).ravel()
+        if not np.array_equal(flat, self._last_bohr):
+            # Per gradient rather than per cycle: `max_steps` bounds cycles, and one cycle on a
+            # large substrate is unbounded in seconds — so a check outside the optimizer is exactly
+            # the one that misses this. It is the same placement the L-BFGS-B objective used.
+            self._deadline.check("geometry optimization")
+            self.evaluations += 1
+            positions = flat.reshape(-1, 3) / ANGSTROM_TO_BOHR
+            energy, gradient, _ = evaluate_point(self._calculator, positions)
+            self.last = (positions, energy, gradient)
+            self._last_bohr = flat.copy()
+        _, energy, gradient = self.last
         return {"energy": energy, "gradient": (gradient / ANGSTROM_TO_BOHR).ravel()}
 
 
@@ -474,7 +505,9 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
     **The convergence check is this module's own, re-evaluated on the returned geometry**, exactly
     as `_optimize_with_binary` does it for the binary and for the same reason: the contract of this
     module is that holding an `OptimizationResult` guarantees `spec.gradient_tolerance` was met, and
-    a backend converging to its own criteria must not quietly weaken that. It costs one gradient.
+    a backend converging to its own criteria must not quietly weaken that. It costs no extra
+    gradient when the final frame is the engine's last evaluated point, which is the usual case,
+    and one checked against the budget when it is not.
     """
     # A budget rather than a spec field, deliberately: it decides whether an answer comes back, not
     # what the answer is, so keying on it would fork the cache every time a deployment gave itself
@@ -515,7 +548,9 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
     steps = 0
     if max_gradient > spec.gradient_tolerance:
         molecule = _geometric_molecule(numbers, positions)
-        engine = _TbliteEngine(molecule, calc, deadline)
+        engine = _TbliteEngine(
+            molecule, calc, deadline, (positions, initial_energy, initial_gradient)
+        )
         coordinates = _coordinate_system(molecule, spec.frozen_atoms)
         try:
             with tempfile.TemporaryDirectory(prefix="chemclaw-geometric-") as scratch:
@@ -538,7 +573,14 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
         # geomeTRIC's progress carries one frame per accepted cycle, the input included.
         steps = max(len(progress.xyzs) - 1, 1)
         final = np.array(progress.xyzs[-1], dtype=float)
-        energy, gradient, _ = evaluate_point(calc, final)
+        last_positions, last_energy, last_gradient = engine.last
+        if np.max(np.abs(final - last_positions)) <= _SAME_POINT_ANGSTROM:
+            # The engine's own geometry rather than geomeTRIC's round-tripped copy of it, so the
+            # coordinates returned are exactly the ones whose gradient is checked below.
+            final, energy, gradient = last_positions, last_energy, last_gradient
+        else:
+            deadline.check("geometry optimization")
+            energy, gradient, _ = evaluate_point(calc, final)
         max_gradient = float(np.max(np.abs(np.where(free_mask, gradient.ravel(), 0.0))))
 
     if max_gradient > spec.gradient_tolerance:

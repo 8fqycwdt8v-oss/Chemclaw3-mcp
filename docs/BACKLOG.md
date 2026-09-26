@@ -115,22 +115,21 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
-- [ ] **Four of `servers/chem`'s species tools have no input bound, and one call of two of them
-  holds the interpreter past the readiness probe.**
-  `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated them on one ceiling
-  and measured what a ceiling cannot fix, in the `cc3-gate` image, engine CPU per call on legal
-  1,990-atom shapes: `describe_topology` **18,030 ms** (polyester, answered),
-  `enumerate_tautomers` **19,351 ms**, `enumerate_stereoisomers` **10,226 ms** and
-  `enumerate_degradants` **47,572 ms** (each then refused by its output cap — the defect
-  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` fixed for `enumerate_protonation_states`
-  alone), against a 30 s `request_timeout`. The first two are single RDKit calls that hold the GIL
-  throughout: on a 996-atom PAMAM G4 one call left a 10 ms tick **2.9 s** late against a 3 s
-  `readinessProbe.timeoutSeconds`. Each needs the input bound `MAX_SITE_ATOM_PRODUCT` is for
-  microstates — priced on the variable that drives its cost, which is the shape and not the atom
-  count (a 1,990-atom alkane is 0.6 s) — and each derivation needs the per-tool measurement first.
+- [ ] **`enumerate_stereoisomers` is the one species tool left with no input bound.**
+  `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated the band on one
+  ceiling and measured what a ceiling cannot fix: four tools past a 30 s `request_timeout` or a 3 s
+  `readinessProbe.timeoutSeconds` in one call on legal 1,990-atom shapes. Three are now priced
+  before they run — `enumerate_tautomers` and `describe_topology`'s tautomer count by
+  `MAX_TAUTOMER_HEAVY_ATOMS`, `enumerate_degradants` by `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`
+  (`servers/chem/tests/test_enumeration_cost_bounds.py`); re-measured on the merged engine, the
+  1,991-atom polyester and polyol refuse or answer in under 0.3 s. `enumerate_stereoisomers` does
+  not: the 1,991-atom polyol still costs **5.4 s** of CPU (10,226 ms in the ADR's image) before its
+  output cap refuses it, the defect `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` fixed
+  for `enumerate_protonation_states`. It needs a bound priced on what drives its cost — the
+  unassigned stereocentre count, not the atom count (a 996-atom PAMAM G4 is 23 ms) — measured first.
   **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py`,
   `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
-  `servers/chem/tests/test_microstate_bound.py`.
+  `servers/chem/tests/test_enumeration_cost_bounds.py`.
 
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**
@@ -172,8 +171,8 @@ decision leaves a record behind and the row goes.
   would answer it.** `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` gave
   `semibatch_accumulation_profile` an admission ceiling rather than a new integrator, because a
   gate was owed either way. What the ceiling does not change is the refusal: a dose whose
-  `k·C_co^n·t_dose` needs more than 200,000 explicit RK4 steps is turned away as mixing-limited. An
-  implicit or exponentially-fitted step for the linear part would be stable at any step and would
+  stiffness bound times its dose time needs more than 200,000 explicit RK4 steps is turned away
+  as mixing-limited. An implicit or exponentially-fitted step for the linear part would be stable at any step and would
   answer it, at the price of re-measuring the convergence order the current scheme was proven at.
   Decide whether the stiff band is worth that, and do not close it by lowering the step ceiling.
   **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py`,

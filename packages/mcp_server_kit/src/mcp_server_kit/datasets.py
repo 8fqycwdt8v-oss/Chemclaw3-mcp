@@ -25,7 +25,9 @@ actively misled on the one file whose whole purpose is that a reviewer can audit
 written with `"license"` parsed clean and then reported `licence` as *missing*, so the error named a
 field the author had written rather than the spelling they had written it under. Forbidding extras
 reports both halves. It also found three manifests carrying `text_column`/`smiles_column`, which
-nothing in either repository has ever read.
+nothing in this repository reads: they belong to Chemclaw3's vendored-dataset schema
+(`ingest/sources/vendored_dataset.py`, where `text_column` is required and both are read), and this
+fleet's `load_dataset` does not share that schema.
 """
 
 from __future__ import annotations

@@ -17,8 +17,14 @@ from __future__ import annotations
 import math
 
 import pytest
-from chemclaw_mcp_unitops.engine import crystallisation, drying, filtration
-from chemclaw_mcp_unitops.engine.validation import UnitOpsInputError
+from chemclaw_mcp_unitops.engine import crystallisation, drying, filtration, mixing
+from chemclaw_mcp_unitops.engine.validation import (
+    UnitOpsInputError,
+    fraction,
+    kelvin,
+    non_negative,
+    positive,
+)
 
 CAKE = {
     "filter_area_m2": 0.456,
@@ -286,4 +292,75 @@ def test_a_wet_basis_percentage_entered_as_a_target_is_refused() -> None:
             initial_moisture_dry_basis=0.25,
             critical_moisture_dry_basis=0.10,
             final_moisture_dry_basis=0.30,
+        )
+
+
+def test_a_target_above_the_critical_moisture_is_answered_as_a_constant_rate_dry() -> None:
+    """The cycle never reaches the falling-rate leg, and the model answers that case exactly.
+
+    It used to be refused, with a docstring calling it "past the point the model describes" while
+    the message itself called it possible. `m_s/(A·N_c)` = 133 333 s per unit, x (0.5 - 0.2).
+    """
+    found = drying.drying_time(
+        **DRYER,
+        initial_moisture_dry_basis=0.5,
+        critical_moisture_dry_basis=0.1,
+        final_moisture_dry_basis=0.2,
+    )
+    assert found.constant_rate_seconds == pytest.approx(80.0 / (1.2 * 5.0e-4) * 0.3, rel=1e-12)
+    assert found.falling_rate_seconds == 0.0
+    assert found.total_time_seconds == found.constant_rate_seconds
+    assert found.starts_in_the_falling_rate_period is False
+
+
+@pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
+def test_a_non_finite_input_is_refused_by_every_guard(bad: float) -> None:
+    """`value <= 0` is False for NaN and for +inf, so both used to pass and answer with nulls."""
+    for guard in (positive, non_negative, fraction, kelvin):
+        with pytest.raises(UnitOpsInputError, match="finite"):
+            guard(bad, "the input")
+    with pytest.raises(UnitOpsInputError, match="finite"):
+        filtration.filtration_time(filtrate_volume_m3=bad, **CAKE)
+
+
+def test_a_finite_input_that_overflows_a_power_law_is_refused_by_name() -> None:
+    """`D**5` past ~1e61 m raises `OverflowError`, which reached the model as an opaque error id."""
+    with pytest.raises(UnitOpsInputError, match="impeller power"):
+        mixing.agitation_scale_up(
+            small_impeller_diameter_m=1e70,
+            small_speed_rpm=100.0,
+            small_liquid_volume_m3=1.0,
+            large_impeller_diameter_m=1.0,
+            large_liquid_volume_m3=1.0,
+            power_number=5.0,
+            liquid_density_kg_per_m3=1000.0,
+            liquid_viscosity_pa_s=1e-3,
+        )
+
+
+def test_a_medium_time_that_overflows_is_refused_rather_than_answered_as_infinity() -> None:
+    """Only the cake term was guarded, so an overflowing medium term came back as `inf`/`null`.
+
+    Measured before the guard: `medium_resistance_per_m=1e308` with a viscosity of 10 answered an
+    infinite total time beside a cake fraction, an average flux and a final rate of exactly zero —
+    plausible-looking zeros next to a null.
+    """
+    with pytest.raises(UnitOpsInputError, match="medium filtration time"):
+        filtration.filtration_time(
+            filtrate_volume_m3=0.1,
+            **{**CAKE, "filtrate_viscosity_pa_s": 10.0},
+            medium_resistance_per_m=1.0e308,
+        )
+
+
+def test_a_filtration_time_that_underflows_to_zero_is_refused_rather_than_divided_by() -> None:
+    """A total of exactly 0.0 used to reach `cake_time / total` as a bare `ZeroDivisionError`."""
+    with pytest.raises(UnitOpsInputError, match="underflow"):
+        filtration.filtration_time(
+            filtrate_volume_m3=0.1,
+            **{
+                **CAKE,
+                "filtrate_viscosity_pa_s": 1.0e-200,
+                "specific_cake_resistance_m_per_kg": 1.0e-200,
+            },
         )

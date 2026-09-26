@@ -34,6 +34,7 @@ has been reviewed for, not a limit on what a parser could manage.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from mcp_server_kit.limits import echo
@@ -147,6 +148,25 @@ _VERY_DEFICIENT = (
 )
 
 
+#: One element symbol and its optional count. A formula this screen answers is nothing but these,
+#: back to back, so a string that is not a run of them is refused before `molmass` sees it.
+_ELEMENT_TOKEN = re.compile(r"([A-Z][a-z]?)(\d*)")
+_PLAIN_FORMULA = re.compile(r"(?:[A-Z][a-z]?\d*)+")
+
+#: Acronyms this screen's domain meets that are spelled entirely from real element symbols, so no
+#: rule over the string can tell them from a formula: `BPO` parses as one boron, one phosphorus and
+#: one oxygen and gets an OB% for that. Refused by name, with what the acronym stands for, because
+#: the symbol check below only catches an acronym with a letter that is not an element (`TNT`,
+#: `PETN`, `DMSO`). A list, and therefore not closed: any other all-element acronym still parses,
+#: and the composition and molar mass returned beside the balance are how a caller catches it.
+_ACRONYMS_THAT_SPELL_A_FORMULA: dict[str, str] = {
+    "BPO": "benzoyl peroxide, C14H10O4",
+    "CHP": "cumene hydroperoxide, C9H12O2",
+    "NC": "nitrocellulose, a polymer — write the repeat unit, e.g. C6H7N3O11 for the trinitrate",
+    "NaN": "a missing number rather than a compound",
+}
+
+
 class FormulaError(ValueError):
     """A molecular formula this module will not guess at.
 
@@ -202,16 +222,32 @@ def parse_formula(formula: str) -> dict[str, float]:
     count (`"C0"`, `"C1H0"`) is now *refused* where the old parser returned a zero, which is the
     stricter direction: an element written with a count of nothing is a typo, not a composition.
 
-    The tokenizing and the weights are the library's; the domain is this module's. An element
-    outside `ALLOWED_ELEMENTS` — including an isotope symbol such as `2H`, which is how `molmass`
-    reports a `D` — is named in the refusal rather than dropped, because a silently ignored element
-    returns a molar mass that is too low and therefore an OB% that is too *favourable*.
+    The weights are the library's; the domain is this module's. An element outside
+    `ALLOWED_ELEMENTS` is named in the refusal rather than dropped, because a silently ignored
+    element returns a molar mass that is too low and therefore an OB% that is too *favourable*.
+
+    **Every symbol is checked against that set before `molmass` runs, not only after.** `molmass`
+    expands abbreviations and residue codes silently, so a compound name or acronym typed where a
+    formula belongs came back as a confident, wrong answer in the reassuring direction: `PETN`
+    parsed as C18H29N5O9 at -144.5% (real PETN is about -10%), `TNT` as C12H22N4O7 at -134% against
+    the real -74%, `THF` as C19H25N5O5, `Et2O` as C4H10O. So the string must be a run of element
+    symbols and counts, and each symbol must be in the table — `E`, `T`, `D`, `Me`, `Et` are named
+    and refused. The post-parse check stays as the backstop for anything the library still invents.
+
+    **That catches an acronym only when one of its letters is not an element, and it said more.**
+    `BPO` (benzoyl peroxide) reads as {B, P, O}, `CHP` (cumene hydroperoxide) as {C, H, P}, `NC`
+    (nitrocellulose) as {C, N} and `NaN` as {N, Na}: every symbol is real, so no rule over the
+    string separates them from a formula without also refusing `HCN` or `COS`. The ones a process-
+    safety screen meets are refused by name from `_ACRONYMS_THAT_SPELL_A_FORMULA`; any other
+    all-element acronym still parses, and the composition and molar mass returned with the balance
+    are what let a caller see the misread.
 
     Raises:
-        FormulaError: the string is empty, holds a character no formula contains, names an element
-            outside `ALLOWED_ELEMENTS`, carries an element count of zero, or uses a notation
-            (brackets or braces of any kind, a hydrate dot, a charge, a leading multiplier) this
-            parser refuses rather than guesses at.
+        FormulaError: the string is empty, is not a run of element symbols and counts, names a
+            symbol outside `ALLOWED_ELEMENTS` (an abbreviation or acronym with a non-element letter
+            included), is one of the listed all-element acronyms, carries an
+            element count of zero, or uses a notation (brackets or braces of any kind, a hydrate
+            dot, a charge, a leading multiplier) this parser refuses rather than guesses at.
     """
     text = formula.strip()
     if not text:
@@ -243,6 +279,26 @@ def parse_formula(formula: str) -> dict[str, float]:
             "a leading number reads as an isotope mass number rather than as a multiplier; write "
             "the whole composition, e.g. 2H2O as H4O2"
         )
+
+    compact = "".join(text.split())
+    if compact in _ACRONYMS_THAT_SPELL_A_FORMULA:
+        raise FormulaError(
+            f"{echo(formula)!r} is an acronym ({_ACRONYMS_THAT_SPELL_A_FORMULA[compact]}), not a "
+            "molecular formula, though every letter in it is an element symbol; write the "
+            "formula itself"
+        )
+    if not _PLAIN_FORMULA.fullmatch(compact):
+        raise FormulaError(
+            f"{echo(formula)!r} is not a molecular formula; expected element symbols and counts "
+            "such as C7H5N3O6"
+        )
+    for symbol, _count in _ELEMENT_TOKEN.findall(compact):
+        if symbol not in ALLOWED_ELEMENTS:
+            raise FormulaError(
+                f"{echo(formula)!r} names {symbol!r}, which is not an element in this server's "
+                f"atomic-weight table; it holds {', '.join(sorted(ALLOWED_ELEMENTS))} — a compound "
+                "name, an acronym or a group abbreviation (Me, Et, Ph, Ts) is not a formula"
+            )
 
     try:
         composition = Formula(text).composition()

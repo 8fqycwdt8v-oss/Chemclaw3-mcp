@@ -38,6 +38,7 @@ retention time it is handed is taken as given.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -74,7 +75,14 @@ class PeakError(ValueError):
 
 
 def _positive(value: float, what: str) -> float:
-    """A width, a time or a height that must be greater than zero to mean anything."""
+    """A width, a time or a height that must be finite and greater than zero to mean anything.
+
+    Finite first: `value <= 0.0` is False for NaN and infinity alike, and the MCP JSON parser
+    accepts both as literals, so a NaN width used to come back as a NaN plate count — `null` in the
+    answer — rather than a refusal.
+    """
+    if not math.isfinite(value):
+        raise PeakError(f"{what} must be a finite number; got {value}.")
     if value <= 0.0:
         raise PeakError(
             f"{what} must be greater than zero; got {value}. A width or a retention time of zero "

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 pytest.importorskip("rdkit")
@@ -136,7 +138,9 @@ def test_a_pattern_is_compiled_once_per_process_rather_than_once_per_call() -> N
     )
 
 
-def test_an_unparseable_pattern_is_warned_about_once_and_answers_no_match() -> None:
+def test_an_unparseable_pattern_is_warned_about_once_and_answers_no_match(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The miss path survived the cache, and stopped being a log line per call.
 
     `_compiled` returns `None` for a pattern RDKit rejects and `_any_mol_matches` reads that as no
@@ -146,4 +150,14 @@ def test_an_unparseable_pattern_is_warned_about_once_and_answers_no_match() -> N
     """
     classifier_module._compiled.cache_clear()
     assert classifier_module._compiled("this is not a SMARTS(((") is None
-    assert not classifier_module._any_mol_matches([Chem.MolFromSmiles("CCO")], "((((")
+    ethanol = [Chem.MolFromSmiles("CCO")]
+    with caplog.at_level(logging.WARNING, logger=classifier_module.__name__):
+        for _ in range(5):
+            assert not classifier_module._any_mol_matches(ethanol, "((((")
+    warned = [
+        record
+        for record in caplog.records
+        if record.name == classifier_module.__name__
+        and record.getMessage() == "invalid SMARTS in classifier: '(((('"
+    ]
+    assert len(warned) == 1, f"{len(warned)} warnings over five calls for one bad pattern"

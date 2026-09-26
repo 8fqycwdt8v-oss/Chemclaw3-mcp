@@ -114,3 +114,5 @@ worst legal call became seconds of pure-Python CPU, and the tool was also runnin
 loop, stalling `/healthz` for as long as it ran. The five closed-form tools stay ungated.
 `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` has the measurement and why the
 integrator was not replaced instead.
+A profile keeps at most `reactors.PROFILE_POINTS` points — evenly spaced samples, the end of the
+dose and the exact peak — so an integration's memory does not grow with its step count.

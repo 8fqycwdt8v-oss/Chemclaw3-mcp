@@ -14,7 +14,7 @@ true of every dose when the floor arrived: the worst legal call runs just under
     k = 0.02    1,552 steps    24 ms
     k = 0.05    3,878 steps    58 ms
     k = 0.5    38,780 steps   585 ms
-    k = 2.578 199,946 steps   1.8-3.4 s   (the worst legal call; peak 49.6 MB traced)
+    k = 2.578 199,946 steps   1.8-3.4 s   (worst legal call; 49.6 MB traced, pre-sampling)
 
 The backlog row that queued this measured the same ceiling at ~1.2 s on a quieter machine, so the
 cost is a range and `WORST_INTEGRATION_SECONDS` is taken from the top of it rather than the bottom.
@@ -39,9 +39,11 @@ server scales by replicas.
 **So the ceiling is derived from the caller's budget.** N admitted worst-case integrations finish,
 serialised, after N x `WORST_INTEGRATION_SECONDS`; keeping that under half of `connector.yaml`'s
 `request_timeout` leaves the other half to the transport and to a slower node than the one measured.
-At 15 s and 2 s that is three. Memory agrees: three worst cases hold ~150 MB of profile points
-against the pod's 512 Mi limit. `tests/test_admission.py` holds the arithmetic against the manifest
-rather than a transcription of it.
+At 15 s and 2 s that is three. Memory does not enter it: the 49.6 MB traced above was one
+`AccumulationPoint` per step, and the integrator now keeps at most `reactors.PROFILE_POINTS` of them
+and tracks the peak inside its loop, so what an integration holds no longer scales with the step
+count the caller's rate constant sets. `tests/test_admission.py` holds the arithmetic against the
+manifest rather than a transcription of it.
 
 **This is admission control, not a clock**, for the reason `CLAUDE.md` gives: cancelling the
 awaiting coroutine does not stop the worker thread, so a wall clock would answer a caller who has

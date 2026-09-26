@@ -105,10 +105,12 @@ class Structure(BaseModel):
         gates eight tools and its derivation
         (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`) is geomeTRIC's coordinate
         build, which only `relax_structure` and `scan_point` run: a GFN2 single point at 509 atoms
-        peaks at 312 MiB against that build's 974 MiB, so the property, Fukui, `combine_structures`
-        and CREST paths are capped on a basis 3.1x above what they cost. That is deliberate and it
-        is the safe direction — the alternative is a second per-tool ceiling for a band D-100 puts
-        outside this server's workload anyway (200-800 Da is ~120 atoms, and the ceiling is 450).
+        peaks at 312 MiB against the 978.9 MiB a whole relaxation peaks at there
+        (`tests/test_cost_bounds.py`'s table, `PEAK_MIB_PER_ATOM_SQUARED`), so the property,
+        Fukui, `combine_structures` and CREST paths are capped on a basis 3.1x above what they
+        cost. That is deliberate and it is the safe direction — the alternative is a second
+        per-tool ceiling for a band D-100 puts outside this server's workload anyway (200-800 Da is
+        ~120 atoms, and the ceiling is 450).
         `xtb_hessian_max_atoms` exists because a Hessian is *tighter* than the global bound, which
         is the direction a per-tool ceiling is worth writing in.
         """

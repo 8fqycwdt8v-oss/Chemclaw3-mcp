@@ -190,3 +190,55 @@ def test_this_module_returns_no_tmr_and_no_temperature() -> None:
     public = {name for name in dir(arrhenius) if not name.startswith("_")}
     for forbidden in ("tmr", "temperature_for", "d24", "criticality", "adiabatic", "runaway"):
         assert not any(forbidden in name.lower() for name in public), (forbidden, sorted(public))
+
+
+@pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
+@pytest.mark.parametrize(
+    "argument",
+    ["target_temperature_c", "reference_rate_constant", "reference_temperature_c", "activation"],
+)
+def test_a_non_finite_input_is_refused_by_name_rather_than_propagated(
+    argument: str, bad: float
+) -> None:
+    """`value <= 0.0` is False for NaN and infinity, and pydantic's `gt=0` passes infinity.
+
+    So these reached the arithmetic and came back as `inf`/`nan` in the answer, or as an exception
+    `connector_app` replaces with an opaque `error_id`.
+    """
+    values = {
+        "target_temperature_c": 60.0,
+        "reference_rate_constant": 1.0e-3,
+        "reference_temperature_c": 25.0,
+        "activation": 80.0,
+    }
+    values[argument] = bad
+    with pytest.raises(arrhenius.KineticsInputError, match="finite"):
+        arrhenius.rate_constant_at(
+            values["target_temperature_c"],
+            reference_rate_constant=values["reference_rate_constant"],
+            reference_temperature_c=values["reference_temperature_c"],
+            activation_energy_kj_per_mol=values["activation"],
+        )
+
+
+def test_an_extrapolation_that_overflows_is_refused_by_name() -> None:
+    """From 0.15 K to 1000 °C at 1000 kJ/mol the ratio is `exp(~8e5)`: `math.exp` raised
+    `OverflowError`, which `connector_app` replaces with an opaque `error_id`."""
+    with pytest.raises(arrhenius.KineticsInputError, match="overflows a double"):
+        arrhenius.rate_constant_at(
+            1000.0,
+            reference_temperature_c=-273.0,
+            reference_rate_constant=1.0,
+            activation_energy_kj_per_mol=1000.0,
+        )
+
+
+def test_an_activation_energy_that_overflows_is_refused_rather_than_returned_as_infinity() -> None:
+    """Two points 1e-9 K apart spanning 600 decades used to return `E_a = inf` and `ln A = inf`."""
+    with pytest.raises(arrhenius.KineticsInputError, match="overflows a double"):
+        arrhenius.activation_energy_from_two_points(
+            lower_temperature_c=0.0,
+            lower_rate_constant=1e-300,
+            upper_temperature_c=1e-9,
+            upper_rate_constant=1e300,
+        )

@@ -437,8 +437,8 @@ things about the CPU half generalise less than they look, and both are in
 consensus tools fan out over every enabled predictor, measured at six at once — and **whether a tool
 is gated is not the manifest's `read_only`/`state_changing` split**, which is how `servers/calc`
 derives it and which does not carry: every `servers/chem` tool is `read_only`, correctly, and six
-of them — the depiction and the species enumerations, one of which costs 18 s of CPU on a legal
-molecule — share a ceiling.
+of them — the depiction and the species enumerations, which cost up to seconds of CPU each on
+a legal molecule — share a ceiling.
 
 ## Ports
 
@@ -469,22 +469,23 @@ checked, rather than as a boundary anybody may rely on — and checking it means
 repository**, which is the only thing that can confirm or refute a sentence about a checkout no
 test here can open.
 
-Re-read on 2026-09-19 against the repositories in the family. Chemclaw3's connector bundles are
+Re-read on 2026-09-26 against the repositories in the family. Chemclaw3's connector bundles are
 what claim ports there, and one of them — `results` — declares no `endpoint:` at all, so it claims
 none. The bundles whose servers that repository runs itself sit below this block: `molfp`, `rxnfp`,
 `calc` and `bo`, plus 8810 for the dev process that mounts every bundle by name. Its runbook
 additionally names 8000 for the front door and 8820 for a mock OpenAI-compatible LLM, and
 `Chemclaw3_mock` serves 8090 and 8091.
 
-**Three of Chemclaw3's endpoints are inside 8850–8899, and that is the seam working rather than a
-collision.** They belong to the bundles that declare an endpoint for a server *this* repository
-hosts — `chem`, `rxnpredict` and `safety` — so the numbers in them are this fleet's own, and they
-are not restated here for the reason no port is: `MODULES.md` is the registry, the manifests are
-what it is checked against, and a second copy goes stale. What this paragraph said until today was
+**Chemclaw3 has endpoints inside 8850–8899, and that is the seam working rather than a
+collision.** Every bundle there that addresses a server *this* repository hosts carries this
+fleet's own port from `MODULES.md`, so the numbers are this fleet's own. Which bundles those are is
+deliberately not listed here, and neither is how many: this paragraph once said "three" and named
+them while that repository already declared more, so a reader auditing a collision would have
+missed the rest. That is the rule no port restates for — `MODULES.md` is the registry, the
+manifests are what it is checked against, and a second copy goes stale. An earlier form said
 "everything observed is below 8850", observed on 2026-08-27; it was already false when it was
-written, and read to anybody checking like a range this fleet had walked into. The block still
-begins at 8850 and is still fifty ports wide, because nothing that is *not* one of this fleet's own
-servers was found inside it.
+written. The block still begins at 8850 and is still fifty ports wide, because nothing that is *not*
+one of this fleet's own servers was found inside it.
 
 A collision with one of those would surface in a local full-stack run, not in this repository's
 suite. If you find one, move **this** block — renumbering a served port here is a `MODULES.md`

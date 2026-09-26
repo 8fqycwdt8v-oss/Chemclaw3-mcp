@@ -11,9 +11,9 @@ requires-python = ">=3.11"
 # - `rdkit` parses, canonicalizes, embeds the 3D geometry and computes the Crippen/QED descriptors.
 #   Its version is in `calc_version` too, for the good reason that a new RDKit shifts the
 #   seeded ETKDG embedding and therefore every energy computed on it.
-# - `scipy` is the null-space projection that separates a molecule's vibrations from its
-#   translations and rotations, **and the CODATA table every unit conversion in `xtb_engine.py` is
-#   derived from** — which is why its distribution version is part of `engine_version()`.
+# - `scipy` supplies the CODATA table every unit conversion in `xtb_engine.py` and `xtb_props.py`
+#   is derived from (`scipy.constants`), and nothing else — which is why its distribution version
+#   is part of `engine_version()`.
 # - `geometric` (geomeTRIC) is the geometry optimizer: delocalised internal coordinates over
 #   tblite's analytic gradient, replacing ~330 lines of `scipy.optimize.minimize(L-BFGS-B)` driven
 #   with both of its own stopping tests disabled over a hand-built trust region and a Lindh pairwise

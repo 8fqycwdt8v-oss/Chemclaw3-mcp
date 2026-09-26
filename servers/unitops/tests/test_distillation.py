@@ -281,3 +281,34 @@ def test_an_ordinary_split_is_untouched_by_the_balance_guard() -> None:
         light_key_in_bottoms=0.01,
     )
     assert column.theoretical_stages > column.minimum_stages
+
+
+@pytest.mark.parametrize("multiple", [1.00001, 1.0 + 1.0e-6, 1.0 + 1.0e-9])
+def test_a_reflux_a_hair_above_the_minimum_is_refused_rather_than_divided_by_zero(
+    multiple: float,
+) -> None:
+    """Just above `R_min` the Gilliland exponent underflows, `Y` is exactly 1 and `1 - Y` is zero.
+
+    Measured before the guard: `shortcut_distillation` at `reflux_over_minimum=1.00001` answered
+    `float division by zero` — an opaque error id, not a refusal the caller can act on. It is
+    covered through both paths, the convention and an explicit ratio.
+    """
+    with pytest.raises(UnitOpsInputError, match=re.escape("1.05 to 1.5")):
+        distillation.shortcut_column(**COLUMN, reflux_over_minimum=multiple)
+    minimum_reflux = distillation.shortcut_column(**COLUMN).minimum_reflux_ratio
+    with pytest.raises(UnitOpsInputError, match="unbounded"):
+        distillation.shortcut_column(**COLUMN, reflux_ratio=multiple * minimum_reflux)
+
+
+@pytest.mark.parametrize("bad", [math.inf, math.nan])
+def test_a_non_finite_explicit_reflux_ratio_is_refused(bad: float) -> None:
+    """`inf` used to come back as an infinite reflux beside NaN stage counts."""
+    with pytest.raises(UnitOpsInputError, match="the reflux ratio must be a finite number"):
+        distillation.shortcut_column(**COLUMN, reflux_ratio=bad)
+
+
+@pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
+def test_a_non_finite_feed_quality_is_refused_by_name(bad: float) -> None:
+    """A NaN `q` used to walk Underwood's root onto an edge and blame the composition instead."""
+    with pytest.raises(UnitOpsInputError, match="feed quality"):
+        distillation.shortcut_column(**COLUMN, feed_quality=bad)

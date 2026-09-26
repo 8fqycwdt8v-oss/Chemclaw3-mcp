@@ -37,13 +37,18 @@ module, and what varied between the hand-written copies was the sentence, not th
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 import os
 import resource
 import threading
-from typing import NamedTuple
+from collections.abc import Awaitable
+from typing import NamedTuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 __all__ = [
     "ATOMS_PER_KIB_OF_STACK",
@@ -210,8 +215,8 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
         The configured ratio, which is at least `minimum`.
 
     Raises:
-        ValueError: The variable is set to something that is not a number, or to one below
-            `minimum`.
+        ValueError: The variable is set to something that is not a finite number, or to one
+            below `minimum`.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -223,6 +228,16 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
             f"{name}={raw!r} is not a number, so this server cannot size the bound it controls; "
             f"unset it for the default of {default:g} or give it a value of at least {minimum:g}"
         ) from None
+    # `float()` parses "nan" and "inf", and neither is caught by the floor: `nan < minimum` is
+    # False, so the one value that disables the bound outright walked past the check written to
+    # stop a value disabling it. Every comparison against a nan ceiling is False, and an infinite
+    # ceiling is never crossed, so both are an off switch rather than a loosening.
+    if not math.isfinite(value):
+        raise ValueError(
+            f"{name}={raw!r} is not a finite number, and a bound multiplied by it is never "
+            f"crossed; unset it for the default of {default:g} or give it a finite value of at "
+            f"least {minimum:g}"
+        )
     if value < minimum:
         raise ValueError(_refused(name, value, default, minimum, consequence))
     return value
@@ -492,3 +507,40 @@ class Admission:
         """Give `cost` slots back. Never below zero, so one double release cannot open the gate."""
         with self._lock:
             self._in_flight = max(0, self._in_flight - cost)
+
+    async def hold(self, work: Awaitable[_T], charged: int) -> _T:
+        """Await admitted work, giving its slots back when the *work* ends, not its awaiter.
+
+        Called after the server's own `acquire` succeeded, with the `charged` it returned — the
+        refusal stays per-server, the release does not. Six servers hand-wrote this same
+        four-line sequence and its done-callback; it is here once because each line is a
+        load-bearing choice rather than boilerplate:
+
+        - **`asyncio.shield`**, because cancelling the awaiting coroutine does not stop the worker
+          thread underneath it. Releasing on cancellation would hand a slot to a retry while the
+          original burn continued — a caller times out, retries, and the second computation lands
+          beside the first on a pod that thinks it has room.
+        - **Release in a done-callback on the inner task**, so the slots come back when the CPU is
+          actually free again, whether the work returned, raised or was itself cancelled.
+        - **Retrieve the exception**, because a shielded task whose awaiter was cancelled has
+          nobody left to receive its failure, and asyncio logs "exception was never retrieved"
+          at exit for every one — noise in the logs of exactly the incident a ceiling exists for.
+
+        Args:
+            work: The admitted computation — a coroutine, typically the tool body or an
+                `asyncio.to_thread(...)`. Scheduled here, so it must not have been awaited yet.
+            charged: The slots `take` charged for it (its `Slots.charged`), which is not always
+                the cost asked for, because `take` clamps.
+
+        Returns:
+            Whatever the work returns; its exception, if it raises.
+        """
+        task = asyncio.ensure_future(work)
+
+        def _release(done: asyncio.Future[_T]) -> None:
+            self.release(charged)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(_release)
+        return await asyncio.shield(task)

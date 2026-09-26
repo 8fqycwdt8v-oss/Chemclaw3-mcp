@@ -185,6 +185,68 @@ def test_concurrent_takers_never_exceed_the_ceiling() -> None:
     assert budget.in_flight == 4
 
 
+def test_hold_releases_the_charge_when_the_work_ends_not_when_its_awaiter_is_cancelled() -> None:
+    """The shield is the point: a cancelled caller must not free a slot the work still holds.
+
+    A thread-backed job is started, its awaiter cancelled mid-flight, and the budget read while the
+    worker is still running — it must still be charged — then again after the worker finishes.
+    """
+    import asyncio
+    import threading
+
+    budget = limits.Admission(4)
+    gate = threading.Event()
+
+    async def scenario() -> tuple[int, int]:
+        taken = budget.take(3)
+        assert taken.charged == 3
+        waiter = asyncio.ensure_future(budget.hold(asyncio.to_thread(gate.wait, 5), 3))
+        await asyncio.sleep(0.05)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        during = budget.in_flight
+        gate.set()
+        for _ in range(200):
+            if budget.in_flight == 0:
+                break
+            await asyncio.sleep(0.01)
+        return during, budget.in_flight
+
+    during, after = asyncio.run(scenario())
+    assert during == 3, "the slots went back while the worker thread was still running"
+    assert after == 0
+
+
+def test_hold_returns_the_result_and_releases_on_failure_without_an_unretrieved_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A result passes through; a raise passes through too and still gives the slot back."""
+    import asyncio
+
+    budget = limits.Admission(1)
+
+    async def answer() -> int:
+        return 42
+
+    async def boom() -> int:
+        raise ValueError("refused")
+
+    async def scenario() -> int:
+        assert budget.take().charged == 1
+        value = await budget.hold(answer(), 1)
+        assert budget.in_flight == 0
+        assert budget.take().charged == 1
+        with pytest.raises(ValueError, match="refused"):
+            await budget.hold(boom(), 1)
+        return value
+
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        assert asyncio.run(scenario()) == 42
+    assert budget.in_flight == 0
+    assert "never retrieved" not in caplog.text
+
+
 def test_an_unset_bound_is_its_default() -> None:
     """The ordinary case: nothing in the environment, so the call site's own number stands."""
     assert limits.env_bound("MCP_A_BOUND_NOBODY_SETS", default=7, minimum=1, consequence="x") == 7
@@ -413,6 +475,19 @@ def test_a_ratio_has_a_floor_and_no_ceiling(monkeypatch: pytest.MonkeyPatch) -> 
     assert limits.env_ratio(
         "MCP_A_RATIO", default=1.8, minimum=1.01, consequence="x"
     ) == pytest.approx(99.0)
+
+
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "infinity"])
+def test_a_ratio_that_is_not_finite_is_refused(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """`float()` parses these, and `nan < minimum` is False, so the floor alone let them through.
+
+    Measured before the fix: `CHEMCLAW_PROPS_MAX_TB_RATIO=nan` made every supercritical ceiling
+    `nan`, `temperature_c > nan` is always False, and the sanity bound never refused anything. An
+    infinite ratio is the same off switch spelled differently.
+    """
+    monkeypatch.setenv("MCP_A_RATIO", raw)
+    with pytest.raises(ValueError, match=r"MCP_A_RATIO.*not a finite number"):
+        limits.env_ratio("MCP_A_RATIO", default=1.8, minimum=1.01, consequence="x")
 
 
 def test_both_readers_refuse_a_low_value_in_the_same_words() -> None:

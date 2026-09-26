@@ -441,6 +441,15 @@ _RETIRED_CITATIONS: dict[str, tuple[str, str]] = {
         "servers/chem/tests/test_admission.py::test_the_band_is_gated_and_nothing_else_is",
         "D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe",
     ),
+    # `D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about` cited the test that
+    # held a bare `tools:` key coerced to `[]`; Chemclaw3's own model refuses that key
+    # (`list_type`), so the stand-in now refuses it too, and keeping the old name would assert the
+    # opposite of the body.
+    "test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error": (
+        "packages/mcp_server_kit/tests/test_manifest_model.py::"
+        "test_an_endpoint_the_consumer_cannot_load_is_refused_here",
+        "D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses",
+    ),
 }
 
 

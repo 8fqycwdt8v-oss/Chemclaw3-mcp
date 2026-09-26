@@ -1097,9 +1097,10 @@ def drying_time(
         The two periods, the total time and the moisture removed.
 
     Raises:
-        ValueError: If a mass, area or rate is not positive, if the final moisture is at or below
-            zero, if the target is not below the start, or if the critical moisture is below the
-            target.
+        ValueError: If a mass, area or rate is not positive or not finite, if the final moisture
+            is at or below zero, or if the target is not below the start. A target at or above the
+            critical moisture is answered: the dry ends in the constant-rate period and the
+            falling-rate time is zero.
     """
     found = drying.drying_time(
         dry_solid_mass_kg=dry_solid_mass_kg,

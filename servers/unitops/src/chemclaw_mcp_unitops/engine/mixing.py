@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from chemclaw_mcp_unitops.engine.validation import GRAVITY_M_PER_S2, positive
+from chemclaw_mcp_unitops.engine.validation import GRAVITY_M_PER_S2, finite_result, positive
 
 __all__ = [
     "TURBULENT_REYNOLDS",
@@ -132,8 +132,14 @@ def _duty(
     viscosity_pa_s: float,
 ) -> AgitationDuty:
     """Power, tip speed and Reynolds number for one impeller at one speed."""
-    power = power_number * density_kg_per_m3 * speed_rev_per_s**3 * diameter_m**5
-    reynolds = density_kg_per_m3 * speed_rev_per_s * diameter_m**2 / viscosity_pa_s
+    power = finite_result(
+        lambda: power_number * density_kg_per_m3 * speed_rev_per_s**3 * diameter_m**5,
+        "the impeller power",
+    )
+    reynolds = finite_result(
+        lambda: density_kg_per_m3 * speed_rev_per_s * diameter_m**2 / viscosity_pa_s,
+        "the Reynolds number",
+    )
     return AgitationDuty(
         speed_rpm=speed_rev_per_s * 60.0,
         tip_speed_m_per_s=math.pi * speed_rev_per_s * diameter_m,
@@ -215,9 +221,16 @@ def agitation_scale_up(
     )
 
     wanted_power = small.power_per_volume_w_per_m3 * large_liquid_volume_m3
-    speed_for_power = (
-        wanted_power / (power_number * liquid_density_kg_per_m3 * large_impeller_diameter_m**5)
-    ) ** (1.0 / 3.0)
+    speed_for_power = finite_result(
+        lambda: (
+            (
+                wanted_power
+                / (power_number * liquid_density_kg_per_m3 * large_impeller_diameter_m**5)
+            )
+            ** (1.0 / 3.0)
+        ),
+        "the large-scale speed that matches P/V",
+    )
     speed_for_tip = small_speed * small_impeller_diameter_m / large_impeller_diameter_m
 
     large_common = {
@@ -384,13 +397,16 @@ def just_suspended_speed(
 
     kinematic_viscosity = liquid_viscosity_pa_s / liquid_density_kg_per_m3
     buoyancy = GRAVITY_M_PER_S2 * density_difference / liquid_density_kg_per_m3
-    speed = (
-        zwietering_constant
-        * kinematic_viscosity ** ZWIETERING_EXPONENTS["kinematic_viscosity"]
-        * particle_diameter_m ** ZWIETERING_EXPONENTS["particle_diameter"]
-        * buoyancy ** ZWIETERING_EXPONENTS["buoyancy"]
-        * solids_loading_percent ** ZWIETERING_EXPONENTS["solids_loading"]
-        * impeller_diameter_m ** ZWIETERING_EXPONENTS["impeller_diameter"]
+    speed = finite_result(
+        lambda: (
+            zwietering_constant
+            * kinematic_viscosity ** ZWIETERING_EXPONENTS["kinematic_viscosity"]
+            * particle_diameter_m ** ZWIETERING_EXPONENTS["particle_diameter"]
+            * buoyancy ** ZWIETERING_EXPONENTS["buoyancy"]
+            * solids_loading_percent ** ZWIETERING_EXPONENTS["solids_loading"]
+            * impeller_diameter_m ** ZWIETERING_EXPONENTS["impeller_diameter"]
+        ),
+        "the just-suspended speed",
     )
     duty = _duty(
         speed_rev_per_s=speed,

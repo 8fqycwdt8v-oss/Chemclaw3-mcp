@@ -48,7 +48,7 @@ import yaml
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 __all__ = [
     "CONNECTOR_NAME_PATTERN",
@@ -150,14 +150,15 @@ class HttpEndpoint(BaseModel):
     the manifests — the general form of that argument is
     `D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in`.
 
-    `tools`, `read_only` and `state_changing` default to empty and accept an explicit `None`, and
-    that is what retires the defensive dict walking this helper used to do. A bare `tools:` key
-    parses to `None` in YAML rather than to `[]`, so `endpoint.get("tools") or []` was load-bearing
-    and carried a comment at the call site explaining why. The coercion is the same fact stated
-    once, in the model, where a reader looks for the shape — and it is a coercion rather than a
-    refusal on purpose: `tools:` with nothing under it means an empty list to the person who wrote
-    it, and `assert_manifest_matches` has a far better sentence for "declares [] and serves one"
-    than a type error does.
+    **Three shapes the consumer refuses are refused here too**, and this model used to accept all
+    of them while calling itself a stand-in: an endpoint with no `transport:` (a
+    `union_tag_not_found` over there, because its endpoint is a discriminated union), a bare
+    `tools:`/`read_only:`/`state_changing:` key (YAML's `None`, a `list_type` error over there),
+    and `tools: []` (refused over there by the classification validator — an endpoint serving
+    nothing is not an endpoint). This model once coerced the first two, on the argument that a bare
+    key "means an empty list to whoever wrote it". What it meant to the consumer was a
+    `ConnectorError` at startup, and a stand-in that is kinder than the model it stands in for
+    turns this suite green on a manifest that cannot be loaded.
 
     **`knowledge_read` is here because it is a field over there**, and this model refused it
     (`D-2026-09-16-a-stand-in-that-refuses-a-real-field-is-not-a-stand-in`). A fleet manifest
@@ -169,21 +170,15 @@ class HttpEndpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    transport: Literal["http"] = "http"
+    transport: Literal["http"]
     url: str = Field(min_length=1)
     health_url: str | None = None
     request_timeout: int | None = Field(default=None, gt=0)
     auth: BearerAuth
-    tools: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(min_length=1)
     read_only: list[str] = Field(default_factory=list)
     state_changing: list[str] = Field(default_factory=list)
     knowledge_read: list[str] = Field(default_factory=list)
-
-    @field_validator("tools", "read_only", "state_changing", "knowledge_read", mode="before")
-    @classmethod
-    def _an_empty_key_is_an_empty_list(cls, value: object) -> object:
-        """`tools:` with nothing under it is `None` in YAML and `[]` to whoever wrote it."""
-        return [] if value is None else value
 
 
 #: The cap `Chemclaw3` puts on every manifest text field
@@ -250,12 +245,11 @@ class ConnectorManifest(BaseModel):
     profiles: list[str] = Field(default_factory=list)
     note_types: list[str] = Field(default_factory=list)
     relations: list[str] = Field(default_factory=list)
-
-    @field_validator("jobs", "skills", "profiles", "note_types", "relations", mode="before")
-    @classmethod
-    def _an_empty_key_is_an_empty_list(cls, value: object) -> object:
-        """`skills:` with nothing under it is `None` in YAML and `[]` to whoever wrote it."""
-        return [] if value is None else value
+    #: The consumer's switch for a bundle that is declared but not bound unless a deployment names
+    #: it (`D-2026-09-20-declaring-a-capability-and-binding-it-are-different-decisions` there). A
+    #: fleet manifest that shadows a consumer copy declaring `false` has to be able to say `false`
+    #: too, or the shadow silently binds every tool schema it carries on every model call.
+    default_enabled: bool = True
 
 
 def load_manifest(path: Path) -> ConnectorManifest:
