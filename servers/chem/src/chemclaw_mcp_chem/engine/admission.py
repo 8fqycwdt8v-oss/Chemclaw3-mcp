@@ -22,8 +22,8 @@ and, against a 10 ms tick beside them, whether one call holds the interpreter:
 
 Two of the five are single RDKit calls that hold the GIL for their whole duration — a legal
 dendrimer stalls this process for 2.9 s against a 3 s `readinessProbe.timeoutSeconds` — and the
-other three yield it but still run one at a time (n=4 costs 4x n=1). So all six tools in
-`GATED_TOOLS` spend the one resource this pod has one of, and they share one ceiling.
+other three yield it but still run one at a time (n=4 costs 4x n=1). So every tool in
+`GATED_TOOLS` spends the one resource this pod has one of, and all of them share one ceiling.
 
 **What the ceiling cannot be derived from is the probe, and saying so is the correction.** The
 render ceiling was derived as "N x the worst call under a third of the probe budget". For the band
