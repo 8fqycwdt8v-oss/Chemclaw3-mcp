@@ -111,6 +111,7 @@ from mcp_server_kit.identity import (
     bind_caller,
     reset_caller,
 )
+from mcp_server_kit.limits import effective_bounds
 from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
 from mcp_server_kit.schema_cache import install_validator_cache
@@ -660,6 +661,12 @@ def connector_app(
             "status": "ok",
             "server": name,
             "revision": server_revision(),
+            # Every resource bound this process resolved, at the value it is running with. On every
+            # answer — ready, unready or degraded — because the deployment ratchets read only the
+            # shipped files, and an overlay, a Helm value or a `kubectl set env` moves a bound they
+            # cannot see (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`). Numbers and
+            # variable names only: nothing here is a secret, and `/healthz` is open.
+            "bounds": effective_bounds(),
         }
         if readiness is None:
             READY.labels(name).set(1)

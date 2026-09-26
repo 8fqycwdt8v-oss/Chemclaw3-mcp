@@ -90,7 +90,14 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # this server passed none — so a pod whose atom-mapper checkpoint failed to load answered a
     # constant 200 and wrote coarse labels indistinguishable from a deployment that never installed
     # one. See `engine/readiness.py`.
-    assert response.json() == {
+    body = response.json()
+    # The bounds this pod is running with, so an overlay that moved the batch bound or the
+    # admission ceiling is readable from the probe
+    # (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    bounds = body.pop("bounds")
+    assert bounds["CHEMCLAW_RXNLABEL_MAX_BATCH"] >= 1
+    assert bounds["CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES"] >= 1
+    assert body == {
         "status": "ok",
         "server": "rxnlabel",
         "revision": "unknown",

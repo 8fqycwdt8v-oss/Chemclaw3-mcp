@@ -14,7 +14,7 @@ own `engine/`.
 | `sessions.py` | The MCP session idle timeout `FastMCP` never passes, plus the hold-open that stops a four-hour CREST search being reaped as "idle". |
 | `identity.py` | The `X-Chemclaw-*` headers and the contextvars that carry them. Provenance, never authorization. |
 | `tracing.py` | The receiving half of Chemclaw3's `traceparent`: one span per tool call, under the caller's trace. Off unless `MCP_TRACING_ENABLED` says otherwise, and it constructs no exporter — the `otel` extra installs the API only. |
-| `datasets.py` | Vendored-corpus loading: all six provenance fields required, checksum verified on load. |
+| `datasets.py` | Vendored-corpus loading: every provenance field required, refresh owner and cadence included, checksum verified on load. |
 | `egress.py` | The runtime guard. Armed on import; a non-loopback `connect`, `sendto`/`sendmsg` or DNS lookup raises `EgressForbidden`. A child process and a `ctypes` call are outside it by construction — `make offline-run` is what covers those. |
 | `no_egress.py` | The static scan — AST, not grep — that each server's `test_no_egress.py` calls. |
 | `testing.py` | A real MCP session against a running server, and the manifest↔served-tools assertion. |

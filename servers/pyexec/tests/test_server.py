@@ -75,7 +75,13 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    # The bounds this pod is running with, read at the value its environment set — so an overlay
+    # that moved the admission ceiling is visible here rather than only in the shipped Deployment
+    # (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    bounds = body.pop("bounds")
+    assert bounds["CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS"] >= 1
+    assert body == {
         "status": "ok",
         "server": "pyexec",
         "revision": "unknown",

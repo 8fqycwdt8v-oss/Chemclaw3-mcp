@@ -1304,6 +1304,9 @@ def test_the_revision_reaches_the_handshake_and_the_probe() -> None:
         "the initialize() handshake reports "
         f"{options.server_version!r}; a client cannot tell which build answered"
     )
+    # `bounds` is the process's own record and is asserted where it is produced
+    # (`test_healthz_reports_the_bounds_the_process_is_running_with`); here only its presence.
+    assert isinstance(probed.pop("bounds"), dict)
     assert probed == {"status": "ok", "server": "probe", "revision": "abc1234"}
 
     with pytest.MonkeyPatch.context() as patch:
@@ -3302,6 +3305,129 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
         f"the settings mechanism contributes {len(calc)} of calc's numbers; a collapse here is a "
         "ratchet that has quietly stopped covering the server with the most to move"
     )
+
+
+# The names a module reports to `/healthz` by writing them down, rather than by reading them through
+# `env_bound`/`env_ratio` (which report themselves) or by handing a whole settings object to
+# `report_settings`. Named here, not imported, for the reason `_BOUND_HELPERS` is: the scan reads
+# source, and a rename of either reporter has to fail this file rather than shrink what it sees.
+_BOUND_REPORTERS = frozenset({"report_bound"})
+_SETTINGS_REPORTERS = frozenset({"report_settings"})
+
+
+def _unreported_bounds(modules: dict[str, ast.Module], bounds: dict[str, Bound]) -> list[str]:
+    """Every bound in `bounds` that no code path in `modules` reports on `/healthz`.
+
+    Three ways a bound is reported, matching the three ways one is read: through one of
+    `_BOUND_HELPERS` (which record what they return); as a numeric field of a settings class whose
+    *own module* hands an instance to `report_settings`; or by a `report_bound("NAME", ...)` call
+    with the name as a literal. A computed name in `report_bound` is not counted — the scan cannot
+    say which bound it reports, which is the ratchet reading as clean on something it cannot see.
+
+    Args:
+        modules: Parsed first-party source, keyed by the path `Bound.where` names.
+        bounds: The inventory, as `numeric_env_bounds` derives it.
+
+    Returns:
+        One sentence per unreported bound, naming it and where it is read.
+    """
+    through_helper: set[str] = set()
+    written_down: set[str] = set()
+    settings_modules: set[str] = set()
+    for label, tree in modules.items():
+        for node in ast.walk(tree):
+            helper = _bound_helper_variable(node)
+            if helper is not None:
+                through_helper.add(helper[0])
+            if not isinstance(node, ast.Call):
+                continue
+            called = _called_name(node)
+            if called in _SETTINGS_REPORTERS:
+                settings_modules.add(label)
+            if called in _BOUND_REPORTERS and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    written_down.add(first.value)
+    settings_fields = _numeric_settings_fields(modules)
+    offences = []
+    for name, bound in sorted(bounds.items()):
+        module = bound.where.rsplit(":", 1)[0]
+        from_settings = name in settings_fields and module in settings_modules
+        if name in through_helper or name in written_down or from_settings:
+            continue
+        offences.append(
+            f"{name} (read at {bound.where}) is a bound a deployment can move and `/healthz` never "
+            "reports it: read it through `env_bound`/`env_ratio`, hand its settings object to "
+            "`report_settings` in the module that declares it, or call "
+            f'`report_bound("{name}", value)` where it is resolved'
+        )
+    return offences
+
+
+def _first_party_modules() -> dict[str, ast.Module]:
+    """Every first-party source module, parsed and keyed the way `numeric_env_bounds` keys it."""
+    roots = sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src"))
+    return {
+        str(source.relative_to(ROOT)): ast.parse(
+            source.read_text(encoding="utf-8"), filename=str(source)
+        )
+        for root in roots
+        for source in sorted(root.rglob("*.py"))
+    }
+
+
+def test_every_bound_a_deployment_can_move_is_reported_on_the_probe() -> None:
+    """The ratchets above read the shipped files; this makes the pod say what it actually runs.
+
+    `test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment` holds every
+    file this repository ships, and cannot see a bound moved by an overlay applied elsewhere, a
+    Helm value in a deploying repository or an operator's `kubectl set env` — by construction, and
+    for good. The serving side can: `connector_app`'s `/healthz` reports
+    `mcp_server_kit.limits.effective_bounds()`, and this holds every bound in the derived inventory
+    to reaching that record, so a new knob is observable from a probe the day it is added
+    (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    """
+    offences = _unreported_bounds(_first_party_modules(), numeric_env_bounds())
+    assert not offences, "\n".join(offences)
+
+
+def test_the_reporting_check_bites() -> None:
+    """A check that passes on everything is not a check, so it is shown failing on purpose.
+
+    Four synthetic modules, one per shape: a bare `int(os.environ[...])` nobody reports (flagged),
+    the same read with a literal `report_bound` (clean), a settings class whose module hands an
+    instance to `report_settings` (clean) and one whose module does not (flagged).
+    """
+    source = {
+        "a.py": 'import os\nX = int(os.environ["PROBE_BARE"])\n',
+        "b.py": (
+            "import os\nfrom mcp_server_kit.limits import report_bound\n"
+            'Y = int(os.environ["PROBE_REPORTED"])\nreport_bound("PROBE_REPORTED", Y)\n'
+        ),
+        "c.py": (
+            "from pydantic_settings import BaseSettings, SettingsConfigDict\n"
+            "from mcp_server_kit.limits import report_settings\n"
+            "class S(BaseSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="PROBE_")\n'
+            "    good: int = 1\n"
+            "report_settings(S())\n"
+        ),
+        "d.py": (
+            "from pydantic_settings import BaseSettings, SettingsConfigDict\n"
+            "class T(BaseSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="PROBE_")\n'
+            "    silent: int = 1\n"
+        ),
+    }
+    modules = {label: ast.parse(text) for label, text in source.items()}
+    bounds = {
+        "PROBE_BARE": Bound("a.py:2", case_sensitive=True),
+        "PROBE_REPORTED": Bound("b.py:3", case_sensitive=True),
+        "PROBE_GOOD": Bound("c.py:5", case_sensitive=False),
+        "PROBE_SILENT": Bound("d.py:4", case_sensitive=False),
+    }
+    flagged = {line.split(" ", 1)[0] for line in _unreported_bounds(modules, bounds)}
+    assert flagged == {"PROBE_BARE", "PROBE_SILENT"}
 
 
 class BoundSite(NamedTuple):

@@ -35,10 +35,12 @@ import sys
 from pathlib import Path
 
 import mcp_server_kit
+import pytest
 from mcp_server_kit.no_egress import (
     FORBIDDEN_MODULES,
     _dynamic_import_target,
     assert_no_egress_sources,
+    computed_imports,
     host_literals,
     network_imports,
 )
@@ -164,25 +166,65 @@ def test_a_dynamic_import_with_a_literal_name_is_flagged(tmp_path: Path) -> None
     assert network_imports(unqualified) == ["urllib.request"]
 
 
-def test_a_dynamic_import_of_a_computed_name_is_deliberately_not_flagged(tmp_path: Path) -> None:
-    """A name the scan cannot read is not an offence here, and the reason is a real caller.
+def test_a_dynamic_import_of_a_computed_name_must_be_justified_at_its_site(tmp_path: Path) -> None:
+    """A name the scan cannot read is an offence until the server argues it, by function.
 
-    `servers/rxnpredict/engine/predictors/__init__.py` loads its optional predictor plug-ins with
-    `importlib.import_module(modname)` over a discovered list — a legitimate dynamic import whose
-    argument no static reader can evaluate. Flagging the *shape* would make that server's own
-    no-egress test fail on correct code, and an exemption granted to work around a false positive
-    is how a scan stops being read.
-
-    So the boundary is stated rather than assumed: what a computed import loads is the runtime
-    guard's job and `make offline-run`'s, exactly as it is for a child process or a `ctypes` call.
+    This used to be the opposite test — `..._is_deliberately_not_flagged` — on the ground that
+    `servers/rxnpredict` loads its optional predictor plug-ins with
+    `importlib.import_module(modname)` and flagging the shape "would fail correct code and teach
+    the next reader to reach for `exempt`". `exempt` skips a whole file, though, and what a
+    computed import needs is narrower: a justification naming the one scope it sits in
+    (`D-2026-09-26-a-computed-import-is-argued-at-its-site`). So a clean scan now says something
+    about computed imports too — there are none, or each one was argued.
     """
-    dynamic = tmp_path / "plugins.py"
-    dynamic.write_text(
+    plugins = tmp_path / "plugins.py"
+    plugins.write_text(
+        "import importlib\n\n\ndef load(name: str) -> object:\n"
+        "    return importlib.import_module(name)\n\n\n"
+        "class Loader:\n    def by_keyword(self, name: str) -> object:\n"
+        "        return __import__(name=name)\n\n\n"
+        'LITERAL = importlib.import_module("json")\n',
+        encoding="utf-8",
+    )
+    # `network_imports` still has nothing to say about it — no module can be named for it — and
+    # the literal import is neither forbidden nor computed.
+    assert network_imports(plugins) == []
+    assert computed_imports(plugins) == [("load", 5), ("Loader.by_keyword", 10)]
+
+    with pytest.raises(AssertionError, match=r"named by a value in `load`"):
+        assert_no_egress_sources(tmp_path)
+    with pytest.raises(AssertionError, match=r"named by a value in `Loader.by_keyword`"):
+        assert_no_egress_sources(
+            tmp_path, justified_imports={(plugins, "load"): "loads names from a literal map"}
+        )
+    assert_no_egress_sources(
+        tmp_path,
+        justified_imports={
+            (plugins, "load"): "loads names from a literal map",
+            (plugins, "Loader.by_keyword"): "the same map, by keyword",
+        },
+    )
+
+
+def test_a_justification_that_outlived_its_computed_import_is_refused(tmp_path: Path) -> None:
+    """Held in both directions, because a justification with no site reads as a live argument.
+
+    The same shape as every other allowlist in this repository: the entry has to name something
+    that is still there, and it has to actually argue — a blank reason is a key with no claim.
+    """
+    plugins = tmp_path / "plugins.py"
+    plugins.write_text(
         "import importlib\n\n\ndef load(name: str) -> object:\n"
         "    return importlib.import_module(name)\n",
         encoding="utf-8",
     )
-    assert network_imports(dynamic) == []
+    with pytest.raises(AssertionError, match=r"`gone` is justified as a computed import"):
+        assert_no_egress_sources(
+            tmp_path,
+            justified_imports={(plugins, "load"): "argued", (plugins, "gone"): "stale"},
+        )
+    with pytest.raises(AssertionError, match="blank reason"):
+        assert_no_egress_sources(tmp_path, justified_imports={(plugins, "load"): "  "})
 
 
 def test_a_host_split_across_string_literals_is_still_a_host(tmp_path: Path) -> None:
