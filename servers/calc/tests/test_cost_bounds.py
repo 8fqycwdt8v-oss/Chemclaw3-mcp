@@ -31,14 +31,19 @@ killing the process group; these tests are the in-process half.
 
 from __future__ import annotations
 
+import time
+import types
 from pathlib import Path
 from typing import Any
 
+import chemclaw_mcp_calc.engine.budget as budget_module
 import chemclaw_mcp_calc.engine.xtb_opt as xtb_opt
+import numpy as np
 import pytest
 import yaml
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
+from chemclaw_mcp_calc.engine.xtb_engine import evaluate_point
 from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, compute_hessian
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
 from chemclaw_mcp_calc.engine.xtb_props import PropertiesSpec, compute_properties
@@ -245,6 +250,59 @@ def test_the_optimizer_stops_when_the_inline_budget_is_spent(
     water = structure_from_smiles("O")
     with pytest.raises(ValueError, match=r"exceeded this server's inline budget"):
         optimize_structure(OptSpec(engine="tblite"), water)
+
+
+def test_a_relaxation_the_budget_stops_says_how_far_it_got(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal reports the gradients it completed and the gradient it was left at.
+
+    At the 450-atom ceiling a relaxation gets on the order of eleven optimizer cycles before the
+    budget stops it (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` measured the
+    per-cycle cost), so "exceeded the budget" alone
+    cannot tell a run one cycle from converging from one nowhere near — and the refusal one atom
+    above the ceiling says this server does not start what it will abandon. Reporting how far it
+    got is what makes an abandoned relaxation visible rather than silent.
+
+    Driven rather than asserted on a string: the budget's clock is replaced so the *second* gradient
+    past the input is refused, and the figures in the message are checked against the gradient
+    this relaxation actually evaluated last — so a message reporting the input's gradient, or a
+    stale count, fails here.
+    """
+    # A water with one bond stretched, so the optimizer certainly runs past its first gradient.
+    strained = Structure(
+        elements=[8, 1, 1],
+        positions=[[0.0, 0.0, 0.0], [1.3, 0.0, 0.0], [-0.3, 0.9, 0.0]],
+    )
+    real_clock = time.monotonic
+    checks = {"count": 0}
+
+    def clock() -> float:
+        # `Deadline.check` reads `elapsed` once to decide; the first decision passes and every
+        # later one finds the budget spent.
+        checks["count"] += 1
+        return real_clock() + (0.0 if checks["count"] <= 1 else 1e9)
+
+    evaluated: list[np.ndarray] = []
+
+    def spy(calculator: Any, positions: np.ndarray) -> Any:
+        answer = evaluate_point(calculator, positions)
+        evaluated.append(np.asarray(answer[1], dtype=float))
+        return answer
+
+    monkeypatch.setattr(budget_module, "time", types.SimpleNamespace(monotonic=clock))
+    monkeypatch.setattr(xtb_opt, "evaluate_point", spy)
+    spec = OptSpec(engine="tblite")
+    with pytest.raises(ValueError, match=r"exceeded this server's inline budget") as refused:
+        optimize_structure(spec, strained)
+
+    message = str(refused.value)
+    assert len(evaluated) == 2, f"expected the input and one gradient past it, got {len(evaluated)}"
+    assert "stopped after 1 gradient evaluation past the input geometry" in message, message
+    reached = float(np.max(np.abs(evaluated[-1])))
+    assert reached > spec.gradient_tolerance, "the relaxation had converged, so this proves nothing"
+    assert f"max |gradient| {reached:.2e} Hartree/Angstrom" in message, message
+    assert f"against the {spec.gradient_tolerance:.2e} it had to reach" in message, message
 
 
 def test_the_finite_difference_hessian_stops_when_the_inline_budget_is_spent(

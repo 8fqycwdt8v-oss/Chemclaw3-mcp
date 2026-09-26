@@ -659,7 +659,9 @@ and 1.18 from 2, so a transposed digit breaks an agreement that must hold to 0.0
 - **ChEMBL is CC-BY-SA.** Attribution obligations follow the data into anything derived from it.
   Needs a licence review before `chembl` is built.
 - **GESTIS prohibits transfer into other information systems.** `ghs` must be built on PubChem LCSS
-  and ECHA C&L, not GESTIS.
+  and ECHA C&L, not GESTIS — settled in
+  `D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build`, which is also what
+  requires the built server's README to carry the reason.
 - **Snapshot refresh is an operational commitment.** Every mirrored corpus needs a named owner and
   a cadence, recorded as `refresh_owner` and `refresh_cadence` in its `dataset.json`, where
   `load_dataset` refuses a corpus without them. A stale patent index that nobody knows is stale is

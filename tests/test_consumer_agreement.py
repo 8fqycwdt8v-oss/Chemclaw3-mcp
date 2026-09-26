@@ -36,7 +36,8 @@ What the arrangement costs, stated rather than implied. Two things:
 
 - The consumer's suite is the authority on what is compared, so a check deleted there is silently
   deleted here, and this side would not know. That is a smaller risk than a divergent copy and it
-  is not zero; `docs/BACKLOG.md` names it.
+  is not zero; `D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary` names the
+  consumer's file as the trust boundary and says why a pass count here would not close it.
 - **It reads that checkout's working tree, not its `HEAD`.** Observed on 2026-09-14: the sibling
   checkout on this machine carried an uncommitted rewrite of the very module this runs, and an
   uncommitted mutation in the code that module reads — somebody else's mutation check, in flight.

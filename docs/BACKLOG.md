@@ -51,20 +51,22 @@ decision leaves a record behind and the row goes.
   box, one optimizer cycle (two gradients) at **99.17 s for 509 atoms** and 12.21 s for 239, and
   `xtb_inline_timeout_seconds` is **780 s** — so at the 450-atom ceiling a relaxation gets on the
   order of **eleven cycles** before `budget.Deadline` stops it, against D-100's measured **177
-  steps** to converge a 76-atom molecule. A 450-atom call is therefore started and abandoned, which
-  is the thing the refusal one atom above it says this server does not do. That ADR names it "a
-  real defect" and sets it aside on purpose, because the ceiling is chartered on *allocation* and
-  time is `xtb_inline_timeout_seconds`' to price — so it was argued and then queued nowhere.
-  **What it is not is a request to lower the ceiling**: 450 is a memory bound and lowering it for a
-  time reason would conflate the two. The decision is whether a relaxation gets a *cycle-count*
-  bound derived from the budget and the size (which needs a converged cycle count for a large
-  molecule, and nobody has one), whether the deadline's refusal should say how far it got so an
-  abandoned run is legible rather than silent, or whether the honest fix is to the refusal's own
-  wording. Any of the three needs one measurement first: a real relaxation at 400-450 atoms run to
-  the deadline, reporting cycles completed and gradient norm, which is hours of CPU and is why this
+  steps** to converge a 76-atom molecule. That ADR names it "a real defect" and sets it aside on
+  purpose, because the ceiling is chartered on *allocation* and time is
+  `xtb_inline_timeout_seconds`' to price. **What it is not is a request to lower the ceiling**: 450
+  is a memory bound and lowering it for a time reason would conflate the two.
+  **An abandoned relaxation is now legible**: `Deadline.check` takes a `progress` callable and the
+  optimizer's refusal reports the gradient evaluations it completed past the input and the largest
+  free gradient component it was left at, against the tolerance it had to reach
+  (`test_a_relaxation_the_budget_stops_says_how_far_it_got`). What remains is the decision the
+  legibility does not make: whether a relaxation gets a *cycle-count* bound derived from the budget
+  and the size, or whether the honest fix is to the refusal's own wording. Both need one
+  measurement nobody has: a real relaxation at 400-450 atoms run to the deadline on the shipped
+  image, whose refusal now reports exactly the two figures wanted — hours of CPU, which is why this
   is a row rather than a commit.
   **Anchors:** `servers/calc/src/chemclaw_mcp_calc/engine/structure.py`,
   `servers/calc/src/chemclaw_mcp_calc/engine/budget.py`,
+  `servers/calc/src/chemclaw_mcp_calc/engine/xtb_opt.py`,
   `servers/calc/src/chemclaw_mcp_calc/engine/config.py`,
   `docs/decisions/D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects.md`.
 
@@ -156,28 +158,7 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py`.
 
-## 2 — Readiness, where it still stops
-
-- [ ] **A degraded `rxnlabel` row is stamped as though it were healthy, because the stamp Chemclaw3
-  writes is a deployment-level string read once per drain pass.** **Other repository:** `Chemclaw3`.
-  `D-2026-09-12-a-degradation-that-is-not-counted-is-a-degradation-nobody-sees` added a third stamp
-  word — `version.labeller_version(failed=...)` answering `mapper@failed` — and `tools.py` puts it on
-  the *per-row* `version` field, with `degraded` beside it. Driven against a full Chemclaw3 checkout
-  on 2026-09-13: neither field reaches that repository. `ingest/labels/labeller.ReactionRepresentation`
-  and `ReactionNaming` are `ConfigDict(extra="ignore")` and declare neither, and
-  `ingest/labels/enrich.label_stale` stamps every row with the `version` argument its planning
-  activity read once from the `labeller_version` *tool* — which is `labeller_version()` with no
-  `failed`, so a pod whose mapper raises on reaction 57 of 200 stamps all 200 as a healthy pod would.
-  The mechanism this fleet built is correct and unread; closing it is a change over there — the two
-  answer models gaining `version`, and `store_labels` stamping the row's own — and nothing here can
-  check it. (A reviewer read this the other way, as rows being *permanently stale* because
-  `store.stale()` accepts only `version` or `underived_stamp(version)`. That would require the
-  `failed` stamp to reach the column, and it does not.)
-  **Anchors (Chemclaw3):** `src/chemclaw/ingest/labels/labeller.py::ReactionRepresentation`,
-  `src/chemclaw/ingest/labels/enrich.py::label_stale`,
-  `src/chemclaw/science/labels/store.py::underived_stamp`.
-
-## 3 — The gate itself
+## 2 — The gate itself
 
 - [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
   `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on
@@ -204,26 +185,7 @@ decision leaves a record behind and the row goes.
   ships today.
   **Anchors:** `tests/test_consumer_agreement.py`, `conftest.py`, `.github/workflows/ci.yml`.
 
-- [ ] **The consumer-side guard cannot tell the agreement module from any file with that name and
-  a green test.** `test_the_consumer_still_agrees_with_the_surface_this_tree_declares` runs whatever
-  module sits at the path `AGREEMENT_MODULE` names in the consumer checkout, and reads its
-  outcome; `inert_outcome` now refuses a skip, an xfail, an xpass, an empty selection and a run with
-  no pass in it, which closes every way that module can be *inert*. It does not close a module that
-  genuinely passes and asserts nothing about this tree. Driven 2026-09-14 at `e8cf74a`: a synthetic
-  checkout whose whole agreement module is one `test_*` with `assert True`, beside a symlinked
-  `.venv`, gives `3 passed in 1.32s` here — the real module's three checks replaced by nothing, with
-  the guard green. `D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts` §4.6 names
-  the *deletion* case only, which is one instance of this. It is inherent to running the consumer's
-  module rather than reproducing it, so the row is a decision rather than a fix: whether this side
-  should also require the module to report a **minimum number of passes** it derives from the
-  consumer's own file (which couples the two trees' test counts), whether it should name the tests
-  it expects by `--collect-only`, or whether the honest arrangement is to say in the record that the
-  consumer's file is trusted and name that as the trust boundary.
-  **Anchors:** `tests/test_consumer_agreement.py::inert_outcome`,
-  `tests/test_consumer_agreement.py::test_the_consumer_still_agrees_with_the_surface_this_tree_declares`,
-  `docs/decisions/D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md`.
-
-## 4 — Corpora that are not yet licensed to exist
+## 3 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA and `chembl` cannot be built until somebody has read what that obliges.**
   Attribution obligations follow the data into anything derived from it, which for this fleet means
@@ -233,14 +195,7 @@ decision leaves a record behind and the row goes.
   itself, which is why it sits here rather than stopping anything.
   **Anchors:** `MODULES.md`.
 
-- [ ] **`ghs` must be built on PubChem LCSS and ECHA C&L, and the reason has to survive the build.**
-  GESTIS prohibits transfer into other information systems, so it is not a source this fleet may
-  vendor at all — and a hazard corpus is exactly the kind of thing a later contributor "improves" by
-  reaching for the most complete source available. The prohibition belongs in the server's
-  `dataset.json` provenance and its README when it is built, not only in the catalogue.
-  **Anchors:** `MODULES.md`, `docs/adding-a-server.md`.
-
-## 5 — Consuming a server hosted elsewhere
+## 4 — Consuming a server hosted elsewhere
 
 - [ ] **`retro` cannot be consumed until six things are true of it, and this repository owes it a
   manifest.** **Other repository:** `chemclaw2_retrosynthesis` — its anchors are that repo's
@@ -253,18 +208,3 @@ decision leaves a record behind and the row goes.
   saying `retrosynthesis_multi_step` is a Chemclaw3 durable job rather than a synchronous tool —
   the first entry in the catalogue that needs one.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
-
-## 6 — Correlations that need data nobody here has
-
-- [ ] **`unitops` models an incompressible cake, and real organic cakes compress.** A filtration
-  time from `filtration_time` takes a single specific cake resistance and assumes it is independent
-  of pressure, so it overstates what pushing harder buys — and it does so in the optimistic
-  direction, which is the one that gets a filter under-sized. The compressible form is
-  `alpha = alpha₀·ΔPˢ`, and `s` is fitted over filtration tests at **several** pressures: a regression over
-  data that exists in nobody's checkout here, and a default `s` would be this server inventing a
-  compressibility. The tool's docstring says what the assumption costs and in which direction, which
-  is the honest interim. What reopens it is filtration-test data arriving through an ELN — the same
-  trigger `servers/kinetics`'s absent `fit_rate_law` waits on — at which point the shape is one tool
-  taking `alpha₀` and `s` rather than a default anywhere.
-  **Anchors:** `servers/unitops/src/chemclaw_mcp_unitops/engine/filtration.py`,
-  `servers/unitops/README.md`.
