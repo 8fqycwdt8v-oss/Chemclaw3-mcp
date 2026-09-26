@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import resource
+from collections.abc import Iterator
 
 import pytest
 from mcp_server_kit import limits
@@ -534,3 +535,69 @@ def test_the_echo_bound_is_the_environment_s(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("MCP_MAX_ECHO_CHARS", "0")
     with pytest.raises(ValueError, match="MCP_MAX_ECHO_CHARS"):
         reimported(limits)
+
+
+@pytest.fixture
+def isolated_bounds() -> Iterator[None]:
+    """The process-wide bound record, restored after the test that writes to it."""
+    saved = dict(limits._EFFECTIVE)
+    yield
+    limits._EFFECTIVE.clear()
+    limits._EFFECTIVE.update(saved)
+
+
+def test_every_bound_the_two_readers_return_is_recorded(
+    monkeypatch: pytest.MonkeyPatch, isolated_bounds: None
+) -> None:
+    """What `env_bound` and `env_ratio` return is what `/healthz` reports — default or override.
+
+    Recorded on both paths, because an unset variable is also an answer an operator needs: "the
+    ceiling is the default" and "nothing reported a ceiling" are different facts, and only the
+    first means the pod is bounded (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    """
+    monkeypatch.delenv("CHEMCLAW_PROBE_UNSET", raising=False)
+    monkeypatch.setenv("CHEMCLAW_PROBE_SET", "12")
+    monkeypatch.setenv("CHEMCLAW_PROBE_RATIO", "2.5")
+    limits.env_bound("CHEMCLAW_PROBE_UNSET", default=4, minimum=1, consequence="none")
+    limits.env_bound("CHEMCLAW_PROBE_SET", default=4, minimum=1, consequence="none")
+    limits.env_ratio("CHEMCLAW_PROBE_RATIO", default=1.8, minimum=1.0, consequence="none")
+    recorded = limits.effective_bounds()
+    assert recorded["CHEMCLAW_PROBE_UNSET"] == 4
+    assert recorded["CHEMCLAW_PROBE_SET"] == 12
+    assert recorded["CHEMCLAW_PROBE_RATIO"] == 2.5
+    # A refused value is not recorded: the process does not start with it.
+    monkeypatch.setenv("CHEMCLAW_PROBE_REFUSED", "0")
+    with pytest.raises(ValueError):
+        limits.env_bound("CHEMCLAW_PROBE_REFUSED", default=4, minimum=1, consequence="none")
+    assert "CHEMCLAW_PROBE_REFUSED" not in limits.effective_bounds()
+
+
+def test_a_settings_object_is_recorded_under_the_names_its_environment_reads(
+    monkeypatch: pytest.MonkeyPatch, isolated_bounds: None
+) -> None:
+    """`servers/calc` and `servers/rxnpredict` read their bounds through `pydantic-settings`.
+
+    So the name is derived the way that library derives it for these classes — prefix plus field,
+    upper-cased, or a literal `validation_alias` — and a `bool` is left out, being an `int` to
+    Python and a switch rather than a bound to an operator.
+    """
+    from pydantic import Field
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+
+    class ProbeSettings(BaseSettings):
+        model_config = SettingsConfigDict(env_prefix="CHEMCLAW_PROBE_")
+
+        max_things: int = 5
+        ratio: float = 1.5
+        enabled: bool = True
+        label: str = "x"
+        aliased: int = Field(default=3, validation_alias="PROBE_ALIASED")
+
+    monkeypatch.setenv("CHEMCLAW_PROBE_MAX_THINGS", "11")
+    limits.report_settings(ProbeSettings())
+    recorded = limits.effective_bounds()
+    assert recorded["CHEMCLAW_PROBE_MAX_THINGS"] == 11
+    assert recorded["CHEMCLAW_PROBE_RATIO"] == 1.5
+    assert recorded["PROBE_ALIASED"] == 3
+    assert "CHEMCLAW_PROBE_ENABLED" not in recorded
+    assert "CHEMCLAW_PROBE_LABEL" not in recorded

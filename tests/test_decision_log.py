@@ -450,6 +450,14 @@ _RETIRED_CITATIONS: dict[str, tuple[str, str]] = {
         "test_an_endpoint_the_consumer_cannot_load_is_refused_here",
         "D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses",
     ),
+    # `D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts` §4.2 cited the test that
+    # pinned a computed-name import as deliberately *unflagged*; the scan now reports one until its
+    # server justifies it by scope, so the old name would assert the opposite of the body.
+    "test_a_dynamic_import_of_a_computed_name_is_deliberately_not_flagged": (
+        "packages/mcp_server_kit/tests/test_no_egress.py::"
+        "test_a_dynamic_import_of_a_computed_name_must_be_justified_at_its_site",
+        "D-2026-09-26-a-computed-import-is-argued-at-its-site",
+    ),
 }
 
 

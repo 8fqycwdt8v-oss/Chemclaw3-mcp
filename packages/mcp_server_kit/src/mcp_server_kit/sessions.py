@@ -111,6 +111,7 @@ from mcp.types import ErrorData, JSONRPCError
 from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
+from mcp_server_kit.limits import report_bound
 from mcp_server_kit.metrics import SESSIONS_CEILING, SESSIONS_LIVE, SESSIONS_REFUSED
 
 logger = logging.getLogger(__name__)
@@ -662,6 +663,9 @@ def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
         The ceiling applied, or `None` if a deployment has turned it off.
     """
     ceiling = max_sessions()
+    # Reported whichever way it resolved: `None` on `/healthz` is how a pod whose ceiling an
+    # operator turned off says so, which a default in the shipped files cannot.
+    report_bound("MCP_MAX_SESSIONS", ceiling)
     if ceiling is None:
         # No gauge is published either: a `chemclaw_mcp_sessions_ceiling` of 0 would read as "this
         # pod admits nothing", which is the opposite of what turning the ceiling off means.
@@ -769,6 +773,7 @@ def apply_session_idle_timeout(server: FastMCP) -> float | None:
     if server.settings.stateless_http:  # pragma: no cover - no stateless server in this fleet
         return None
     timeout = session_idle_timeout()
+    report_bound("MCP_SESSION_IDLE_TIMEOUT_SECONDS", timeout)
     if timeout is None:
         # **Reaping off is not "install nothing", and it used to be.** The discard of a session
         # upstream minted for a request it then refused is not a reaping policy — that session can
@@ -780,5 +785,7 @@ def apply_session_idle_timeout(server: FastMCP) -> float | None:
     server.session_manager.session_idle_timeout = timeout
     _hold_open_during_tool_calls(server, timeout=timeout)
     _reclaim_after_every_request(server)
-    _settle_a_minted_session(server, unused=session_unused_timeout(timeout))
+    unused = session_unused_timeout(timeout)
+    report_bound("MCP_SESSION_UNUSED_TIMEOUT_SECONDS", unused)
+    _settle_a_minted_session(server, unused=unused)
     return timeout

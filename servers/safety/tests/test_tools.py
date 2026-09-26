@@ -103,6 +103,8 @@ def _rule_corpus(directory: Path, body: str) -> Path:
                 "retrieved_from": "written by this test",
                 "description": "a stand-in rule table",
                 "sha256": hashlib.sha256(table.read_bytes()).hexdigest(),
+                "refresh_owner": "team:test-owners",
+                "refresh_cadence": "P12M",
             }
         ),
         encoding="utf-8",

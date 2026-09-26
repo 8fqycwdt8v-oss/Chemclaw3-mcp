@@ -661,5 +661,6 @@ and 1.18 from 2, so a transposed digit breaks an agreement that must hold to 0.0
 - **GESTIS prohibits transfer into other information systems.** `ghs` must be built on PubChem LCSS
   and ECHA C&L, not GESTIS.
 - **Snapshot refresh is an operational commitment.** Every mirrored corpus needs a named owner and
-  a cadence, recorded in that server's README. A stale patent index that nobody knows is stale is
+  a cadence, recorded as `refresh_owner` and `refresh_cadence` in its `dataset.json`, where
+  `load_dataset` refuses a corpus without them. A stale patent index that nobody knows is stale is
   worse than no patent index.

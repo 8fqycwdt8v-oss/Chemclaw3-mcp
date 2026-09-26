@@ -26,7 +26,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from mcp_server_kit.limits import echo
+from mcp_server_kit.limits import echo, report_settings
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -251,6 +251,8 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
+        # Its numbers, for `/healthz` (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+        report_settings(_settings)
     return _settings
 
 
