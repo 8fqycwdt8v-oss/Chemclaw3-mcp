@@ -19,6 +19,11 @@ implementation cannot satisfy by agreeing with itself.
   `time < dose_time_seconds`, which put one step of O(h) error into an O(h⁴) scheme and dropped it
   to first-order convergence. The answer was still right to three significant figures, so no
   absolute tolerance would have caught it — only the *rate* did.
+- **The stable scheme must land on the quasi-steady limit.** A dose far past RK4's ceiling reacts
+  its feed as fast as it arrives, so the unreacted reagent is `F / (k * C_co)` at every instant —
+  at the end of the dose, a fraction `1 / (k * C_co,end * t_dose)` of the charge. That closed form
+  is written nowhere in the scheme, which knows only the rate law; an SDIRK coefficient typed wrong
+  or a projection that discards moles moves the answer off it.
 - **Arrhenius must reproduce the rule every chemist carries**: the rate doubles per 10 °C near room
   temperature at an activation energy of about 53 kJ/mol.
 
@@ -41,7 +46,7 @@ __all__ = ["CONSTANTS_VERSION", "SelfTestFailed", "verify"]
 
 #: The version of the first-party formulas this build serves. Bumped by hand in the commit that
 #: changes one, so an operator reading `/healthz` can tell two pods apart without a shell on either.
-CONSTANTS_VERSION = "1.0.0"
+CONSTANTS_VERSION = "1.1.0"
 
 #: τ_CSTR/τ_PFR at X = 0.9, first order: X/((1-X)·ln(1/(1-X))). Written as the closed form rather
 #: than as 3.909 so the check cannot be satisfied by somebody updating a literal.
@@ -108,7 +113,9 @@ def _peak(steps: int) -> float:
     original = reactors.MAX_INTEGRATION_STEPS
     reactors.MAX_INTEGRATION_STEPS = max(original, steps)
     try:
-        return reactors.semibatch_accumulation(steps=steps, **_DOSE).peak_accumulation_fraction
+        return reactors.semibatch_accumulation(
+            steps=steps, force_stable=False, **_DOSE
+        ).peak_accumulation_fraction
     finally:
         reactors.MAX_INTEGRATION_STEPS = original
 
@@ -127,6 +134,49 @@ def _check_integrator_order() -> None:
             f"{improvement:.1f}x, where fourth-order convergence gives about 39x. A first-order "
             "rate means a discontinuity inside the integration domain — check that no stage of the "
             "RK4 step sees a different feed rate from the others."
+        )
+
+
+#: A 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60 — the stiff fixture the reviews
+#: drove — at a rate constant six orders past RK4's ceiling.
+_STIFF_DOSE = {
+    "rate_constant": 1.0e6,
+    "dose_time_seconds": 3600.0,
+    "initial_volume": 0.1,
+    "dosed_moles": 5.0,
+    "dosed_volume": 0.0,
+    "initial_coreagent_concentration": 60.0,
+}
+
+#: Measured agreement with the limit is 1e-9; the dose's own departure from it is `1/(k*C_co*t)`,
+#: about 3e-11 here. Loose enough that neither moves it, tight enough that a coefficient error does.
+_QUASI_STEADY_TOLERANCE = 1e-6
+
+
+def _check_stable_scheme() -> None:
+    """The stiff band lands on the quasi-steady closed form, integrated by the stable scheme."""
+    profile = reactors.semibatch_accumulation(
+        steps=reactors.DEFAULT_INTEGRATION_STEPS, force_stable=False, **_STIFF_DOSE
+    )
+    if profile.method != reactors.METHOD_STABLE:
+        raise SelfTestFailed(
+            f"a dose {profile.dose_damkohler:.3g} times faster than its addition was integrated "
+            f"by {profile.method!r}, not by the stable scheme"
+        )
+    coreagent_at_end = (
+        _STIFF_DOSE["initial_coreagent_concentration"] * _STIFF_DOSE["initial_volume"]
+        - _STIFF_DOSE["dosed_moles"]
+    ) / _STIFF_DOSE["initial_volume"]
+    limit = 1.0 / (
+        _STIFF_DOSE["rate_constant"] * coreagent_at_end * _STIFF_DOSE["dose_time_seconds"]
+    )
+    error = abs(profile.peak_accumulation_fraction - limit) / limit
+    if error > _QUASI_STEADY_TOLERANCE:
+        raise SelfTestFailed(
+            f"the stable scheme put the peak of a dose that reacts as it arrives at "
+            f"{profile.peak_accumulation_fraction:.6e}, where the quasi-steady limit is "
+            f"{limit:.6e} ({error:.1e} relative) — check the SDIRK coefficients and the "
+            "projection onto the conserved line"
         )
 
 
@@ -195,6 +245,7 @@ def verify() -> list[Dataset]:
     _check_reactor_ratio()
     _check_inverse_round_trip()
     _check_integrator_order()
+    _check_stable_scheme()
     _check_arrhenius()
 
     return [
@@ -210,7 +261,8 @@ def verify() -> list[Dataset]:
                 "The ideal-reactor and Arrhenius formulas this server computes with. Verified on "
                 "every probe against relations the implementation does not contain: the textbook "
                 "CSTR/PFR ratio, the exactness of the closed-form inverse, the integrator's "
-                "convergence order, and the doubling-per-10-degrees rule."
+                "convergence order, the stable scheme's quasi-steady limit, and the "
+                "doubling-per-10-degrees rule."
             ),
             sha256=_formula_digest(),
             # The formulas *are* the modules, so a module is what is named. Pointing this at a

@@ -50,14 +50,15 @@ awaiting coroutine does not stop the worker thread, so a wall clock would answer
 gone while the integration kept burning. Refusing before any work starts orphans nothing, and a
 refusal is a `ValueError`, which `connector_app` passes to the caller verbatim.
 
-**Why not a cheaper integrator instead**, which the backlog row offered as the alternative: an
-implicit or exponentially-fitted step would put the stiff case back under the band and lift the
-refusal a dose past `MAX_INTEGRATION_STEPS` now gets. It would not remove the need for this gate —
-the realistic `k = 0.5` case already sits at hundreds of milliseconds, well past the 8.1 ms the old
-comment put beside `chem`'s gated `render_structure` — and it replaces a scheme whose convergence
-order was *measured* (`reactors.MAX_INTEGRATION_STEPS`' comment) with one that has not been. That
-trade is its own decision, recorded in
-`docs/decisions/D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated.md`.
+**The stable scheme came later and changes none of this arithmetic.** A dose past
+`MAX_INTEGRATION_STEPS` used to be refused; it is now integrated by an L-stable SDIRK at a fixed
+`reactors.STABLE_INTEGRATION_STEPS`
+(`D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused`). Below the ceiling RK4
+still answers, so the worst legal call is still the RK4 one above — re-measured 1,272 ms median on a
+loaded laptop against 1,292 ms before the change — and the newly answered band costs 46-89 ms a call
+on the same machine whatever the rate constant, well inside `WORST_INTEGRATION_SECONDS`. It did not
+remove the need for this gate, for the reason the gate's own record gave: the realistic `k = 0.5`
+case already sits at hundreds of milliseconds.
 """
 
 from __future__ import annotations

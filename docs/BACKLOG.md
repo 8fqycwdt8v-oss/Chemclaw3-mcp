@@ -119,15 +119,17 @@ decision leaves a record behind and the row goes.
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
   `servers/rxnpredict/tests/test_dataset.py`.
 
-- [ ] **`kinetics` refuses a semi-batch dose past `MAX_INTEGRATION_STEPS`, and a stable scheme
-  would answer it.** `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` gave
-  `semibatch_accumulation_profile` an admission ceiling rather than a new integrator, because a
-  gate was owed either way. What the ceiling does not change is the refusal: a dose whose
-  stiffness bound times its dose time needs more than 200,000 explicit RK4 steps is turned away
-  as mixing-limited. An implicit or exponentially-fitted step for the linear part would be stable at any step and would
-  answer it, at the price of re-measuring the convergence order the current scheme was proven at.
-  Decide whether the stiff band is worth that, and do not close it by lowering the step ceiling.
-  **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py`,
+- [ ] **RK4's step floor in `kinetics` lands on its stability limit, where the transient barely
+  decays.** `_steps_for_stability` sets `h*lambda` to `RK4_REAL_STABILITY_LIMIT` exactly, the
+  point where RK4's amplification factor is 1. When the stiffness bound is tight — first order in
+  the dosed reagent and zero order in the co-reagent, so `lambda = k` for the whole dose — the
+  start-up transient decays slowly across the dose and the peak comes back low: measured
+  2026-09-26 at `k = 10.0005` (1 h, 40 mol into 1 volume), 2.7718e-05 against 2.7776e-05, 0.21%
+  low, the dangerous direction. A margin on the limit doubles RK4's step count and so its worst
+  legal call, which `engine/admission.py` sizes the ceiling on; routing floor-bound doses to the
+  stable scheme (`METHOD_STABLE`, measured 0.01% *high* on a neighbouring dose at `k = 10`) costs
+  about a tenth of a second but moves answers RK4 now gives. Decide which, measured.
+  **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py::RK4_REAL_STABILITY_LIMIT`,
   `servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`.
 
 - [ ] **`rxnpredict`'s per-class prior override still replaces the vendored corpus whole.**

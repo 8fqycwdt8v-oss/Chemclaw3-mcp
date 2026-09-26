@@ -428,9 +428,9 @@ semi-batch addition for the accumulation profile a dose time is chosen against.
 
 **This entry previously proposed `fit_rate_law` and named Cantera + SciPy as the offline source.
 It ships with neither, and the split is the decision rather than a shortfall.** Fitting a rate law
-to time-course data is a regression; everything else on the list is closed-form algebra or a
-fixed-step RK4 over two state variables. `thermalsafety` hand-rolled a 200-step bisection rather
-than import `scipy.optimize`, citing `props` for the same choice, and only `calc` (behind a QM
+to time-course data is a regression; everything else on the list is closed-form algebra or two
+fixed-step integrators over two state variables. `thermalsafety` hand-rolled a 200-step bisection
+rather than import `scipy.optimize`, citing `props` for the same choice, and only `calc` (behind a QM
 binary) and `pyexec` (which *is* a sandbox toolbox) carry numpy or scipy at all — neither reason
 transfers here. Cantera is a gas-phase mechanism package and was never right for liquid-phase
 process chemistry. What would reopen `fit_rate_law` is real time-course data arriving through an

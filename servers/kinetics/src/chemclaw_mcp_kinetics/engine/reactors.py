@@ -1,9 +1,12 @@
 """Ideal isothermal reactors: batch, CSTR and PFR, plus semi-batch accumulation.
 
-Three of the four are closed form. The fourth is integrated, in about thirty lines of Python, for
-the reason `servers/thermalsafety` hand-rolled a bisection rather than import `scipy.optimize`: a
-server is a dependency closure as much as a capability, and a fixed-step RK4 over two state
-variables does not justify SciPy in this image.
+Three of the four are closed form. The fourth is integrated in plain Python, for the reason
+`servers/thermalsafety` hand-rolled a bisection rather than import `scipy.optimize`: a server is a
+dependency closure as much as a capability, and two fixed-step schemes over two state variables do
+not justify SciPy in this image. Fixed-step RK4 answers every dose it can integrate stably within
+`MAX_INTEGRATION_STEPS`; the stiff band past that — a reaction fast relative to its addition — is
+integrated by an L-stable implicit scheme at a fixed step count instead of being refused
+(`D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused`).
 
 **What each reactor's equation assumes**, because the assumptions are what make a number wrong
 rather than the arithmetic:
@@ -37,7 +40,10 @@ from chemclaw_mcp_kinetics.engine.arrhenius import KineticsInputError, represent
 __all__ = [
     "DEFAULT_INTEGRATION_STEPS",
     "MAX_INTEGRATION_STEPS",
+    "METHOD_RK4",
+    "METHOD_STABLE",
     "PROFILE_POINTS",
+    "STABLE_INTEGRATION_STEPS",
     "AccumulationPoint",
     "SemiBatchProfile",
     "batch_conversion",
@@ -103,6 +109,56 @@ DEFAULT_INTEGRATION_STEPS = 200
 #: number the *caller's* rate constant sets. The peak is tracked inside the loop instead, so memory
 #: is O(this) and the peak is exact rather than whichever sample happened to land nearest it.
 PROFILE_POINTS = 25
+
+#: The two schemes a `SemiBatchProfile` can come out of, returned as its `method`.
+METHOD_RK4 = "rk4"
+METHOD_STABLE = "sdirk3-l-stable"
+
+#: The stable scheme's step count, fixed rather than derived — which is the whole point of it: an
+#: L-stable scheme is stable at every step size, so what sets the count is the accuracy the *slow*
+#: part of the dose needs, not the reaction's speed. Its cost is therefore a constant however fast
+#: the caller's reaction is, and that is what lets the stiff band be answered inside the admission
+#: ceiling `engine/admission.py` derived for RK4's worst call.
+#:
+#: **Measured, against RK4 on the fixtures RK4 answers and against itself at 16,000 steps on the
+#: ones it cannot.** At 2,000 steps the stable scheme agrees with RK4 to 7.9e-10 on the worked dose,
+#: 2.6e-07 on the worked dose at `k = 50`, 4.5e-08 on the stiff dose at `k = 2.5` and 5.8e-08 on the
+#: second-order dose; past the RK4 ceiling it agrees with a 465,000-step RK4 reference to 9.3e-08 on
+#: the worked dose at `k = 200`, and with its own 16,000-step answer to 1.3e-09 at `k = 100` on the
+#: stiff dose and to 2.7e-12 at `k = 1e12`. Third order on a smooth dose (500 -> 1,000 steps
+#: improves 7.8x against 2^3 = 8); lower in the stiff band, where a stage order of one costs the
+#: classical order, which is why the count is 2,000 and not the 200 RK4 needs.
+STABLE_INTEGRATION_STEPS = 2_000
+
+#: Backward-Euler sub-steps that replace the stable scheme's first step. **Without them the reported
+#: peak was an artefact of the start**: the dose begins at zero accumulation, far off the
+#: quasi-steady value the reaction pulls it to within `1/lambda` seconds, and the SDIRK stability
+#: function is *negative* at large `h*lambda`, so the first step overshot that value and the
+#: overshoot was the peak — measured 7.8e-03 high at `k = 200` against a zero-order co-reagent,
+#: where the true profile rises monotonically to its plateau. Backward Euler's stability function
+#: lies in (0, 1) for every `h*lambda`, so it can only approach from below; four of them damp the
+#: start below 1e-9 and cost one step's worth of the O(h) error they carry (Rannacher's start, for
+#: the same reason).
+STABLE_START_SUBSTEPS = 4
+
+# Alexander's three-stage, third-order, L-stable, stiffly accurate SDIRK (SIAM J. Numer. Anal. 14,
+# 1977, table 5.2). Stiffly accurate means the last stage *is* the step's answer, so the step
+# inherits the stage solve's guarantee that neither species goes below zero.
+_SDIRK_GAMMA = 0.435866521508459
+_SDIRK_TAU = (1.0 + _SDIRK_GAMMA) / 2.0
+_SDIRK_B1 = -(6.0 * _SDIRK_GAMMA**2 - 16.0 * _SDIRK_GAMMA + 1.0) / 4.0
+_SDIRK_B2 = (6.0 * _SDIRK_GAMMA**2 - 20.0 * _SDIRK_GAMMA + 5.0) / 4.0
+_SDIRK_A: tuple[tuple[float, ...], ...] = (
+    (),
+    (_SDIRK_TAU - _SDIRK_GAMMA,),
+    (_SDIRK_B1, _SDIRK_B2),
+)
+_SDIRK_C = (_SDIRK_GAMMA, _SDIRK_TAU, 1.0)
+
+#: Newton iterations allowed per implicit stage before the bisection bracket alone must have closed.
+#: Measured at three per stage across every fixture; the bracket halves on any iteration Newton
+#: would leave, so this is a bound on the cost rather than a convergence tolerance.
+_STAGE_ITERATIONS = 100
 
 #: Conversions at or above this are refused as an input, because the time to reach them is where
 #: the ideal-reactor idealisation stops describing anything: at 99.99% the answer is set by mixing,
@@ -425,6 +481,14 @@ class SemiBatchProfile:
     #: What is still unreacted when the addition finishes. A dose slow enough to keep accumulation
     #: low can still leave a tail, and the two are different questions.
     accumulation_at_end_of_dose: float
+    #: `METHOD_RK4` or `METHOD_STABLE` — which scheme integrated this dose.
+    method: str = METHOD_RK4
+    #: How many steps it took. RK4's count is derived from the problem; the stable scheme's is
+    #: `STABLE_INTEGRATION_STEPS` whatever the problem, which is what bounds its cost.
+    steps: int = DEFAULT_INTEGRATION_STEPS
+    #: `stiffness * dose_time`: how many times over the dose the reaction could consume what is in
+    #: the vessel. Large is the regime where a perfectly-mixed model stops describing the vessel.
+    dose_damkohler: float = 0.0
 
 
 def _stiffness_bound(
@@ -518,8 +582,8 @@ def _steps_for_stability(
     stiffness: float,
     dose_time_seconds: float,
     requested: int,
-) -> int:
-    """The step count this dose actually needs, never fewer than `requested`.
+) -> int | None:
+    """The RK4 step count this dose actually needs, never fewer than `requested` — or `None`.
 
     **A fixed step count reported a fast reaction as a perfectly safe one, and the clamps hid it.**
     At first order in each reagent the dosed-reagent ODE is pseudo-first-order with eigenvalue
@@ -544,11 +608,15 @@ def _steps_for_stability(
     reaction is fast. `steps` is not exposed on the tool, so a caller could not work around it.
 
     The floor is derived rather than raised to a new constant, because the number depends on the
-    problem: a rate and a dose time somebody supplies cannot be covered by any fixed count. A call
-    that would still be unstable at `MAX_INTEGRATION_STEPS` is refused here rather than answered —
-    a reaction that fast is mixing-limited, which is a regime this ideal model does not describe,
-    and saying so is better than a zero. That includes a stiffness too large to represent, which
-    used to reach `math.ceil` and leave as an `OverflowError` the caller saw only as an `error_id`.
+    problem: a rate and a dose time somebody supplies cannot be covered by any fixed count.
+
+    **Past `MAX_INTEGRATION_STEPS` this returns `None`, and the dose goes to the stable scheme.** It
+    used to be refused there as mixing-limited — a refusal set by what an *explicit* scheme can
+    afford, not by the chemistry, and
+    `D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused` replaced it with an
+    answer that carries that caveat instead. What is still refused
+    is a stiffness too large to represent at all, which used to reach `math.ceil` and leave as an
+    `OverflowError` the caller saw only as an `error_id`.
 
     Args:
         stiffness: `_stiffness_bound`'s upper bound on the Jacobian's eigenvalue, per second.
@@ -556,28 +624,27 @@ def _steps_for_stability(
         requested: The caller's step count, which is a floor rather than the answer.
 
     Returns:
-        The step count to integrate with — `requested` when the problem is not stiff.
+        The RK4 step count — `requested` when the problem is not stiff — or `None` when no count up
+        to `MAX_INTEGRATION_STEPS` integrates it stably.
 
     Raises:
-        KineticsInputError: If no step count up to `MAX_INTEGRATION_STEPS` integrates it stably.
+        KineticsInputError: If the stiffness, or the step count it implies, is not a finite number.
     """
     if stiffness <= 0.0:
         return requested
     needed = dose_time_seconds * stiffness / RK4_REAL_STABILITY_LIMIT
-    if not needed <= MAX_INTEGRATION_STEPS:  # also true for an infinite or NaN `needed`
-        needed_text = f"{math.ceil(needed):,}" if math.isfinite(needed) else "unboundedly many"
+    if not math.isfinite(needed):  # an infinite or NaN stiffness, or a product past DBL_MAX
         raise KineticsInputError(
-            f"this dose is too fast for this integrator to resolve: the reaction's rate responds "
-            f"to the concentrations at up to {stiffness:.3g} per second over the dose, which would "
-            f"need {needed_text} steps over {dose_time_seconds:g} s to integrate stably and the "
-            f"ceiling is {MAX_INTEGRATION_STEPS:,}. A reaction this fast relative to the addition "
-            "is mixing-limited — the accumulation is set by how fast the feed disperses, not by "
-            "the rate law — and that is a regime this ideal, perfectly-mixed model does not "
-            "describe. Treat the accumulation as feed-rate-limited and size the dose from the "
-            "heat-removal duty instead; `thermalsafety` is the server for that question. This "
-            "refusal replaced a reported accumulation of zero, which read as a dose that is safe "
-            "at any rate."
+            "this dose is too fast for any integrator here to represent: the rate's response to "
+            "the concentrations over the dose is not a finite number in double precision. A "
+            "reaction that fast relative to the addition is mixing-limited — the accumulation is "
+            "set by how fast the feed disperses, not by the rate law — which this ideal, "
+            "perfectly-mixed model does not describe. Check the units of the rate constant and "
+            "the concentrations; if they are right, size the dose from the heat-removal duty "
+            "instead (`thermalsafety`)."
         )
+    if needed > MAX_INTEGRATION_STEPS:
+        return None
     return max(requested, math.ceil(needed))
 
 
@@ -592,6 +659,7 @@ def semibatch_accumulation(
     order_in_dosed: float = 1.0,
     order_in_coreagent: float = 1.0,
     steps: int = DEFAULT_INTEGRATION_STEPS,
+    force_stable: bool = False,
 ) -> SemiBatchProfile:
     """Integrate a constant-rate semi-batch addition and report the accumulation profile.
 
@@ -599,9 +667,11 @@ def semibatch_accumulation(
     the worst moment?** That is the material a cooling failure would have to absorb all at once,
     and it is why "add it slowly" is a safety decision rather than a preference.
 
-    Integrated with fixed-step RK4 over two states — moles of dosed reagent and moles of
-    co-reagent — with the volume rising linearly as the dose goes in. No closed form exists: the
-    volume and both concentrations move together.
+    Integrated over two states — moles of dosed reagent and moles of co-reagent — with the volume
+    rising linearly as the dose goes in. No closed form exists: the volume and both concentrations
+    move together. Fixed-step RK4 at a step count derived from the problem, or — when no count up to
+    `MAX_INTEGRATION_STEPS` makes RK4 stable — Alexander's L-stable SDIRK at
+    `STABLE_INTEGRATION_STEPS`. The profile's `method` says which.
 
     **Isothermal.** The vessel is assumed held at temperature, which is what a jacket is for and
     what makes this a kinetics question rather than a thermal one. If the jacket cannot hold it,
@@ -621,6 +691,8 @@ def semibatch_accumulation(
         order_in_coreagent: Order in the co-reagent. Pass 0 for a large excess, which makes the
             reaction pseudo-first-order in the dosed reagent.
         steps: Integration steps. The default is measured sufficient; lowering it is for a test.
+        force_stable: Integrate with the stable scheme even where RK4 would be stable. For the
+            tests that hold the two schemes to each other; the tool never sets it.
 
     Returns:
         The profile, its peak accumulation and the value at the end of the dose.
@@ -662,9 +734,11 @@ def semibatch_accumulation(
         order_in_dosed=order_in_dosed,
         order_in_coreagent=order_in_coreagent,
     )
-    steps = _steps_for_stability(
+    rk4_steps = _steps_for_stability(
         stiffness=stiffness, dose_time_seconds=dose_time_seconds, requested=steps
     )
+    stable = force_stable or rk4_steps is None
+    steps = max(steps, STABLE_INTEGRATION_STEPS) if rk4_steps is None or stable else rk4_steps
     volume_rate = dosed_volume / dose_time_seconds
     coreagent_moles_0 = initial_coreagent_concentration * initial_volume
 
@@ -710,6 +784,86 @@ def semibatch_accumulation(
         # dropped the integrator to *first-order* convergence, 2,000 steps agreeing with 20,000 to
         # three significant figures instead of the eleven RK4 gives without it.
         return feed_rate - consumed, -consumed
+
+    def implicit_stage(
+        time: float, dosed_known: float, coreagent_known: float, weight: float, guess: float
+    ) -> tuple[float, float]:
+        """Solve one implicit stage: `Y = known + weight * f(time, Y)`, both species at once.
+
+        **Two unknowns reduce to one, exactly.** The feed enters only the dosed reagent and the
+        consumption is one-to-one, so `Y_d - Y_c = known_d - known_c + weight * F` whatever the
+        rate law — the stage is a scalar equation in `Y_d`. It is `Y_d + weight*R = target`, with
+        `R >= 0` rising in `Y_d`, so its root is unique and bracketed: at or below `target`, and
+        above the point where either species reaches zero (where `R` vanishes). Newton inside that
+        bracket, bisecting whenever Newton would leave it, cannot diverge or go negative, which
+        is the property an explicit step lacked.
+        """
+        offset = dosed_known - coreagent_known + weight * feed_rate  # Y_d - Y_c
+        target = dosed_known + weight * feed_rate
+        low, high = max(0.0, offset), target
+        if high <= low:  # the rate is zero at the root: one species is already gone
+            return high, high - offset
+        dosed = min(max(guess, low), high)
+        if dosed == low:
+            dosed = high
+        volume = volume_at(time)
+        for _ in range(_STAGE_ITERATIONS):
+            coreagent = dosed - offset
+            consumed = _rate(dosed / volume, coreagent / volume) * volume
+            residual = dosed - target + weight * consumed
+            if residual > 0.0:
+                high = dosed
+            elif residual < 0.0:
+                low = dosed
+            else:
+                break
+            # d(consumed)/d(Y_d) along the stage line, where d(Y_c)/d(Y_d) = 1. Both species are
+            # positive wherever `consumed` is, so neither division is by zero.
+            slope = 1.0 + weight * consumed * (
+                order_in_dosed / dosed + order_in_coreagent / coreagent
+            )
+            newton = dosed - residual / slope if math.isfinite(slope) else math.nan
+            converged = low <= newton <= high and abs(newton - dosed) <= 1e-14 * newton
+            dosed = newton if low <= newton <= high else 0.5 * (low + high)
+            if converged or high - low <= 1e-15 * high:
+                break
+        return dosed, dosed - offset
+
+    def stable_step(
+        time: float, dosed: float, coreagent: float, first: bool
+    ) -> tuple[float, float]:
+        """One step of the stable scheme, from `time` to `time + step`.
+
+        The first step is `STABLE_START_SUBSTEPS` backward-Euler sub-steps instead (see that
+        constant). Every step ends by moving a state that truncation left below zero back onto the
+        line `dosed - coreagent = F*t - n_co,0`, which every Runge-Kutta scheme conserves exactly: a
+        co-reagent at -1e-6 mol means the reagent ran out inside the step, and the exact state
+        there is zero co-reagent with that excess of dosed reagent. Without it a dose that uses its
+        co-reagent up mid-way reported a peak 1.1e-04 low at 2,000 steps; with it, exactly the
+        excess. **This is a projection onto the conserved line, not the clamp the divergence check
+        forbids**: that clamp discarded moles, this keeps the difference the feed fixes.
+        """
+        if first:
+            sub = step / STABLE_START_SUBSTEPS
+            for index in range(1, STABLE_START_SUBSTEPS + 1):
+                dosed, coreagent = implicit_stage(time + index * sub, dosed, coreagent, sub, dosed)
+        else:
+            gamma_step = _SDIRK_GAMMA * step
+            slopes: list[tuple[float, float]] = []
+            for weights, fraction in zip(_SDIRK_A, _SDIRK_C, strict=True):
+                stage_time = time + fraction * step
+                known_d = dosed + step * sum(w * k[0] for w, k in zip(weights, slopes, strict=True))
+                known_c = coreagent + step * sum(
+                    w * k[1] for w, k in zip(weights, slopes, strict=True)
+                )
+                stage_d, stage_c = implicit_stage(stage_time, known_d, known_c, gamma_step, dosed)
+                slopes.append(derivatives(stage_time, stage_d, stage_c))
+            dosed, coreagent = stage_d, stage_c  # stiffly accurate: the last stage is the answer
+        if coreagent < 0.0:
+            dosed, coreagent = dosed - coreagent, 0.0
+        if dosed < 0.0:
+            dosed, coreagent = 0.0, coreagent - dosed
+        return dosed, coreagent
 
     # The profile is integrated over the dose itself. What happens after the addition stops is the
     # batch case, which `batch_conversion` answers and this does not duplicate.
@@ -774,6 +928,11 @@ def semibatch_accumulation(
             points.append(point_at(index, dosed_moles_now, coreagent_now))
         if index == steps:
             break
+        if stable:
+            dosed_moles_now, coreagent_now = stable_step(
+                time, dosed_moles_now, coreagent_now, index == 0
+            )
+            continue
         # Classical RK4 over the two-state system.
         k1a, k1b = derivatives(time, dosed_moles_now, coreagent_now)
         k2a, k2b = derivatives(
@@ -797,4 +956,7 @@ def semibatch_accumulation(
         peak_accumulation_fraction=peak.accumulated_fraction,
         peak_at_seconds=peak.time_seconds,
         accumulation_at_end_of_dose=points[-1].accumulated_fraction,
+        method=METHOD_STABLE if stable else METHOD_RK4,
+        steps=steps,
+        dose_damkohler=stiffness * dose_time_seconds,
     )

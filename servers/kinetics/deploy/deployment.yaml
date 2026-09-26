@@ -110,7 +110,8 @@ spec:
             # textbook CSTR/PFR ratio at 90% first-order conversion (3.909, written nowhere in
             # `reactors.py` and coming out of the two reactor models being *different*), the
             # closed-form batch inverse round-tripping exactly at five orders, the doubling-per-10-
-            # degrees rule, and the semi-batch integrator's convergence *order*.
+            # degrees rule, the semi-batch integrator's convergence *order*, and the stable
+            # scheme landing on the quasi-steady limit of a dose that reacts as it arrives.
             #
             # That last one has already earned its place. The first version of the integrator
             # guarded its feed term with `time < dose_time_seconds`, so the final RK4 step's k4
