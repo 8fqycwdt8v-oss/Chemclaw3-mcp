@@ -80,6 +80,21 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
     && rm -rf /wheels
 
+# **Three system libraries, because Rxn-INSIGHT imports RDKit's drawing module**, and the import
+# check after them. `rxn_insight.utils` does `from rdkit.Chem.Draw import rdMolDraw2D` at import
+# time, and the locked RDKit wheel links that extension against `libXrender.so.1`, `libXext.so.6`,
+# `libX11.so.6` and `libexpat.so.1`, none of which `python:3.11-slim` carries (`libX11` arrives as a
+# dependency); `servers/rxnlabel/Containerfile` records how the set was found. Found by building `servers/rxnlabel`'s image on 2026-09-26,
+# which failed on exactly this import; this image installs the same `rxn-insight` from the same
+# lock and had no import check, so it would have built and then recorded the `rxn_insight`
+# conditions predictor as failed at startup: one predictor down among several, which
+# `engine/readiness.py` deliberately does not refuse, so the image would have served without it.
+# The check makes that a build failure instead.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxrender1 libxext6 libexpat1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "from rxn_insight.reaction import Reaction; print('rxn-insight importable')"
+
 USER ${UID}
 EXPOSE 8857
 
@@ -92,6 +107,19 @@ ENV HF_HOME=/opt/models/hf \
     TRANSFORMERS_OFFLINE=1 \
     MCP_EGRESS_GUARD=on \
     CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models
+
+# **One thread per forward pass, pinned here rather than left to the node**
+# (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`). torch sizes its intra-op pool
+# from the machine's cores, not from the container's CPU limit, so unpinned a forward pass in this
+# two-core pod runs as many threads as the node has. Measured on 2026-09-26 in a `--cpus=2`
+# container on an eight-core VM, torch 2.13.0 CPU: RXNMapper over 16 reactions took 4,014 ms
+# unpinned (8 threads) against 395 ms at one thread and 224 ms at two, and a T5-small-shaped
+# forward 3,993 / 1,359 / 860 ms — oversubscription, not parallelism. `inference_threads()` reads
+# the pinned width, so the admission gate charges one slot per forward pass and a slot is a core
+# by construction. Raise deliberately, on a pod sized for it; the gate follows without an edit.
+ENV OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
 
 # The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a

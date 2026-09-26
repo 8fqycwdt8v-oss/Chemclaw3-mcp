@@ -20,9 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The full image installs this. `Containerfile` bakes the RXNMapper weights at build time, because
-# the fleet rule is that no server makes an outbound call at request time and RXNMapper downloads
-# its checkpoint on first use.
+# The full image installs this, from the hashed lock export. RXNMapper's checkpoint ships inside its
+# wheel and loads from the package path, so the weights are covered by the same `uv.lock` hash as
+# the code and nothing is fetched at build or request time; `Containerfile` checks that offline.
 models = [
     "rxnmapper>=0.4",
     "rxn-insight>=0.1.2",

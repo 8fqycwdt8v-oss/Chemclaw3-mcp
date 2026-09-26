@@ -242,8 +242,9 @@ def test_a_batch_is_charged_the_mappers_threads_rather_than_one_call(
     """A slot is a core, and the mapper is the reason this server cannot count calls.
 
     RXNMapper is a transformer: torch releases the GIL and parallelises inside one forward pass, at
-    a width it takes from the machine's physical cores rather than from the container's cgroup —
-    and no image in this fleet pins `OMP_NUM_THREADS`. So a gate counting calls would admit two
+    a width it takes from the machine's physical cores rather than from the container's cgroup
+    unless `OMP_NUM_THREADS` pins it, which the image does at 1 and a deployment may raise. So a
+    gate counting calls would admit two
     batches on a two-core pod while each ran four, eight or sixty-four threads. Charged its
     threads, one mapped batch fills the pod and the next call is refused rather than admitted onto
     a machine with no core left for it.

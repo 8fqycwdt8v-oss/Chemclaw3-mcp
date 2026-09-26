@@ -65,10 +65,11 @@ def test_the_container_declares_the_port_the_manifest_dials() -> None:
 def test_the_image_runs_the_mapper_offline() -> None:
     """The HuggingFace offline switches are what stop `RXNMapper()` reaching the hub on first load.
 
-    Without them, construction consults the hub even for a model already baked in; the armed guard
-    turns that into an `EgressForbidden` (an `OSError`) that `mapping._mapper` swallows, and the
-    corpus is then labelled at a coarser resolution with no error anywhere. `rxnpredict` sets these
-    and this server did not — a silent degradation the NetworkPolicy alone could not prevent.
+    RXNMapper 0.4.3 loads from its package path and needs neither, but a `transformers` that
+    consulted the hub even for a local model would; the armed guard turns that into an
+    `EgressForbidden` (an `OSError`) that `mapping._mapper` swallows, and the corpus is then
+    labelled at a coarser resolution with no error anywhere. `rxnpredict` sets these and this
+    server did not — a silent degradation the NetworkPolicy alone could not prevent.
     """
     containerfile = (POLICY.parents[1] / "Containerfile").read_text(encoding="utf-8")
     assert "HF_HUB_OFFLINE=1" in containerfile

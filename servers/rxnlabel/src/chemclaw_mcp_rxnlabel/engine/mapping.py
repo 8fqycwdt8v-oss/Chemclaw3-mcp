@@ -158,9 +158,10 @@ def inference_threads() -> int:
     **Read from torch rather than assumed**, for the reason `engine/admission.py` gives at length:
     torch's intra-op width is sized from the machine's physical cores and not from the container's
     cgroup, so a pod limited to two cores on a large node gives one forward pass a thread count
-    nobody chose — and no image in this fleet pins `OMP_NUM_THREADS` for it. Charging the ceiling
-    what the process is *actually* configured to spend is the only honest number available, and it
-    follows a deployment that does pin the variable without this function knowing that it did.
+    nobody chose. The image now pins `OMP_NUM_THREADS=1`
+    (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`), so this reads 1 there.
+    Charging the ceiling what the process is *actually* configured to spend is still the only
+    honest number, and it follows a deployment that raises the pin without this function knowing.
 
     `1` with no mapper installed, which is the measured truth of the RDKit-only path: SMARTS
     matching holds the GIL, and 1, 2 and 4 threads labelling 50 reactions each measured 581, 425
@@ -262,9 +263,9 @@ def _mapper() -> Any | None:
                     "and `labeller_version` records that so the rows re-label when it arrives"
                 )
                 return None
-            # Constructing it downloads or loads weights. In this fleet the image bakes them at
-            # build time, so a failure here means a broken image rather than a missing network —
-            # and the server must still start and still assign roles.
+            # Constructing it loads weights — from inside the installed package, which the image's
+            # build checks offline — so a failure here means a broken image rather than a missing
+            # network, and the server must still start and still assign roles.
             #
             # **Counted as well as logged**, and this branch is why the counter takes a cause: a
             # deployment whose weights are absent from the image raises here, and one whose loader

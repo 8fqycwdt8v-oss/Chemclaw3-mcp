@@ -120,3 +120,72 @@ def test_an_env_prior_the_aggregator_cannot_mean_is_refused(
     monkeypatch.setenv(_PRIORS_ENV, raw)
     with pytest.raises(ValueError, match=reason):
         Settings()
+
+
+_CLASS_PRIORS_ENV = "CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS_BY_CLASS"
+
+# A calibrated corpus standing in for `data/trust_priors.json`, which ships empty: the defect is
+# what an override does to the classes it does *not* name, so there have to be some.
+_CALIBRATED = {
+    "amide_formation": {"parrot": 0.5, "reaction_t5_v2": 0.9},
+    "suzuki_coupling": {"megan": 0.7},
+}
+
+
+def test_a_class_prior_adjusts_the_corpus_rather_than_replacing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One named `(class, predictor)` pair used to drop every other calibrated class weight.
+
+    Driven through the real environment source, as the global-table test is, with the corpus
+    patched where `class_priors()` reads it — the shipped file is `{}`, and a merge onto nothing
+    cannot tell a merge from a replacement.
+    """
+    from chemclaw_mcp_rxnpredict.engine.meta import trust_priors
+
+    corpus = {label: dict(weights) for label, weights in _CALIBRATED.items()}
+    monkeypatch.setattr(trust_priors, "load_vendored_priors", lambda _directory: corpus)
+    monkeypatch.setenv(_CLASS_PRIORS_ENV, '{"amide_formation": {"parrot": 2.0}}')
+
+    merged = Settings().class_priors()
+    assert merged == {
+        "amide_formation": {"parrot": 2.0, "reaction_t5_v2": 0.9},
+        "suzuki_coupling": {"megan": 0.7},
+    }
+    assert corpus == _CALIBRATED, "the cached corpus was edited in place by an override"
+    # Where it is read: the class the operator did not name keeps its calibrated weight, not the
+    # global 0.80 the old whole-table replacement fell through to.
+    global_priors = dict(DEFAULT_MODEL_TRUST_PRIORS)
+    assert effective_prior("megan", "suzuki_coupling", global_priors, merged) == 0.7
+
+
+def test_no_class_override_is_the_corpus_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shipped state reads the vendored table and nothing else — the real one, checksummed."""
+    monkeypatch.delenv(_CLASS_PRIORS_ENV, raising=False)
+    from chemclaw_mcp_rxnpredict.engine.config import DATA_DIR
+    from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import load_vendored_priors
+
+    assert Settings().class_priors() == load_vendored_priors(DATA_DIR)
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ('{"amide_formaton": {"parrot": 0.9}}', "not a class"),
+        ('{"other": {"parrot": 0.9}}', "not a class"),
+        ('{"amide_formation": {"parot": 0.9}}', "does not weight"),
+        ('{"amide_formation": {"parrot": 0}}', "finite and above zero"),
+        ('{"amide_formation": {"parrot": -1}}', "finite and above zero"),
+        ('{"amide_formation": {"parrot": true}}', "must be a number"),
+        ('{"amide_formation": 0.9}', "JSON object"),
+        ('[{"parrot": 0.9}]', "JSON object"),
+    ],
+)
+def test_a_class_prior_the_aggregator_cannot_mean_is_refused(
+    monkeypatch: pytest.MonkeyPatch, raw: str, reason: str
+) -> None:
+    """A misspelt class or predictor would set nothing and read as done; `other` is never looked
+    up; a non-positive weight inverts or silences a vote. Refused at settings load, by name."""
+    monkeypatch.setenv(_CLASS_PRIORS_ENV, raw)
+    with pytest.raises(ValueError, match=reason):
+        Settings()
