@@ -9,11 +9,11 @@ The in-process optimizer is **geomeTRIC**, driven by tblite's **analytic** gradi
 delocalised internal coordinates (TRIC). It replaced ~330 lines of
 `scipy.optimize.minimize(method="L-BFGS-B")` run with *both* of its own stopping tests disabled
 (`gtol=0.0`, `ftol=0.0`), convergence enforced by a `StopIteration`-raising callback, over a
-hand-built per-coordinate trust region and a Lindh pairwise model Hessian (`engine/anc.py`, deleted
-with it). That module's own docstring stated the gap in the library's favour — "a full Lindh model
-with angle and torsion terms would do better, at the cost of primitive-internal machinery and a
-Wilson B matrix" — and measured its preconditioner at about **2x** against ANCopt's 8-11x. Atoms are
-frozen as Cartesian constraints in the coordinate system rather than as optimizer bounds.
+hand-built per-coordinate trust region and a Lindh pairwise model Hessian (an `anc.py` module,
+deleted with it). That module's own docstring stated the gap in the library's favour — "a full Lindh
+model with angle and torsion terms would do better, at the cost of primitive-internal machinery and
+a Wilson B matrix" — and measured its preconditioner at about **2x** against ANCopt's 8-11x. Atoms
+are frozen as Cartesian constraints in the coordinate system rather than as optimizer bounds.
 
 **What the swap is worth is a measured capability rather than a speedup.** Driven against a worktree
 at the commit before it, so only the optimizer differs: water, ethanol, acetic acid and benzene all

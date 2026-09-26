@@ -83,19 +83,17 @@ spec:
                 - ALL
             seccompProfile:
               type: RuntimeDefault
-          # **This server is transport-bound, and the request is sized for the transport.**
-          # The arithmetic is 1.9 µs to 4.9 µs for the six single-peak tools and 29.8 µs for
-          # `system_kinetics_report` over a three-peak table with two six-injection series —
-          # and most of even those figures is pydantic building the result model rather than any
-          # chromatography. A whole call over a real MCP session is milliseconds, so well under 1%
-          # of it is this server's own work and the rest is the streamable-HTTP round trip every
-          # server in the fleet pays.
+          # **Five tools are transport-bound and one is not, and the request is sized for the
+          # five.** The closed-form tools are microseconds of arithmetic inside a call that is
+          # milliseconds of streamable-HTTP round trip. `semibatch_accumulation_profile` derives
+          # its step count from the caller's rate constant and dose time, and its worst legal call
+          # is seconds of pure-Python CPU that holds the interpreter — so it is offloaded and gated
+          # (`engine/admission.py`), and a pod serves those one at a time whatever `limits.cpu`
+          # says. More of them per second is more replicas, which is what `hpa.yaml` is for.
           #
-          # That is why the numbers below match `props` rather than being scaled down for a server
-          # that does no real computation: scaling them to the arithmetic would size the pod for
-          # the 1% and starve the 99%. `requests.cpu` is what `hpa.yaml` measures utilization
-          # against, so it is the draw a pod doing real work actually has; 250m is ~32 calls a
-          # second here.
+          # (This comment used to describe a chromatography server's "six single-peak tools" and a
+          # `system_kinetics_report` this server has never had — copied, and wrong about the one
+          # tool here that costs anything.)
           resources:
             requests:
               cpu: "250m"

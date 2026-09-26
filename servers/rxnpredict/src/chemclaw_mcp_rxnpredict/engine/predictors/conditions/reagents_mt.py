@@ -114,4 +114,5 @@ except Exception as exc:  # noqa: BLE001
         f"missing optional deps (install `chemclaw-mcp-rxnpredict[reagents_mt]` and download "
         f"checkpoint to $REAGENTS_MT_MODEL_PATH): {exc!r}",
         exc=exc,
+        optional=("onmt",),
     )

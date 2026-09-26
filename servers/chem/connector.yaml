@@ -26,8 +26,12 @@ endpoint:
   # A loopback dev default; the deployment moves it.
   url: http://127.0.0.1:8858/mcp
   health_url: http://127.0.0.1:8858/healthz
-  # Chemclaw3's own bundle allowed 30 s and it is kept: a depiction is tens of milliseconds, but
-  # the bound exists to stop a mute connector hanging a turn, not to police a fast one.
+  # Chemclaw3's own bundle allowed 30 s and it is kept: a drug-sized call is milliseconds, and the
+  # bound exists to stop a mute connector hanging a turn. It is *not* a budget every legal call
+  # fits: a species enumeration on a 1,990-atom polymer measured up to 47 s before its output cap
+  # refused it. That is an input-bound question queued in docs/BACKLOG.md, and
+  # `engine/admission.py` says why the concurrency ceiling is derived from the pod's thread pool
+  # rather than from this number.
   request_timeout: 30
   # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here
   # and refuse it the moment a deployment points this at a real host — and a manifest whose auth
@@ -49,8 +53,10 @@ endpoint:
     - enumerate_stereoisomers
     - enumerate_bond_cleavages
     - enumerate_degradants
-  # Pure functions of their arguments plus a read of a read-only table: nothing here spends compute
-  # worth gating, writes anything, or has an effect the plan gate should hold. So an agent may use
+  # Pure functions of their arguments plus a read of a read-only table: nothing here writes
+  # anything or has an effect the plan gate should hold. Six of them spend CPU worth a concurrency
+  # ceiling (`engine/admission.py::GATED_TOOLS`) — cost and mutability are different axes, and
+  # the plan gate is about the second. So an agent may use
   # every one of them while building the plan a human is asked to approve — which is the point,
   # since "what do we actually charge, and what does it cost in waste" is a question that has to be
   # answerable *before* approval, not after. (A count is not written here: the sentence that used

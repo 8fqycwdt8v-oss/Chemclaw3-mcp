@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from mcp_server_kit.limits import env_bound, smiles_length_error
+from mcp_server_kit.limits import echo, env_bound, smiles_length_error
 from rdkit import Chem
 from rdkit.Chem import Draw, rdChemReactions
 from rdkit.Chem.Draw import rdMolDraw2D
@@ -263,7 +263,7 @@ def _reaction(smiles: str) -> rdChemReactions.ChemicalReaction:
     try:
         reaction = rdChemReactions.ReactionFromSmarts(smiles, useSmiles=True)
     except ValueError as exc:
-        raise InvalidSmilesError(f"not a drawable reaction SMILES: {smiles!r}") from exc
+        raise InvalidSmilesError(f"not a drawable reaction SMILES: {echo(smiles)!r}") from exc
     if reaction.GetNumReactantTemplates() + reaction.GetNumProductTemplates() == 0:
-        raise InvalidSmilesError(f"a reaction with no reactants and no products: {smiles!r}")
+        raise InvalidSmilesError(f"a reaction with no reactants and no products: {echo(smiles)!r}")
     return reaction

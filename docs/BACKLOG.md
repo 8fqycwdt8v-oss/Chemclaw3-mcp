@@ -44,16 +44,6 @@ decision leaves a record behind and the row goes.
 
 ## 1 — The no-egress posture, where it stops
 
-- [ ] **A cheaper stable scheme for `servers/kinetics`' semi-batch integrator would lift a refusal
-  the admission ceiling cannot.**
-  `D-2026-09-26-a-cost-the-caller-sets-is-a-cost-that-needs-a-ceiling` bounded what a stiff dose
-  costs the pod (`servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`); it did not change
-  that a dose whose stability floor passes `MAX_INTEGRATION_STEPS` is refused as too fast for this
-  integrator (`servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py::_steps_for_stability`).
-  An exponentially-fitted step for the linear part, or an implicit method, would answer those doses
-  and cut the per-call cost with them. Do not close this by lowering the step ceiling: that reinstates a safety number that is
-  wrong in the reassuring direction.
-
 - [ ] **A dynamic import whose name is computed from a *value* is outside the static scan, and
   always will be.** `importlib.import_module("gr" + "pc")` is folded to `grpc` since 2026-09-12, but
   `import_module(name)` cannot be resolved by any static reader, and `servers/rxnpredict` loads its
@@ -65,22 +55,6 @@ decision leaves a record behind and the row goes.
   names it may load, which *is* statically checkable.
   **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors`.
-
-- [ ] **A path cited in a module docstring is checked by nothing, and the check that would do it is
-  not the one `CLAUDE.md` gets.** Until 2026-09-12
-  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py` named the pyexec sandbox at a path
-  missing its `src/<package>` segment, in two places, both copied rather than opened — the failure
-  `test_every_path_claude_md_cites_under_a_real_directory_resolves` exists to stop, one document
-  over. Extending that test to first-party source prose was measured the same day and is **not** a
-  one-liner: of 86 rooted path tokens under `packages/*/src` and `servers/*/src`, 52 do not resolve
-  from the repository root — a server's docstrings name their own tests directory *server-relatively*
-  and the fleet writes a sibling server's engine module with the `src/<package>` segment elided. So
-  the row is the resolution rule rather than the glob: decide whether a citation inside a server's
-  own source resolves against that server first, and whether the elided form is spelled out or
-  taught to the checker.
-  **Anchors:** `tests/test_fleet.py::test_every_path_claude_md_cites_under_a_real_directory_resolves`,
-  `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
-  `servers/calc/src/chemclaw_mcp_calc/engine/admission.py`.
 
 ## 2 — The resource-bound ratchet, where it stops
 
@@ -101,63 +75,6 @@ decision leaves a record behind and the row goes.
   false when it was written: the other two were parsed as setting nothing at all.)
   **Anchors:** `tests/test_fleet.py::_bound_offences`, `servers/calc/deploy/deployment.yaml`,
   `packages/mcp_server_kit/src/mcp_server_kit/app.py`.
-
-- [ ] **The derived bound set covers scalar settings fields only, and one real container-typed field
-  is env-settable.** `_numeric_settings_fields` takes `int`/`float` annotations (and `X | None`),
-  deliberately: a number inside `dict[str, float]` is not a bound the ratchet could compare. But
-  `servers/rxnpredict`'s `model_trust_priors` is a `dict[str, float]` with a `mode="before"`
-  validator that parses a JSON string, under `env_prefix="CHEMCLAW_RXNPREDICT_"` — so it is
-  environment-settable, and measured on 2026-09-12 the env value **replaces the whole table** rather
-  than merging into it: `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS='{"parrot": 9.9}'` leaves the
-  aggregator with one prior and every other predictor unweighted. That is a scientific behaviour
-  change by environment variable, which is the class the calc constants are protected as. Decide
-  whether the ratchet covers container annotations whose validator accepts a string, or whether this
-  field is argued in the register instead.
-  **Anchors:** `tests/test_fleet.py::_numeric_settings_fields`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
-
-- [ ] **The bound derivation reads two configuration mechanisms and three shapes past them are
-  invisible, one of them under the wrong name.** Measured 2026-09-12 against synthetic modules, none
-  of these three exists in `src/` today and each would enter it as an ordinary line: a settings
-  class inheriting from a `BaseSettings` *subclass* (the `env_prefix` is on the parent), a nested
-  `BaseModel` reached through `env_nested_delimiter`, and `Field(4, validation_alias="REAL_NAME")` —
-  the last being worse than absent, because the bound is found under the prefixed field name rather
-  than under the alias the environment actually reads, so the ratchet would refuse the wrong
-  variable and wave the real one through. `os.getenv` and `Annotated[int, …]` were in this list and
-  are closed. So was **a read through a helper**, differently and only for one helper:
-  `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put eleven bounds behind
-  `mcp_server_kit.limits.env_bound`, and `_BOUND_HELPERS` follows that one *by name* — measured, the
-  derived set fell 45→34 without it. A helper the scan does not know by name is still invisible,
-  and that is the part left standing here. Decide whether following an alias and a parent class is
-  worth the AST, or whether the honest arrangement is the floor that already exists
-  (`_BOUND_ANCHORS`) plus this row.
-  **Anchors:** `tests/test_fleet.py::numeric_env_bounds`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`.
-
-- [ ] **A refusal's echo is bounded in four engines by a constant each of them declares, and most
-  refusals do not go through it.** `chem`, `calc`, `safety` and `rxnpredict` each define their own
-  120-character `_MAX_ECHO_CHARS` and an `_echo`/`truncate_echo` beside it, and the reason is
-  recorded at `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`: `connector_app` passes a
-  `ValueError` to the model verbatim, so an unbounded echo is unbounded caller-influenced text in
-  the context window of the turn that asked. Most refusal sites interpolate the structure directly
-  instead. Re-derive the list with
-
-  ```sh
-  grep -rnE '\{[a-z_]*\.?smiles[^}]*!r\}' servers/*/src packages/*/src | grep -v '_echo\|truncate'
-  ```
-
-  The ceiling above them is not the echo bound but `mcp_server_kit.limits.MAX_SMILES_CHARS`, which
-  is 4000 — so these are bounded, at roughly thirty times the bound the four engines chose.
-  Measured 2026-09-12: `predict_pka` on `"C" * 1500` (inside both structural bounds, so it is an
-  ordinary accepted call) raises a **1,587-character** refusal where `_echo` would have produced
-  about two hundred. Two things to decide together, and that is why they are queued here as a pair: whether the
-  truncation belongs in `mcp_server_kit.limits` beside the bounds it pairs with rather than
-  copied per server, and whether a ratchet can tell a caller-derived echo from a corpus-derived
-  one — `servers/chem/src/chemclaw_mcp_chem/engine/reagents.py` quotes a *table's* own SMILES in a
-  duplicate-name error, which is not caller-influenced and needs no bound.
-  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/limits.py`,
-  `servers/calc/src/chemclaw_mcp_calc/engine/chem.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/preprocessing.py`.
 
 - [ ] **A relaxation at `servers/calc`'s atom ceiling spends its budget instead of converging, and
   the refusal one atom above it promises the opposite.** `Structure`'s refusal says a system past
@@ -198,44 +115,21 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
-- [ ] **`servers/chem`'s enumerators carry per-call input bounds and no admission ceiling, while
-  `render_structure` — the cheapest tool beside them — is the one that is gated.** Every dear
-  enumerator is now priced before it runs: `enumerate_microstates` by
-  `MAX_SITE_ATOM_PRODUCT`, `enumerate_tautomer_set` and `describe_topology`'s tautomer count by
-  `MAX_TAUTOMER_HEAVY_ATOMS`, and `enumerate_degradant_candidates` by
-  `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`, the last two set at about a second of worst-case work after
-  polyglycine at 1,985 heavy atoms measured 11.6 s and 22.5 s unbounded. `enumerate_stereoisomer_set` stays
-  unbounded and measured cheap (18 ms on a 996-atom PAMAM G4, 367 ms on a 1,900-atom alkane). What
-  a per-call bound does not answer is how many run at once. `render_structure` is gated at
-  `DEFAULT_MAX_CONCURRENT_RENDERS` = 8 while its worst *legal* depiction is 4.6 ms, and the
-  enumerators, admitted up to about a second each and `enumerate_microstates` up to 1,986 ms
-  (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`), have no ceiling.
-  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` measured that eight concurrent
-  worst-legal `enumerate_microstates` calls left the event loop 384 ms late against a 3 s
-  `readinessProbe.timeoutSeconds`. Nobody has measured whether the tautomer and degradant paths
-  hold the interpreter that way at their new worst-legal inputs, and that is the first thing this
-  row owes. The decision after it: either the band shares one ceiling derived from the probe, or
-  `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob `POD_THREAD_POOL_WIDTH` already makes unreachable.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
-  `servers/chem/tests/test_microstate_bound.py`, `servers/chem/tests/test_enumeration_cost_bounds.py`,
-  `servers/chem/tests/test_depiction_bound.py`.
-
-- [ ] **Constant SMARTS tables in this fleet are compiled on every call, and "that was
-  the last one" has now been said twice.** `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work`
-  cached `servers/chem`'s `_ACIDIC`/`_BASIC` and its docstring claimed to be the third and last
-  such fix; grepping `MolFromSmarts`/`ReactionFromSmarts` across `servers/*/src` in the same
-  session found four more, each over a table that is a module constant. One is closed:
-  `species.py::_TRANSFORMS` is now compiled once by `_compiled_transforms`, because pricing a
-  degradant call needs its templates before any product is built. Still open are
-  `chem`'s `sites.py::_matched_atoms` and `torsions.py::_matched_pairs`, and `rxnlabel`'s
-  `agents.py` and `species.py`. **None of them is measured**, which is the whole row: the one that
-  was measured turned out to be worth 1.4x on a real molecule and nothing at all on a large one, so
-  the useful output here is a number each and then a `@cache` or a note saying they are not
-  worth one — not four caches applied on the strength of the pattern looking familiar.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/sites.py::_matched_atoms`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/torsions.py::_matched_pairs`,
-  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/agents.py`,
-  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/species.py`.
+- [ ] **`enumerate_stereoisomers` is the one species tool left with no input bound.**
+  `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated the band on one
+  ceiling and measured what a ceiling cannot fix: four tools past a 30 s `request_timeout` or a 3 s
+  `readinessProbe.timeoutSeconds` in one call on legal 1,990-atom shapes. Three are now priced
+  before they run — `enumerate_tautomers` and `describe_topology`'s tautomer count by
+  `MAX_TAUTOMER_HEAVY_ATOMS`, `enumerate_degradants` by `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`
+  (`servers/chem/tests/test_enumeration_cost_bounds.py`); re-measured on the merged engine, the
+  1,991-atom polyester and polyol refuse or answer in under 0.3 s. `enumerate_stereoisomers` does
+  not: the 1,991-atom polyol still costs **5.4 s** of CPU (10,226 ms in the ADR's image) before its
+  output cap refuses it, the defect `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` fixed
+  for `enumerate_protonation_states`. It needs a bound priced on what drives its cost — the
+  unassigned stereocentre count, not the atom count (a 996-atom PAMAM G4 is 23 ms) — measured first.
+  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py`,
+  `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
+  `servers/chem/tests/test_enumeration_cost_bounds.py`.
 
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**
@@ -273,22 +167,28 @@ decision leaves a record behind and the row goes.
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
   `servers/rxnpredict/tests/test_dataset.py`.
 
-## 3 — Readiness, where it still stops
+- [ ] **`kinetics` refuses a semi-batch dose past `MAX_INTEGRATION_STEPS`, and a stable scheme
+  would answer it.** `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` gave
+  `semibatch_accumulation_profile` an admission ceiling rather than a new integrator, because a
+  gate was owed either way. What the ceiling does not change is the refusal: a dose whose
+  stiffness bound times its dose time needs more than 200,000 explicit RK4 steps is turned away
+  as mixing-limited. An implicit or exponentially-fitted step for the linear part would be stable at any step and would
+  answer it, at the price of re-measuring the convergence order the current scheme was proven at.
+  Decide whether the stiff band is worth that, and do not close it by lowering the step ceiling.
+  **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py`,
+  `servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`.
 
-- [ ] **An `ImportError` from a broken shared library reads as an extra nobody installed, and only
-  one of the two servers catches it.** `degradation.classify` sorts every `ImportError` as
-  `not_installed`, which is right for `ModuleNotFoundError` and wrong for
-  `ImportError("libcudart.so.11: cannot open shared object file")` — a distribution that *is*
-  installed and cannot load, which is a broken image. Distinguishing them from the exception is not
-  possible and matching the message is the control `degradation.py`'s docstring refuses to write, so
-  the only reliable test is the one `rxnlabel` already makes: `version._installed(distribution)`
-  against `available()`, where metadata saying the distribution is present and the predicate saying
-  it did not build is the fault. `rxnpredict` has no equivalent — a predictor class carries
-  `extras_install`, which is an extra's name rather than a distribution's, so the cross-check needs a
-  third declaration per predictor and that is the thing to design rather than bolt on.
-  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/degradation.py::classify`,
-  `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/readiness.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/base.py`.
+- [ ] **`rxnpredict`'s per-class prior override still replaces the vendored corpus whole.**
+  `D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it` made
+  `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS` an adjustment; `model_trust_priors_by_class` is left as
+  its documented override, so one class named in `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS_BY_CLASS`
+  drops every other class's calibrated weights from `data/trust_priors.json`, and nothing validates
+  its class labels against `classifier.ALL_CLASSES` or its predictor ids. Decide whether it merges
+  onto the corpus like the global table, or stays a whole replacement that at least validates.
+  **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
+  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py`.
+
+## 3 — Readiness, where it still stops
 
 - [ ] **A degraded `rxnlabel` row is stamped as though it were healthy, because the stamp Chemclaw3
   writes is a deployment-level string read once per drain pass.** **Other repository:** `Chemclaw3`.

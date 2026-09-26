@@ -37,8 +37,9 @@ is then killed for it, so queueing does not delay a run, it destroys one. A prom
 the family `connector_app` passes to the caller verbatim, so the model is told the pod is full
 rather than being told its program was too slow.
 
-The shape is copied from `servers/chem/engine/admission.py` rather than imported — one server never
-imports another, and the wording has to name this server's own tool and knob.
+The shape is copied from `servers/chem/src/chemclaw_mcp_chem/engine/admission.py` rather than
+imported — one server never imports another, and the wording has to name this server's own tool and
+knob.
 """
 
 from __future__ import annotations

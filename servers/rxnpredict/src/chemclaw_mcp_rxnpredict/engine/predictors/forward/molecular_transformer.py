@@ -18,7 +18,9 @@ import os
 import re
 from typing import Any
 
-from ...preprocessing import canonical_smiles, truncate_echo
+from mcp_server_kit.limits import echo
+
+from ...preprocessing import canonical_smiles
 from ...schemas import ForwardPrediction
 from .. import mark_unavailable, register_forward
 from ..base import BaseForwardPredictor
@@ -71,7 +73,7 @@ def _tokenize_smiles(smiles: str) -> str:
         raise ValueError(
             "the Molecular Transformer tokenizer does not cover every character of this "
             "structure, so tokenising it would silently drop part of the molecule and the "
-            f"prediction would be about a different one: {truncate_echo(smiles)!r}"
+            f"prediction would be about a different one: {echo(smiles)!r}"
         )
     return " ".join(tokens)
 
@@ -175,4 +177,5 @@ except Exception as exc:  # noqa: BLE001
         "and download MIT_mixed_augm_model_average.pt to "
         f"$MOLECULAR_TRANSFORMER_MODEL_PATH): {exc!r}",
         exc=exc,
+        optional=("onmt",),
     )

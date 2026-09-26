@@ -85,21 +85,6 @@ _QUOTED_AS_UNREACHABLE = frozenset({"68083a4", "39ba4a7", "362e764", "1161473"})
 _RETIRED_BY_A_SQUASH = {
     "eb58363": "D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance",
 }
-# A test a merged record cites by name whose behaviour was reversed rather than renamed, mapped to
-# `(the record that supersedes the decision, the test asserting the reversal)`. A reversed behaviour
-# is a reversed decision, and a merged record is never edited — so the row is valid only while the
-# superseding record exists, which is what stops this map becoming the place a decision is quietly
-# undone. The first row is `D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about`
-# citing the test that held a bare `tools:` key coerced to `[]`; Chemclaw3's own model refuses that
-# key (`list_type`), so the stand-in now refuses it too. Renaming the new test back would give it a
-# name asserting the opposite of its body. Checked in every direction below: a retired name defined
-# again, a replacement not defined, or a superseding record that is not on disk, fails.
-_RETIRED_CITATIONS = {
-    "test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error": (
-        "D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses",
-        "test_an_endpoint_the_consumer_cannot_load_is_refused_here",
-    ),
-}
 
 
 def _records(directory: Path = _DECISIONS) -> list[Path]:
@@ -441,15 +426,65 @@ def test_every_record_says_what_keeps_it_true() -> None:
         )
 
 
+# A test a merged record cites, whose *claim* a later decision made false, and what replaced it.
+#
+# The allowlist `test_every_test_a_record_names_still_exists` anticipated: a merged record is never
+# edited, so a citation to a test that was renamed for a reason other than tidiness either keeps a
+# name that now lies or dangles. The first entry is the case: `servers/chem` gated one tool, a test
+# asserted exactly that, and
+# `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated six — so "only
+# the depiction is gated" could not survive as a name. Each entry names the test that now holds the
+# ground, which `test_every_retired_citation_names_a_live_replacement` resolves, and the record
+# that retired it.
+_RETIRED_CITATIONS: dict[str, tuple[str, str]] = {
+    "test_only_the_depiction_is_gated_and_it_is_gated": (
+        "servers/chem/tests/test_admission.py::test_the_band_is_gated_and_nothing_else_is",
+        "D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe",
+    ),
+    # `D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about` cited the test that
+    # held a bare `tools:` key coerced to `[]`; Chemclaw3's own model refuses that key
+    # (`list_type`), so the stand-in now refuses it too, and keeping the old name would assert the
+    # opposite of the body.
+    "test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error": (
+        "packages/mcp_server_kit/tests/test_manifest_model.py::"
+        "test_an_endpoint_the_consumer_cannot_load_is_refused_here",
+        "D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses",
+    ),
+}
+
+
+def test_every_retired_citation_names_a_live_replacement() -> None:
+    """The allowlist above, held in both directions so it cannot become a place names go to die.
+
+    A retired name must really be gone (or it is not retired), still be cited by some record (or
+    the entry is dead weight), and name a replacement that resolves in the file it names, retired
+    by a record that exists.
+    """
+    defined = _test_definitions()
+    cited = {
+        name
+        for path in _records()
+        for name in _TEST_CITATION.findall(path.read_text(encoding="utf-8"))
+    }
+    records = {path.stem for path in _records()}
+    for retired, (replacement, record) in _RETIRED_CITATIONS.items():
+        assert retired not in defined, f"{retired} still exists, so it is not retired"
+        assert retired in cited, f"no record cites {retired}; delete its allowlist entry"
+        where, _, name = replacement.partition("::")
+        assert any(fnmatch.fnmatch(real, where) for real in defined.get(name, set())), (
+            f"{retired}'s replacement {replacement} does not resolve"
+        )
+        assert record in records, f"{retired} names {record}, which is not a record"
+
+
 def test_every_test_a_record_names_still_exists() -> None:
     """A guard a record cites by name resolves against the suite.
 
     A citation that resolves to nothing looks identical to one that resolves: it reads as
     authoritative while pointing at nothing, which is `CLAUDE.md`'s deleted port table one level in.
     A merged record is never edited, so when a rename genuinely retires a citation the fix is to
-    rename the test back — or, if its behaviour was reversed and it is really gone, a row in
-    `_RETIRED_CITATIONS` naming the record that supersedes the decision and the test that replaced
-    it, both of which must resolve.
+    rename the test back — or, if it is really gone, an entry in `_RETIRED_CITATIONS` saying what
+    replaced it and which record retired it.
 
     **This half reads the function name only.** The file half is
     `test_a_record_names_the_file_its_test_lives_in`, which is a separate test because the two fail
@@ -464,17 +499,6 @@ def test_every_test_a_record_names_still_exists() -> None:
             if name not in defined and name not in _RETIRED_CITATIONS
         }
     )
-    for retired, (superseding_record, replacement) in _RETIRED_CITATIONS.items():
-        assert retired not in defined, (
-            f"{retired} is defined again, so its `_RETIRED_CITATIONS` row is stale: delete it."
-        )
-        assert replacement in defined, (
-            f"{retired} is retired in favour of {replacement}, which resolves to nothing."
-        )
-        assert (_DECISIONS / f"{superseding_record}.md").is_file(), (
-            f"{retired} is retired by {superseding_record}, which is not a record on disk: a "
-            "reversed behaviour is a reversed decision and needs the record that supersedes it."
-        )
     assert not dangling, (
         f"test name(s) cited in docs/decisions/ that resolve to nothing: {dangling}. Rename the "
         "test back, or correct the citation before the record is merged."

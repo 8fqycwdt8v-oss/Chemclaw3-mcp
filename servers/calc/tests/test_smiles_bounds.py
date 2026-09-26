@@ -26,7 +26,8 @@ import sys
 
 import pytest
 from chemclaw_mcp_calc.engine.chem import InvalidSmilesError, require_canonical_smiles
-from mcp_server_kit.limits import MAX_MOLECULE_ATOMS, MAX_SMILES_CHARS
+from chemclaw_mcp_calc.engine.pka import PkaInput, predict_pka
+from mcp_server_kit.limits import MAX_ECHO_CHARS, MAX_MOLECULE_ATOMS, MAX_SMILES_CHARS
 
 # Long enough to overflow the canonicaliser's C stack on the measured build (20,000 atoms
 # segfaults; 8,000 is an OOM kill), and far past `MAX_SMILES_CHARS` either way.
@@ -133,3 +134,18 @@ def test_a_long_unparseable_smiles_is_echoed_bounded() -> None:
     message = str(raised.value)
     assert len(message) < 300, f"the refusal is {len(message)} characters"
     assert "3000" in message, "the length must survive the truncation"
+
+
+def test_a_refusal_of_an_accepted_structure_is_echoed_bounded_too() -> None:
+    """The case the parse-failure bound above never covered, measured before it was fixed.
+
+    `"C" * 1500` parses, is inside `MAX_SMILES_CHARS` and `MAX_MOLECULE_ATOMS`, and has neither an
+    acidic site nor a basic nitrogen — so `predict_pka` refuses it on chemistry, not on shape. That
+    refusal interpolated `job.smiles` raw: 1,587 characters where the parse failure gives ~200.
+    """
+    payload = "C" * 1500
+    with pytest.raises(ValueError) as raised:
+        predict_pka(PkaInput(smiles=payload))
+    message = str(raised.value)
+    assert "C" * (MAX_ECHO_CHARS + 1) not in message, f"the refusal is {len(message)} characters"
+    assert "1500 chars" in message, "the length must survive the truncation"

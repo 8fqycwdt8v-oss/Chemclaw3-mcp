@@ -13,9 +13,11 @@ import resource
 import pytest
 from mcp_server_kit import limits
 from mcp_server_kit.limits import (
+    MAX_ECHO_CHARS,
     MAX_MOLECULE_ATOMS,
     MAX_SMILES_CHARS,
     atom_count_error,
+    echo,
     smiles_length_error,
 )
 from mcp_server_kit.testing import reimported
@@ -504,3 +506,31 @@ def test_both_readers_refuse_a_low_value_in_the_same_words() -> None:
         assert f"unset {name} for the default of {default}" in message
         assert "has no 'off' setting" in message
     assert "500.0" not in count, "a count must not read as a float"
+
+
+def test_an_echo_within_the_bound_is_the_text_itself() -> None:
+    """A short structure is quoted whole, so the refusal still names what the chemist typed."""
+    assert echo("CCO junk") == "CCO junk"
+    exact = "C" * MAX_ECHO_CHARS
+    assert echo(exact) == exact
+
+
+def test_an_echo_past_the_bound_keeps_the_head_and_names_the_length() -> None:
+    """The measured case: `"C" * 1500` is inside both structural bounds and was quoted whole."""
+    payload = "C" * 1500
+    shown = echo(payload)
+    assert "C" * (MAX_ECHO_CHARS + 1) not in shown
+    assert shown.startswith("C" * MAX_ECHO_CHARS)
+    assert shown.endswith("(1500 chars)")
+    assert len(shown) <= MAX_ECHO_CHARS + len("… (1500 chars)")
+
+
+def test_the_echo_bound_is_the_environment_s(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One config-driven constant, read at import like every other bound in this module."""
+    monkeypatch.setenv("MCP_MAX_ECHO_CHARS", "8")
+    rebuilt = reimported(limits)
+    assert rebuilt.MAX_ECHO_CHARS == 8
+    assert rebuilt.echo("ABCDEFGHIJ") == "ABCDEFGH… (10 chars)"
+    monkeypatch.setenv("MCP_MAX_ECHO_CHARS", "0")
+    with pytest.raises(ValueError, match="MCP_MAX_ECHO_CHARS"):
+        reimported(limits)

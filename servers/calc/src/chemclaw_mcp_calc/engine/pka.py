@@ -55,6 +55,7 @@ from __future__ import annotations
 
 from typing import Literal, NamedTuple
 
+from mcp_server_kit.limits import echo
 from pydantic import BaseModel, Field
 from rdkit import Chem
 
@@ -368,7 +369,7 @@ def _predict_base_pka(
     """
     forms = _protonated_forms(base, sites)
     if not forms:
-        raise CalculationDomainError(f"no protonatable nitrogen in {smiles!r}")
+        raise CalculationDomainError(f"no protonatable nitrogen in {echo(smiles)!r}")
     energy_base = _relaxed_energy(base, charge=0)
     # The conjugate acid is the *most stable* protomer, so it is the lowest energy that defines the
     # equilibrium — and its site decides which calibration applies.
@@ -378,7 +379,7 @@ def _predict_base_pka(
     )
     if not aryl:
         raise CalculationDomainError(
-            f"{smiles!r} protonates on an aliphatic nitrogen, which this predictor does "
+            f"{echo(smiles)!r} protonates on an aliphatic nitrogen, which this predictor does "
             "not cover: over 13 reference amines its computed basicity correlates with "
             "the measured pKa at Spearman -0.17 (no ranking ability). The cause is the "
             "implicit solvent — aqueous aliphatic amine basicity is set by the ammonium "
@@ -457,7 +458,8 @@ def predict_pka(job: PkaInput) -> PkaResult:
     formal_charge = Chem.GetFormalCharge(neutral)
     if formal_charge != 0:
         raise CalculationDomainError(
-            f"pKa requires a neutral acid; {job.smiles!r} has net formal charge {formal_charge}"
+            f"pKa requires a neutral acid; {echo(job.smiles)!r} has net formal charge "
+            f"{formal_charge}"
         )
     require_closed_shell(neutral, 0)
     anions = _conjugate_bases(neutral)
@@ -471,7 +473,7 @@ def predict_pka(job: PkaInput) -> PkaResult:
     if basic:
         return _predict_base_pka(canonical, neutral, basic, version, key)
     raise CalculationDomainError(
-        f"no acidic O-H/S-H site and no basic nitrogen in {job.smiles!r}: nothing to "
+        f"no acidic O-H/S-H site and no basic nitrogen in {echo(job.smiles)!r}: nothing to "
         "protonate or deprotonate"
     )
 

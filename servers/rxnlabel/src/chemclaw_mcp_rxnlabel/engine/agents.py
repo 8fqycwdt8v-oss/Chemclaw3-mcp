@@ -22,6 +22,7 @@ does not. The same argument applies to a diimine.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 
 from rdkit import Chem
 
@@ -241,7 +242,26 @@ def _matches_any(smiles: str, patterns: tuple[str, ...]) -> bool:
     if mol is None:
         return False
     for pattern in patterns:
-        query = Chem.MolFromSmarts(pattern)
+        query = _compiled(pattern)
         if query is not None and mol.HasSubstructMatch(query):
             return True
     return False
+
+
+@cache
+def _compiled(pattern: str) -> Chem.Mol | None:
+    """One SMARTS from `_LIGAND_SMARTS` or `_BASE_SMARTS`, compiled once per process.
+
+    **Measured before it was cached.** Both tables were re-parsed on every `is_ligand` and
+    `is_base`, which run per species across a whole labelling batch. In the `cc3-gate` Linux image
+    (RDKit 2026.03.5), compiling the twenty patterns cost 0.45-1.3 ms against 0.47-2.3 ms for the
+    two calls themselves — **73-95%** of the call was parsing constants, the largest share of any
+    table `docs/BACKLOG.md` named. In one process, cache cleared per call against warm: 611 → 140
+    µs on ethanol, which walks both tables whole (**4.4x**), and 564 → 217 µs on P(tBu)3 (**2.6x**).
+
+    Cached on the string, following `chem`'s `species.py::_compiled`, so a pattern that will not
+    compile is still a per-pattern skip rather than an import-time failure; `@cache` is unbounded
+    and bounded in fact, the keys being the literals in the two tables. None of the twenty is a
+    recursive SMARTS, so a shared query here is read-only under matching.
+    """
+    return Chem.MolFromSmarts(pattern)

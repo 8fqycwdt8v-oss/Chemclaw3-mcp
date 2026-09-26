@@ -2277,7 +2277,7 @@ _BOUND_ANCHORS = frozenset(
     {
         "MCP_MAX_SMILES_CHARS",
         "MCP_MAX_MOLECULE_ATOMS",
-        "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS",
+        "CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS",
         "CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS",
         "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS",
         "CHEMCLAW_PROPS_MAX_TB_RATIO",
@@ -2452,8 +2452,240 @@ def _numeric_environ_reads(tree: ast.Module) -> dict[str, int]:
     return found
 
 
-def _numeric_settings_fields(tree: ast.Module) -> dict[str, int]:
-    """Every numeric `pydantic-settings` field this module declares, as its environment name.
+class _Declared(NamedTuple):
+    """A class statement and the module label it was declared in."""
+
+    label: str
+    node: ast.ClassDef
+
+
+class _SettingsBound(NamedTuple):
+    """One environment name a `pydantic-settings` class reads a number from."""
+
+    where: str
+    case_sensitive: bool
+
+
+# The `SettingsConfigDict` keys the derivation reads, and what each is when a class sets none.
+_SETTINGS_CONFIG_DEFAULTS: dict[str, object] = {
+    "env_prefix": "",
+    "env_nested_delimiter": None,
+    "case_sensitive": False,
+}
+
+
+def _base_name(base: ast.expr) -> str:
+    """The bare name a base-class expression names — `BaseSettings`, `x.BaseSettings`, `G[T]`."""
+    if isinstance(base, ast.Subscript):
+        return _base_name(base.value)
+    if isinstance(base, ast.Attribute):
+        return base.attr
+    return base.id if isinstance(base, ast.Name) else ""
+
+
+def _resolve_class(name: str, label: str, index: dict[str, list[_Declared]]) -> _Declared | None:
+    """The first-party class `name` means from inside `label`, or `None` for a library class.
+
+    The same module first, then the whole tree when exactly one class has the name. **Two
+    candidates is refused rather than guessed**: the parent is where an inherited `env_prefix` comes
+    from, so picking the wrong one would derive a set of names nothing reads — the defect the
+    `validation_alias` arm below exists for, reached a different way.
+    """
+    candidates = index.get(name, [])
+    local = [declared for declared in candidates if declared.label == label]
+    if len(local) == 1:
+        return local[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    assert not candidates, (
+        f"{label}: `{name}` is declared in {sorted(d.label for d in candidates)}, and the bound "
+        "derivation cannot tell which one a class there inherits from. Rename one of them, or "
+        "teach `_resolve_class` the import"
+    )
+    return None
+
+
+def _lineage(declared: _Declared, index: dict[str, list[_Declared]]) -> list[_Declared]:
+    """`declared` and every first-party ancestor, root first, so a subclass's statements win."""
+    ordered: list[_Declared] = []
+    for base in declared.node.bases:
+        parent = _resolve_class(_base_name(base), declared.label, index)
+        if parent is not None and parent.node is not declared.node:
+            ordered.extend(a for a in _lineage(parent, index) if a not in ordered)
+    ordered.append(declared)
+    return ordered
+
+
+def _derives_from(lineage: list[_Declared], root: str) -> bool:
+    """Whether any class in `lineage` names the library class `root` among its bases."""
+    return any(_base_name(base) == root for declared in lineage for base in declared.node.bases)
+
+
+def _settings_config(lineage: list[_Declared]) -> dict[str, object]:
+    """The `SettingsConfigDict` keys this derivation reads, merged down `lineage` as pydantic does.
+
+    **Inherited, which is the first of the three shapes the derivation used to miss.** pydantic
+    merges `model_config` along the class hierarchy, so a subclass of a settings class that sets
+    `env_prefix` reads its fields under the *parent's* prefix — and this read only the class's own
+    body, so it derived `MAX_RUNS` where the environment reads `CHEMCLAW_MAX_RUNS`. A value it
+    cannot read as a literal is refused rather than skipped, because a skipped prefix is a wrong
+    name rather than a missing one.
+    """
+    config = dict(_SETTINGS_CONFIG_DEFAULTS)
+    for declared in lineage:
+        for statement in declared.node.body:
+            if not (
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "model_config"
+                    for target in statement.targets
+                )
+            ):
+                continue
+            value = statement.value
+            pairs: list[tuple[str | None, ast.expr]]
+            if isinstance(value, ast.Call):
+                pairs = [(keyword.arg, keyword.value) for keyword in value.keywords]
+            elif isinstance(value, ast.Dict):
+                pairs = [
+                    (
+                        key.value
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                        else None,
+                        item,
+                    )
+                    for key, item in zip(value.keys, value.values, strict=True)
+                    if key is not None
+                ]
+            else:
+                raise AssertionError(
+                    f"{declared.label}:{statement.lineno}: `model_config` is not a literal "
+                    "`SettingsConfigDict(...)` or dict, so the bound derivation cannot read its "
+                    "env_prefix"
+                )
+            for key, item in pairs:
+                assert key is not None, (
+                    f"{declared.label}:{statement.lineno}: `model_config` unpacks a mapping, so "
+                    "the bound derivation cannot read its env_prefix"
+                )
+                if key not in config:
+                    continue
+                assert isinstance(item, ast.Constant), (
+                    f"{declared.label}:{statement.lineno}: `{key}` is not a literal, so the bound "
+                    "derivation cannot say which environment names this class reads"
+                )
+                config[key] = item.value
+    return config
+
+
+def _field_aliases(value: ast.expr | None, where: str) -> list[str] | None:
+    """The environment names a `Field(validation_alias=...)` or `Field(alias=...)` reads, if any.
+
+    **The third shape, and the one worse than absent**: pydantic-settings reads an aliased field
+    from the alias *as written*, with no `env_prefix` — so deriving the prefixed field name
+    reported a variable nothing reads, and a ratchet built on it would refuse the harmless name and
+    wave the real one through. `AliasChoices` of literals is every one of them; an `AliasPath` or a
+    computed alias is refused, because this cannot name what it reads.
+    """
+    if not (isinstance(value, ast.Call) and _called_name(value) == "Field"):
+        return None
+    chosen = {keyword.arg: keyword.value for keyword in value.keywords}
+    alias = chosen.get("validation_alias", chosen.get("alias"))
+    if alias is None:
+        return None
+    if isinstance(alias, ast.Constant) and isinstance(alias.value, str):
+        return [alias.value]
+    if (
+        isinstance(alias, ast.Call)
+        and _called_name(alias) == "AliasChoices"
+        and alias.args
+        and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in alias.args)
+    ):
+        return [str(a.value) for a in alias.args if isinstance(a, ast.Constant)]
+    raise AssertionError(
+        f"{where}: a field alias the bound derivation cannot read as a literal name "
+        f"({ast.unparse(alias)}); it would derive a variable nothing reads"
+    )
+
+
+def _annotation_class(annotation: ast.expr) -> str | None:
+    """The one class an annotation is about — `M`, `M | None`, `Annotated[M, ...]` — or None."""
+    if isinstance(annotation, ast.Name):
+        return annotation.id
+    if isinstance(annotation, ast.Attribute):
+        return annotation.attr
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        names = {
+            n
+            for n in (_annotation_class(annotation.left), _annotation_class(annotation.right))
+            if n
+        }
+        names.discard("None")
+        return names.pop() if len(names) == 1 else None
+    if isinstance(annotation, ast.Subscript) and _annotation_name(annotation.value) == "Annotated":
+        inner = annotation.slice
+        first = inner.elts[0] if isinstance(inner, ast.Tuple) and inner.elts else inner
+        return _annotation_class(first)
+    return None
+
+
+def _model_numbers(
+    declared: _Declared,
+    index: dict[str, list[_Declared]],
+    prefix: str,
+    delimiter: str | None,
+    seen: frozenset[int] = frozenset(),
+) -> dict[str, str]:
+    """Every environment name a settings class — or a model nested in one — reads a number from.
+
+    **Nested models are the second shape.** A field annotated with a first-party `BaseModel` is one
+    environment variable carrying JSON — which moves every number inside it — and, where the
+    settings class sets `env_nested_delimiter`, one variable per nested field as well. Both are
+    derived; before this the field was skipped as "not numeric" and its numbers were invisible.
+    """
+    fields: dict[str, tuple[str, ast.AnnAssign]] = {}
+    for ancestor in _lineage(declared, index):
+        for statement in ancestor.node.body:
+            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                head = statement.annotation
+                if isinstance(head, ast.Subscript):
+                    head = head.value
+                if _annotation_name(head) == "ClassVar":
+                    continue
+                fields[statement.target.id] = (ancestor.label, statement)
+    found: dict[str, str] = {}
+    for field, (label, statement) in fields.items():
+        where = f"{label}:{statement.lineno}"
+        aliases = _field_aliases(statement.value, where)
+        names = aliases if aliases is not None else [prefix + field]
+        if _annotation_is_numeric(statement.annotation):
+            found.update(dict.fromkeys(names, where))
+            continue
+        nested_name = _annotation_class(statement.annotation)
+        nested = _resolve_class(nested_name, label, index) if nested_name else None
+        if nested is None or id(nested.node) in seen:
+            continue
+        lineage = _lineage(nested, index)
+        if not _derives_from(lineage, "BaseModel") or _derives_from(lineage, "BaseSettings"):
+            continue
+        inner_seen = seen | {id(nested.node)}
+        whole = _model_numbers(nested, index, "", None, inner_seen)
+        if not whole:
+            continue
+        found.update(dict.fromkeys(names, where))
+        if delimiter:
+            assert aliases is None, (
+                f"{where}: an aliased nested model under `env_nested_delimiter`, which the bound "
+                "derivation does not follow"
+            )
+            found.update(
+                _model_numbers(nested, index, f"{prefix}{field}{delimiter}", delimiter, inner_seen)
+            )
+    return found
+
+
+def _numeric_settings_fields(modules: dict[str, ast.Module]) -> dict[str, _SettingsBound]:
+    """Every numeric `pydantic-settings` field across `modules`, as its environment name.
 
     `servers/calc` and `servers/rxnpredict` configure themselves through `BaseSettings` with an
     `env_prefix`, so their bounds never appear in an `os.environ` call at all — the variable name is
@@ -2462,41 +2694,39 @@ def _numeric_settings_fields(tree: ast.Module) -> dict[str, int]:
     admission ceiling — see `test_the_bound_scan_sees_both_configuration_mechanisms`, which holds
     the figure rather than this sentence.
 
-    Scalar `int`/`float` annotations only, `X | None` included. A number inside a container
-    annotation (`dict[str, float]`) is not a bound anything here could compare, and is left out
-    rather than half-covered.
+    **Read across the whole tree rather than one module**, because two of the shapes it follows
+    are about a class declared somewhere else: a parent that carries the `env_prefix`, and a model
+    nested in a field. `test_the_derivation_follows_inheritance_nesting_and_aliases` drives each.
+
+    Scalar `int`/`float` annotations only, `X | None` included, plus nested first-party models. A
+    number inside a container annotation (`dict[str, float]`) is not a bound anything here could
+    compare, and is left out rather than half-covered.
+
+    Args:
+        modules: Parsed source, keyed by the path an offence should name.
     """
-    found: dict[str, int] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        bases = {
-            base.id if isinstance(base, ast.Name) else getattr(base, "attr", "")
-            for base in node.bases
-        }
-        if "BaseSettings" not in bases:
-            continue
-        prefix = ""
-        for statement in node.body:
-            if not (
-                isinstance(statement, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "model_config"
-                    for target in statement.targets
-                )
-                and isinstance(statement.value, ast.Call)
-            ):
+    index: dict[str, list[_Declared]] = {}
+    for label, tree in modules.items():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                index.setdefault(node.name, []).append(_Declared(label, node))
+    found: dict[str, _SettingsBound] = {}
+    for declarations in index.values():
+        for declared in declarations:
+            lineage = _lineage(declared, index)
+            if not _derives_from(lineage, "BaseSettings"):
                 continue
-            for keyword in statement.value.keywords:
-                if keyword.arg == "env_prefix" and isinstance(keyword.value, ast.Constant):
-                    prefix = str(keyword.value.value)
-        for statement in node.body:
-            if (
-                isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and _annotation_is_numeric(statement.annotation)
-            ):
-                found[(prefix + statement.target.id).upper()] = statement.lineno
+            config = _settings_config(lineage)
+            sensitive = bool(config["case_sensitive"])
+            delimiter = config["env_nested_delimiter"]
+            numbers = _model_numbers(
+                declared,
+                index,
+                str(config["env_prefix"]),
+                str(delimiter) if delimiter else None,
+            )
+            for name, where in numbers.items():
+                found[name if sensitive else name.upper()] = _SettingsBound(where, sensitive)
     return found
 
 
@@ -2551,33 +2781,33 @@ def numeric_env_bounds() -> dict[str, Bound]:
     table that published two taken ports as free. `Bound.where` is `path:line`, which is what makes
     an offence actionable without a second lookup.
 
-    **What the derivation does not see, stated rather than implied** — each measured on 2026-09-12
-    against a synthetic module, and none of these shapes exists in `src/` today:
+    **What the derivation does not see, stated rather than implied**: a read through a helper this
+    scan does not know by name (`_env_int("X", 4)`), which would need the helper's body followed.
+    `_BOUND_HELPERS` names the one exception and argues for it — that list is a coupling
+    `_BOUND_ANCHORS` is what catches, not a general capability.
 
-    - a read through a helper this scan does not know by name (`_env_int("X", 4)`), which would
-      need the helper's body followed. `_BOUND_HELPERS` names the one exception and argues for it —
-      that list is a coupling `_BOUND_ANCHORS` is what catches, not a general capability;
-    - a settings class inheriting from a `BaseSettings` *subclass*, where `env_prefix` is on the
-      parent;
-    - a nested `BaseModel` reached through `env_nested_delimiter`;
-    - `Field(4, validation_alias="REAL_NAME")`, which is found under the *prefixed field name*
-      rather than under the alias the environment actually uses — the one shape that is worse than
-      absent, because it reports a name nothing reads.
-
-    A row in `docs/BACKLOG.md` carries the decision about whether to follow them; `_BOUND_ANCHORS`
-    is the floor that keeps the derivation from quietly returning less than it did.
+    Three more shapes used to be listed here, each measured on 2026-09-12 against a synthetic
+    module: a settings class inheriting its `env_prefix` from a parent, a nested `BaseModel`, and
+    `Field(validation_alias=...)`, the last found under a name nothing reads. `_numeric_settings_
+    fields` now follows all three, and where one of them is written in a form it cannot read — an
+    `AliasPath`, a computed prefix, a parent it cannot resolve — it **fails the suite** rather than
+    returning a wrong name. `test_the_derivation_follows_inheritance_nesting_and_aliases` holds
+    each shape, and `_BOUND_ANCHORS` is the floor that keeps the derivation from quietly returning
+    less than it did.
     """
     found: dict[str, Bound] = {}
     roots = sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src"))
     assert roots, "no first-party source roots found; has the layout changed?"
+    modules: dict[str, ast.Module] = {}
     for root in roots:
         for source in sorted(root.rglob("*.py")):
             tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-            where = source.relative_to(ROOT)
+            where = str(source.relative_to(ROOT))
+            modules[where] = tree
             for name, line in _numeric_environ_reads(tree).items():
                 found[name] = Bound(f"{where}:{line}", case_sensitive=True)
-            for name, line in _numeric_settings_fields(tree).items():
-                found[name] = Bound(f"{where}:{line}", case_sensitive=False)
+    for name, field in _numeric_settings_fields(modules).items():
+        found[name] = Bound(field.where, case_sensitive=field.case_sensitive)
     return found
 
 
@@ -2651,8 +2881,8 @@ def test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment
     The set is derived from the code that reads it (`numeric_env_bounds`), not listed here, so a
     bound added next year in one of the shapes that derivation parses is covered the day it is
     written — which is the honest form of a sentence that used to promise *any* new bound.
-    `numeric_env_bounds` names the four shapes it does not follow; a row in `docs/BACKLOG.md`
-    carries the decision.
+    `numeric_env_bounds` names the one shape it does not follow — a helper it does not know by
+    name — and fails rather than guesses on the forms of the others it cannot read.
 
     What this cannot see is stated rather than implied: a pod `env:` a cluster operator adds outside
     these files, and an `envFrom` whose values live in a ConfigMap this repository does not hold —
@@ -2686,23 +2916,25 @@ def test_the_bound_check_bites() -> None:
     to for two of seven servers, and this check reads the same files through the same parser.
     """
     bounds = {
-        "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS": Bound("servers/chem/x.py:1", case_sensitive=False)
+        "CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS": Bound(
+            "servers/chem/x.py:1", case_sensitive=False
+        )
     }
     assert _bound_offences(
         "servers/chem/deploy/deployment.yaml",
         "spec:\n  containers:\n    - name: server\n      env:\n"
-        "        - name: CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS\n          value: '64'\n",
+        "        - name: CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS\n          value: '64'\n",
         bounds,
     ) == [
-        "servers/chem/deploy/deployment.yaml: sets CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS='64', "
+        "servers/chem/deploy/deployment.yaml: sets CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS='64', "
         "which servers/chem/x.py:1 reads as a number"
     ]
     assert _bound_offences(
         "servers/chem/Containerfile",
-        "ENV PYTHONUNBUFFERED=1 \\\n    CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS=64\n",
+        "ENV PYTHONUNBUFFERED=1 \\\n    CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS=64\n",
         bounds,
     ) == [
-        "servers/chem/Containerfile: sets CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS='64', "
+        "servers/chem/Containerfile: sets CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS='64', "
         "which servers/chem/x.py:1 reads as a number"
     ]
     # A setting nothing reads as a number is not this check's business.
@@ -2889,7 +3121,7 @@ def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
         '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_")\n'
         "    max_runs: Annotated[int, Field(ge=1)] = 4\n"
     )
-    assert set(_numeric_settings_fields(annotated)) == {"CHEMCLAW_MAX_RUNS"}
+    assert set(_numeric_settings_fields({"m.py": annotated})) == {"CHEMCLAW_MAX_RUNS"}
 
     # And the boundary, asserted so the docstring naming it cannot quietly become false. It moved
     # on 2026-09-16 and is now a *pair*: one named helper is followed, every other is not.
@@ -2899,6 +3131,129 @@ def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
     assert set(_numeric_environ_reads(known)) == {"MCP_MAX_THINGS"}
     helper = ast.parse('LIMIT = _env_int("MCP_MAX_THINGS", 4)\n')
     assert _numeric_environ_reads(helper) == {}
+
+
+def _settings_names(**sources: str) -> dict[str, _SettingsBound]:
+    """`_numeric_settings_fields` over synthetic modules, keyed by the label each is given."""
+    return _numeric_settings_fields(
+        {f"{label}.py": ast.parse(source) for label, source in sources.items()}
+    )
+
+
+def test_the_derivation_follows_inheritance_nesting_and_aliases() -> None:
+    """The three shapes `numeric_env_bounds` used to name as invisible, each one driven.
+
+    Measured on 2026-09-12 against synthetic modules and queued since: none exists in `src/` today,
+    and each would have entered it as an ordinary line. Every assertion below was red against the
+    one-module derivation this replaced — the parent's prefix was lost, the nested model's numbers
+    were skipped as "not numeric", and the aliased field came back under `CHEMCLAW_MAX_RUNS`, a
+    name pydantic-settings does not read at all.
+    """
+    # 1. The `env_prefix` is on the parent, and the parent is in another module.
+    inherited = _settings_names(
+        base=(
+            "class ChemclawSettings(BaseSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_")\n'
+            "    max_batch: int = 8\n"
+        ),
+        child="class RunSettings(ChemclawSettings):\n    max_runs: int = 4\n",
+    )
+    assert set(inherited) == {"CHEMCLAW_MAX_BATCH", "CHEMCLAW_MAX_RUNS"}
+    assert inherited["CHEMCLAW_MAX_RUNS"].where == "child.py:2"
+    overridden = _settings_names(
+        base=(
+            "class ChemclawSettings(BaseSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_")\n'
+        ),
+        child=(
+            "class RunSettings(ChemclawSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_RUN_")\n'
+            "    max_runs: int = 4\n"
+        ),
+    )
+    assert set(overridden) == {"CHEMCLAW_RUN_MAX_RUNS"}
+
+    # 2. A nested model: one JSON variable always, one per field under a delimiter.
+    nested = (
+        "class Limits(BaseModel):\n    max_runs: int = 4\n    label: str = 'x'\n\n"
+        "class S(BaseSettings):\n"
+        '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_"{delimiter})\n'
+        "    limits: Limits = Limits()\n"
+    )
+    assert set(_settings_names(m=nested.format(delimiter=""))) == {"CHEMCLAW_LIMITS"}
+    assert set(_settings_names(m=nested.format(delimiter=', env_nested_delimiter="__"'))) == {
+        "CHEMCLAW_LIMITS",
+        "CHEMCLAW_LIMITS__MAX_RUNS",
+    }
+    wordy = "class Tags(BaseModel):\n    label: str = 'x'\n\nclass S(BaseSettings):\n    t: Tags\n"
+    assert _settings_names(m=wordy) == {}, "a nested model with no number in it is not a bound"
+
+    # 3. An alias is the name the environment reads, prefix or no prefix.
+    aliased = _settings_names(
+        m=(
+            "class S(BaseSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="CHEMCLAW_")\n'
+            '    max_runs: int = Field(4, validation_alias="REAL_NAME")\n'
+            '    max_jobs: int = Field(2, validation_alias=AliasChoices("JOBS", "OLD_JOBS"))\n'
+        )
+    )
+    assert set(aliased) == {"REAL_NAME", "JOBS", "OLD_JOBS"}
+    assert "CHEMCLAW_MAX_RUNS" not in aliased, (
+        "the one shape worse than absent: a name nothing reads"
+    )
+
+    # `case_sensitive=True` is read too, since it changes which spelling a shipped file must match.
+    sensitive = _settings_names(
+        m=(
+            "class S(BaseSettings):\n"
+            '    model_config = SettingsConfigDict(env_prefix="chemclaw_", case_sensitive=True)\n'
+            "    max_runs: int = 4\n"
+        )
+    )
+    assert sensitive == {"chemclaw_max_runs": _SettingsBound("m.py:3", True)}
+
+
+@pytest.mark.parametrize(
+    ("label", "source"),
+    [
+        (
+            "a path alias",
+            "class S(BaseSettings):\n"
+            '    n: int = Field(4, validation_alias=AliasPath("limits", 0))\n',
+        ),
+        (
+            "a computed prefix",
+            "class S(BaseSettings):\n    model_config = SettingsConfigDict(env_prefix=PREFIX)\n",
+        ),
+        (
+            "an unpacked config",
+            "class S(BaseSettings):\n    model_config = SettingsConfigDict(**SHARED)\n",
+        ),
+    ],
+)
+def test_a_settings_shape_the_derivation_cannot_read_fails_loudly(label: str, source: str) -> None:
+    """Where a shape cannot be followed cleanly, the suite goes red rather than deriving a guess.
+
+    Each of these would otherwise produce a *wrong* name — the field's own, where the environment
+    reads something else — and a wrong name is the failure the alias arm above is about.
+    """
+    with pytest.raises(AssertionError, match="bound derivation"):
+        _settings_names(m=source)
+
+
+def test_an_ambiguous_parent_fails_loudly_rather_than_picking_a_prefix() -> None:
+    """Two first-party classes with the parent's name, and the child in neither module."""
+    parent = (
+        "class Base(BaseSettings):\n"
+        '    model_config = SettingsConfigDict(env_prefix="{}")\n'
+        "    n: int = 1\n"
+    )
+    with pytest.raises(AssertionError, match="cannot tell which one"):
+        _settings_names(
+            a=parent.format("CHEMCLAW_A_"),
+            b=parent.format("CHEMCLAW_B_"),
+            c="class Child(Base):\n    m: int = 2\n",
+        )
 
 
 def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
@@ -3323,6 +3678,111 @@ def test_every_path_claude_md_cites_under_a_real_directory_resolves() -> None:
     )
 
 
+_CITED_PATH = re.compile(r"`([A-Za-z0-9_./*-]+\.(?:py|yaml|yml|json|md|toml))`")
+
+# Citations in first-party source that are paths in **another repository**, which no check here can
+# open — the same treatment `docs/BACKLOG.md` gives a row marked `**Other repository:**`. Keyed by
+# the citing file and the token, and held in both directions below: an entry whose citation has
+# gone, or that has started resolving here, is stale.
+_OTHER_REPOSITORY_CITATIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Chemclaw3's side of the at-capacity marker contract; "here ... there" in the sentence.
+        ("servers/calc/src/chemclaw_mcp_calc/engine/admission.py", "tests/test_calc_remote.py"),
+        # Chemclaw3's template that passes `smiles` into `rank_species`, quoted for its comment.
+        (
+            "servers/chem/src/chemclaw_mcp_chem/engine/species.py",
+            "data/templates/tautomer-resolution.yaml",
+        ),
+    }
+)
+
+
+def _citation_bases(source: Path) -> list[Path]:
+    """Where a path cited in `source` may be rooted, most local first.
+
+    The component (`servers/<name>` or `packages/<name>`) first, because a server's docstrings name
+    their own `tests/` and `deploy/` server-relatively; then the package directory, for `engine/…`;
+    then its `src/`, for `mcp_server_kit/egress.py`; then the repository root.
+    """
+    parts = source.relative_to(ROOT).parts
+    component = ROOT / parts[0] / parts[1]
+    return [component, component / "src" / parts[3], component / "src", ROOT]
+
+
+def source_path_citations() -> list[tuple[str, int, str, bool]]:
+    """Every rooted path cited in first-party source: `(file, line, token, resolves)`.
+
+    A token counts as a path when its first segment is an entry of one of `_citation_bases`, the
+    same self-rooting trick as the `CLAUDE.md` check above, and it resolves when it exists under at
+    least one base where that first segment does. Single-segment tokens are left out: a bare
+    `tools.py` or `connector.yaml` is shorthand for "the one in this server", and is self-rooting.
+    """
+    found: list[tuple[str, int, str, bool]] = []
+    roots = sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src"))
+    for root in roots:
+        for source in sorted(root.rglob("*.py")):
+            text = source.read_text(encoding="utf-8")
+            bases = _citation_bases(source)
+            for match in _CITED_PATH.finditer(text):
+                token = match.group(1)
+                if "/" not in token:
+                    continue
+                first = token.split("/")[0]
+                rooted = [base for base in bases if (base / first).exists()]
+                if not rooted:
+                    continue
+                resolves = any(
+                    sorted(base.glob(token)) if "*" in token else (base / token).exists()
+                    for base in rooted
+                )
+                line = text.count("\n", 0, match.start()) + 1
+                found.append((str(source.relative_to(ROOT)), line, token, resolves))
+    return found
+
+
+def test_every_path_first_party_source_cites_resolves() -> None:
+    """A docstring or comment that names a file must name one that exists.
+
+    The `CLAUDE.md` check above did not reach source prose, and the prose had drifted:
+    `mcp_server_kit/no_egress.py` had named the pyexec sandbox without its `src/<package>` segment,
+    and when this test was first run it found thirteen more broken citations and two that belong to
+    Chemclaw3. Six wrote a sibling server's `engine/admission.py` with that segment elided;
+    `egress.py` sent a reader to `servers/calc/tools.py` and `servers/rxnpredict/tools.py`, neither
+    of which has ever existed; `metrics.py` cited a `tests/test_metrics.py` the kit does not have;
+    and `species.py` wrote calc's `engine/pka.py` so that it read as chem's own, which has none.
+
+    **The resolution rule is the part that needed deciding**, because the backlog row that queued
+    this measured a naive extension failing 52 of 86 citations that were fine: a citation resolves
+    server-relative first (`_citation_bases`), and the elided `servers/<name>/engine/…` form is
+    *spelled out* in the source rather than taught to the checker — a reader following the path by
+    hand meets the same missing segment the checker would have had to invent.
+    """
+    citations = source_path_citations()
+    assert len(citations) > 50, "the citation scan found almost nothing; has the style changed?"
+    broken = [
+        f"{file}:{line}: {token}"
+        for file, line, token, resolves in citations
+        if not resolves and (file, token) not in _OTHER_REPOSITORY_CITATIONS
+    ]
+    assert not broken, (
+        "first-party source cites paths that do not resolve (server-relative, package-relative or "
+        "from the repository root). Spell the full path out; if it is another repository's, add "
+        "it to `_OTHER_REPOSITORY_CITATIONS`:\n  " + "\n  ".join(broken)
+    )
+
+
+def test_every_other_repository_citation_is_still_cited_and_still_not_here() -> None:
+    """The allowlist is held to the tree, so it cannot grow into a place broken paths hide."""
+    unresolved = {
+        (file, token) for file, _, token, resolves in source_path_citations() if not resolves
+    }
+    stale = sorted(_OTHER_REPOSITORY_CITATIONS - unresolved)
+    assert not stale, (
+        f"these entries no longer match an unresolved citation — removed, or now resolving here: "
+        f"{stale}"
+    )
+
+
 # The modules whose *product* is an assertion failure. Both are imported by tests and by nothing
 # else — `testing.assert_manifest_matches`, `testing.assert_bearer_is_enforced` and
 # `no_egress.assert_no_egress_sources` exist to fail a test — so an `assert` there is the verdict
@@ -3528,6 +3988,124 @@ def test_the_assert_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
     )
     offences = _assert_offences([tmp_path])
     assert offences == [f"{(tmp_path / 'flagged.py').as_posix()}:2"], offences
+
+
+# Refusal echo. A caller-derived string interpolated into a raised exception reaches the model
+# verbatim (a `ValueError` passes `connector_app` unchanged) and so is bounded by
+# `mcp_server_kit.limits.echo`, the one config-driven bound — see that function's docstring and
+# `D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it`.
+#
+# **What counts as caller-derived is a vocabulary, and the vocabulary is the rule's reach.** The
+# fleet's refusals name what they quote after what it is: a structure is `smiles` or `*_smiles` (or
+# `job.smiles`, `result.smiles`), a formula `formula`, a solvent `solvent`, a looked-up name `name`.
+# A value spelled any other way walks past this scan, and so does a message built into a variable
+# before the `raise` — both are written down here rather than implied.
+_ECHO_VOCABULARY = frozenset({"formula", "name", "solvent"})
+
+# Interpolations the scan finds that quote something the caller did not supply, keyed by
+# `path::expression` rather than by line so an edit above one does not orphan its argument.
+ECHO_IS_NOT_CALLER_DERIVED = {
+    # `connector_app`'s own name for the server, written by the server's author in `app.py`.
+    "packages/mcp_server_kit/src/mcp_server_kit/app.py::name",
+    # The reagent tables' own canonical SMILES, quoted in a duplicate-name error raised while the
+    # vendored corpus is indexed — no request is in flight and no caller wrote the string.
+    "servers/chem/src/chemclaw_mcp_chem/engine/reagents.py::smiles",
+    "servers/safety/src/chemclaw_mcp_safety/engine/reagents.py::smiles",
+    # An environment variable's own name, in the import-time refusal `env_bound` raises; the value
+    # beside it is the operator's and is already quoted as a number or as `raw!r` of an env value.
+    "packages/mcp_server_kit/src/mcp_server_kit/limits.py::name",
+    # A parameter's name as the calling code spells it (`name="mass_kg"`), never the caller's text.
+    "servers/thermalsafety/src/chemclaw_mcp_thermalsafety/engine/runaway.py::name",
+    # Self-tests over the server's own published fixtures, run at readiness with no request.
+    "servers/thermalsafety/src/chemclaw_mcp_thermalsafety/engine/selftest.py::formula",
+    "servers/unitops/src/chemclaw_mcp_unitops/engine/selftest.py::name",
+}
+
+
+def _echo_subject(node: ast.expr) -> bool:
+    """Whether an interpolated expression names caller-derived text by this fleet's vocabulary."""
+    if isinstance(node, ast.Name):
+        return "smiles" in node.id or node.id in _ECHO_VOCABULARY
+    if isinstance(node, ast.Attribute):
+        return "smiles" in node.attr
+    return False
+
+
+def _unbounded_echoes(roots: list[Path], relative_to: Path | None = None) -> list[str]:
+    """Every `path::expression` a raised f-string interpolates without going through `echo`.
+
+    Only a bare name or attribute is an offence: `echo(smiles)` is a call and passes, and so is
+    `len(smiles)` — a length quotes no text.
+    """
+    offences: list[str] = []
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text("utf-8"))
+            shown = (path.relative_to(relative_to) if relative_to else path).as_posix()
+            for raised in ast.walk(tree):
+                if not isinstance(raised, ast.Raise) or raised.exc is None:
+                    continue
+                for node in ast.walk(raised.exc):
+                    if isinstance(node, ast.FormattedValue) and _echo_subject(node.value):
+                        offences.append(f"{shown}::{ast.unparse(node.value)}")
+    return sorted(set(offences))
+
+
+def test_no_refusal_interpolates_caller_text_past_the_echo_bound() -> None:
+    """A refusal quotes what it was given through `mcp_server_kit.limits.echo`, or not at all.
+
+    **Four servers carried their own copy of the bound and most refusals bypassed all four.**
+    `chem`, `calc`, `safety` and `rxnpredict` each declared a 120-character `_MAX_ECHO_CHARS`, and
+    `grep -rnE '\\{[a-z_]*\\.?smiles[^}]*!r\\}'` over the serving trees still found fifteen raises
+    interpolating the structure raw: measured, `predict_pka` on `"C" * 1500` — an ordinary accepted
+    call, inside both structural bounds — raised a 1,587-character refusal. Read as a tree rather
+    than grepped, so `{smiles}` without `!r` and a multi-line f-string are the same offence.
+    """
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    assert len(roots) > 1, "no source trees found; has the workspace layout changed?"
+    offences = [
+        one for one in _unbounded_echoes(roots, ROOT) if one not in ECHO_IS_NOT_CALLER_DERIVED
+    ]
+    assert not offences, (
+        "these raises quote caller-derived text without `mcp_server_kit.limits.echo`:\n  "
+        + "\n  ".join(offences)
+        + "\nWrap it as `{echo(value)!r}`, or add it to ECHO_IS_NOT_CALLER_DERIVED with the "
+        "argument for why no caller wrote it."
+    )
+
+
+def test_the_argued_echoes_are_still_there() -> None:
+    """An exemption that no longer names an interpolation is an argument about nothing."""
+    roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
+    stale = sorted(ECHO_IS_NOT_CALLER_DERIVED - set(_unbounded_echoes(roots, ROOT)))
+    assert not stale, f"ECHO_IS_NOT_CALLER_DERIVED names interpolations that are gone: {stale}"
+
+
+def test_the_echo_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
+    """The bite test: a raw interpolation in a raise is flagged; a bounded or unraised one is not.
+
+    Without it the check above is green over a tree with no raises at all.
+    """
+    (tmp_path / "flagged.py").write_text(
+        "def f(smiles: str, job) -> None:\n"
+        "    raise ValueError(\n"
+        "        f'bad: {smiles}'\n"
+        "        f' and {job.smiles!r}'\n"
+        "    )\n",
+        "utf-8",
+    )
+    (tmp_path / "clean.py").write_text(
+        "from mcp_server_kit.limits import echo\n"
+        "def f(smiles: str) -> str:\n"
+        "    if not smiles:\n"
+        "        raise ValueError(f'bad: {echo(smiles)!r} of {len(smiles)} characters')\n"
+        "    return f'{smiles} is fine'\n",
+        "utf-8",
+    )
+    assert _unbounded_echoes([tmp_path], tmp_path) == [
+        "flagged.py::job.smiles",
+        "flagged.py::smiles",
+    ]
 
 
 # Marks that make a `test_*` body no evidence about anything: it may not run, or it may run and be
@@ -3817,8 +4395,8 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 # in a README that no test reads.
 #
 # It cannot be derived from the manifest. `D-2026-09-12-one-tool-call-is-not-one-thread` measured
-# that the `read_only`/`state_changing` split does not carry, because `render_structure` is
-# `read_only`, correctly, and is the one `chem` tool that needs a ceiling. So the rule is the same
+# that the `read_only`/`state_changing` split does not carry, because every `chem` tool is
+# `read_only`, correctly, and six of them share a ceiling. So the rule is the same
 # shape as `BLIND_ANSWER_IS_ARGUED`: present, or argued here, and checked in both directions.
 #
 # Each argument below is a measurement rather than an adjective, because "it is fast" is what every

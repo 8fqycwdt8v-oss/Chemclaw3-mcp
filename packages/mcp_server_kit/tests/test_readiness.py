@@ -201,7 +201,7 @@ async def test_a_recovered_server_is_readied_once_the_memo_expires(
 _VERDICT_CASES: dict[str, BaseException] = {
     degradation.CAUSE_EGRESS_REFUSED: EgressForbidden(f"{REASON} (huggingface.co)"),
     degradation.CAUSE_RESOURCE_EXHAUSTED: MemoryError(REASON),
-    degradation.CAUSE_NOT_INSTALLED: ImportError(REASON),
+    degradation.CAUSE_NOT_INSTALLED: ModuleNotFoundError(REASON, name="an_optional_extra"),
     degradation.CAUSE_FAILED: RuntimeError(REASON),
 }
 

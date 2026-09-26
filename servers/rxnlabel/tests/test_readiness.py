@@ -51,12 +51,14 @@ def fresh_verdict(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr("mcp_server_kit.app.READINESS_FAILURE_TTL_SECONDS", 0.0)
     saved = (mapping._MAPPER, mapping._TRIED, mapping._FAILURE, mapping._ATTEMPTED_AT)
     saved_namer = (naming._NAMER, naming._TRIED, naming._FAILURE, naming._ATTEMPTED_AT)
+    saved_detail = (mapping._FAILURE_DETAIL, naming._FAILURE_DETAIL)
     readiness.forget_verdict()
     try:
         yield
     finally:
         mapping._MAPPER, mapping._TRIED, mapping._FAILURE, mapping._ATTEMPTED_AT = saved
         naming._NAMER, naming._TRIED, naming._FAILURE, naming._ATTEMPTED_AT = saved_namer
+        mapping._FAILURE_DETAIL, naming._FAILURE_DETAIL = saved_detail
         readiness.forget_verdict()
 
 
@@ -237,7 +239,9 @@ def test_the_namer_does_not_retry_a_permanent_cause_or_an_absent_extra() -> None
 
     def not_installed() -> object:
         absent.append("tried")
-        raise ImportError("No module named 'rxn_insight.reaction'")
+        # What `from rxn_insight.reaction import ...` raises with the package absent: the import
+        # system names the top-level package, not the submodule.
+        raise ModuleNotFoundError("No module named 'rxn_insight'", name="rxn_insight")
 
     with _rxn_insight(not_installed, retry_seconds=0.0):
         for _ in range(3):
@@ -263,6 +267,70 @@ def test_the_namer_does_not_retry_a_permanent_cause_or_an_absent_extra() -> None
             f"a transient cause was re-attempted {len(busy)} times inside a 3600 s window, so the "
             "retry is a per-call loop rather than a bounded one"
         )
+
+
+async def test_a_namer_whose_shared_library_will_not_load_is_broken_not_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row this closes: a missing `.so` read as an extra nobody installed.
+
+    `naming._namer` caught `ImportError` as "rxn-insight is not installed" and left `_FAILURE` at
+    `None`, so an installed namer whose compiled half would not load was recorded as a deployment's
+    choice — the one verdict that keeps a broken image in service — and `/healthz` could say only
+    "cause not recorded". A plain `ImportError` is the interpreter saying the module was *found*
+    and would not load, so it is `failed`, and the refusal carries the library's own sentence.
+    """
+
+    def broken() -> object:
+        raise ImportError("libcudart.so.11.0: cannot open shared object file: No such file")
+
+    monkeypatch.setattr(
+        version, "_installed", lambda name: "0.1.3" if name == "rxn-insight" else "absent"
+    )
+    with _rxn_insight(broken, retry_seconds=3600.0):
+        assert naming._namer() is None
+        assert naming._FAILURE == degradation.CAUSE_FAILED, (
+            "an installed distribution that will not load was sorted as not installed"
+        )
+        assert naming._FAILURE in degradation.PERMANENT_CAUSES
+        response = await _probe()
+    assert response.status_code == 503
+    reason = response.json()["reason"]
+    assert "rxn-insight" in reason and "libcudart.so.11.0" in reason, (
+        f"the refusal must say what broke, not only which bucket it fell in: {reason}"
+    )
+
+
+def test_a_mapper_missing_a_dependency_of_its_own_is_broken_not_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other shape: `ModuleNotFoundError`, but for a module that is not the extra.
+
+    An installed `rxnmapper` whose `transformers` is gone raises exactly the type an absent extra
+    does. Only the *name* separates them, and only this module knows which name it tolerates.
+    """
+
+    def build() -> object:
+        raise ModuleNotFoundError("No module named 'transformers'", name="transformers")
+
+    monkeypatch.setattr(mapping, "CONSTRUCTION_RETRY_SECONDS", 3600.0)
+    _install_rxnmapper(monkeypatch, build)
+    assert mapping._mapper() is None
+    assert mapping._FAILURE == degradation.CAUSE_FAILED
+    assert "transformers" in (mapping.construction_detail() or "")
+
+
+def test_a_mapper_that_is_not_installed_is_still_absent_rather_than_broken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The counterfactual that keeps a developer checkout ready: the extra's own name is absent."""
+    # `None` in `sys.modules` is the import system's own spelling of "not importable": it raises
+    # the `ModuleNotFoundError` an absent distribution does, with `name` set, whatever is on disk.
+    monkeypatch.setitem(sys.modules, "rxnmapper", None)
+    mapping._MAPPER, mapping._TRIED, mapping._FAILURE = None, False, None
+    assert mapping._mapper() is None
+    assert mapping._FAILURE is None, "an extra nobody installed is not a failure"
+    assert mapping.construction_detail() is None
 
 
 @contextmanager
@@ -297,6 +365,7 @@ def _rxn_insight(reaction_class: Callable[[], object], *, retry_seconds: float) 
     sys.modules["rxn_insight.reaction"] = reaction
     naming.CONSTRUCTION_RETRY_SECONDS = retry_seconds
     naming._NAMER, naming._TRIED, naming._FAILURE, naming._ATTEMPTED_AT = None, False, None, None
+    naming._FAILURE_DETAIL = None
     try:
         yield
     finally:
@@ -319,6 +388,7 @@ def _install_rxnmapper(monkeypatch: pytest.MonkeyPatch, build: object) -> None:
     mapping._MAPPER = None
     mapping._TRIED = False
     mapping._FAILURE = None
+    mapping._FAILURE_DETAIL = None
     mapping._ATTEMPTED_AT = None
 
 

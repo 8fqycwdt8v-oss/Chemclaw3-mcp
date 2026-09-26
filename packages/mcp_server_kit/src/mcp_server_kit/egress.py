@@ -223,11 +223,12 @@ def _check(address: Any) -> None:
     **The refusal is logged and counted before it is raised, and that is not decoration.**
     `EgressForbidden` derives from `OSError` — the family libraries retry on — so what a refusal
     looks like from outside depends entirely on who catches it, and three real catchers in this
-    fleet turn it into something else: `servers/calc/tools.py` catches `(OSError, SubprocessError)`
-    and reports "could not resolve the xTB backend", `servers/rxnpredict/tools.py` gathers with
-    `return_exceptions=True` so a transformer reaching for weights degrades the ensemble silently,
-    and any library's own `except OSError: retry` swallows it whole. The fleet's central security
-    promise was therefore enforceable and invisible: nothing recorded that it had ever fired.
+    fleet turn it into something else: `servers/calc/src/chemclaw_mcp_calc/tools.py` catches
+    `(OSError, SubprocessError)` and reports "could not resolve the xTB backend",
+    `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/tools.py` gathers with `return_exceptions=True`
+    so a transformer reaching for weights degrades the ensemble silently, and any library's own
+    `except OSError: retry` swallows it whole. The fleet's central security promise was therefore
+    enforceable and invisible: nothing recorded that it had ever fired.
 
     **The host and nothing else.** A destination is enough to name the library that tried to call
     out, which is what a stack trace ending here is for; the payload of a refused `sendto` is not

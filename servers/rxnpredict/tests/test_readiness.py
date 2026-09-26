@@ -180,6 +180,99 @@ def test_every_predictor_module_hands_its_exception_to_the_registry() -> None:
     )
 
 
+def test_an_installed_extra_that_will_not_load_is_broken_rather_than_absent(
+    clean_registry: None,
+) -> None:
+    """The row this closes, on the registry: every `ImportError` was "an extra nobody installed".
+
+    Every predictor guard hands its exception to `mark_unavailable`, which classified any
+    `ImportError` as `not_installed` — so a torch whose CUDA library would not load, or a
+    `transformers` missing one of its own dependencies, read as a deployment's choice and could
+    never make `verify_predictors` refuse. The guard now declares which modules it imports, and
+    only a `ModuleNotFoundError` naming one of *those* is absent.
+    """
+    registry._UNAVAILABLE.clear()
+    registry.mark_unavailable(
+        "parrot",
+        "conditions",
+        "missing optional deps",
+        exc=ImportError("libcudart.so.11.0: cannot open shared object file"),
+        optional=("torch",),
+    )
+    registry.mark_unavailable(
+        "reaction_t5_v2",
+        "forward",
+        "missing optional deps",
+        exc=ModuleNotFoundError("No module named 'tokenizers'", name="tokenizers"),
+        optional=("transformers",),
+    )
+    registry.mark_unavailable(
+        "megan",
+        "forward",
+        "missing optional deps",
+        exc=ModuleNotFoundError("No module named 'dgl'", name="dgl"),
+        optional=("dgl", "torch"),
+    )
+    causes = {name: entry.cause for name, entry in registry.unavailable().items()}
+    assert causes == {
+        "parrot": degradation.CAUSE_FAILED,
+        "reaction_t5_v2": degradation.CAUSE_FAILED,
+        "megan": degradation.CAUSE_NOT_INSTALLED,
+    }
+    with pytest.raises(RuntimeError) as unready:
+        verify_predictors()
+    assert "reaction_t5_v2 (failed)" in str(unready.value), (
+        "the broken predictor was the last of its kind, and the refusal must name it"
+    )
+
+
+def test_every_guard_declares_the_modules_it_imports() -> None:
+    """`optional=` is a second statement of the guard's own `import` lines, so it is held to them.
+
+    Read as source for the reason the test above this file's AST tests gives: the guards run at
+    import, in a checkout where every one fails the same way. A declaration naming a module the
+    guard does not import would sort that guard's real absence as a broken image; one missing a
+    module it does import would sort a broken image as absent.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(registry.__file__).parent
+    wrong: list[str] = []
+    for module in sorted(root.glob("*/*.py")):
+        if module.name == "__init__.py":
+            continue
+        for node in ast.parse(module.read_text()).body:
+            if not isinstance(node, ast.Try):
+                continue
+            imported = {
+                alias.name.partition(".")[0]
+                for statement in node.body
+                if isinstance(statement, ast.Import)
+                for alias in statement.names
+            }
+            for handler in node.handlers:
+                for call in ast.walk(handler):
+                    if not (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "mark_unavailable"
+                    ):
+                        continue
+                    declared = next((k.value for k in call.keywords if k.arg == "optional"), None)
+                    names = (
+                        {e.value for e in declared.elts if isinstance(e, ast.Constant)}
+                        if isinstance(declared, ast.Tuple)
+                        else None
+                    )
+                    if names != imported:
+                        wrong.append(f"{module.parent.name}/{module.name}: {names} != {imported}")
+    assert not wrong, (
+        "a predictor guard's `optional=` must name exactly the top-level modules its `try` "
+        f"imports: {wrong}"
+    )
+
+
 def test_the_module_map_agrees_with_the_registry_names() -> None:
     """`_FORWARD_MODULES`/`_CONDITIONS_MODULES` name each predictor, and must name it correctly.
 

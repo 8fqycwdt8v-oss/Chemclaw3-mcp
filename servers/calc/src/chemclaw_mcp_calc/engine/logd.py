@@ -37,6 +37,7 @@ from __future__ import annotations
 import math
 from importlib.metadata import version
 
+from mcp_server_kit.limits import echo
 from pydantic import BaseModel, Field
 from rdkit import Chem
 from rdkit.Chem import Crippen
@@ -117,7 +118,7 @@ def _require_a_single_equilibrium(result: PkaResult, ph: float, ionised_ratio: f
     sites = ionisable_sites(result.smiles)
     if sites.acidic and sites.basic:
         raise CalculationDomainError(
-            f"{result.smiles!r} is amphoteric ({sites.acidic} acidic O-H/S-H site(s) and "
+            f"{echo(result.smiles)!r} is amphoteric ({sites.acidic} acidic O-H/S-H site(s) and "
             f"{sites.basic} basic nitrogen(s)): its acid and base equilibria run in opposite "
             "directions and this calculator applies one ionisation term to the single pKa "
             "the pKa predictor reports — which for an amphoteric molecule is always the acid site, "
@@ -129,7 +130,8 @@ def _require_a_single_equilibrium(result: PkaResult, ph: float, ionised_ratio: f
     if ionised_fraction > settings.logd_negligible_ionised_fraction:
         kind = "acidic O-H/S-H site(s)" if result.site == "acid" else "basic nitrogen(s)"
         raise CalculationDomainError(
-            f"{result.smiles!r} has {sites.total} {kind} and is {ionised_fraction:.0%} ionised at "
+            f"{echo(result.smiles)!r} has {sites.total} {kind} and is {ionised_fraction:.0%} "
+            "ionised at "
             f"pH {ph:g} on the one site the pKa predictor reports (pKa {result.pka:.2f}). A second "
             "ionisation of comparable size is unaccounted for and its pKa is not computable from "
             "this predictor, so the single-equilibrium logD would be wrong by an unbounded "
@@ -161,7 +163,7 @@ def predict_logd(job: LogdInput) -> LogdResult:
     # already had.
     mol = Chem.MolFromSmiles(pka_result.smiles)
     if mol is None:  # pragma: no cover - `predict_pka` canonicalised this exact string
-        raise ValueError(f"invalid SMILES: {job.smiles!r}")
+        raise ValueError(f"invalid SMILES: {echo(job.smiles)!r}")
     clogp = Crippen.MolLogP(mol)  # type: ignore[attr-defined]  # rdkit-stubs gap
     # Henderson-Hasselbalch, and the sign of this exponent is the entire content of it.
     #   acid  HA  <-> A- + H+ : the ionized fraction *rises* with pH  -> 10**(pH - pKa)

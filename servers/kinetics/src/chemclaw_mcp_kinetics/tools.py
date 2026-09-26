@@ -26,16 +26,20 @@ about different processes, and keeping the tools apart is what stops one being q
 
 Every answer carries `basis`: the equation it came out of and the assumption that equation makes.
 
-The five closed-form tools are synchronous and microseconds. The integrator is the one that does
-real work: its step count is derived from the caller's rate constant up to `MAX_INTEGRATION_STEPS`,
-which is up to half a second of CPU, so it runs off the event loop behind an admission ceiling
-(`engine/admission.py`) rather than on the loop that answers `/healthz`.
+The five closed-form tools are synchronous and cost microseconds. The integrator is the one that
+does real work, and its cost is set by the caller's rate constant and dose time: the step count is
+derived from the problem up to `reactors.MAX_INTEGRATION_STEPS`, so the worst legal call is seconds
+of pure-Python CPU. It therefore owes what `CLAUDE.md` says a slow tool owes — a bound on its input
+(that step ceiling), an offload so it does not run on the event loop, and a ceiling on how many run
+at once. `engine/admission.py` has the measurement and the derivation.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
+import functools
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Annotated, Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from mcp_server_kit.limits import env_bound
@@ -43,13 +47,15 @@ from pydantic import BaseModel, Field
 
 from chemclaw_mcp_kinetics.engine import arrhenius, reactors
 from chemclaw_mcp_kinetics.engine.admission import (
+    ADMISSION_MARKER,
     DEFAULT_MAX_CONCURRENT_INTEGRATIONS,
     Admission,
 )
 
 server = FastMCP("kinetics")
 
-# Built at import; a test that needs a different ceiling replaces this attribute.
+# The pod's ceiling on concurrent integrations, built at import; a test that needs a different
+# ceiling replaces this attribute. `env_bound` so a value below one fails naming the variable.
 _admission = Admission(
     env_bound(
         "CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS",
@@ -58,6 +64,27 @@ _admission = Admission(
         consequence="this pod would refuse every semi-batch integration it is asked for",
     )
 )
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
+    """Bound how many integrations run at once, refusing promptly when the pod is full.
+
+    The same shape as `servers/chem`'s gate: stamped with `ADMISSION_MARKER` so a test checks the
+    gated set against the served surface, and held through `Admission.hold` so the slot is released
+    when the worker thread finishes rather than when the caller stops waiting. `functools.wraps` is
+    what lets FastMCP read the real signature through `__wrapped__` for the tool's argument schema.
+    """
+
+    @functools.wraps(work)
+    async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        _admission.acquire(work.__name__)
+        return await _admission.hold(work(*args, **kwargs), 1)
+
+    setattr(_guarded, ADMISSION_MARKER, True)
+    return _guarded
 
 
 class RateConstantResult(BaseModel):
@@ -480,6 +507,7 @@ def continuous_reactor_conversion(
 
 
 @server.tool()
+@_admitted
 async def semibatch_accumulation_profile(
     rate_constant: Annotated[
         float,
@@ -561,27 +589,22 @@ async def semibatch_accumulation_profile(
 
     Raises:
         ValueError: If a value is not positive or an order is negative, if the dose is too fast
-            or runs a reagent out in a way the integrator cannot follow, or if the pod is already
-            running as many integrations as it admits.
+            for the integrator to resolve or runs a reagent out in a way it cannot follow, or if
+            this pod is already running its ceiling of integrations — that last one is transient,
+            and the identical call may be retried.
     """
-    # Off the event loop and behind the ceiling: the step count is derived from `rate_constant`,
-    # so the cost is the caller's to set. `asyncio.shield` releases the slot when the work ends
-    # rather than when the caller stops waiting, because cancelling the await does not stop the
-    # worker thread.
-    _admission.acquire("semibatch_accumulation_profile")
-    profile = await _admission.hold(
-        asyncio.to_thread(
-            reactors.semibatch_accumulation,
-            rate_constant=rate_constant,
-            dose_time_seconds=dose_time_seconds,
-            initial_volume=initial_volume,
-            dosed_moles=dosed_moles,
-            dosed_volume=dosed_volume,
-            initial_coreagent_concentration=initial_coreagent_concentration,
-            order_in_dosed=order_in_dosed,
-            order_in_coreagent=order_in_coreagent,
-        ),
-        1,
+    # Off the event loop: FastMCP 1.x calls a synchronous tool on the loop itself, and the worst
+    # legal integration is seconds of CPU — every other call and `/healthz` would wait behind it.
+    profile = await asyncio.to_thread(
+        reactors.semibatch_accumulation,
+        rate_constant=rate_constant,
+        dose_time_seconds=dose_time_seconds,
+        initial_volume=initial_volume,
+        dosed_moles=dosed_moles,
+        dosed_volume=dosed_volume,
+        initial_coreagent_concentration=initial_coreagent_concentration,
+        order_in_dosed=order_in_dosed,
+        order_in_coreagent=order_in_coreagent,
     )
     return AccumulationResult(
         peak_accumulation_fraction=profile.peak_accumulation_fraction,

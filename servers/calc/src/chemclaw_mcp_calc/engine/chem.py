@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from mcp_server_kit.limits import atom_count_error, smiles_length_error
+from mcp_server_kit.limits import atom_count_error, echo, smiles_length_error
 from rdkit import Chem
 from rdkit.Chem import rdDetermineBonds
 
@@ -56,22 +56,6 @@ class InvalidSmilesError(ValueError):
     """
 
 
-_MAX_ECHO_CHARS = 120
-
-
-def _echo(smiles: str, limit: int = _MAX_ECHO_CHARS) -> str:
-    """The caller's string for a refusal message, truncated so a megastring cannot flood the log.
-
-    A refusal quotes what was rejected so a chemist can fix it, but a 3 kB invalid SMILES echoed
-    into a `ValueError` is not merely noisy: `connector_app` passes that family to the model
-    verbatim, so an unbounded echo is unbounded attacker-influenced text landing in the context
-    window of the turn that asked. Measured before this bound: a 3,000-character parse failure
-    produced a 3,018-character refusal here against 152 in `servers/chem`. The head is enough to
-    recognise; the length is appended so nothing about the size is hidden.
-    """
-    return smiles if len(smiles) <= limit else f"{smiles[:limit]}… ({len(smiles)} chars)"
-
-
 def require_molecule(smiles: str) -> Chem.Mol:
     """The parsed molecule, raising `InvalidSmilesError` unless RDKit reads `smiles` **whole**.
 
@@ -93,7 +77,7 @@ def require_molecule(smiles: str) -> Chem.Mol:
 
     Surrounding whitespace is stripped rather than refused: a leading newline is a copy-paste
     artifact, not a second molecule. The message quotes the caller's own string, not the stripped
-    one, so what is echoed back is what was typed — bounded by `_echo`.
+    one, so what is echoed back is what was typed — bounded by `mcp_server_kit.limits.echo`.
 
     **The two structural bounds come first, and on this server they are not optional.**
     `MolToSmiles` recurses over the molecular graph and overflows the C stack on a long enough
@@ -112,7 +96,7 @@ def require_molecule(smiles: str) -> Chem.Mol:
     if reason := smiles_length_error(smiles, subject="this SMILES"):
         raise InvalidSmilesError(reason)
     stripped = smiles.strip()
-    echoed = _echo(smiles)
+    echoed = echo(smiles)
     if not stripped or any(ch.isspace() for ch in stripped):
         raise InvalidSmilesError(f"invalid SMILES (empty or contains whitespace): {echoed!r}")
     if not stripped.isascii():

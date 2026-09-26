@@ -89,4 +89,5 @@ except Exception as exc:  # noqa: BLE001
         "missing optional deps (install `chemclaw-mcp-rxnpredict[graphrxn]` and the GraphRXN "
         f"repo): {exc!r}",
         exc=exc,
+        optional=("torch",),
     )

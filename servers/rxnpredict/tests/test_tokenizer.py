@@ -80,7 +80,7 @@ def test_a_structure_the_pattern_does_not_cover_is_refused_not_silently_shortene
 
 
 def test_the_refusal_does_not_echo_a_megastring_whole() -> None:
-    """The message is bounded by the same `truncate_echo` every other refusal in this server uses.
+    """The message is bounded by `mcp_server_kit.limits.echo`, as every refusal in this fleet is.
 
     An `AssertionError`'s message is written as a debugging aid, so the version this replaced
     interpolated the caller's SMILES raw. What this bounds is the **log line**: the one caller runs

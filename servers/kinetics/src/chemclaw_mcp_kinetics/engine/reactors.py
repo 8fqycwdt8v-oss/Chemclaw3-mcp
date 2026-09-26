@@ -84,12 +84,9 @@ QUASI_STEADY_MARGIN = 10.0
 #: rate. With the discontinuity gone, **200 steps agrees with a hundredfold finer grid to 6.4e-08**,
 #: eight significant figures on a number reported to four, and costs 0.83 ms of CPU against 8.1 ms.
 #:
-#: 200 is the default for a *non-stiff* dose, and it is a floor rather than a cost: the stability
-#: floor below raises the step count per call, up to `MAX_INTEGRATION_STEPS`, from the caller's own
-#: rate constant. That caller-set cost is why this server does carry a concurrency ceiling after
-#: all — `engine/admission.py`, and
-#: `D-2026-09-26-a-cost-the-caller-sets-is-a-cost-that-needs-a-ceiling` for why — so the tenfold
-#: saving made the common case cheap, not the worst case.
+#: That tenfold saving was once the argument that this server owed no concurrency ceiling. It held
+#: only while the count was fixed: `_steps_for_stability` below makes the cost the caller's, the
+#: worst legal call is seconds, and `engine/admission.py` is the ceiling it now has.
 #:
 #: **This stays the default and is no longer the whole story, because "measured sufficient" was
 #: measured on one case.** The 6.4e-08 agreement above was taken at `k = 0.02, C_co = 0.9`, i.e.

@@ -65,12 +65,12 @@ from collections.abc import Callable
 from typing import Any
 
 from mcp_server_kit import degradation
+from mcp_server_kit.limits import echo
 
 from chemclaw_mcp_rxnpredict.engine.predictors import SERVER
 from chemclaw_mcp_rxnpredict.engine.preprocessing import (
     canonical_multi_smiles,
     canonical_smiles,
-    truncate_echo,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def _canonical_or_none(canonicalise: Callable[[str], str], smiles: str) -> str |
     try:
         return canonicalise(smiles)
     except ValueError as exc:
-        logger.debug("not caching %s: %s", truncate_echo(smiles), exc)
+        logger.debug("not caching %s: %s", echo(smiles), exc)
         return None
     # BLE001: blind on purpose and classified on the next line - see this function's docstring for
     # why the `ValueError` arm above is separated out rather than folded in here.
