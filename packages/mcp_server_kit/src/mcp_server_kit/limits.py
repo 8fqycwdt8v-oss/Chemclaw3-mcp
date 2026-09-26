@@ -28,6 +28,15 @@ ingests a corpus leniently (`rxnlabel`) treats a reason as "could not be read" a
 species. The reason string is caller-safe — it quotes only sizes, never the offending megastring —
 so it is safe to surface to the model verbatim through `connector_app`.
 
+**Every bound read here is also recorded, and `/healthz` reports the record.** The deployment
+ratchets in `tests/test_fleet.py` read the files this repository ships, so a bound moved by an
+overlay applied elsewhere, a Helm value or a `kubectl set env` is invisible to them and always will
+be. What the process can do is say what it is actually running with: `env_bound` and `env_ratio`
+record the value they return, `report_settings` records a settings object's numbers, and
+`connector_app`'s `/healthz` answers with `effective_bounds()` beside the corpus versions — so an
+operator's override is read from a probe rather than inferred from an image
+(`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+
 **`env_bound` is the exception to that rule and its docstring says why**: it is how every server in
 this fleet reads a resource bound out of the environment at import, and a bound that cannot work
 has to stop the process rather than hand somebody a reason there is nobody to receive. It is here
@@ -44,7 +53,7 @@ import os
 import resource
 import threading
 from collections.abc import Awaitable
-from typing import NamedTuple, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +68,74 @@ __all__ = [
     "Slots",
     "atom_count_error",
     "echo",
+    "effective_bounds",
     "env_bound",
     "env_ratio",
+    "report_bound",
+    "report_settings",
     "smiles_length_error",
     "stack_safe_atom_ceiling",
 ]
+
+
+#: Every bound this process has resolved, by the environment variable that moves it. Written by
+#: `report_bound` — which `env_bound`, `env_ratio` and `report_settings` all go through — and read
+#: by `/healthz`. A plain dict under a lock rather than anything cleverer: it is written a few
+#: dozen times at import and read once per probe.
+_EFFECTIVE: dict[str, int | float | None] = {}
+_EFFECTIVE_LOCK = threading.Lock()
+
+
+def report_bound(name: str, value: int | float | None) -> None:
+    """Record the value this process is running a bound at, for `/healthz` to report.
+
+    Called by the two readers below for every bound they return, so a bound read through them needs
+    nothing more. A bound read any other way — a settings class, a per-call reader in `sessions.py`
+    or `executor.py` — calls this itself, and `tests/test_fleet.py::
+    test_every_bound_a_deployment_can_move_is_reported_on_the_probe` is what makes it.
+
+    Args:
+        name: The environment variable that moves the bound, spelled as an operator would set it.
+        value: What the process is actually using — after defaults, floors and clamps, which is the
+            number an overlay's author needs to see. `None` means the bound is off, which only the
+            kit's own "0 means unbounded" knobs can say.
+    """
+    with _EFFECTIVE_LOCK:
+        _EFFECTIVE[name] = value
+
+
+def report_settings(settings: Any) -> None:
+    """Record every numeric field of a `pydantic-settings` object under its environment name.
+
+    `servers/calc` and `servers/rxnpredict` configure themselves through `BaseSettings`, so their
+    bounds never pass through `env_bound`. The environment name is derived the way pydantic-settings
+    derives it for these classes — `env_prefix` plus the field name, upper-cased, or the field's
+    `validation_alias` where it has a literal one — and `bool` is skipped, since it is an `int` to
+    Python and a switch, not a bound, to an operator.
+
+    Duck-typed rather than importing `pydantic_settings`: the kit does not depend on it, and all
+    this needs is the model's field table, its config and the values.
+    """
+    prefix = str(settings.model_config.get("env_prefix", ""))
+    for field, info in type(settings).model_fields.items():
+        value = getattr(settings, field)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        alias = info.validation_alias
+        name = alias if isinstance(alias, str) else f"{prefix}{field}".upper()
+        report_bound(name, value)
+
+
+def effective_bounds() -> dict[str, int | float | None]:
+    """Every bound this process has resolved so far, sorted by name — what `/healthz` reports.
+
+    "So far" is literal: a bound declared in a module nothing has imported yet is not in it. Every
+    server here imports its tool modules before `connector_app` builds the app, which is where the
+    fleet's bounds live, and `sessions.py` and `executor.py` record theirs when they are first
+    resolved — before the lifespan completes, so before a probe can be answered.
+    """
+    with _EFFECTIVE_LOCK:
+        return dict(sorted(_EFFECTIVE.items()))
 
 
 def _refused(name: str, value: float, default: float, minimum: float, consequence: str) -> str:
@@ -152,6 +224,7 @@ def env_bound(
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
+        report_bound(name, default)
         return default
     try:
         value = int(raw)
@@ -169,6 +242,7 @@ def env_bound(
             f"a preference — above it the failure is a crash rather than a loosened bound — so "
             f"unset {name} for the default of {default}, or give it a value of at most {maximum}."
         )
+    report_bound(name, value)
     return value
 
 
@@ -220,6 +294,7 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
+        report_bound(name, default)
         return default
     try:
         value = float(raw)
@@ -240,6 +315,7 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
         )
     if value < minimum:
         raise ValueError(_refused(name, value, default, minimum, consequence))
+    report_bound(name, value)
     return value
 
 

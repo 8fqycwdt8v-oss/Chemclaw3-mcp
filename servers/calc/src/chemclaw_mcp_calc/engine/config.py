@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from mcp_server_kit.limits import report_settings
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -281,3 +282,9 @@ class CalcSettings(BaseSettings):
 # One instance for the process. Read at import by nothing that matters — every consumer reads
 # through `settings.<field>` at call time, so a test may monkeypatch an attribute and see it apply.
 settings = CalcSettings()
+# What the environment resolved to, for `/healthz`: the admission ceiling, the atom bounds and the
+# timeouts an overlay can move without this repository seeing it
+# (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`). The scientific constants ride along
+# because they are numbers a deployment can move too, and a pod computing with a moved one is the
+# thing an operator most needs to be able to read off a probe.
+report_settings(settings)

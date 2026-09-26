@@ -28,6 +28,14 @@ reports both halves. It also found three manifests carrying `text_column`/`smile
 nothing in this repository reads: they belong to Chemclaw3's vendored-dataset schema
 (`ingest/sources/vendored_dataset.py`, where `text_column` is required and both are read), and this
 fleet's `load_dataset` does not share that schema.
+
+**Two of the fields say who refreshes the corpus and how often, because what a corpus *is* can be
+checked and when it was last true of its upstream cannot.** `retrieved_from` and `sha256` pin the
+file a review approved; nothing said whose job it is to go back to the source, or when. `MODULES.md`
+put that in each server's README, and no README carried it — a sentence nobody validates is a
+sentence nobody writes. So `refresh_owner` and `refresh_cadence` are required here, in a checked
+shape, and a corpus without them does not load
+(`D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often`).
 """
 
 from __future__ import annotations
@@ -35,11 +43,13 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic_core import PydanticCustomError
 
 __all__ = ["Dataset", "DatasetError", "DatasetManifest", "load_dataset", "read_records"]
 
@@ -48,8 +58,18 @@ class DatasetError(RuntimeError):
     """A vendored dataset is missing, malformed, or is not the file that was approved."""
 
 
+#: A refresh owner is a team or a role, never a person: `team:<slug>` or `role:<slug>`. A person's
+#: name goes stale the day they change jobs, and the corpus goes on looking owned.
+REFRESH_OWNER = re.compile(r"(team|role):[a-z0-9][a-z0-9-]*")
+
+#: A refresh cadence is an ISO 8601 duration in whole months or years — `P6M`, `P1Y`. Months and
+#: years only, because a corpus re-checked weekly is a feed, and a feed is a request-time call by
+#: another name; this fleet mirrors snapshots.
+REFRESH_CADENCE = re.compile(r"P[1-9][0-9]*[MY]")
+
+
 class DatasetManifest(BaseModel):
-    """What a `dataset.json` must be: six provenance strings and nothing else.
+    """What a `dataset.json` must be: eight provenance strings and nothing else.
 
     Every field is required and non-blank, and each for a reason that has already cost somebody
     something — the module docstring has them. `extra="forbid"` is the half a hand-rolled check
@@ -68,6 +88,8 @@ class DatasetManifest(BaseModel):
     retrieved_from: str
     description: str
     sha256: str
+    refresh_owner: str
+    refresh_cadence: str
 
     @field_validator("*")
     @classmethod
@@ -80,6 +102,26 @@ class DatasetManifest(BaseModel):
         """
         if not value.strip():
             raise ValueError("must not be blank")
+        return value
+
+    @field_validator("refresh_owner")
+    @classmethod
+    def _names_a_team_or_role(cls, value: str) -> str:
+        """`team:<slug>` or `role:<slug>`; a blank value is `_is_not_blank`'s to report."""
+        if value.strip() and not REFRESH_OWNER.fullmatch(value):
+            raise PydanticCustomError(
+                "malformed", "must be team:<slug> or role:<slug>, lowercase, never a person"
+            )
+        return value
+
+    @field_validator("refresh_cadence")
+    @classmethod
+    def _is_a_whole_month_duration(cls, value: str) -> str:
+        """An ISO 8601 duration in months or years; a blank value is `_is_not_blank`'s."""
+        if value.strip() and not REFRESH_CADENCE.fullmatch(value):
+            raise PydanticCustomError(
+                "malformed", "must be an ISO 8601 duration in whole months or years, e.g. P12M"
+            )
         return value
 
 
@@ -106,6 +148,9 @@ def _explain(manifest_path: Path, error: ValidationError) -> str:
 
     - `missing` — the key is not in the file.
     - `value_error` — the key is there and blank, which `DatasetManifest._is_not_blank` raises.
+    - `malformed` — the key is there, is a string, and is not in the shape its field requires: a
+      refresh owner that is not `team:`/`role:`, a cadence that is not a whole-month duration.
+      Its own type rather than a `value_error`, because "blank" would name the wrong fix.
     - anything else about a named field — the key is there and is not a string. Reported with the
       type that was found, because "must be a string" without "got a number" sends a reviewer back
       to a line that looks correct to them.
@@ -129,7 +174,13 @@ def _explain(manifest_path: Path, error: ValidationError) -> str:
     if any(not item["loc"] for item in problems):
         found = type(json.loads(manifest_path.read_text(encoding="utf-8"))).__name__
         return f"{manifest_path} must contain a JSON object, got {found}"
-    named: dict[str, list[str]] = {"missing": [], "blank": [], "wrong_type": [], "extra": []}
+    named: dict[str, list[str]] = {
+        "missing": [],
+        "blank": [],
+        "malformed": [],
+        "wrong_type": [],
+        "extra": [],
+    }
     for item in problems:
         field = str(item["loc"][-1])
         if item["type"] == "extra_forbidden":
@@ -138,6 +189,8 @@ def _explain(manifest_path: Path, error: ValidationError) -> str:
             named["missing"].append(field)
         elif item["type"] == "value_error":
             named["blank"].append(field)
+        elif item["type"] == "malformed":
+            named["malformed"].append(f"{field} ({item['msg']}, got {item.get('input')!r})")
         else:
             found = type(item.get("input")).__name__
             named["wrong_type"].append(f"{field} (got {found}, expected string)")
@@ -152,6 +205,11 @@ def _explain(manifest_path: Path, error: ValidationError) -> str:
         parts.append(
             f"blank field(s) {listed['blank']}; a key a template left empty is exactly as "
             "unreviewable as one that is not there"
+        )
+    if listed["malformed"]:
+        parts.append(
+            f"malformed field(s) {listed['malformed']}; a refresh owner or cadence nobody can "
+            "parse is one nobody can hold a corpus to"
         )
     if listed["wrong_type"]:
         parts.append(
@@ -210,9 +268,10 @@ def load_dataset(directory: Path, *, records_file: str = "records.csv") -> Datas
 
     Raises:
         DatasetError: The manifest or records file is missing, the manifest is not a JSON object,
-            a required field is absent, blank or not a string, a key is not one of the six, or the
-            file on disk is not the one the manifest's `sha256` names. Those four field cases are
-            reported as four different sentences, which is `_explain`'s whole subject: naming a
+            a required field is absent, blank, malformed or not a string, a key is not one of the
+            eight, or the file on disk is not the one the manifest's `sha256` names. Those five
+            field cases are reported as five different sentences, which is `_explain`'s whole
+            subject: naming a
             field the author wrote as "missing" is the failure this contract exists to avoid.
     """
     manifest_path = directory / "dataset.json"

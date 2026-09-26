@@ -42,39 +42,7 @@ decision leaves a record behind and the row goes.
 
 ---
 
-## 1 — The no-egress posture, where it stops
-
-- [ ] **A dynamic import whose name is computed from a *value* is outside the static scan, and
-  always will be.** `importlib.import_module("gr" + "pc")` is folded to `grpc` since 2026-09-12, but
-  `import_module(name)` cannot be resolved by any static reader, and `servers/rxnpredict` loads its
-  optional predictor plug-ins exactly that way — so flagging the shape would fail correct code and
-  teach the next reader to reach for `exempt`. The same is true of an address assembled at runtime.
-  What covers them is the runtime guard for anything going through Python and `make offline-run` for
-  anything that is not, which is the target `make check` does not run — the row above. Decide
-  whether that pair is the answer or whether a server loading plug-ins owes a manifest of the module
-  names it may load, which *is* statically checkable.
-  **Anchors:** `packages/mcp_server_kit/src/mcp_server_kit/no_egress.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors`.
-
-## 2 — The resource-bound ratchet, where it stops
-
-- [ ] **Neither ratchet can see a pod `env:` a cluster operator adds outside these files.** Both
-  read the tree, through `tests/test_fleet.py::shipped_deployment_files` — every file under
-  `servers/*/deploy/` and every `servers/*/Containerfile*`. (That sentence used to name two globs,
-  `servers/*/deploy/*.yaml` and `servers/*/Containerfile`, and it was describing a second hole
-  rather than this one: a `deploy/tuning.yml` or an overlay directory was invisible to both
-  ratchets. `D-2026-09-14-a-ratchet-holds-the-set-it-enumerates` closed that; what stays open is
-  the row's actual subject.) A bound moved by a kustomize overlay applied outside this tree, a Helm
-  value in a deploying repository, or an operator's `kubectl set env` is invisible here and always
-  will be — the shipped files are what this suite can read. What is not yet decided is whether the
-  serving side should *say* what it is running: an admission ceiling and an atom
-  bound reported on `/healthz` beside the corpus versions would make the live value observable from
-  a probe rather than inferred from an image. That is a readiness-payload change, not a ratchet
-  change. (An `envFrom` block, a `valueFrom:` reference and a `command:` assignment are all refused
-  outright now. This sentence used to say `envFrom` was "the one case a file can hide", which was
-  false when it was written: the other two were parsed as setting nothing at all.)
-  **Anchors:** `tests/test_fleet.py::_bound_offences`, `servers/calc/deploy/deployment.yaml`,
-  `packages/mcp_server_kit/src/mcp_server_kit/app.py`.
+## 1 — The resource-bound ratchet, where it stops
 
 - [ ] **A relaxation at `servers/calc`'s atom ceiling spends its budget instead of converging, and
   the refusal one atom above it promises the opposite.** `Structure`'s refusal says a system past
@@ -188,7 +156,7 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py`.
 
-## 3 — Readiness, where it still stops
+## 2 — Readiness, where it still stops
 
 - [ ] **A degraded `rxnlabel` row is stamped as though it were healthy, because the stamp Chemclaw3
   writes is a deployment-level string read once per drain pass.** **Other repository:** `Chemclaw3`.
@@ -209,7 +177,7 @@ decision leaves a record behind and the row goes.
   `src/chemclaw/ingest/labels/enrich.py::label_stale`,
   `src/chemclaw/science/labels/store.py::underived_stamp`.
 
-## 4 — The gate itself
+## 3 — The gate itself
 
 - [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
   `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on
@@ -255,7 +223,7 @@ decision leaves a record behind and the row goes.
   `tests/test_consumer_agreement.py::test_the_consumer_still_agrees_with_the_surface_this_tree_declares`,
   `docs/decisions/D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts.md`.
 
-## 5 — Corpora that are not yet licensed to exist
+## 4 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA and `chembl` cannot be built until somebody has read what that obliges.**
   Attribution obligations follow the data into anything derived from it, which for this fleet means
@@ -272,18 +240,7 @@ decision leaves a record behind and the row goes.
   `dataset.json` provenance and its README when it is built, not only in the catalogue.
   **Anchors:** `MODULES.md`, `docs/adding-a-server.md`.
 
-- [ ] **No mirrored corpus has a named refresh owner or cadence.** Every `dataset.json` carries
-  `retrieved_from` and a `sha256`, so what a corpus *is* can be checked; when it was last true of
-  the upstream cannot. `CLAUDE.md` already says refreshing a snapshot is a build step reviewed by a
-  person, and `MODULES.md` says the owner and cadence go in that server's README — no README carries
-  either today. A stale patent index nobody knows is stale is worse than no patent index, and the
-  same is true of a hazard table. Decide the smallest thing that works: a field in `dataset.json`
-  (which `load_dataset` already refuses to open without its six keys) is checkable; a sentence in a
-  README is not.
-  **Anchors:** `MODULES.md`, `packages/mcp_server_kit/src/mcp_server_kit/datasets.py`,
-  `servers/props/src/chemclaw_mcp_props/data`.
-
-## 6 — Consuming a server hosted elsewhere
+## 5 — Consuming a server hosted elsewhere
 
 - [ ] **`retro` cannot be consumed until six things are true of it, and this repository owes it a
   manifest.** **Other repository:** `chemclaw2_retrosynthesis` — its anchors are that repo's
@@ -297,7 +254,7 @@ decision leaves a record behind and the row goes.
   the first entry in the catalogue that needs one.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
 
-## 7 — Correlations that need data nobody here has
+## 6 — Correlations that need data nobody here has
 
 - [ ] **`unitops` models an incompressible cake, and real organic cakes compress.** A filtration
   time from `filtration_time` takes a single specific cake resistance and assumes it is independent

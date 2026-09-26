@@ -48,6 +48,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from mcp_server_kit.limits import report_bound
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["cpu_allowance", "install_default_executor", "thread_pool_size"]
@@ -136,6 +138,7 @@ def thread_pool_size() -> int:
             "MCP_THREAD_POOL_HEADROOM=%r is not an integer; using %d", headroom, DEFAULT_HEADROOM
         )
         reserve = DEFAULT_HEADROOM
+    report_bound("MCP_THREAD_POOL_HEADROOM", reserve)
     return math.ceil(cpu_allowance()) + reserve
 
 
@@ -154,6 +157,9 @@ def install_default_executor(*, server: str) -> ThreadPoolExecutor:
         The installed executor, so the lifespan can shut it down and a test can assert its width.
     """
     width = thread_pool_size()
+    # The width actually installed, under the knob that sets it outright — so a pod sized from its
+    # cgroup and one an operator sized by hand both answer the same question on `/healthz`.
+    report_bound("MCP_THREAD_POOL_SIZE", width)
     executor = ThreadPoolExecutor(max_workers=width, thread_name_prefix=f"{server}-tool")
     asyncio.get_running_loop().set_default_executor(executor)
     logger.info(

@@ -15,17 +15,28 @@ a file whose whole body was `h = __import__("httpx")` scanned clean, as did
 imports it can also un-patch the guard". Both spellings are covered now, and so is a host written
 as `"http://" + "example" + ".com"`, which the text regex read as three harmless fragments.
 
-**What is deliberately still not covered, so that nobody has to infer it from a clean scan:** an
-import whose module name is computed *from a value* (`importlib.import_module(name)`), and any
-address assembled at runtime — an f-string, a `%` format, a `"".join`, a decoded blob. The first has
-a real caller in this fleet (`servers/rxnpredict` loads its optional predictor plug-ins that way),
-and flagging the shape would make correct code fail while teaching the next reader to reach for
-`exempt`. The second is unbounded by construction: no static reader evaluates arbitrary
-expressions. A name assembled from *literals* is a different case and **is** covered —
-`import_module("gr" + "pc")` folds to `grpc`, the same folding `host_literals` does on a split
-address. **This is a review-time control against what somebody writes down, not a boundary** — what
-a computed import or a computed address actually does is `egress.py`'s job at runtime and
-`make offline-run`'s when the call leaves Python entirely.
+**A module name computed *from a value* is not resolved, and it is no longer passed in silence.**
+`importlib.import_module(name)` cannot be evaluated by any static reader, and for a while that was
+the whole of the argument for leaving it out: `servers/rxnpredict` loads its optional predictor
+plug-ins that way, so flagging the shape "would fail correct code and teach the next reader to reach
+for `exempt`". That conflated two things. `exempt` skips a *file*; what a computed import needs is
+narrower — a statement, at the one call site, of which names it may load and why none of them is a
+network client. So `computed_imports` reports every such site by the function it sits in, and
+`assert_no_egress_sources` refuses each one that its server's own test has not justified by name
+(`justified_imports`), in both directions: an unjustified site fails, and so does a justification
+whose site has gone (`D-2026-09-26-a-computed-import-is-argued-at-its-site`).
+The justification is the manifest the old wording said a plug-in loader could owe: `rxnpredict`'s
+test holds the loader's module map to first-party, non-forbidden names, which *is* statically
+checkable where the call is not. A name assembled from *literals* is a different case and is
+resolved outright — `import_module("gr" + "pc")` folds to `grpc`, the same folding `host_literals`
+does on a split address.
+
+**Any address assembled at runtime is still outside this scan** — an f-string, a `%` format, a
+`"".join`, a decoded blob — because it is unbounded by construction: no static reader evaluates
+arbitrary expressions, and unlike an import there is no call shape to demand an argument at.
+**This is a review-time control against what somebody writes down, not a boundary** — what a
+computed address actually does is `egress.py`'s job at runtime and `make offline-run`'s when the
+call leaves Python entirely.
 
 `socket` is on the list even though it is stdlib and the guard patches it, because a server here has
 no legitimate reason to hold one — and a module that imports it can also un-patch the guard.
@@ -87,10 +98,16 @@ import ast
 import io
 import re
 import tokenize
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-__all__ = ["FORBIDDEN_MODULES", "assert_no_egress_sources", "host_literals", "network_imports"]
+__all__ = [
+    "FORBIDDEN_MODULES",
+    "assert_no_egress_sources",
+    "computed_imports",
+    "host_literals",
+    "network_imports",
+]
 
 FORBIDDEN_MODULES = frozenset(
     {
@@ -120,8 +137,8 @@ _URL = re.compile(r"https?://(?!127\.0\.0\.1|localhost|\[::1\])[A-Za-z0-9.-]+", 
 # The two ways to import a module by name at runtime. Matched on the *called name* rather than on
 # the object it hangs off, so `importlib.import_module`, a `from importlib import import_module`
 # and a rebound alias all read the same — the alternative is tracking assignments, which is a
-# different program. Only a literal first argument is resolved; see this module's docstring for why
-# a computed one is left to the runtime guard.
+# different program. Only a literal first argument is resolved; a computed one is reported by
+# `computed_imports` and has to be justified by name — see this module's docstring.
 _DYNAMIC_IMPORTS = frozenset({"__import__", "import_module"})
 
 
@@ -131,12 +148,12 @@ def _is_forbidden(module: str) -> bool:
     return any(".".join(parts[: i + 1]) in FORBIDDEN_MODULES for i in range(len(parts)))
 
 
-def _dynamic_import_target(node: ast.Call) -> str | None:
-    """The module a `__import__("x")` or `import_module("x")` call names, when it is a literal.
+def _dynamic_import_name(node: ast.Call) -> ast.expr | None:
+    """The expression a `__import__(...)` or `import_module(...)` call names its module with.
 
-    Folded through `_constant_string`, so `import_module("gr" + "pc")` is the module it spells — the
-    same folding `host_literals` already did for an address split across literals, and the same
-    reason: a static reader that stops at `ast.Constant` reads a split name as no name at all.
+    `None` when `node` is not one of the two, or names no module at all. The first positional
+    argument, or the `name=` keyword both functions accept — a keyword spelling is the same import,
+    and reading positionals only would pass it as no import at all.
     """
     func = node.func
     if isinstance(func, ast.Attribute):
@@ -145,17 +162,60 @@ def _dynamic_import_target(node: ast.Call) -> str | None:
         called = func.id
     else:
         return None
-    if called not in _DYNAMIC_IMPORTS or not node.args:
+    if called not in _DYNAMIC_IMPORTS:
         return None
-    return _constant_string(node.args[0])
+    if node.args:
+        return node.args[0]
+    return next((keyword.value for keyword in node.keywords if keyword.arg == "name"), None)
+
+
+def _dynamic_import_target(node: ast.Call) -> str | None:
+    """The module a `__import__("x")` or `import_module("x")` call names, when it is a literal.
+
+    Folded through `_constant_string`, so `import_module("gr" + "pc")` is the module it spells — the
+    same folding `host_literals` already did for an address split across literals, and the same
+    reason: a static reader that stops at `ast.Constant` reads a split name as no name at all.
+    """
+    name = _dynamic_import_name(node)
+    return None if name is None else _constant_string(name)
+
+
+def computed_imports(source: Path) -> list[tuple[str, int]]:
+    """Every dynamic import in `source` whose module name is computed from a value.
+
+    Reported as the qualified name of the enclosing function or class (`"<module>"` at top level)
+    and the line, because the scope is what a justification names: a line number moves on every
+    edit above it, while "`discover_predictors` loads a plug-in by name" stays true until somebody
+    changes what that function does — which is exactly when the argument should be read again.
+
+    Returns:
+        `(scope, line)` for each call whose module name `_constant_string` cannot fold, in source
+        order.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    found: list[tuple[str, int]] = []
+
+    def visit(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                inner = child.name if scope == "<module>" else f"{scope}.{child.name}"
+            if isinstance(child, ast.Call):
+                name = _dynamic_import_name(child)
+                if name is not None and _constant_string(name) is None:
+                    found.append((scope, child.lineno))
+            visit(child, inner)
+
+    visit(tree, "<module>")
+    return sorted(found, key=lambda site: site[1])
 
 
 def network_imports(source: Path) -> list[str]:
     """Every forbidden module `source` imports, however the import is spelled.
 
     Covers the statement forms (`import x`, `from x import y`) and the two runtime forms with a
-    literal name (`__import__("x")`, `import_module("x")`). A computed name is not an offence —
-    the module docstring says why, and says what covers it instead.
+    literal name (`__import__("x")`, `import_module("x")`). A computed name is not returned here —
+    no module can be named for it — and is `computed_imports`' to report instead.
     """
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     found: list[str] = []
@@ -242,7 +302,11 @@ def host_literals(source: Path) -> list[str]:
     return sorted(found)
 
 
-def assert_no_egress_sources(*roots: Path, exempt: Iterable[Path] = ()) -> None:
+def assert_no_egress_sources(
+    *roots: Path,
+    exempt: Iterable[Path] = (),
+    justified_imports: Mapping[tuple[Path, str], str] | None = None,
+) -> None:
     """Assert no `.py` file under `roots` imports a network client or names a remote host.
 
     Args:
@@ -252,11 +316,22 @@ def assert_no_egress_sources(*roots: Path, exempt: Iterable[Path] = ()) -> None:
             order to disable it. A server that passes anything here owes a test proving that is what
             the file does; an exemption without one is an unchecked claim, which is the failure this
             whole scan exists to prevent.
+        justified_imports: The dynamic imports whose module name is computed from a value, keyed by
+            `(file, scope)` as `computed_imports` reports them, each mapped to the argument for why
+            what it loads cannot be a network client. Held in both directions: a computed import
+            with no entry is an offence, and so is an entry with no computed import left in that
+            scope, or with a blank argument — a justification that outlived its site reads as a
+            live one.
 
     Raises:
         AssertionError: naming the file and what was found in it.
     """
     skipped = {path.resolve() for path in exempt}
+    argued = {
+        (path.resolve(), scope): reason
+        for (path, scope), reason in (justified_imports or {}).items()
+    }
+    seen: set[tuple[Path, str]] = set()
     offences: list[str] = []
     for root in roots:
         for source in sorted(root.rglob("*.py")):
@@ -266,6 +341,24 @@ def assert_no_egress_sources(*roots: Path, exempt: Iterable[Path] = ()) -> None:
                 offences.append(f"{source}: imports {module}")
             for host in host_literals(source):
                 offences.append(f"{source}: names remote host {host}")
+            for scope, line in computed_imports(source):
+                key = (source.resolve(), scope)
+                seen.add(key)
+                if key not in argued:
+                    offences.append(
+                        f"{source}:{line}: imports a module named by a value in `{scope}`, which "
+                        "no static reader can resolve; justify it by passing "
+                        f"justified_imports={{(<this file>, {scope!r}): '<why it cannot load a "
+                        "network client>'}"
+                    )
+    for (path, scope), reason in sorted(argued.items()):
+        if (path, scope) not in seen:
+            offences.append(
+                f"{path}: `{scope}` is justified as a computed import and holds none; delete the "
+                "justification, because one that outlived its site reads as a live argument"
+            )
+        elif not reason.strip():
+            offences.append(f"{path}: `{scope}`'s computed import is justified with a blank reason")
     assert not offences, (
         "servers in this repository answer from vendored data and never call out:\n  "
         + "\n  ".join(offences)

@@ -34,7 +34,7 @@ from typing import Any
 import httpx
 import pytest
 from mcp.server.fastmcp import FastMCP
-from mcp_server_kit import Dataset
+from mcp_server_kit import Dataset, limits
 from mcp_server_kit.app import connector_app
 from prometheus_client.parser import text_string_to_metric_families
 
@@ -167,6 +167,53 @@ def test_readiness_success_names_the_verified_datasets(serving: Callable[..., An
 
         exposition = httpx.get(f"{base}/metrics", timeout=5.0).text
         assert 'chemclaw_mcp_ready{server="probe-ready"} 1.0' in exposition
+
+
+@pytest.fixture
+def isolated_bounds() -> Iterator[None]:
+    """The process-wide bound record, restored after the test that writes to it."""
+    saved = dict(limits._EFFECTIVE)
+    yield
+    limits._EFFECTIVE.clear()
+    limits._EFFECTIVE.update(saved)
+
+
+def test_healthz_reports_the_bounds_the_process_is_running_with(
+    serving: Callable[..., Any], monkeypatch: pytest.MonkeyPatch, isolated_bounds: None
+) -> None:
+    """An operator's override is read off the probe, not inferred from the image.
+
+    The deployment ratchets in `tests/test_fleet.py` read the files this repository ships, so a
+    bound moved by an overlay applied elsewhere, a Helm value or `kubectl set env` is invisible to
+    them and always will be (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`). This
+    drives the other half: a server bound read through `env_bound`, the kit's own session ceiling
+    and the thread-pool width, each moved by the environment the way an overlay would move it, and
+    each read back from a live `/healthz` at the value the process is using — on the unready answer
+    too, because a pod that cannot serve is the one whose configuration an operator is reading.
+    """
+    monkeypatch.setenv("CHEMCLAW_PROBE_MAX_WIDGETS", "9")
+    monkeypatch.setenv("MCP_MAX_SESSIONS", "7")
+    monkeypatch.setenv("MCP_THREAD_POOL_SIZE", "3")
+    assert (
+        limits.env_bound("CHEMCLAW_PROBE_MAX_WIDGETS", default=4, minimum=1, consequence="none")
+        == 9
+    )
+
+    def _broken() -> list[Dataset]:
+        raise RuntimeError("the probe's corpus is missing")
+
+    for readiness, status in ((None, 200), (_broken, 503)):
+        app = connector_app(_probe_server(), name="probe-bounds", readiness=readiness)
+        with serving(app) as base:
+            response = httpx.get(f"{base}/healthz", timeout=5.0)
+        assert response.status_code == status
+        bounds = response.json()["bounds"]
+        assert bounds["CHEMCLAW_PROBE_MAX_WIDGETS"] == 9, "an env_bound override is not reported"
+        assert bounds["MCP_MAX_SESSIONS"] == 7, "the session ceiling is not reported"
+        assert bounds["MCP_THREAD_POOL_SIZE"] == 3, "the installed pool width is not reported"
+        # The kit's own module-level bounds, read at import with nothing set.
+        assert bounds["MCP_MAX_MOLECULE_ATOMS"] == limits.MAX_MOLECULE_ATOMS
+        assert list(bounds) == sorted(bounds), "the record is reported in a stable order"
 
 
 def test_a_declared_oversize_body_is_refused(running_server: str) -> None:

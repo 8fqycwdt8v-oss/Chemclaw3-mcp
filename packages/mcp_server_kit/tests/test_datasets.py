@@ -21,6 +21,8 @@ MANIFEST = {
     "retrieved_from": "hand-authored in this test",
     "description": "two rows",
     "sha256": "",
+    "refresh_owner": "team:test-owners",
+    "refresh_cadence": "P12M",
 }
 
 RECORDS = "name,value\nalpha,1\nbeta,2\n"
@@ -202,6 +204,58 @@ def test_no_shipped_manifest_carries_a_key_the_loader_does_not_read(tmp_path: Pa
     for path in manifests:
         parsed = json.loads(path.read_text(encoding="utf-8"))
         assert set(parsed) == set(datasets._REQUIRED), (
-            f"{path} declares {sorted(set(parsed) - set(datasets._REQUIRED))} beyond the six "
+            f"{path} declares {sorted(set(parsed) - set(datasets._REQUIRED))} beyond the "
             "provenance fields; nothing reads them"
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("refresh_owner", "Jane Doe"),
+        ("refresh_owner", "person:jdoe"),
+        ("refresh_owner", "team:"),
+        ("refresh_owner", "Team:Process-Safety"),
+        ("refresh_cadence", "yearly"),
+        ("refresh_cadence", "P0M"),
+        ("refresh_cadence", "P2W"),
+        ("refresh_cadence", "P1Y2M"),
+        ("refresh_cadence", "12"),
+    ],
+)
+def test_a_refresh_owner_or_cadence_nobody_can_parse_is_refused(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    """Who refreshes a corpus and how often is a checked shape, not a sentence.
+
+    `MODULES.md` put the owner and cadence in each server's README, and no README carried either:
+    a sentence nothing validates is one nothing makes anybody write
+    (`D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often`). A malformed value is its own
+    sentence rather than "blank", because the fix is different — the key is there and says the
+    wrong kind of thing. A person's name is malformed on purpose: it goes stale the day they move,
+    and the corpus goes on looking owned.
+    """
+    with pytest.raises(DatasetError, match=rf"malformed field\(s\) {field}"):
+        load_dataset(_write(tmp_path, overrides={field: value}))
+
+
+@pytest.mark.parametrize("value", ["P1M", "P6M", "P12M", "P1Y", "P3Y"])
+def test_a_whole_month_or_year_cadence_is_accepted(tmp_path: Path, value: str) -> None:
+    """The positive half, so the pattern cannot tighten into refusing every shipped corpus."""
+    assert load_dataset(_write(tmp_path, overrides={"refresh_cadence": value})).name
+
+
+def test_every_shipped_corpus_names_a_refresh_owner_and_cadence() -> None:
+    """Every `dataset.json` in the fleet loads its refresh fields through the model itself.
+
+    `test_no_shipped_manifest_carries_a_key_the_loader_does_not_read` holds the key *set*; this
+    holds the *values*, through `DatasetManifest` rather than a copy of its patterns, so a shipped
+    corpus with a person's name or a free-text cadence fails here as well as in its own server.
+    """
+    root = Path(__file__).resolve().parents[3]
+    manifests = sorted(root.glob("servers/*/src/*/data/**/dataset.json"))
+    assert manifests, "no shipped dataset manifests found — the glob is wrong, not the fleet"
+    for path in manifests:
+        manifest = datasets.DatasetManifest.model_validate_json(path.read_text(encoding="utf-8"))
+        assert datasets.REFRESH_OWNER.fullmatch(manifest.refresh_owner), path
+        assert datasets.REFRESH_CADENCE.fullmatch(manifest.refresh_cadence), path

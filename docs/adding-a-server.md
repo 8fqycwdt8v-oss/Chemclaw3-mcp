@@ -160,9 +160,12 @@ itself" is **proving the computation needs nothing from outside the process**, w
 egress guard armed. The failure being ruled out is the one a numerical library can produce: fetching
 parameters, model weights or a licence check on first use.
 
-`data/dataset.json` needs all six fields — `name`, `version`, `licence`, `retrieved_from`,
-`description`, `sha256` — and `load_dataset` refuses without them. Compute the checksum with
-`sha256sum` and paste it; the loader verifies it on every start.
+`data/dataset.json` needs every field `mcp_server_kit.datasets.DatasetManifest` declares — `name`,
+`version`, `licence`, `retrieved_from`, `description`, `sha256`, `refresh_owner` and
+`refresh_cadence` — and `load_dataset` refuses without them. Compute the checksum with `sha256sum`
+and paste it; the loader verifies it on every start. `refresh_owner` is `team:<slug>` or
+`role:<slug>`, never a person, and `refresh_cadence` is an ISO 8601 duration in whole months or
+years (`P12M`): who goes back to the source, and how often.
 
 **Then make the corpus validate itself.** This is the part most worth the effort, and `props`
 shows the pattern: CAS check digits, molecular weight against formula, and Antoine constants against

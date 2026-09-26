@@ -140,7 +140,10 @@ that helper are non-obvious, and each is quiet when wrong:
   will not load answers 503 naming the reason, and lists what it did verify as `name@version`.
   Datasets here load lazily, so before this a `chem` pod with a corpus that failed its checksum
   passed the probe, took traffic and failed every call. A new server passes `readiness=` to
-  `connector_app`; see `docs/adding-a-server.md`.
+  `connector_app`; see `docs/adding-a-server.md`. **Every answer also carries `bounds`** — each
+  resource bound this process resolved, at the value it is running with — because the deployment
+  ratchets read only the shipped files, and an overlay or a `kubectl set env` moves a bound they
+  cannot see (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
   **And it loads its corpus lazily, so the probe is what fails rather than the import**
   (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`). Two servers
   touched theirs at module scope — `props` deriving a tool-schema bound from the table's size,
@@ -308,7 +311,10 @@ independent layers because a rule that lives in one place rots:
    screen saying so.
 2. **The static scan** (`mcp_server_kit/no_egress.py`), one three-line test per server. AST-based,
    not grep-based — `import httpx as h` and `from requests import get` read differently as text and
-   identically as a tree.
+   identically as a tree. An `import_module(name)` whose name no static reader can resolve is an
+   offence until that server's own test justifies it by the function it sits in, in both
+   directions (`D-2026-09-26-a-computed-import-is-argued-at-its-site`); `exempt` is not the tool
+   for it, because `exempt` skips a whole file.
 3. **The whole suite runs with the guard armed** (root `conftest.py`). A test that only passes by
    reaching the internet fails instead, which is what makes a vendored dataset *proven* sufficient.
    `make offline-run` goes further and takes the network away entirely.
@@ -336,10 +342,13 @@ Two consequences that decide what gets built:
 ## Vendored data
 
 Every corpus ships with a `dataset.json` carrying `name`, `version`, `licence`, `retrieved_from`,
-`description` and `sha256`. All six are required and `load_dataset` refuses without them: a corpus
-with no recorded licence is a legal question nobody can answer a year later, one with no checksum
-cannot be shown to be what the review approved, and `retrieved_from` is the only record of where a
-human obtained the file. **Nothing reads `retrieved_from` as an address**; the guard would refuse.
+`description`, `sha256`, `refresh_owner` and `refresh_cadence`. All are required and `load_dataset`
+refuses without them: a corpus with no recorded licence is a legal question nobody can answer a year
+later, one with no checksum cannot be shown to be what the review approved, and `retrieved_from` is
+the only record of where a human obtained the file. **Nothing reads `retrieved_from` as an
+address**; the guard would refuse. The last two say who goes back to the source and how often — a
+`team:`/`role:` and a whole-month ISO 8601 duration, both checked by the model
+(`D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often`).
 
 **Validate the corpus against itself.** A hand-compiled table is a table with typos in it, and the
 realistic failure is not a bad decision but a transposed digit in a row nobody looks at again.
