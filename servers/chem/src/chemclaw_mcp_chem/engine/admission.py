@@ -30,8 +30,10 @@ render ceiling was derived as "N x the worst call under a third of the probe bud
 the worst single call exceeds the whole probe budget on its own, so no N >= 1 satisfies that
 arithmetic; nor does "N x worst under half of `request_timeout`", since one refused degradant run
 costs 47 s against a 30 s budget. Both are properties of *one call*, which a ceiling bounds nothing
-about — only an input bound prices them, and that is queued in `docs/BACKLOG.md` with these figures
-rather than papered over with a number here.
+about — only an input bound prices them. Each species enumeration now has one, priced on what
+drives its cost and refused before the work starts (`engine/species.py`: `MAX_SITE_ATOM_PRODUCT`,
+`MAX_TAUTOMER_HEAVY_ATOMS`, `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`, `MAX_STEREO_ISOMER_ATOM_PRODUCT`),
+so the table above records what the band cost before those bounds, not what a call costs now.
 
 **So the ceiling is derived from the pool, which is the half a ceiling does control.** Admitted
 calls run one at a time whatever the ceiling, so a slot buys no throughput, and a slot beyond the
@@ -155,7 +157,7 @@ WORST_RENDER_SECONDS = 0.1
 
 #: `deploy/deployment.yaml`'s `readinessProbe.timeoutSeconds`. The kubelet's probe is the request
 #: that must not be starved, and the one no ceiling protects from a single call that holds the
-#: interpreter longer than this — see the module docstring and `docs/BACKLOG.md`.
+#: interpreter longer than this — see the module docstring and the input bounds it names.
 PROBE_TIMEOUT_SECONDS = 3
 
 #: The width of the process's default `asyncio.to_thread` pool on the shipped pod: what

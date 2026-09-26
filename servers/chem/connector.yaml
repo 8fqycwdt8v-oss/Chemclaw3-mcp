@@ -27,11 +27,11 @@ endpoint:
   url: http://127.0.0.1:8858/mcp
   health_url: http://127.0.0.1:8858/healthz
   # Chemclaw3's own bundle allowed 30 s and it is kept: a drug-sized call is milliseconds, and the
-  # bound exists to stop a mute connector hanging a turn. It is *not* a budget every legal call
-  # fits: a species enumeration on a 1,990-atom polymer measured up to 47 s before its output cap
-  # refused it. That is an input-bound question queued in docs/BACKLOG.md, and
-  # `engine/admission.py` says why the concurrency ceiling is derived from the pod's thread pool
-  # rather than from this number.
+  # bound exists to stop a mute connector hanging a turn. A species enumeration on a 1,990-atom
+  # polymer once measured up to 47 s before its output cap refused it; each enumeration is now
+  # priced on its own cost and refused before it runs (`engine/species.py`'s input bounds, the
+  # stereoisomer one last), and `engine/admission.py` says why the concurrency ceiling is derived
+  # from the pod's thread pool rather than from this number.
   request_timeout: 30
   # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here
   # and refuse it the moment a deployment points this at a real host — and a manifest whose auth
