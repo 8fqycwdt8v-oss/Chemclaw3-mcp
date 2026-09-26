@@ -499,9 +499,42 @@ def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: fl
         )
 
 
+@pytest.mark.parametrize("order", [0.0, 0.5, 2.0])
+def test_a_rate_constant_times_time_past_dbl_max_is_complete_conversion_at_every_order(
+    order: float,
+) -> None:
+    """`(n-1)·k·t` past DBL_MAX used to be refused as an overflow at every order but the first,
+    which answered 1.0 for the same inputs — so the outcome depended on the order. The exact answer
+    is complete conversion, and it is an ordinary double.
+    """
+    assert reactors.batch_conversion(
+        rate_constant=1e200, initial_concentration=1.0, time_seconds=1e200, order=order
+    ) == pytest.approx(1.0)
+    assert reactors.batch_conversion(
+        rate_constant=1e200, initial_concentration=1.0, time_seconds=1e200, order=1.0
+    ) == pytest.approx(1.0)
+
+
+def test_a_pfr_whose_damkohler_number_overflows_is_complete_conversion() -> None:
+    """`pfr_conversion` delegates to `batch_conversion`, so it inherited the same false refusal."""
+    assert reactors.pfr_conversion(
+        rate_constant=1e300, initial_concentration=1.0, residence_time_seconds=1e10, order=2.0
+    ) == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize(
-    "call",
+    ("call", "expected"),
     [
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1e120,
+                residence_time_seconds=1.0,
+                order=3.0,
+            ),
+            1.0 - 1e40 / 1e120,
+            id="cstr-power-past-dbl-max",
+        ),
         pytest.param(
             lambda: reactors.cstr_conversion(
                 rate_constant=1.0,
@@ -509,7 +542,8 @@ def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: fl
                 residence_time_seconds=1.0,
                 order=3.0,
             ),
-            id="cstr-power-overflow",
+            1.0,
+            id="cstr-power-far-past-dbl-max",
         ),
         pytest.param(
             lambda: reactors.cstr_conversion(
@@ -518,13 +552,15 @@ def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: fl
                 residence_time_seconds=1e200,
                 order=1.0,
             ),
-            id="cstr-first-order-nan",
+            1.0,
+            id="cstr-first-order-inf-over-inf",
         ),
         pytest.param(
             lambda: reactors.batch_conversion(
                 rate_constant=1.0, initial_concentration=1e-5, time_seconds=1.0, order=200.0
             ),
-            id="batch",
+            0.0,
+            id="batch-c0-power-past-dbl-max",
         ),
         pytest.param(
             lambda: reactors.pfr_conversion(
@@ -533,8 +569,26 @@ def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: fl
                 residence_time_seconds=1.0,
                 order=200.0,
             ),
-            id="pfr",
+            0.0,
+            id="pfr-c0-power-past-dbl-max",
         ),
+    ],
+)
+def test_an_intermediate_past_dbl_max_does_not_refuse_a_representable_answer(
+    call: Callable[[], float], expected: float
+) -> None:
+    """Each of these used to be refused as "no finite number to report", and each has one.
+
+    At order 200 and `C₀ = 1e-5`, `C₀^(1-n)` is 1e995 but `k·t` is 199 against it, so conversion is
+    effectively zero; a CSTR at `C₀ = 1e120`, order 3, has an outlet near 1e40 although `τ·k·C₀³`
+    overflows during the bisection.
+    """
+    assert call() == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
         pytest.param(
             lambda: reactors.time_for_batch_conversion(
                 rate_constant=1.0, initial_concentration=1e-5, conversion=0.5, order=200.0
@@ -553,6 +607,37 @@ def test_a_closed_form_that_overflows_is_refused_by_name(call: Callable[[], floa
     """Finite inputs the field bounds admit (`order >= 0`, `C0 > 0`, `k > 0`) reached a float `**`
     that raised `OverflowError` — not a `ValueError`, so `connector_app` handed the model an opaque
     `error_id` — or a `*`/`/` that quietly returned `inf` or `nan` as the answer.
+
+    Only answers that really are past DBL_MAX belong here: at order 200 and `C₀ = 1e-5` the time to
+    half conversion is ~1e1052 s, not a false refusal of a finite one.
     """
     with pytest.raises(KineticsInputError, match="overflows a double"):
+        call()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda: reactors.batch_conversion(
+                rate_constant=1.0, initial_concentration=1.0, time_seconds=math.nan, order=2.0
+            ),
+            id="batch",
+        ),
+        pytest.param(
+            lambda: reactors.cstr_conversion(
+                rate_constant=1.0,
+                initial_concentration=1.0,
+                residence_time_seconds=math.nan,
+                order=2.0,
+            ),
+            id="cstr",
+        ),
+    ],
+)
+def test_a_nan_time_is_refused_rather_than_answered(call: Callable[[], float]) -> None:
+    """`NaN < 0` is False, and the CSTR's log-space bisection would read a NaN comparison as "the
+    root is lower" all the way down to complete conversion — so the check is `not t >= 0`.
+    """
+    with pytest.raises(KineticsInputError, match="zero or above"):
         call()

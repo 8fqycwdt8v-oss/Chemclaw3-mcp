@@ -198,28 +198,41 @@ def batch_conversion(
     _positive(rate_constant, "the rate constant")
     _positive(initial_concentration, "the initial concentration")
     _order(order)
-    if time_seconds < 0.0:
-        raise KineticsInputError(f"time must not be negative; got {time_seconds}.")
+    if not time_seconds >= 0.0:  # also true for NaN, which no branch below would refuse
+        raise KineticsInputError(f"time must be zero or above; got {time_seconds}.")
     if time_seconds == 0.0:
         return 0.0
 
     if math.isclose(order, 1.0):
         return 1.0 - math.exp(-rate_constant * time_seconds)
 
-    exponent = 1.0 - order
-    remaining_powered = representable(
-        "C^(1-n), the integrated rate law's state",
-        lambda: initial_concentration**exponent + (order - 1.0) * rate_constant * time_seconds,
-    )
-    if remaining_powered <= 0.0:
-        # For n < 1 the concentration reaches exactly zero in finite time — a real property of a
-        # zero- or half-order rate law, not a numerical failure, so it is reported as complete
-        # rather than raised.
-        return 1.0
-    remaining = representable(
-        "the remaining concentration", lambda: remaining_powered ** (1.0 / exponent)
-    )
-    return 1.0 - min(remaining / initial_concentration, 1.0)
+    # Worked in ratio form, `(C/C₀)^(1-n) = 1 + (n-1)·a` with `a = k·t·C₀^(n-1)` the Damköhler
+    # number, and `a` taken as a logarithm. **The absolute form `C^(1-n) = C₀^(1-n) + (n-1)·k·t`
+    # refused inputs whose answer is an ordinary double**: `C₀^(1-n)` overflows at order 200 and
+    # `C₀ = 1e-5` although the conversion is effectively zero, and `(n-1)·k·t` overflows at
+    # `k·t` past DBL_MAX although the conversion is exactly one — at every order but the first,
+    # which made the answer depend on the order. Here only the ratio is ever exponentiated, and a
+    # ratio lies in [0, 1].
+    shift = order - 1.0
+    log_scaled = (
+        math.log(abs(shift))
+        + math.log(rate_constant)
+        + math.log(time_seconds)
+        + shift * math.log(initial_concentration)
+    )  # log(|n-1|·a)
+    if shift < 0.0:
+        scaled = math.exp(min(log_scaled, 0.0))
+        if scaled >= 1.0:
+            # For n < 1 the concentration reaches exactly zero in finite time — a real property of
+            # a zero- or half-order rate law, not a numerical failure, so it is reported as
+            # complete rather than raised.
+            return 1.0
+        log_ratio = math.log1p(-scaled) / -shift
+    else:
+        # log(1 + (n-1)·a), without forming a term past DBL_MAX: past e^700 the 1 is invisible.
+        log_state = log_scaled if log_scaled > 700.0 else math.log1p(math.exp(log_scaled))
+        log_ratio = -log_state / shift
+    return representable("the batch conversion", lambda: -math.expm1(log_ratio))
 
 
 def time_for_batch_conversion(
@@ -338,18 +351,17 @@ def cstr_conversion(
     _positive(rate_constant, "the rate constant")
     _positive(initial_concentration, "the initial concentration")
     _order(order)
-    if residence_time_seconds < 0.0:
+    if not residence_time_seconds >= 0.0:  # also true for NaN, which the bisection would not see
         raise KineticsInputError(
-            f"the residence time must not be negative; got {residence_time_seconds}."
+            f"the residence time must be zero or above; got {residence_time_seconds}."
         )
     if residence_time_seconds == 0.0:
         return 0.0
 
     if math.isclose(order, 1.0):
-        product = representable(
-            "k·τ, the Damköhler number", lambda: rate_constant * residence_time_seconds
-        )
-        return product / (1.0 + product)
+        # `k·τ/(1+k·τ)` is `inf/inf` once `k·τ` passes DBL_MAX, and the answer there is 1.
+        product = rate_constant * residence_time_seconds
+        return product / (1.0 + product) if product <= 1.0 else 1.0 / (1.0 + 1.0 / product)
 
     if math.isclose(order, 0.0):
         removed = rate_constant * residence_time_seconds
@@ -358,20 +370,25 @@ def cstr_conversion(
     # C₀ - C - τkCⁿ = 0 is strictly decreasing in C over (0, C₀]: at C = C₀ it is -τkC₀ⁿ < 0, and
     # as C → 0 it tends to C₀ > 0. So a bisection on (0, C₀] always brackets the root, with no
     # bracket-widening and no failure mode to report.
-    def residual(concentration: float) -> float:
-        return representable(
-            "the CSTR balance C₀ - C - τ·k·Cⁿ",
-            lambda: (
-                initial_concentration
-                - concentration
-                - residence_time_seconds * rate_constant * concentration**order
-            ),
-        )
+    #
+    # **Only the residual's sign is needed, and it is compared in logarithms**, because `τ·k·Cⁿ`
+    # overflows a double at `C₀ = 1e120`, order 3, while the outlet it is bisecting for (~1e40) is
+    # an ordinary number. Refusing the overflow refused a finite answer; an overflowing term only
+    # ever means "consumption exceeds the gap", i.e. the root is below this `C`.
+    log_tk = math.log(residence_time_seconds) + math.log(rate_constant)
+
+    def feed_exceeds_consumption(concentration: float) -> bool:
+        gap = initial_concentration - concentration
+        if gap <= 0.0:
+            return False
+        if concentration <= 0.0:
+            return True
+        return math.log(gap) > log_tk + order * math.log(concentration)
 
     low, high = 0.0, initial_concentration
     for _ in range(200):
         middle = 0.5 * (low + high)
-        if residual(middle) > 0.0:
+        if feed_exceeds_consumption(middle):
             low = middle
         else:
             high = middle
