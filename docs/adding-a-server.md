@@ -167,6 +167,16 @@ and paste it; the loader verifies it on every start. `refresh_owner` is `team:<s
 `role:<slug>`, never a person, and `refresh_cadence` is an ISO 8601 duration in whole months or
 years (`P12M`): who goes back to the source, and how often.
 
+**A source whose terms forbid redistribution is not a source, however complete it is.** Read the
+terms before the data, and record them in `licence`. The standing case is **GESTIS**, which
+prohibits transfer into other information systems: no corpus in this fleet is vendored from it, and
+`ghs` is built on PubChem LCSS and ECHA C&L instead. A hazard corpus is exactly what gets "improved"
+later by reaching for the most complete source available, so the server that vendors one says in its
+own README which source it may not use and why — the catalogue is not where the next contributor
+looks (`D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build`).
+`tests/test_fleet.py::test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why` holds both
+halves.
+
 **Then make the corpus validate itself.** This is the part most worth the effort, and `props`
 shows the pattern: CAS check digits, molecular weight against formula, and Antoine constants against
 the tabulated boiling point are all pairs of *independently written* numbers that must agree, so a

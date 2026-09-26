@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from chemclaw_mcp_calc.engine.metrics import INLINE_BUDGET_EXCEEDED
@@ -54,8 +55,8 @@ class Deadline:
         """Seconds since this budget started."""
         return time.monotonic() - self.started
 
-    def check(self, what: str) -> None:
-        """Raise if the budget is spent, naming the calculation and both numbers.
+    def check(self, what: str, progress: Callable[[], str] | None = None) -> None:
+        """Raise if the budget is spent, naming the calculation, both numbers and how far it got.
 
         **Logged and counted before it is raised, and that is not symmetry for its own sake.** A
         `ValueError` is the family `connector_app` passes to the model verbatim — which is exactly
@@ -76,22 +77,34 @@ class Deadline:
                 an unbounded series set. Two exist today, `"Hessian"` and `"geometry optimization"`,
                 and telling them apart is the point — an undersized Hessian budget and an
                 undersized optimisation budget are different decisions.
+            progress: How far the loop got, phrased to follow "stopped after" — called only once
+                the budget is spent, so the loop pays nothing for it on the path that continues.
+                **This is what makes an abandoned calculation legible rather than silent.** At
+                `servers/calc`'s atom ceiling a relaxation gets on the order of eleven optimizer
+                cycles before this clock stops it (the per-cycle cost is measured in
+                `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`), so
+                "exceeded the budget" alone cannot tell a caller — or an operator reading the
+                WARNING — whether the run was one cycle from converging or nowhere near. The
+                figures come from the loop, not from the caller, so they are safe in the message.
 
         Raises:
             ValueError: the budget is spent. Worded for the model, which is what receives it.
         """
         if self.elapsed <= self.seconds:
             return
+        spent = self.elapsed
+        reached = f"; stopped after {progress()}" if progress is not None else ""
         INLINE_BUDGET_EXCEEDED.labels(what).inc()
         logger.warning(
-            "inline budget exceeded: a %s spent %.1fs of a %gs budget and was stopped",
+            "inline budget exceeded: a %s spent %.1fs of a %gs budget and was stopped%s",
             what,
-            self.elapsed,
+            spent,
             self.seconds,
+            reached,
         )
         raise ValueError(
             f"a {what} exceeded this server's inline budget of {self.seconds:g}s (spent "
-            f"{self.elapsed:.1f}s). This calculation runs inside a conversation turn and nothing "
+            f"{spent:.1f}s{reached}). This calculation runs inside a conversation turn and nothing "
             "here is cached, so it is stopped rather than left burning CPU for an answer the "
             "caller has already stopped waiting for: run a smaller system, relax it first, or "
             "raise CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS on a deployment that waits longer"

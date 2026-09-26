@@ -4738,3 +4738,39 @@ def test_the_gate_runs_the_only_layer_that_covers_two_of_the_four_egress_channel
         "the guarded target no longer names the lane it did not run; silently omitting a layer is "
         "the defect it exists to prevent, and it reads exactly like having run it"
     )
+
+
+def test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why() -> None:
+    """GESTIS forbids transfer into other information systems, so no corpus here comes from it.
+
+    `ghs` is proposed in `MODULES.md` on PubChem LCSS and ECHA C&L, and a hazard corpus is exactly
+    what a later contributor "improves" by reaching for the most complete source available — which
+    for occupational hazard data is GESTIS. The catalogue says so; a catalogue is prose nothing
+    reads at build time (`D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build`).
+
+    Two halves. Every vendored `dataset.json` is read, and none may name GESTIS in the two fields
+    that say where the data came from and on what terms — `retrieved_from` and `licence`. And the
+    day `servers/ghs` exists, its README must name GESTIS: the prohibition is the one fact about
+    that server's corpus a reviewer cannot recover from the corpus itself, so it has to travel with
+    the server rather than stay behind in the catalogue. That half is vacuous until the server is
+    built, and it is written now so that building it is what makes it bite.
+    """
+    corpora = sorted(SERVERS.glob("*/src/*/data/**/dataset.json"))
+    assert corpora, "no vendored dataset.json found; the glob has drifted from the layout"
+    sourced = []
+    for path in corpora:
+        provenance = json.loads(path.read_text(encoding="utf-8"))
+        for field in ("retrieved_from", "licence"):
+            if "gestis" in str(provenance.get(field, "")).lower():
+                sourced.append(f"{path.relative_to(ROOT)}:{field}")
+    assert not sourced, (
+        f"corpus provenance naming GESTIS: {sourced}. GESTIS prohibits transfer into other "
+        "information systems; `ghs` is built on PubChem LCSS and ECHA C&L instead"
+    )
+    ghs = SERVERS / "ghs"
+    if ghs.is_dir():
+        readme = (ghs / "README.md").read_text(encoding="utf-8")
+        assert "GESTIS" in readme, (
+            "servers/ghs/README.md does not name GESTIS. The reason its corpus is PubChem LCSS and "
+            "ECHA C&L has to travel with the server, or the next contributor reaches for GESTIS"
+        )

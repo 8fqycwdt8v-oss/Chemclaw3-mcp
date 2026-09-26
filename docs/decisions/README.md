@@ -122,6 +122,7 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it](D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it.md) | A claim about another repository is checked by re-reading it, and a count in prose is the same defect wherever it appears |
 | [D-2026-09-19-an-atom-count-under-a-byte-cap-is-a-range-not-a-figure](D-2026-09-19-an-atom-count-under-a-byte-cap-is-a-range-not-a-figure.md) | An atom count under a byte cap is a range, not a figure, and a margin derived from a refused size is derived from nothing |
 | [D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape](D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape.md) | The worst of three shapes is not the worst shape |
+| [D-2026-09-26-a-cake-stays-incompressible-until-a-filtration-test-arrives](D-2026-09-26-a-cake-stays-incompressible-until-a-filtration-test-arrives.md) | A cake stays incompressible until a filtration test arrives |
 | [D-2026-09-26-a-computed-import-is-argued-at-its-site](D-2026-09-26-a-computed-import-is-argued-at-its-site.md) | A computed import is argued at its site, not exempted with its file |
 | [D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter](D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter.md) | A constant table is cached where its compile is measured to matter, and not on the strength of the pattern looking familiar |
 | [D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often](D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often.md) | A corpus names who refreshes it and how often, in a shape the loader checks |
@@ -131,7 +132,9 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses](D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses.md) | A stand-in refuses what its consumer refuses |
 | [D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated](D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated.md) | A tool that runs on the event loop cannot be gated, and the integrator gets a ceiling rather than a new scheme |
 | [D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it](D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it.md) | An environment trust prior adjusts the table; it does not replace it |
+| [D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build](D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build.md) | GESTIS is not a source, and the reason outlives the build |
 | [D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe](D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe.md) | One ceiling for chem's heavy band, derived from the pool rather than the probe |
 | [D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it](D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it.md) | One echo bound, and the refusals that bypassed the four copies of it |
+| [D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary](D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary.md) | The consumer's agreement module is the trust boundary |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

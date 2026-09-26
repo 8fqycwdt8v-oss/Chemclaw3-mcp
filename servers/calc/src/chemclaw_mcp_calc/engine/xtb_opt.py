@@ -394,6 +394,13 @@ class _TbliteEngine(Engine):  # type: ignore[misc]
     SCFs — 9 single points for 6 steps — and the verification one ran with no `Deadline.check`, so
     the uninterruptible overrun past the budget could be two single points against a caller margin
     sized for one. `last` answers both without a second SCF.
+
+    **It is also what says how far a relaxation got when the budget stops it** — `progress`, handed
+    to `Deadline.check`. geomeTRIC's cycle counter lives inside `Optimize` and does not survive the
+    exception, so the figure reported is `evaluations`, which bounds the cycles from above (a
+    rejected step costs a gradient and advances none), beside the largest free gradient component at
+    the last point evaluated and the tolerance it had to reach. That pair is what tells an
+    abandoned relaxation from one that was nearly done.
     """
 
     def __init__(
@@ -402,10 +409,15 @@ class _TbliteEngine(Engine):  # type: ignore[misc]
         calculator: Calculator,
         deadline: Deadline,
         start: tuple[np.ndarray, float, np.ndarray],
+        *,
+        free_mask: np.ndarray,
+        tolerance: float,
     ) -> None:
         super().__init__(molecule)
         self._calculator = calculator
         self._deadline = deadline
+        self._free_mask = free_mask
+        self._tolerance = tolerance
         self.evaluations = 0
         #: `(positions, energy, gradient)` in Angstrom and Hartree/Angstrom, as `evaluate_point`
         #: returns them — the most recent point this engine knows the answer at.
@@ -419,7 +431,7 @@ class _TbliteEngine(Engine):  # type: ignore[misc]
             # Per gradient rather than per cycle: `max_steps` bounds cycles, and one cycle on a
             # large substrate is unbounded in seconds — so a check outside the optimizer is exactly
             # the one that misses this. It is the same placement the L-BFGS-B objective used.
-            self._deadline.check("geometry optimization")
+            self._deadline.check("geometry optimization", self.progress)
             self.evaluations += 1
             positions = flat.reshape(-1, 3) / ANGSTROM_TO_BOHR
             energy, gradient, _ = evaluate_point(self._calculator, positions)
@@ -427,6 +439,17 @@ class _TbliteEngine(Engine):  # type: ignore[misc]
             self._last_bohr = flat.copy()
         _, energy, gradient = self.last
         return {"energy": energy, "gradient": (gradient / ANGSTROM_TO_BOHR).ravel()}
+
+    def progress(self) -> str:
+        """How far this relaxation got, phrased to follow "stopped after" in a refusal."""
+        _, _, gradient = self.last
+        largest = float(np.max(np.abs(np.where(self._free_mask, gradient.ravel(), 0.0))))
+        noun = "evaluation" if self.evaluations == 1 else "evaluations"
+        return (
+            f"{self.evaluations} gradient {noun} past the input geometry, with max |gradient| "
+            f"{largest:.2e} Hartree/Angstrom at the last one against the {self._tolerance:.2e} "
+            "it had to reach"
+        )
 
 
 def _geometric_molecule(numbers: np.ndarray, positions: np.ndarray) -> Any:
@@ -549,7 +572,12 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
     if max_gradient > spec.gradient_tolerance:
         molecule = _geometric_molecule(numbers, positions)
         engine = _TbliteEngine(
-            molecule, calc, deadline, (positions, initial_energy, initial_gradient)
+            molecule,
+            calc,
+            deadline,
+            (positions, initial_energy, initial_gradient),
+            free_mask=free_mask,
+            tolerance=spec.gradient_tolerance,
         )
         coordinates = _coordinate_system(molecule, spec.frozen_atoms)
         try:
@@ -579,7 +607,7 @@ def _optimize_with_library(spec: OptSpec, structure: Structure) -> OptimizationR
             # coordinates returned are exactly the ones whose gradient is checked below.
             final, energy, gradient = last_positions, last_energy, last_gradient
         else:
-            deadline.check("geometry optimization")
+            deadline.check("geometry optimization", engine.progress)
             energy, gradient, _ = evaluate_point(calc, final)
         max_gradient = float(np.max(np.abs(np.where(free_mask, gradient.ravel(), 0.0))))
 
