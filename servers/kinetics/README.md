@@ -110,7 +110,8 @@ significant figures, so no absolute tolerance would have caught it. Only the rat
 (`CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`), and the tool runs off the event loop. This server
 used to be argued out of a ceiling at 836 µs per integration; that stopped being true when the step
 count became derived from the caller's rate constant (up to `MAX_INTEGRATION_STEPS`), which is up
-to half a second of pure-Python RK4 holding the interpreter. The five closed-form tools are
+to half a second of pure-Python RK4 holding the interpreter — the measurement and its conditions are
+`D-2026-09-26-a-cost-the-caller-sets-is-a-cost-that-needs-a-ceiling`'s, and no test holds the figure. The five closed-form tools are
 microseconds and are not gated. A profile keeps at most `reactors.PROFILE_POINTS` points — evenly
 spaced samples, the end of the dose and the exact peak — so memory does not grow with the step
 count either.

@@ -5,16 +5,17 @@
 integrator costing 836 µs at its 200-step default. That is still the default, but the step count is
 no longer the default's to set: `reactors._steps_for_stability` derives a floor from the caller's
 rate constant, and `MAX_INTEGRATION_STEPS` was raised to 200,000 so a realistic stiff dose is
-answered rather than refused. Measured on a 1 h dose of 5 mol into 0.1 against a co-reagent at 60,
-`k = 2.5` integrates ~194,000 steps in **0.42 s of pure-Python RK4** — five hundred times the figure
-the exemption quoted, from an input any caller controls.
+answered rather than refused. A stiff dose is therefore hundreds of milliseconds of pure-Python RK4
+— orders of magnitude past the figure the exemption quoted, from an input any caller controls. The
+measurement, with its conditions, is the ADR's alone: no test holds a wall-clock figure, and the
+copy this docstring used to carry had already drifted from the ADR's re-measurement.
 
 **Pure Python holds the GIL**, so offloading to a thread buys latency isolation and no throughput:
 the event loop and `/healthz` get their turns at every switch interval, and N admitted integrations
 run one at a time. The ceiling below is therefore the same arithmetic `servers/chem` uses for its
 depictions: N in-flight calls at the worst legal cost must stay well inside the kubelet probe's
-`timeoutSeconds` of 3 — two at 0.42 s is under a third of it. A pod that needs more throughput
-needs more replicas, not a wider ceiling.
+`timeoutSeconds` of 3 — the ADR's worst case, doubled, is under a third of it. A pod that needs
+more throughput needs more replicas, not a wider ceiling.
 
 **Refused rather than queued, and admission rather than a clock.** Cancelling the awaiting
 coroutine does not stop the worker thread, so a per-call timeout would answer a caller who has gone
@@ -31,8 +32,8 @@ from mcp_server_kit.limits import Admission as KitAdmission
 
 __all__ = ["DEFAULT_MAX_CONCURRENT_INTEGRATIONS", "Admission"]
 
-#: Two worst-case integrations at 0.42 s each hold the interpreter for 0.84 s, under a third of the
-#: kubelet probe's 3 s budget. See the module docstring.
+#: Two worst-case integrations hold the interpreter for under a third of the kubelet probe's 3 s
+#: budget, on the measurement in the ADR the module docstring names.
 DEFAULT_MAX_CONCURRENT_INTEGRATIONS = 2
 
 

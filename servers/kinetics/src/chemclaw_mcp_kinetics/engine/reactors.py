@@ -649,10 +649,26 @@ def semibatch_accumulation(
         `max(c, 0.0) ** n` alone is not that: `0.0 ** 0.0` is 1, so a rate law of order zero in
         the dosed reagent kept consuming a reagent that was not there, and drove its own state
         negative.
+
+        **A float `**` raises `OverflowError` rather than returning infinity**, and every guard
+        upstream is about finiteness, not magnitude: at an order below one in the dosed reagent the
+        stiffness bound is zero, so nothing priced the co-reagent's own power, and a finite
+        `C_co = 1e200` at order 2 left here as an `OverflowError` that `connector_app` turns into an
+        opaque `error_id`. Caught here, at the one expression that can raise, rather than by an
+        arbitrary input ceiling: no magnitude bound on the inputs is physical, and a rate that
+        cannot be represented is the refusal the caller needs to read.
         """
         if dosed_c <= 0.0 or coreagent_c <= 0.0:
             return 0.0
-        return float(rate_constant * dosed_c**order_in_dosed * coreagent_c**order_in_coreagent)
+        try:
+            return float(rate_constant * dosed_c**order_in_dosed * coreagent_c**order_in_coreagent)
+        except OverflowError:
+            raise KineticsInputError(
+                f"the rate law overflows a double at a dosed-reagent concentration of "
+                f"{dosed_c:.3g} and a co-reagent concentration of {coreagent_c:.3g} (orders "
+                f"{order_in_dosed:g} and {order_in_coreagent:g}): no real solution is that "
+                "concentrated. Check the units of the concentrations and of the rate constant."
+            ) from None
 
     def derivatives(time: float, dosed: float, coreagent: float) -> tuple[float, float]:
         """d(moles)/dt for both species. Consumption is one-to-one in the dosed reagent."""

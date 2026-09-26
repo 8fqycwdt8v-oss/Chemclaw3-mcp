@@ -477,3 +477,22 @@ def test_a_stiffness_too_large_to_represent_is_the_too_fast_refusal() -> None:
             order_in_dosed=1.0,
             order_in_coreagent=2.0,
         )
+
+
+@pytest.mark.parametrize("order_in_dosed", [0.0, 0.5])
+def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: float) -> None:
+    """Below first order in the dosed reagent the stiffness bound is zero, so nothing priced
+    `C_co ** n_co` before the integrator evaluated it — and a finite `1e200` squared left the rate
+    law as an `OverflowError`, which `connector_app` replaces with an opaque `error_id`.
+    """
+    with pytest.raises(KineticsInputError, match="overflows"):
+        reactors.semibatch_accumulation(
+            rate_constant=1e-3,
+            dose_time_seconds=3600.0,
+            initial_volume=1.0,
+            dosed_moles=1.0,
+            dosed_volume=0.0,
+            initial_coreagent_concentration=1e200,
+            order_in_dosed=order_in_dosed,
+            order_in_coreagent=2.0,
+        )
