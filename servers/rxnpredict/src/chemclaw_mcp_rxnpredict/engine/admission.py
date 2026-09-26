@@ -13,13 +13,15 @@ six deterministic doubles that each sleep, driven through the real tool: one cal
 So a call-counting ceiling of two on this server admits two times the predictor count, which is a
 number the *deployment's* enabled-model list decides and the ceiling never sees.
 
-**And each of those threads is itself wider than one core.** These predictors are torch models, and
-torch's intra-op width is `torch.get_num_threads()` — sized from the machine's physical cores, not
-from the container's cgroup, and pinned by no image in this fleet. On a 64-core node a pod limited
-to two cores gives one forward pass 64 runnable threads. That is `servers/calc`'s lesson arriving
-twice over: there a call-counting ceiling of four admitted sixteen CREST threads on a four-core pod
-because `CHEMCLAW_CREST_THREADS` was set and not counted; here the fan-out and the thread width are
-both uncounted, and the second of them is a number nobody chose.
+**And each of those threads can itself be wider than one core.** These predictors are torch
+models, and torch's intra-op width is `torch.get_num_threads()` — sized from the machine's
+physical cores, not from the container's cgroup. Unpinned, on a 64-core node a pod limited to two
+cores gives one forward pass 64 runnable threads, which is why the image now pins
+`OMP_NUM_THREADS=1` (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`) and why the cost
+below is still read from torch rather than assumed: a deployment can raise the pin. That is
+`servers/calc`'s lesson arriving twice over: there a call-counting ceiling of four admitted sixteen
+CREST threads on a four-core pod because `CHEMCLAW_CREST_THREADS` was set and not counted; here the
+fan-out and the thread width are both multipliers a call count cannot see.
 
 So `acquire` takes a **cost** in slots, where a slot is a core:
 

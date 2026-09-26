@@ -300,8 +300,10 @@ def test_a_prediction_is_charged_the_models_threads_rather_than_one_call(
     """A slot is a core, and torch's intra-op width is the second multiplier a call count misses.
 
     `torch.get_num_threads()` is sized from the machine's physical cores rather than from the
-    container's cgroup, and no image in this fleet pins `OMP_NUM_THREADS`, so on a large node one
-    forward pass in a two-core pod is a thread count nobody chose. Driven with a stub `torch`
+    container's cgroup, so unpinned a forward pass in a two-core pod on a large node is a thread
+    count nobody chose. The image pins `OMP_NUM_THREADS=1` (held by `tests/test_fleet.py::
+    test_every_torch_image_pins_its_inference_thread_width`); a deployment may raise it, and the
+    charge must follow whatever torch reports. Driven with a stub `torch`
     rather than the real extra, which no test environment here carries: what is under test is the
     number `inference_threads()` *reads*, and reading a real torch would assert this runner's core
     count instead.

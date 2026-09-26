@@ -53,6 +53,38 @@ DEFAULT_MODEL_TRUST_PRIORS: Mapping[str, float] = MappingProxyType(
 )
 
 
+def _predictor_weights(supplied: object, field: str) -> dict[str, float]:
+    """`supplied` as `{predictor id: weight}`, or a `ValueError` naming what it cannot mean.
+
+    Shared by the global table and each class of the per-class one, so the two cannot disagree
+    about what a weight is: a predictor `DEFAULT_MODEL_TRUST_PRIORS` weights — a typo would set
+    nothing and read as done — and a finite number above zero, since zero silences a predictor
+    that still reports having voted and a negative one inverts its vote.
+    """
+    if not isinstance(supplied, dict):
+        raise ValueError(
+            f"{field} must be a JSON object of predictor id to weight, "
+            f"not {type(supplied).__name__}"
+        )
+    unknown = sorted(str(name) for name in set(supplied) - set(DEFAULT_MODEL_TRUST_PRIORS))
+    if unknown:
+        raise ValueError(
+            f"{field} names {echo(repr(unknown))}, which this server does not "
+            f"weight; the predictors it does are {sorted(DEFAULT_MODEL_TRUST_PRIORS)}"
+        )
+    weights: dict[str, float] = {}
+    for name, weight in supplied.items():
+        if isinstance(weight, bool) or not isinstance(weight, int | float):
+            raise ValueError(f"{field}[{echo(name)!r}] must be a number, not {echo(repr(weight))}")
+        if not (math.isfinite(weight) and weight > 0):
+            raise ValueError(
+                f"{field}[{echo(name)!r}] must be finite and above zero, not {weight!r}; "
+                "to stop a predictor voting, name it in CHEMCLAW_RXNPREDICT_DISABLED_MODELS"
+            )
+        weights[str(name)] = float(weight)
+    return weights
+
+
 class Settings(BaseSettings):
     """Server configuration, from `CHEMCLAW_RXNPREDICT_*` environment variables.
 
@@ -103,10 +135,12 @@ class Settings(BaseSettings):
         default_factory=lambda: dict(DEFAULT_MODEL_TRUST_PRIORS)
     )
 
-    # Per-reaction-class priors, as an explicit JSON env override and nothing else. Empty is the
-    # shipped state and means "read the vendored table" — which `class_priors()` does, lazily.
+    # Per-reaction-class priors, as an explicit JSON env **adjustment** and nothing else. Empty is
+    # the shipped state and means "the vendored table as calibrated". A value names
+    # `{class: {predictor: weight}}` pairs, and `class_priors()` lays them over the corpus — lazily,
+    # because the corpus is read on the probe and never at settings load.
     # **Never read this field directly on a serving path**; read `class_priors()`, which is the
-    # only place that knows the override beats the corpus.
+    # only place that knows how the two combine.
     model_trust_priors_by_class: dict[str, dict[str, float]] = Field(default_factory=dict)
 
     @field_validator("model_trust_priors", mode="before")
@@ -131,37 +165,49 @@ class Settings(BaseSettings):
         Accepts a JSON string as well as a mapping, which is how an env var can carry one.
         """
         supplied = json.loads(value) if isinstance(value, str) else value
-        if not isinstance(supplied, dict):
-            raise ValueError(
-                "model_trust_priors must be a JSON object of predictor id to weight, "
-                f"not {type(supplied).__name__}"
-            )
-        unknown = sorted(set(supplied) - set(DEFAULT_MODEL_TRUST_PRIORS))
-        if unknown:
-            raise ValueError(
-                f"model_trust_priors names {echo(repr(unknown))}, which this server does not "
-                f"weight; the predictors it does are {sorted(DEFAULT_MODEL_TRUST_PRIORS)}"
-            )
         merged = dict(DEFAULT_MODEL_TRUST_PRIORS)
-        for name, weight in supplied.items():
-            if isinstance(weight, bool) or not isinstance(weight, int | float):
-                raise ValueError(
-                    f"model_trust_priors[{echo(name)!r}] must be a number, not {echo(repr(weight))}"
-                )
-            if not (math.isfinite(weight) and weight > 0):
-                raise ValueError(
-                    f"model_trust_priors[{echo(name)!r}] must be finite and above zero, "
-                    f"not {weight!r}; "
-                    "to stop a predictor voting, name it in CHEMCLAW_RXNPREDICT_DISABLED_MODELS"
-                )
-            merged[name] = float(weight)
+        merged.update(_predictor_weights(supplied, "model_trust_priors"))
         return merged
 
     @field_validator("model_trust_priors_by_class", mode="before")
     @classmethod
     def _parse_class_priors(cls, value: Any) -> Any:
-        """Same, for the per-class table."""
-        return json.loads(value) if isinstance(value, str) else value
+        """Validate a per-class adjustment; `class_priors()` is what lays it over the corpus.
+
+        **It used to be the whole per-class table**, with nothing checked: one class named in
+        `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS_BY_CLASS` dropped every other class's calibrated
+        weights from `data/trust_priors.json`, a misspelt class label or predictor id set nothing
+        and read as done, and a zero or negative weight silenced or inverted a vote — the defect
+        `_merge_priors` fixed for the global table, one level down
+        (`D-2026-09-26-a-class-prior-adjusts-the-corpus-it-does-not-replace-it`).
+
+        So the same rules apply per class: an object of class label to an object of predictor id to
+        weight; every label one `classifier.ALL_CLASSES` names **other than `CLASS_OTHER`**, which
+        `effective_prior` never selects a per-class weight for, so a prior on it would change
+        nothing and read as done; every predictor one `DEFAULT_MODEL_TRUST_PRIORS` weights; every
+        weight finite and above zero. The corpus is not read here: that would put a checksum
+        failure back into settings load, which is an import-time crash
+        (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
+        """
+        from chemclaw_mcp_rxnpredict.engine.meta.classifier import ALL_CLASSES, CLASS_OTHER
+
+        supplied = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(supplied, dict):
+            raise ValueError(
+                "model_trust_priors_by_class must be a JSON object of reaction class to "
+                f"{{predictor id: weight}}, not {type(supplied).__name__}"
+            )
+        selectable = ALL_CLASSES - {CLASS_OTHER}
+        unknown = sorted(str(label) for label in supplied if label not in selectable)
+        if unknown:
+            raise ValueError(
+                f"model_trust_priors_by_class names {echo(repr(unknown))}, which is not a class "
+                f"a per-class prior is ever read for; the classes are {sorted(selectable)}"
+            )
+        return {
+            label: _predictor_weights(weights, f"model_trust_priors_by_class[{label!r}]")
+            for label, weights in supplied.items()
+        }
 
     def parse_enabled(self, raw: str) -> set[str] | None:
         """`None` for `*` or empty (meaning "all"), otherwise the named predictor IDs."""
@@ -186,15 +232,26 @@ class Settings(BaseSettings):
         Lazy here means the failure lands where `chem` and `safety` already put it: on the probe,
         which runs this (`app.py`'s `_readiness`) before the pod takes traffic.
 
+        **An override adjusts the corpus rather than replacing it**
+        (`D-2026-09-26-a-class-prior-adjusts-the-corpus-it-does-not-replace-it`): each
+        `(class, predictor)` pair it names replaces that one calibrated weight, and every pair it
+        does not name — including every class it does not mention — stands as calibrated. A new
+        dict every call, so the cached corpus is never edited in place.
+
         Returns:
-            `{reaction_class: {model_name: weight}}`, empty when no calibration has been run —
-            which is the shipped state, and makes the aggregator fall back to the global priors.
+            `{reaction_class: {model_name: weight}}`, empty when no calibration has been run and no
+            override is set — which is the shipped state, and makes the aggregator fall back to the
+            global priors.
         """
-        if self.model_trust_priors_by_class:
-            return self.model_trust_priors_by_class
         from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import load_vendored_priors
 
-        return load_vendored_priors(DATA_DIR)
+        corpus = load_vendored_priors(DATA_DIR)
+        if not self.model_trust_priors_by_class:
+            return corpus
+        merged = {label: dict(weights) for label, weights in corpus.items()}
+        for label, weights in self.model_trust_priors_by_class.items():
+            merged.setdefault(label, {}).update(weights)
+        return merged
 
     def parse_disabled(self) -> set[str]:
         """The predictor IDs forced off, whatever the enabled list says."""
@@ -215,10 +272,12 @@ def inference_threads() -> int:
     """Cores one predictor's forward pass may spend, which is what the admission gate charges it.
 
     **Read from torch rather than assumed.** `torch.get_num_threads()` is the intra-op width, and
-    torch sizes it from the machine's physical cores — *not* from the container's cgroup, and no
-    image in this fleet pins `OMP_NUM_THREADS` for it. So on a large node a pod limited to two
-    cores hands one forward pass a thread count nobody chose, and charging the ceiling anything
-    else would be charging it for CPU that either does not exist or is not being counted.
+    torch sizes it from the machine's physical cores — *not* from the container's cgroup. The image
+    pins `OMP_NUM_THREADS=1`
+    (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`), so this reads 1 there; it is
+    still read rather than assumed, because a deployment that raises the pin — or runs this
+    package somewhere without it — spends what torch was configured with, and charging the
+    ceiling anything else would be charging it for CPU that is not being counted.
 
     `1` when torch is not importable, which is every checkout without the model extras and is also
     the floor a cost must never fall below: a cost of zero would make the tool uncounted. On CUDA

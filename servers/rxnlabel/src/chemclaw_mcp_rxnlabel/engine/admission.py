@@ -20,10 +20,12 @@ path admitted batches run one at a time whatever the ceiling says.
 RXNMapper is an ALBERT transformer, and torch releases the GIL and parallelises *inside* one call:
 its intra-op width is `torch.get_num_threads()`, which torch sizes from the machine's physical
 cores and **not** from the container's cgroup — so a pod limited to two cores on a 64-core node
-gives one forward pass 64 runnable threads, a number nobody chose and no image here pins. That is
-`servers/calc`'s lesson arriving by a different route: there a call-counting ceiling of four
-admitted sixteen CREST threads on a four-core pod, because `CHEMCLAW_CREST_THREADS` was set and not
-counted. Here nothing is set at all, which is worse, because the number changes with the node.
+gives one forward pass 64 runnable threads, a number nobody chose unless the image pins it — and
+it now does, `OMP_NUM_THREADS=1`
+(`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`). That is `servers/calc`'s lesson
+arriving by a different route: there a call-counting ceiling of four admitted sixteen CREST threads
+on a four-core pod, because `CHEMCLAW_CREST_THREADS` was set and not counted. Unpinned, nothing is
+set at all, which is worse, because the number changes with the node.
 
 So `acquire` takes a **cost**: one slot for the RDKit-only path, which the measurement above shows
 is one core's worth however many threads it is given, and `mapping.inference_threads()` where a

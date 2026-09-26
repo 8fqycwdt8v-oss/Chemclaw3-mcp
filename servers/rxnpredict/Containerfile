@@ -93,6 +93,19 @@ ENV HF_HOME=/opt/models/hf \
     MCP_EGRESS_GUARD=on \
     CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models
 
+# **One thread per forward pass, pinned here rather than left to the node**
+# (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`). torch sizes its intra-op pool
+# from the machine's cores, not from the container's CPU limit, so unpinned a forward pass in this
+# two-core pod runs as many threads as the node has. Measured on 2026-09-26 in a `--cpus=2`
+# container on an eight-core VM, torch 2.13.0 CPU: RXNMapper over 16 reactions took 4,014 ms
+# unpinned (8 threads) against 395 ms at one thread and 224 ms at two, and a T5-small-shaped
+# forward 3,993 / 1,359 / 860 ms — oversubscription, not parallelism. `inference_threads()` reads
+# the pinned width, so the admission gate charges one slot per forward pass and a slot is a core
+# by construction. Raise deliberately, on a pod sized for it; the gate follows without an edit.
+ENV OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
+
 # The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
 # caller learns which build answered without a second endpoint. Left unsupplied it reports
