@@ -9,14 +9,14 @@ Every capability here is a pure function of its arguments plus a read of a vendo
 store, no durable state, no network. A count is deliberately not written here — the sentence that
 used to say "five" outlived two additions.
 
-**The six enumerations exist so that the expensive half never has to guess its own universe.**
+**The enumerations exist so that the expensive half never has to guess its own universe.**
 Chemclaw3's `rank_species` and `survey_bond_strengths` rank a *set*; these produce the set from the
 molecular graph, for a small fraction of what ranking it costs. Its skills state the rule as
 *enumerate, then compute, and never the reverse*, and the reason is that the alternative is a model
 inventing plausible SMILES. "Free" is what that used to say, and it is the wrong word twice over:
 these are milliseconds on a drug-sized molecule and **seconds** on a large one — `describe_topology`
-measures 2,793 ms on a 996-atom dendrimer — and only `enumerate_protonation_states` has an input
-bound.
+measures 2,793 ms on a 996-atom dendrimer — and every one but `enumerate_stereoisomers` is priced
+by an input bound before it runs.
 
 **"Cheap" is relative to a DFT job, not to an event loop.** RDKit parsing, `Descriptors.MolWt` and
 especially 2D-coordinate generation plus SVG rendering are CPU-bound C++ that holds the GIL for
@@ -68,11 +68,16 @@ from chemclaw_mcp_chem.engine.species import (
     enumerate_stereoisomer_set,
     enumerate_tautomer_set,
 )
+from chemclaw_mcp_chem.engine.substitution import (
+    SubstitutionMode,
+    SubstitutionSet,
+    enumerate_substitution_set,
+)
 from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candidates
 
 server = FastMCP("chem")
 
-# The pod's ceiling on concurrent heavy calls — the depiction and the five species tools, one gate
+# The pod's ceiling on concurrent heavy calls — the depiction and the species tools, one gate
 # because they spend one interpreter. Built at import; a test that needs a different ceiling
 # replaces this attribute, so the number a gate enforces is the number it was built from. The
 # default and its derivation live in `engine/admission.py`, beside the measurement they rest on.
@@ -560,3 +565,62 @@ async def enumerate_degradants(smiles: str) -> DegradantSet:
         more.
     """
     return await asyncio.to_thread(enumerate_degradant_candidates, smiles)
+
+
+@server.tool()
+@_admitted
+async def enumerate_substitutions(
+    smiles: str, substituent: str | None = None, mode: SubstitutionMode = "move"
+) -> SubstitutionSet:
+    """List the regioisomers of a substitution series: the set a "which position" question ranks.
+
+    Structural, and priced before it runs. Pass `smiles` and `labels` from the result straight to
+    `rank_species` (as `species` and `labels`, `ranking="custom"`) to rank the isomers by free
+    energy; this tool says only which positions exist.
+
+    **Two questions, chosen by `mode`:**
+
+    - `move` (the default) answers "what does moving the methyl do": every substituent on an
+      aromatic carbon is moved, one at a time, to every other aromatic C-H of its own ring system.
+      The results are isomers of the input, so the input is first, labelled "as given" — "the
+      isomer you drew is the most stable" is a common answer and needs the input in the set. Pass
+      `substituent` to move only that group (`C` for methyl, `OC` for methoxy); leave it out to
+      move every one.
+    - `add` answers "which regioisomer can this substitution give": `substituent` is put on each
+      symmetry-distinct aromatic C-H of the input, once. The input is **not** in the result, since
+      it has one group fewer and ranking it against its products compares different formulas.
+
+    `substituent` bonds through its **first** atom (`OC` is methoxy, `CO` is hydroxymethyl), or
+    through the atom a single `*` marks — write nitro as `*[N+](=O)[O-]`, since its nitrogen has no
+    hydrogen to give up.
+
+    **Not a prediction, and a ranking of this set is not a regioselectivity.** Every entry says a
+    position exists, not that a reaction goes there. `rank_species` then ranks the *finished*
+    isomers by stability, while the regiochemistry of an electrophilic aromatic substitution is
+    usually set kinetically, at the sigma complex — so say, whenever you report such a ranking,
+    that it is the thermodynamic order and that the major product can differ from it.
+
+    What it does not cover, by construction: aliphatic positions, a second substitution (call it
+    again on a result), and a group on a ring **nitrogen**, which is never moved — the N-alkylation
+    question of an azole is answered by moving its carbon substituents instead (for
+    1-methyl-3-phenylpyrazole, the phenyl to C5).
+
+    A molecule above `MAX_SUBSTITUTION_HEAVY_ATOMS` (250 heavy atoms by default) is refused, and so
+    is one whose `candidates x heavy atoms` exceeds `MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT`
+    (20,000 by default, about a second of work) — the refusal names both numbers and three ways on.
+
+    Args:
+        smiles: The molecule, as SMILES.
+        substituent: The group to move (`move`, optional) or to put on the ring (`add`,
+            required), as SMILES bonding through its first atom or through a marked `*`.
+        mode: `move` for positional isomers of the input, `add` for the products of one new
+            substitution.
+
+    Returns:
+        `smiles` and `labels`, positional, with the positions named on the input the way
+        `describe_sites` names them ("the para aromatic carbon (para to the OH substituent)"), and
+        `sites` giving each landing position's `site_id` on `parent`. Refuses rather than
+        truncating past 64 isomers — a partial set would make a downstream population normalize
+        over a fraction of the universe while looking complete.
+    """
+    return await asyncio.to_thread(enumerate_substitution_set, smiles, substituent, mode)

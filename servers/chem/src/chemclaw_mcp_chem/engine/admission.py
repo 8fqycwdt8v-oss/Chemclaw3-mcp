@@ -128,8 +128,11 @@ __all__ = [
 ADMISSION_MARKER = "__admission_gated__"
 
 #: The tools that share the ceiling: the depiction and the five species tools the module docstring
-#: measures. `tests/test_admission.py` holds this against the *served* surface in both directions,
-#: so a heavy tool added next year is either gated or named there as the reason it need not be.
+#: measures, plus `enumerate_substitutions`, which joined the band after that measurement — each of
+#: its candidates is a product canonicalised over the whole graph, the degradant enumerator's
+#: shape, and `engine/substitution.py` has its own frontier. `tests/test_admission.py` holds this
+#: against the *served* surface in both directions, so a heavy tool added next year is either
+#: gated or named there as the reason it need not be.
 GATED_TOOLS = frozenset(
     {
         "render_structure",
@@ -138,6 +141,7 @@ GATED_TOOLS = frozenset(
         "enumerate_protonation_states",
         "enumerate_stereoisomers",
         "enumerate_degradants",
+        "enumerate_substitutions",
     }
 )
 
