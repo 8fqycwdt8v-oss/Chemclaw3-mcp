@@ -22,8 +22,8 @@ and, against a 10 ms tick beside them, whether one call holds the interpreter:
 
 Two of the five are single RDKit calls that hold the GIL for their whole duration — a legal
 dendrimer stalls this process for 2.9 s against a 3 s `readinessProbe.timeoutSeconds` — and the
-other three yield it but still run one at a time (n=4 costs 4x n=1). So all six tools in
-`GATED_TOOLS` spend the one resource this pod has one of, and they share one ceiling.
+other three yield it but still run one at a time (n=4 costs 4x n=1). So every tool in
+`GATED_TOOLS` spends the one resource this pod has one of, and all of them share one ceiling.
 
 **What the ceiling cannot be derived from is the probe, and saying so is the correction.** The
 render ceiling was derived as "N x the worst call under a third of the probe budget". For the band
@@ -128,8 +128,11 @@ __all__ = [
 ADMISSION_MARKER = "__admission_gated__"
 
 #: The tools that share the ceiling: the depiction and the five species tools the module docstring
-#: measures. `tests/test_admission.py` holds this against the *served* surface in both directions,
-#: so a heavy tool added next year is either gated or named there as the reason it need not be.
+#: measures, plus `enumerate_substitutions`, which joined the band after that measurement — each of
+#: its candidates is a product canonicalised over the whole graph, the degradant enumerator's
+#: shape, and `engine/substitution.py` has its own frontier. `tests/test_admission.py` holds this
+#: against the *served* surface in both directions, so a heavy tool added next year is either
+#: gated or named there as the reason it need not be.
 GATED_TOOLS = frozenset(
     {
         "render_structure",
@@ -138,6 +141,7 @@ GATED_TOOLS = frozenset(
         "enumerate_protonation_states",
         "enumerate_stereoisomers",
         "enumerate_degradants",
+        "enumerate_substitutions",
     }
 )
 

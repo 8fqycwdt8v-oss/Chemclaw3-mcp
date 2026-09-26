@@ -18,8 +18,11 @@ description: >-
   Bench chemistry over RDKit: resolve a compound name, abbreviation or SMILES to a canonical
   structure from a vendored, checksummed table of 61 reagents and solvents; build a stoichiometry
   and charge table scaled to the limiting reagent, converting solvent volumes to real masses;
-  compute E-factor and PMI for a route from those masses; and render a molecule or reaction as an
-  inline SVG. Pure and synchronous — no store, no durable state, and no network call at any point.
+  compute E-factor and PMI for a route from those masses; render a molecule or reaction as an
+  inline SVG; and enumerate, from the molecular graph, the species sets a free-energy ranking runs
+  over — tautomers, microstates, stereoisomers, bond cleavages, torsions, degradants and the
+  regioisomers of an aromatic substitution series. Pure and synchronous — no store, no durable
+  state, and no network call at any point.
 
 endpoint:
   transport: http
@@ -53,10 +56,11 @@ endpoint:
     - enumerate_stereoisomers
     - enumerate_bond_cleavages
     - enumerate_degradants
+    - enumerate_substitutions
   # Pure functions of their arguments plus a read of a read-only table: nothing here writes
-  # anything or has an effect the plan gate should hold. Six of them spend CPU worth a concurrency
-  # ceiling (`engine/admission.py::GATED_TOOLS`) — cost and mutability are different axes, and
-  # the plan gate is about the second. So an agent may use
+  # anything or has an effect the plan gate should hold. Several of them spend CPU worth a
+  # concurrency ceiling (`engine/admission.py::GATED_TOOLS`) — cost and mutability are different
+  # axes, and the plan gate is about the second. So an agent may use
   # every one of them while building the plan a human is asked to approve — which is the point,
   # since "what do we actually charge, and what does it cost in waste" is a question that has to be
   # answerable *before* approval, not after. (A count is not written here: the sentence that used
@@ -83,3 +87,7 @@ endpoint:
     - enumerate_stereoisomers
     - enumerate_bond_cleavages
     - enumerate_degradants
+    # A regioisomer set for a "which position" question: a map from one SMILES (and optionally a
+    # group) to a set of SMILES, like the species enumerations above, and `read_only` for their
+    # reason — what costs something is ranking the set, which is `calc`'s `rank_species`.
+    - enumerate_substitutions

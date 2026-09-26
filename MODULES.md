@@ -162,7 +162,7 @@ draws a molecule or reaction as an inline SVG, optionally with chosen atoms high
 rewritten SMILES — because an atom index does not, and a torsion scan driven from a stale one
 returns a plausible barrier for a different bond with no error anywhere.
 
-**The six enumerations are the free half of Chemclaw3's multi-step protocols.** `rank_species` and
+**The enumerations are the cheap half of Chemclaw3's multi-step protocols.** `rank_species` and
 `survey_bond_strengths` rank a *set* of structures; these produce the set from the molecular graph
 at no cost, which is what lets Chemclaw3's skills state the rule as *enumerate, then compute, and
 never the reverse*. `describe_topology` is the one to ask first — it says whether a search would
@@ -173,7 +173,8 @@ normalized over.
 
 *Tools:* `resolve_compound`, `stoichiometry_table`, `green_metrics`, `render_structure`,
 `enumerate_torsions`, `describe_topology`, `enumerate_tautomers`, `enumerate_protonation_states`,
-`enumerate_stereoisomers`, `enumerate_bond_cleavages`, `enumerate_degradants` — all `read_only`.
+`enumerate_stereoisomers`, `enumerate_bond_cleavages`, `enumerate_degradants`,
+`enumerate_substitutions` — all `read_only`.
 *Offline:* a vendored, checksummed CSV of 61 reagents under 87 spellings (CC0), plus RDKit. No
 upstream at all, and deliberately so: an external resolver (PubChem, OPSIN) is a request-time
 network call, which this repository does not permit and which the common case does not need.
