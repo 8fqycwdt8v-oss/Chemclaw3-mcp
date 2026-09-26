@@ -52,7 +52,7 @@ import math
 import os
 import resource
 import threading
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, NamedTuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -587,9 +587,9 @@ class Admission:
     async def hold(self, work: Awaitable[_T], charged: int) -> _T:
         """Await admitted work, giving its slots back when the *work* ends, not its awaiter.
 
-        Called after the server's own `acquire` succeeded, with the `charged` it returned — the
-        refusal stays per-server, the release does not. Six servers hand-wrote this same
-        four-line sequence and its done-callback; it is here once because each line is a
+        Reached through `admit`, after the server's own `acquire` succeeded, with the `charged` it
+        returned — the refusal stays per-server, the release does not. Six servers hand-wrote this
+        same four-line sequence and its done-callback; it is here once because each line is a
         load-bearing choice rather than boilerplate:
 
         - **`asyncio.shield`**, because cancelling the awaiting coroutine does not stop the worker
@@ -620,3 +620,35 @@ class Admission:
 
         task.add_done_callback(_release)
         return await asyncio.shield(task)
+
+    async def admit(self, work: Awaitable[_T], acquire: Callable[[], int]) -> _T:
+        """Charge admitted work and `hold` it, with the work built *before* anything is charged.
+
+        This is the order every gated tool needs and the one six of them had backwards: they called
+        `acquire` and only then `work(*args, **kwargs)`. Calling an `async def` binds its arguments
+        on the spot, so a call the signature does not accept raised `TypeError` *between* the charge
+        and `hold` — the only place a slot is ever given back — and the slot was gone for the life
+        of the process. A ceiling of one lost to one malformed direct call is a pod that refuses
+        everything. Taking the already-built awaitable makes the leak unrepresentable here: a bad
+        call fails while building the argument, before this method runs.
+
+        The other order has a cost of its own, paid here once: on a refusal the built coroutine was
+        never scheduled, and asyncio warns "coroutine ... was never awaited" when it is collected —
+        noise on exactly the saturated pod whose logs somebody is reading. So it is closed.
+
+        Args:
+            work: The admitted computation, built but not yet awaited — see `hold`.
+            acquire: The server's own charge, returning the slots it took and raising its own
+                caller-worded refusal. A callable rather than a count so the refusal happens here,
+                after `work` exists, where it can be cleaned up.
+
+        Returns:
+            Whatever the work returns; the refusal or the work's exception, if either raises.
+        """
+        try:
+            charged = acquire()
+        except BaseException:
+            if isinstance(work, Coroutine):
+                work.close()
+            raise
+        return await self.hold(work, charged)

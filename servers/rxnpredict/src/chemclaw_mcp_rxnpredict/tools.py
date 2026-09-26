@@ -251,8 +251,9 @@ def _admitted(
 
     @functools.wraps(work)
     async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
-        charge = _admission.acquire(work.__name__, cost())
-        return await _admission.hold(work(*args, **kwargs), charge)
+        return await _admission.admit(
+            work(*args, **kwargs), lambda: _admission.acquire(work.__name__, cost())
+        )
 
     setattr(_guarded, ADMISSION_MARKER, True)
     return _guarded

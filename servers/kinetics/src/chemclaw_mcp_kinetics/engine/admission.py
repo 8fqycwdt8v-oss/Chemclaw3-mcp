@@ -94,17 +94,21 @@ class Admission(KitAdmission):
 
     unit = "integration"
 
-    def acquire(self, what: str) -> None:
+    def acquire(self, what: str) -> int:
         """Take a slot, or refuse in terms the caller can act on.
 
         Args:
             what: The tool being asked for, named in the refusal.
 
+        Returns:
+            The slot taken, for `Admission.admit` to give back when the work ends.
+
         Raises:
             ValueError: the ceiling is already reached. Worded for whoever receives it — an agent
                 reading a tool error, or Chemclaw3 backing off.
         """
-        if self.take().charged is None:
+        charged = self.take().charged
+        if charged is None:
             raise ValueError(
                 f"this server is already integrating {self.limit} semi-batch doses, which is its "
                 f"configured ceiling, so {what} was refused rather than queued: the integration "
@@ -114,3 +118,4 @@ class Admission(KitAdmission):
                 "help — it admits more onto the same serialised interpreter; this server scales "
                 "by replicas."
             )
+        return charged

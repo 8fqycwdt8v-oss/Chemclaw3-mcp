@@ -73,15 +73,16 @@ def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, 
     """Bound how many integrations run at once, refusing promptly when the pod is full.
 
     The same shape as `servers/chem`'s gate: stamped with `ADMISSION_MARKER` so a test checks the
-    gated set against the served surface, and held through `Admission.hold` so the slot is released
+    gated set against the served surface, and held through `Admission.admit` so the slot is released
     when the worker thread finishes rather than when the caller stops waiting. `functools.wraps` is
     what lets FastMCP read the real signature through `__wrapped__` for the tool's argument schema.
     """
 
     @functools.wraps(work)
     async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
-        _admission.acquire(work.__name__)
-        return await _admission.hold(work(*args, **kwargs), 1)
+        return await _admission.admit(
+            work(*args, **kwargs), lambda: _admission.acquire(work.__name__)
+        )
 
     setattr(_guarded, ADMISSION_MARKER, True)
     return _guarded

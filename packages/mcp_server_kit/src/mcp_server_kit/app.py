@@ -54,6 +54,10 @@ since):
   the timeout, holds it off for the duration of a tool call so a four-hour CREST search is not
   reaped as "idle", and refuses a handshake past `MCP_MAX_SESSIONS` with a 503 rather than minting
   the session that exhausts the pod.
+- **Nothing upstream refuses a NaN or an infinity in a tool argument.** The transport parses the
+  `NaN`/`Infinity` literals JSON does not have and hands an optional argument `None` for them;
+  pydantic coerces the strings `"nan"` and `"1e400"`. `finite.py` refuses both — the raw body and
+  every served tool's argument model — so no server has to remember it argument by argument.
 - **`configure_logging()` must force, and must not run at import.** `FastMCP.__init__` calls
   `basicConfig` at import of the server's `tools.py`, so anything that does not pass `force=True`
   silently loses to it. But every server builds its app at *module scope*, so calling it from
@@ -99,6 +103,7 @@ from mcp_server_kit.degradation import (
     register_components,
 )
 from mcp_server_kit.executor import install_default_executor
+from mcp_server_kit.finite import NonFiniteLiteralRefusal, refuse_non_finite_arguments
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
     HEADER_CORRELATION,
@@ -487,6 +492,9 @@ def connector_app(
         register_secret_env(token_env)
     BUILD_INFO.labels(name, server_revision()).set(1)
     _stamp_revision(server)
+    # Before any wrapper, because it is not one: it replaces each tool's argument model, so a NaN or
+    # an infinity is a validation refusal like any other and every wrapper below books it as one.
+    refuse_non_finite_arguments(server)
     _sanitize_tool_errors(server, name=name)
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
@@ -564,6 +572,9 @@ def connector_app(
             tool_pool.shutdown(wait=False)
 
     app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
+    # First, therefore innermost: it buffers a body, so it runs only on one the size cap has bounded
+    # and the bearer check has admitted, and its 400 is inside the caller log. See `finite.py`.
+    app.add_middleware(NonFiniteLiteralRefusal)
     app.add_middleware(CallerLogMiddleware, server=name, revision=server_revision())
     # Added after the logger, so Starlette's add-order (most recent outermost) puts the credential
     # check outside it: an unauthenticated request is refused before anything logs or reads it.
