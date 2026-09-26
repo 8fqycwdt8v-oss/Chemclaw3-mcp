@@ -106,8 +106,11 @@ significant figures, so no absolute tolerance would have caught it. Only the rat
 
 ## Concurrency
 
-No `engine/admission.py`, and the exemption is argued with its measurement in
-`tests/test_fleet.py::CEILING_IS_ARGUED_ABSENT`. Five tools are closed-form microseconds; the
-integrator is the only one that does real work, and its cost is bounded by a fixed step count
-(`MAX_INTEGRATION_STEPS`) rather than by an adaptive controller — a bound on the input, which is a
-different thing from a concurrency ceiling and the one this server actually needs.
+`engine/admission.py` bounds how many semi-batch integrations run at once
+(`CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`), and the tool runs off the event loop. This server
+used to be argued out of a ceiling at 836 µs per integration; that stopped being true when the step
+count became derived from the caller's rate constant (up to `MAX_INTEGRATION_STEPS`), which is up
+to half a second of pure-Python RK4 holding the interpreter. The five closed-form tools are
+microseconds and are not gated. A profile keeps at most `reactors.PROFILE_POINTS` points — evenly
+spaced samples, the end of the dose and the exact peak — so memory does not grow with the step
+count either.

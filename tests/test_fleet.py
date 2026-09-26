@@ -3809,8 +3809,9 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 
 # Which servers answer for their own concurrency, and which are argued not to need to.
 #
-# **A ceiling is `engine/admission.py`** — five servers ship one (`calc`, `chem`, `pyexec`,
-# `rxnlabel`, `rxnpredict`) and each is held by its own module. The absence of a sixth was held by
+# **A ceiling is `engine/admission.py`**, and each server that ships one is held by its own module.
+# `kinetics` was argued out of one at 836 µs and moved in when its integrator's step count became
+# the caller's to set. The absence of a ceiling in an eighth server was held by
 # nobody, which `docs/BACKLOG.md` recorded as "an eighth server without one passes every test here"
 # — and then an eighth server arrived (`thermalsafety`) with exactly that shape: an argued absence
 # in a README that no test reads.
@@ -3830,17 +3831,6 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 # what is measured; the transport each call also pays is the same for every server in this fleet
 # and is what the millisecond figures were mostly made of.
 CEILING_IS_ARGUED_ABSENT = {
-    # Five closed-form tools at 1.4 µs to 31.7 µs (the widest being a second-order CSTR's 200-step
-    # bisection), and one integrator at **836 µs** — the heaviest tool argued out of a ceiling in
-    # this table, and the one that had to earn it. At its first default of 2,000 RK4 steps it cost
-    # 8.1 ms, which is `chem`'s `render_structure` band, the one tool in that server gated for
-    # exactly this reason. That default was set while a feed-term discontinuity held the integrator
-    # to first-order convergence, where 2,000 steps really were needed. With the discontinuity gone
-    # the scheme converges at fourth order and 200 steps agrees with a hundredfold finer grid to
-    # 6.4e-08 — eight significant figures on a number reported to four. So a defect fixed made the
-    # control unnecessary, rather than a control covering for a defect. `MAX_INTEGRATION_STEPS`
-    # caps what a caller may ask for, so the cost cannot run away unpriced.
-    "kinetics": "closed-form algebra plus one bounded integrator, measured at 836 µs at its widest",
     # A dict lookup and a bisection over a 44-row vendored table: 0.7 µs for the lookup, 1.8 µs for
     # `vapour_pressure`, and 10.3 µs for a Hansen sweep across the whole table — which is the
     # largest single call `MAX_COMPARED_SOLVENTS` permits, since that bound *is* the table's size.

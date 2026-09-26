@@ -91,9 +91,13 @@ def drying_time(
 
     Raises:
         UnitOpsInputError: If a mass, area or rate is not positive, if the final moisture is at or
-            below zero, if the target is not below the start, or if the critical moisture is below
-            the target — which would mean the whole cycle sits inside the falling-rate leg past the
-            point the model describes.
+            below zero, or if the target is not below the start.
+
+    A target at or above the critical moisture is **answered**, not refused: the cycle finishes in
+    the constant-rate period, which the model describes exactly as `m_s·(X₁ - X₂)/(A·N_c)`, and
+    `falling_rate_seconds` is zero. It used to be refused with a docstring saying the cycle sat "in
+    the falling-rate leg past the point the model describes", which was backwards — it never
+    reaches that leg — while the message itself called the case possible.
     """
     positive(dry_solid_mass_kg, "the dry solid mass")
     positive(drying_area_m2, "the drying area")
@@ -113,19 +117,16 @@ def drying_time(
             "moisture per kg of BONE-DRY solid — so a wet-basis percentage entered here reads as a "
             "target wetter than the charge."
         )
-    if critical_moisture_dry_basis < final_moisture_dry_basis:
-        raise UnitOpsInputError(
-            f"the critical moisture content ({critical_moisture_dry_basis} kg/kg) is below the "
-            f"target ({final_moisture_dry_basis} kg/kg), so the whole cycle would finish during "
-            "the constant-rate period and the falling-rate leg never starts. That is possible, but "
-            "it means the critical moisture is not the number limiting this dry — check which "
-            "drying curve it came from."
-        )
-
     time_per_unit_moisture = dry_solid_mass_kg / (drying_area_m2 * constant_rate_kg_per_m2_s)
     starts_falling = initial_moisture_dry_basis <= critical_moisture_dry_basis
 
-    if starts_falling:
+    if final_moisture_dry_basis >= critical_moisture_dry_basis:
+        # The whole cycle is inside the constant-rate period; the falling-rate leg never starts.
+        constant_seconds = time_per_unit_moisture * (
+            initial_moisture_dry_basis - final_moisture_dry_basis
+        )
+        falling_seconds = 0.0
+    elif starts_falling:
         constant_seconds = 0.0
         falling_seconds = (
             time_per_unit_moisture

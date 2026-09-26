@@ -44,10 +44,12 @@ from chemclaw_mcp_chem.engine.chem import require_molecule
 
 __all__ = [
     "MAX_DEGRADANTS",
+    "MAX_DEGRADANT_MATCH_ATOM_PRODUCT",
     "MAX_MICROSTATES",
     "MAX_SITE_ATOM_PRODUCT",
     "MAX_STEREOISOMERS",
     "MAX_TAUTOMERS",
+    "MAX_TAUTOMER_HEAVY_ATOMS",
     "Degradant",
     "DegradantSet",
     "SpeciesSet",
@@ -154,6 +156,92 @@ MAX_SITE_ATOM_PRODUCT = env_bound(
 )
 
 
+#: The largest molecule, in heavy atoms, whose tautomers this server enumerates.
+#:
+#: **The enumeration stops at `MAX_TAUTOMERS + 1` forms and each form is canonicalised over the
+#: whole graph**, so on a tautomeric molecule the work is roughly the cap times a canonicalisation —
+#: and canonicalisation is itself super-linear in size. The output cap therefore bounds nothing
+#: about the cost, and before this bound there was none: measured, polyglycine at 1,985 heavy atoms
+#: (inside `MAX_MOLECULE_ATOMS`) cost 11.6 s in `enumerate_tautomer_set` and the same again inside
+#: `describe_molecule`, holding a worker thread through ~40% of the manifest's 30 s
+#: `request_timeout` and burning on after its caller had gone. The frontier, one run each:
+#:
+#:     polyglycine          401 atoms      583 ms
+#:     PAMAM G3             484 atoms      835 ms
+#:     poly-1,3-dicarbonyl  498 atoms      788 ms
+#:     polyketone           500 atoms      943 ms
+#:     poly(phenol ketone)  500 atoms    1,218 ms   (the worst shape measured at the bound)
+#:     polyglycine          601 atoms    1,156 ms
+#:     PAMAM G4             996 atoms    2,746 ms   refused
+#:     polyketone         1,200 atoms    4,958 ms   refused
+#:
+#: A heavy-atom count rather than a count of mobile-proton sites, because the site perception here
+#: does not see a ketone's enol at all (the polyketone above has zero sites and is the dearest
+#: shape per atom) — the enumerator's own transforms decide, and they cannot be priced before they
+#: run. So a large molecule with no tautomer question is refused too; that is the cost of a bound
+#: that is honest about what it can see.
+MAX_TAUTOMER_HEAVY_ATOMS = env_bound(
+    "CHEMCLAW_CHEM_MAX_TAUTOMER_HEAVY_ATOMS",
+    default=500,
+    # Acetylacetone, the textbook tautomeric case, is 7 heavy atoms.
+    minimum=7,
+    consequence=(
+        "below it even acetylacetone would be refused; far above it one call can hold a worker "
+        "thread for tens of seconds, past the request timeout its caller is waiting on"
+    ),
+)
+
+#: The most `transform matches x heavy atoms` one degradant enumeration may spend.
+#:
+#: **Each match is one product, sanitised and canonicalised over the whole graph**, so the work is
+#: the product of those two numbers — and `MAX_DEGRADANTS` is consulted only after all of it. On a
+#: molecule with a repeating hydrolysable or oxidisable unit that is not a small number: measured,
+#: polyglycine at 1,985 heavy atoms (496 amide matches) cost 22.5 s and a 2,000-atom polyester
+#: 18.8 s, both to be refused as too many candidates at the end. The frontier, one run each:
+#:
+#:     PAMAM G3        484 atoms,  90 matches     43,560     275 ms
+#:     polyester       500 atoms, 100 matches     50,000     409 ms
+#:     polyglycine     633 atoms, 158 matches    100,014   1,030 ms
+#:     polyester       632 atoms, 158 matches     99,856   1,362 ms   (the worst shape measured)
+#:     PAMAM G4        996 atoms, 186 matches    185,256   1,695 ms   refused
+#:     polyglycine   1,985 atoms, 496 matches    984,560  22,514 ms   refused
+#:
+#: The matches are counted by substructure search before any product is built, which costs about a
+#: millisecond at the largest molecule `MAX_MOLECULE_ATOMS` admits.
+MAX_DEGRADANT_MATCH_ATOM_PRODUCT = env_bound(
+    "CHEMCLAW_CHEM_MAX_DEGRADANT_MATCH_ATOM_PRODUCT",
+    default=100_000,
+    # A drug-sized parent with one liability — paracetamol is 11 heavy atoms and one amide match.
+    minimum=11,
+    consequence=(
+        "below it even a drug-sized parent with one liability would be refused; far above it one "
+        "call can hold a worker thread for tens of seconds, past the request timeout its caller is "
+        "waiting on"
+    ),
+)
+
+
+class TautomerCostRefused(ValueError):
+    """A tautomer enumeration refused for its cost before it ran, not for the size of its answer."""
+
+
+def _refuse_tautomer_enumeration_past(heavy_atoms: int, smiles: str) -> None:
+    """Raise when enumerating tautomers of a molecule this size would cost more than one call may.
+
+    A `ValueError`, so `connector_app` passes the wording through to the model verbatim — and a
+    `TautomerCostRefused` so `describe_molecule` can tell "not computed" from "past the count cap".
+    """
+    if heavy_atoms > MAX_TAUTOMER_HEAVY_ATOMS:
+        raise TautomerCostRefused(
+            f"{smiles!r} has {heavy_atoms} heavy atoms, above the {MAX_TAUTOMER_HEAVY_ATOMS} this "
+            "server enumerates tautomers for: each form is canonicalised over the whole graph, so "
+            "the work grows faster than the molecule and a set this size is not something one call "
+            "here may spend. This refuses the cost, not the answer. Ask about the tautomeric unit "
+            "on its own (the repeat unit of a polymer, the heterocycle of a larger drug), or raise "
+            "CHEMCLAW_CHEM_MAX_TAUTOMER_HEAVY_ATOMS on this deployment."
+        )
+
+
 class SpeciesSet(BaseModel):
     """A set of related structures, with the parent first.
 
@@ -213,6 +301,15 @@ class Topology(BaseModel):
     tautomer_count_saturated: bool = Field(
         default=False,
         description="True when the count above is null because the enumeration hit its cap.",
+    )
+    tautomer_count_computed: bool = Field(
+        default=True,
+        description=(
+            "False when the molecule is too large for this server to enumerate its tautomers at "
+            "all, so the count above is null because nobody counted — which says nothing about "
+            "whether the molecule is tautomeric. Distinct from `tautomer_count_saturated`, which "
+            "means it was counted and is emphatically tautomeric."
+        ),
     )
 
 
@@ -347,9 +444,11 @@ def enumerate_tautomer_set(smiles: str) -> SpeciesSet:
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
+        TautomerCostRefused: more heavy atoms than `MAX_TAUTOMER_HEAVY_ATOMS`.
         ValueError: more tautomers than `MAX_TAUTOMERS`.
     """
     mol = require_molecule(smiles)
+    _refuse_tautomer_enumeration_past(mol.GetNumHeavyAtoms(), smiles)
     parent = _canonical(mol)
     enumerator = rdMolStandardize.TautomerEnumerator()
     enumerator.SetMaxTautomers(MAX_TAUTOMERS + 1)
@@ -408,10 +507,11 @@ def _compiled(smarts: str) -> Chem.Mol | None:
     `classifier.py::_compiled` is the same shape one server over.
 
     **It is not the last one in the fleet, and this docstring said it was.** Grepping after the
-    measurement found four more constant tables compiled per call — `_TRANSFORMS` fifty lines
-    below, `sites.py::_matched_atoms`, `torsions.py::_matched_pairs` and `rxnlabel`'s two — none of
-    which was measured here, so none is claimed either way. `docs/BACKLOG.md` carries them as the
-    row they are.
+    measurement found four more constant tables compiled per call — `_TRANSFORMS` below (since
+    cached by `_compiled_transforms`, because pricing a degradant call needs its templates before
+    any product is built), `sites.py::_matched_atoms`, `torsions.py::_matched_pairs` and
+    `rxnlabel`'s two — none of which was measured here, so none is claimed either way.
+    `docs/BACKLOG.md` carries them as the row they are.
 
     **What it is worth, measured here against the exact code this replaced rather than transcribed
     from the row that asked for it.** On tyrosine, over five runs of 2,000 iterations: both tables
@@ -622,6 +722,26 @@ _TRANSFORMS: tuple[tuple[DegradationCondition, str, str], ...] = (
 )
 
 
+#: A ceiling on the substructure search that prices a degradant enumeration, so pricing a
+#: pathological molecule cannot itself be the expensive step. Any count this high is already far
+#: past the bound.
+_MATCH_COUNT_LIMIT = 100_000
+
+
+@cache
+def _compiled_transforms() -> tuple[
+    tuple[DegradationCondition, str, rdChemReactions.ChemicalReaction], ...
+]:
+    """Every transform, compiled once per process. A malformed constant is dropped, as before."""
+    compiled = []
+    for condition, name, smarts in _TRANSFORMS:
+        reaction = rdChemReactions.ReactionFromSmarts(smarts)
+        if reaction is None:  # pragma: no cover - a malformed constant would fail every call
+            continue
+        compiled.append((condition, name, reaction))
+    return tuple(compiled)
+
+
 def enumerate_degradant_candidates(smiles: str) -> DegradantSet:
     """Structures a forced-degradation transform reaches from `smiles`.
 
@@ -633,16 +753,30 @@ def enumerate_degradant_candidates(smiles: str) -> DegradantSet:
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
-        ValueError: more candidates than `MAX_DEGRADANTS`.
+        ValueError: more `transform matches x heavy atoms` than `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`,
+            or more candidates than `MAX_DEGRADANTS`.
     """
     mol = require_molecule(smiles)
+    reactions = _compiled_transforms()
+    matches = sum(
+        len(mol.GetSubstructMatches(reaction.GetReactantTemplate(0), maxMatches=_MATCH_COUNT_LIMIT))
+        for _, _, reaction in reactions
+    )
+    atoms = mol.GetNumHeavyAtoms()
+    if matches * atoms > MAX_DEGRADANT_MATCH_ATOM_PRODUCT:
+        raise ValueError(
+            f"{smiles!r} matches the degradation transforms {matches} times on {atoms} heavy "
+            "atoms. Each match is one product sanitised and canonicalised over the whole graph, so "
+            f"the work is the product of those two numbers — {matches * atoms:,} here, "
+            f"{matches * atoms / MAX_DEGRADANT_MATCH_ATOM_PRODUCT:.1f}x the "
+            f"{MAX_DEGRADANT_MATCH_ATOM_PRODUCT:,} one call on this server may spend. This refuses "
+            "the cost, not the answer. Ask about the repeat unit where the liabilities repeat, or "
+            "raise CHEMCLAW_CHEM_MAX_DEGRADANT_MATCH_ATOM_PRODUCT on this deployment."
+        )
     parent = _canonical(mol)
     seen: set[str] = {parent}
     degradants: list[Degradant] = []
-    for condition, name, smarts in _TRANSFORMS:
-        reaction = rdChemReactions.ReactionFromSmarts(smarts)
-        if reaction is None:  # pragma: no cover - a malformed constant would fail every call
-            continue
+    for condition, name, reaction in reactions:
         for products in reaction.RunReactants((mol,)):
             for product in products:
                 try:
@@ -697,8 +831,13 @@ def describe_molecule(smiles: str) -> Topology:
     # enumeration beside them does not honour. `docs/BACKLOG.md` carries the ceiling question.
     acidic = _sites(mol, _ACIDIC)
     basic = _sites(mol, _BASIC)
+    computed = True
     try:
         tautomers: int | None = len(enumerate_tautomer_set(smiles).smiles)
+    except TautomerCostRefused:
+        # Too large to count at all: null, and a flag saying nobody counted — not "saturated",
+        # which would claim the molecule is emphatically tautomeric.
+        tautomers, computed = None, False
     except ValueError:
         # Past the cap is emphatically tautomeric; answering rather than failing keeps this tool
         # free and total, which is the property its callers rely on. But the cap is not a count —
@@ -718,6 +857,7 @@ def describe_molecule(smiles: str) -> Topology:
         ionisable_acidic_sites=len(acidic),
         ionisable_basic_sites=len(basic),
         mobile_proton_sites=len(acidic) + len(basic),
-        tautomer_count_saturated=tautomers is None,
+        tautomer_count_saturated=computed and tautomers is None,
+        tautomer_count_computed=computed,
         tautomer_count=tautomers,
     )

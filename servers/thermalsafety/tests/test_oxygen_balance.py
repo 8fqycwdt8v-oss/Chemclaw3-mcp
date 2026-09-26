@@ -308,14 +308,37 @@ def test_a_notation_molmass_would_answer_is_still_refused_here() -> None:
 
 
 def test_an_isotope_symbol_is_named_rather_than_silently_weighed() -> None:
-    """`D2O` reaches the allowlist as `2H`, which is not an element this screen carries.
+    """`D2O` is refused by naming `D`, before `molmass` can turn it into `2H`.
 
-    Worth its own case because the refusal comes from a different place than the others: there is
-    no `D` character to reject up front, so this is the allowlist catching a symbol the library
-    invented during the parse. The message must name what it saw.
+    The symbol pass in front of the library sees the `D` the caller wrote, so the message names
+    what the caller typed rather than what the library would have invented.
     """
-    with pytest.raises(FormulaError, match="2H"):
+    with pytest.raises(FormulaError, match="'D'"):
         parse_formula("D2O")
+
+
+@pytest.mark.parametrize(
+    ("typed", "named"),
+    [("TNT", "'T'"), ("PETN", "'E'"), ("THF", "'T'"), ("Et2O", "'Et'"), ("Me", "'Me'")],
+)
+def test_a_name_or_abbreviation_typed_for_a_formula_is_refused_not_expanded(
+    typed: str, named: str
+) -> None:
+    """`molmass` expands acronyms and residue codes; this screen refuses them by name.
+
+    Measured before the fix: `PETN` parsed as C18H29N5O9 at -144.5% (real PETN is about -10%) and
+    `TNT` as C12H22N4O7 at -134% against the real -74% — confident, wrong, and in the reassuring
+    direction. The premise is driven through the library too, so the day `molmass` stops expanding
+    these the test says the argument changed rather than passing for a new reason.
+    """
+    assert Formula(typed).mass > 0
+    with pytest.raises(FormulaError, match=named):
+        oxygen_balance(typed)
+
+
+def test_the_formula_those_names_stand_for_still_answers() -> None:
+    """The refusal is of the notation, not the compound: TNT written as C7H5N3O6 is about -74%."""
+    assert oxygen_balance("C7H5N3O6").oxygen_balance_percent == pytest.approx(-74.0, abs=0.5)
 
 
 #: `(formula, the token an interpretation string quotes, the band that string belongs to)`.

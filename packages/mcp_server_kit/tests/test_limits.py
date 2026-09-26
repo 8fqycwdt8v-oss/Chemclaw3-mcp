@@ -413,6 +413,19 @@ def test_a_ratio_has_a_floor_and_no_ceiling(monkeypatch: pytest.MonkeyPatch) -> 
     ) == pytest.approx(99.0)
 
 
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "infinity"])
+def test_a_ratio_that_is_not_finite_is_refused(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """`float()` parses these, and `nan < minimum` is False, so the floor alone let them through.
+
+    Measured before the fix: `CHEMCLAW_PROPS_MAX_TB_RATIO=nan` made every supercritical ceiling
+    `nan`, `temperature_c > nan` is always False, and the sanity bound never refused anything. An
+    infinite ratio is the same off switch spelled differently.
+    """
+    monkeypatch.setenv("MCP_A_RATIO", raw)
+    with pytest.raises(ValueError, match=r"MCP_A_RATIO.*not a finite number"):
+        limits.env_ratio("MCP_A_RATIO", default=1.8, minimum=1.01, consequence="x")
+
+
 def test_both_readers_refuse_a_low_value_in_the_same_words() -> None:
     """One sentence, because an operator meeting either needs the same four facts in the same order.
 

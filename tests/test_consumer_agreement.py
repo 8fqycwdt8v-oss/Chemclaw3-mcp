@@ -334,8 +334,34 @@ _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
     ("top-level profiles", _manifest(profiles=["a-profile"]), True, True),
     ("top-level note_types", _manifest(note_types=["job-result"]), True, True),
     ("top-level relations", _manifest(relations=["computed-from"]), True, True),
+    # The consumer's switch for a declared-but-unbound bundle. No fleet manifest declares it (the
+    # consumer argues that divergence in `_ARGUED_DIVERGENCES`), but it is a real field there, so
+    # refusing it here would be the false refusal this table exists to catch.
+    ("default_enabled: false", _manifest(default_enabled=False), True, True),
     # Still refused on both sides, which is what makes the row above a widening rather than a hole.
     ("an invented key", _manifest(nonsense=["x"]), False, False),
+    # Shapes the stand-in once coerced and the consumer refuses: a discriminated endpoint with no
+    # tag (`union_tag_not_found`), a bare YAML key (`None`, a `list_type` error), and an endpoint
+    # serving nothing (the consumer's classification validator).
+    (
+        "an endpoint with no transport",
+        _manifest(endpoint={k: v for k, v in _ENDPOINT.items() if k != "transport"}),
+        False,
+        False,
+    ),
+    (
+        "a bare state_changing key",
+        _manifest(endpoint={**_ENDPOINT, "state_changing": None}),
+        False,
+        False,
+    ),
+    ("a bare top-level skills key", _manifest(skills=None), False, False),
+    (
+        "an empty tools list",
+        _manifest(endpoint={**_ENDPOINT, "tools": [], "read_only": []}),
+        False,
+        False,
+    ),
     # The deliberate differences. `endpoint` is the fourth the docstring names and does not show as
     # a difference here: this probe drops the endpoint *and* declares no jobs, so the consumer
     # refuses it too, for its own reason (`_contributes_capability`).

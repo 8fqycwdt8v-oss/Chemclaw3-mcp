@@ -38,6 +38,7 @@ module, and what varied between the hand-written copies was the sentence, not th
 from __future__ import annotations
 
 import logging
+import math
 import os
 import resource
 import threading
@@ -208,8 +209,8 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
         The configured ratio, which is at least `minimum`.
 
     Raises:
-        ValueError: The variable is set to something that is not a number, or to one below
-            `minimum`.
+        ValueError: The variable is set to something that is not a finite number, or to one
+            below `minimum`.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -221,6 +222,16 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
             f"{name}={raw!r} is not a number, so this server cannot size the bound it controls; "
             f"unset it for the default of {default:g} or give it a value of at least {minimum:g}"
         ) from None
+    # `float()` parses "nan" and "inf", and neither is caught by the floor: `nan < minimum` is
+    # False, so the one value that disables the bound outright walked past the check written to
+    # stop a value disabling it. Every comparison against a nan ceiling is False, and an infinite
+    # ceiling is never crossed, so both are an off switch rather than a loosening.
+    if not math.isfinite(value):
+        raise ValueError(
+            f"{name}={raw!r} is not a finite number, and a bound multiplied by it is never "
+            f"crossed; unset it for the default of {default:g} or give it a finite value of at "
+            f"least {minimum:g}"
+        )
     if value < minimum:
         raise ValueError(_refused(name, value, default, minimum, consequence))
     return value

@@ -205,52 +205,41 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
-- [ ] **`servers/chem` has five enumerators in one cost band and a ceiling on none of them, and
-  the measurement that would decide whether they need one has been taken.**
-  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` bounded
-  `enumerate_microstates`' input and deliberately added no admission ceiling, on a driven result:
-  eight concurrent worst-legal calls left the event loop 384 ms late at worst against a 3 s
-  `readinessProbe.timeoutSeconds`, so a ceiling would not bind. What it did *not* settle is the
-  other four. Measured the same day on a 1,900-atom alkane, one call each:
-  `describe_topology` **615 ms**, `enumerate_tautomer_set` **400 ms**, `enumerate_stereoisomer_set`
-  **367 ms**, `enumerate_degradant_candidates` **106 ms** — all ungated. **Those four figures are a
-  linear alkane's, and that shape is the cheap case for three of them.** Re-measured 2026-09-19 on
-  a 996-atom PAMAM G4 dendrimer, a molecule a caller may now send:
-  `enumerate_tautomer_set` **2,801 ms**, `describe_topology` **2,793 ms**,
-  `enumerate_degradant_candidates` **1,823 ms**, `enumerate_stereoisomer_set` **18 ms**, against
-  `enumerate_microstates`' **587 ms** — so the one with an input bound is the *cheap* one and the
-  two dearest have none. Whether those four hold the interpreter the way `enumerate_microstates`
-  measurably does is **not** measured and is the first thing this row owes; what the re-measurement
-  settles is that "one cost band" was an artefact of the fixture, and that the worst call
-  `D-2026-09-19-a-bound-on-the-site-count-prices-half-the-work` admits is a bigger number for a
-  probe-derived ceiling to divide than the 640 ms this row was written against. **That figure was
-  itself a fixture artefact and is now 1,986 ms**
-  (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`): the 1,266 ms it read was the
-  worst *aliphatic* shape, and a poly(pyridine) at the same product costs 13.26 us per site-atom
-  against the chain's 8.52, super-linearly in the product. So whatever ceiling this row settles on
-  divides 2.0 s, not 1.3 — and the tool that measurably holds the interpreter is still the one the
-  derivation calls cheap.
-  `render_structure` is gated at
-  8 while its worst *legal* depiction is 4.6 ms, which is the inversion worth resolving: either the
-  band shares one ceiling derived from the probe, or `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob
-  `POD_THREAD_POOL_WIDTH` already makes unreachable. The row is the decision, not the number — the
-  numbers above are what it is to be decided against.
+- [ ] **`servers/chem`'s enumerators carry per-call input bounds and no admission ceiling, while
+  `render_structure` — the cheapest tool beside them — is the one that is gated.** Every dear
+  enumerator is now priced before it runs: `enumerate_microstates` by
+  `MAX_SITE_ATOM_PRODUCT`, `enumerate_tautomer_set` and `describe_topology`'s tautomer count by
+  `MAX_TAUTOMER_HEAVY_ATOMS`, and `enumerate_degradant_candidates` by
+  `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`, the last two set at about a second of worst-case work after
+  polyglycine at 1,985 heavy atoms measured 11.6 s and 22.5 s unbounded. `enumerate_stereoisomer_set` stays
+  unbounded and measured cheap (18 ms on a 996-atom PAMAM G4, 367 ms on a 1,900-atom alkane). What
+  a per-call bound does not answer is how many run at once. `render_structure` is gated at
+  `DEFAULT_MAX_CONCURRENT_RENDERS` = 8 while its worst *legal* depiction is 4.6 ms, and the
+  enumerators, admitted up to about a second each and `enumerate_microstates` up to 1,986 ms
+  (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`), have no ceiling.
+  `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` measured that eight concurrent
+  worst-legal `enumerate_microstates` calls left the event loop 384 ms late against a 3 s
+  `readinessProbe.timeoutSeconds`. Nobody has measured whether the tautomer and degradant paths
+  hold the interpreter that way at their new worst-legal inputs, and that is the first thing this
+  row owes. The decision after it: either the band shares one ceiling derived from the probe, or
+  `DEFAULT_MAX_CONCURRENT_RENDERS` is a knob `POD_THREAD_POOL_WIDTH` already makes unreachable.
   **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
-  `servers/chem/tests/test_microstate_bound.py`, `servers/chem/tests/test_depiction_bound.py`.
+  `servers/chem/tests/test_microstate_bound.py`, `servers/chem/tests/test_enumeration_cost_bounds.py`,
+  `servers/chem/tests/test_depiction_bound.py`.
 
-- [ ] **Four more constant SMARTS tables in this fleet are compiled on every call, and "that was
+- [ ] **Constant SMARTS tables in this fleet are compiled on every call, and "that was
   the last one" has now been said twice.** `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work`
   cached `servers/chem`'s `_ACIDIC`/`_BASIC` and its docstring claimed to be the third and last
   such fix; grepping `MolFromSmarts`/`ReactionFromSmarts` across `servers/*/src` in the same
-  session found four more, each over a table that is a module constant:
-  `species.py::enumerate_degradant_candidates` rebuilding all eleven `_TRANSFORMS` reaction SMARTS,
+  session found four more, each over a table that is a module constant. One is closed:
+  `species.py::_TRANSFORMS` is now compiled once by `_compiled_transforms`, because pricing a
+  degradant call needs its templates before any product is built. Still open are
   `chem`'s `sites.py::_matched_atoms` and `torsions.py::_matched_pairs`, and `rxnlabel`'s
   `agents.py` and `species.py`. **None of them is measured**, which is the whole row: the one that
   was measured turned out to be worth 1.4x on a real molecule and nothing at all on a large one, so
-  the useful output here is four numbers and then four `@cache`s or a note saying they are not
+  the useful output here is a number each and then a `@cache` or a note saying they are not
   worth one — not four caches applied on the strength of the pattern looking familiar.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py::enumerate_degradant_candidates`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/sites.py::_matched_atoms`,
+  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/sites.py::_matched_atoms`,
   `servers/chem/src/chemclaw_mcp_chem/engine/torsions.py::_matched_pairs`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/agents.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/species.py`.

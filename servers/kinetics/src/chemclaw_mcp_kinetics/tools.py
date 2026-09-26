@@ -26,27 +26,49 @@ about different processes, and keeping the tools apart is what stops one being q
 
 Every answer carries `basis`: the equation it came out of and the assumption that equation makes.
 
-The tools are synchronous and cheap. The five closed-form ones are microseconds; the integrator is
-the only one that does real work, and its cost is bounded by a fixed step count rather than by an
-adaptive controller — a bound on the input, which `docs/adding-a-server.md` asks of every tool
-whose cost could otherwise run away.
+The five closed-form tools are synchronous and microseconds. The integrator is the one that does
+real work: its step count is derived from the caller's rate constant up to `MAX_INTEGRATION_STEPS`,
+which is up to half a second of CPU, so it runs off the event loop behind an admission ceiling
+(`engine/admission.py`) rather than on the loop that answers `/healthz`.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+import asyncio
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp_server_kit.limits import env_bound
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_kinetics.engine import arrhenius, reactors
+from chemclaw_mcp_kinetics.engine.admission import (
+    DEFAULT_MAX_CONCURRENT_INTEGRATIONS,
+    Admission,
+)
 
 server = FastMCP("kinetics")
 
-#: The most profile points a semi-batch answer will return. The integrator runs at
-#: `DEFAULT_INTEGRATION_STEPS` regardless; this bounds what crosses the wire, because a 201-point
-#: profile is a large tool result for a model that wants the shape and the peak.
-MAX_PROFILE_POINTS = 25
+# Built at import; a test that needs a different ceiling replaces this attribute.
+_admission = Admission(
+    env_bound(
+        "CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS",
+        default=DEFAULT_MAX_CONCURRENT_INTEGRATIONS,
+        minimum=1,
+        consequence="this pod would refuse every semi-batch integration it is asked for",
+    )
+)
+
+
+def _release_slot(task: asyncio.Task[Any]) -> None:
+    """Give the slot back when the integration finishes, not when its caller stops waiting.
+
+    Retrieving the exception keeps a cancelled caller's failure from being logged at exit as
+    "never retrieved".
+    """
+    _admission.release()
+    if not task.cancelled():
+        task.exception()
 
 
 class RateConstantResult(BaseModel):
@@ -469,7 +491,7 @@ def continuous_reactor_conversion(
 
 
 @server.tool()
-def semibatch_accumulation_profile(
+async def semibatch_accumulation_profile(
     rate_constant: Annotated[
         float,
         Field(
@@ -549,18 +571,30 @@ def semibatch_accumulation_profile(
         profile.
 
     Raises:
-        ValueError: If a value is not positive or an order is negative.
+        ValueError: If a value is not positive or an order is negative, if the dose is too fast
+            or runs a reagent out in a way the integrator cannot follow, or if the pod is already
+            running as many integrations as it admits.
     """
-    profile = reactors.semibatch_accumulation(
-        rate_constant=rate_constant,
-        dose_time_seconds=dose_time_seconds,
-        initial_volume=initial_volume,
-        dosed_moles=dosed_moles,
-        dosed_volume=dosed_volume,
-        initial_coreagent_concentration=initial_coreagent_concentration,
-        order_in_dosed=order_in_dosed,
-        order_in_coreagent=order_in_coreagent,
+    # Off the event loop and behind the ceiling: the step count is derived from `rate_constant`,
+    # so the cost is the caller's to set. `asyncio.shield` releases the slot when the work ends
+    # rather than when the caller stops waiting, because cancelling the await does not stop the
+    # worker thread.
+    _admission.acquire("semibatch_accumulation_profile")
+    task = asyncio.ensure_future(
+        asyncio.to_thread(
+            reactors.semibatch_accumulation,
+            rate_constant=rate_constant,
+            dose_time_seconds=dose_time_seconds,
+            initial_volume=initial_volume,
+            dosed_moles=dosed_moles,
+            dosed_volume=dosed_volume,
+            initial_coreagent_concentration=initial_coreagent_concentration,
+            order_in_dosed=order_in_dosed,
+            order_in_coreagent=order_in_coreagent,
+        )
     )
+    task.add_done_callback(_release_slot)
+    profile = await asyncio.shield(task)
     return AccumulationResult(
         peak_accumulation_fraction=profile.peak_accumulation_fraction,
         peak_at_seconds=profile.peak_at_seconds,
@@ -571,26 +605,10 @@ def semibatch_accumulation_profile(
                 dosed_fraction=point.dosed_fraction,
                 accumulated_fraction=point.accumulated_fraction,
             )
-            for point in _sampled(profile.points)
+            for point in profile.points
         ],
         basis=(
             "fixed-step RK4 over moles of both species with the volume rising linearly; ideal "
             "isothermal semi-batch, perfect mixing, constant dose rate, no energy balance"
         ),
     )
-
-
-def _sampled(points: tuple[reactors.AccumulationPoint, ...]) -> list[reactors.AccumulationPoint]:
-    """Thin the integrator's grid to what a model needs to see the shape.
-
-    The integration runs at its full step count regardless — this bounds only what crosses the
-    wire. The last point is always kept, because the accumulation left at the end of the dose is a
-    separate question from the peak and a stride that dropped it would silently answer neither.
-    """
-    if len(points) <= MAX_PROFILE_POINTS:
-        return list(points)
-    stride = (len(points) - 1) / (MAX_PROFILE_POINTS - 1)
-    indices = sorted(
-        {round(index * stride) for index in range(MAX_PROFILE_POINTS)} | {len(points) - 1}
-    )
-    return [points[index] for index in indices]

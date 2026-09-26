@@ -50,8 +50,8 @@ __all__ = [
 # The four literals these replace carried the comment "CODATA 2018, to full double precision", and
 # that was false of the first of them: CODATA-2018's Bohr radius gives 1.8897261246257702 and the
 # literal stopped at 1.8897261246 — eleven significant digits where a float64 holds about
-# seventeen, 1.4e-11 relative. Deriving removes the transcription step entirely; scipy is already a
-# declared dependency of this server for L-BFGS-B and the vibrational projection.
+# seventeen, 1.4e-11 relative. Deriving removes the transcription step entirely; scipy is a
+# declared dependency of this server for exactly this table, `scipy.constants`, and nothing else.
 #
 # **What deriving costs is that the numbers now track the installed CODATA table, and that is why
 # `engine_version()` names scipy.** Measured at the commit that made the change: scipy 1.17.1 ships

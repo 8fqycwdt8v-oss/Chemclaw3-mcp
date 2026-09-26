@@ -35,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from chemclaw_mcp_unitops.engine.validation import non_negative, positive
+from chemclaw_mcp_unitops.engine.validation import finite_result, non_negative, positive
 
 __all__ = ["CakeFiltration", "filtration_time"]
 
@@ -109,12 +109,18 @@ def filtration_time(
     positive(dry_cake_per_filtrate_kg_per_m3, "the dry cake per unit filtrate")
     non_negative(medium_resistance_per_m, "the medium resistance")
 
-    cake_time = (
-        filtrate_viscosity_pa_s
-        * specific_cake_resistance_m_per_kg
-        * dry_cake_per_filtrate_kg_per_m3
-        * filtrate_volume_m3**2
-    ) / (2.0 * filter_area_m2**2 * pressure_drop_pa)
+    cake_time = finite_result(
+        lambda: (
+            (
+                filtrate_viscosity_pa_s
+                * specific_cake_resistance_m_per_kg
+                * dry_cake_per_filtrate_kg_per_m3
+                * filtrate_volume_m3**2
+            )
+            / (2.0 * filter_area_m2**2 * pressure_drop_pa)
+        ),
+        "the cake filtration time",
+    )
     medium_time = (filtrate_viscosity_pa_s * medium_resistance_per_m * filtrate_volume_m3) / (
         filter_area_m2 * pressure_drop_pa
     )

@@ -280,3 +280,80 @@ def test_a_sub_first_order_reaction_reaches_completion_in_finite_time() -> None:
         )
         == 1.0
     )
+
+
+#: The stiff dose the reviews drove: a 1 h dose of 5 mol into 0.1 against a co-reagent at 60.
+_STIFF_DOSE_SECONDS = 3600.0
+
+
+def _stiff(*, rate_constant: float, order_in_dosed: float = 1.0) -> reactors.SemiBatchProfile:
+    """The stiff case, named argument by argument for the reason `_dose` gives."""
+    return reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=_STIFF_DOSE_SECONDS,
+        initial_volume=0.1,
+        dosed_moles=5.0,
+        dosed_volume=0.0,
+        initial_coreagent_concentration=60.0,
+        order_in_dosed=order_in_dosed,
+    )
+
+
+def test_a_profile_keeps_a_bounded_set_of_points_whatever_the_step_count() -> None:
+    """Memory is O(samples), not O(steps), and the peak is exact rather than the nearest sample.
+
+    At `k = 2.5` the stability floor integrates ~194,000 steps; every one used to be materialised as
+    an `AccumulationPoint` to return 25.
+    """
+    profile = _stiff(rate_constant=2.5)
+    assert len(profile.points) <= reactors.PROFILE_POINTS
+    assert profile.points[0].time_seconds == 0.0
+    assert profile.points[-1].time_seconds == pytest.approx(_STIFF_DOSE_SECONDS)
+    times = [point.time_seconds for point in profile.points]
+    assert times == sorted(times)
+    assert any(
+        point.time_seconds == profile.peak_at_seconds
+        and point.accumulated_fraction == profile.peak_accumulation_fraction
+        for point in profile.points
+    ), "the peak the summary reports is not among the points it summarises"
+
+
+@pytest.mark.parametrize(("order_in_dosed", "rate_constant"), [(0.0, 0.05), (0.5, 0.5)])
+def test_an_order_below_one_that_runs_its_reagent_out_says_so_rather_than_blaming_stiffness(
+    order_in_dosed: float, rate_constant: float
+) -> None:
+    """Below first order the rate does not fall smoothly to zero, so no step floor covers it.
+
+    Before the fix both cases were reported as "went unstable … a stiffness the step floor did not
+    catch", which misstates the cause: the reaction consumes the dose as fast as it arrives.
+    """
+    with pytest.raises(KineticsInputError, match="ran out") as refused:
+        _stiff(rate_constant=rate_constant, order_in_dosed=order_in_dosed)
+    assert "feed-rate-limited" in str(refused.value)
+    assert "stiffness" not in str(refused.value)
+
+
+def test_a_slow_zero_order_dose_still_answers() -> None:
+    """The refusal above is for a reagent that runs out, not for zero order as such."""
+    profile = _stiff(rate_constant=1e-4, order_in_dosed=0.0)
+    assert 0.0 < profile.peak_accumulation_fraction < 1.0
+
+
+def test_the_stability_floor_carries_the_order_in_the_dosed_reagent() -> None:
+    """At `n_d = 2` the bound is `k*2*C_d,max*C_co`, not the dimensionally wrong `k*C_co`."""
+    bound = reactors._stiffness_bound(
+        rate_constant=1e-3,
+        max_dosed_concentration=50.0,
+        initial_coreagent_concentration=60.0,
+        order_in_dosed=2.0,
+        order_in_coreagent=1.0,
+    )
+    assert bound == pytest.approx(1e-3 * 2.0 * 50.0 * 60.0)
+    first_order = reactors._stiffness_bound(
+        rate_constant=1e-3,
+        max_dosed_concentration=50.0,
+        initial_coreagent_concentration=60.0,
+        order_in_dosed=1.0,
+        order_in_coreagent=1.0,
+    )
+    assert first_order == pytest.approx(1e-3 * 60.0), "first order must be the old bound exactly"

@@ -37,6 +37,7 @@ from chemclaw_mcp_kinetics.engine.arrhenius import KineticsInputError
 __all__ = [
     "DEFAULT_INTEGRATION_STEPS",
     "MAX_INTEGRATION_STEPS",
+    "PROFILE_POINTS",
     "AccumulationPoint",
     "SemiBatchProfile",
     "batch_conversion",
@@ -88,6 +89,14 @@ RK4_REAL_STABILITY_LIMIT = 2.785
 #: `MAX_INTEGRATION_STEPS` is now high enough to hold the realistic band. A call that would still be
 #: unstable at the ceiling is refused rather than answered.
 DEFAULT_INTEGRATION_STEPS = 200
+
+#: The most points a `SemiBatchProfile` keeps: evenly spaced samples of the dose, its last instant,
+#: and its peak. **The integrator's step count is not what bounds this, and it used to be.** Every
+#: step was materialised as an `AccumulationPoint` and the tool thinned the list afterwards, so a
+#: stiff dose at the step ceiling built ~200,000 objects to return 25 — memory proportional to a
+#: number the *caller's* rate constant sets. The peak is tracked inside the loop instead, so memory
+#: is O(this) and the peak is exact rather than whichever sample happened to land nearest it.
+PROFILE_POINTS = 25
 
 #: Conversions at or above this are refused as an input, because the time to reach them is where
 #: the ideal-reactor idealisation stops describing anything: at 99.99% the answer is set by mixing,
@@ -357,6 +366,8 @@ class AccumulationPoint:
 class SemiBatchProfile:
     """A whole dose, and the worst instant in it."""
 
+    #: At most `PROFILE_POINTS`: evenly spaced samples, the end of the dose, and the peak — never
+    #: one point per integration step.
     points: tuple[AccumulationPoint, ...]
     #: The highest unreacted fraction reached at any point in the dose, and when. This is what a
     #: dose time is chosen to control: accumulation is the reagent a cooling failure would have to
@@ -368,19 +379,55 @@ class SemiBatchProfile:
     accumulation_at_end_of_dose: float
 
 
-def _steps_for_stability(
+def _stiffness_bound(
     *,
     rate_constant: float,
-    dose_time_seconds: float,
+    max_dosed_concentration: float,
     initial_coreagent_concentration: float,
+    order_in_dosed: float,
     order_in_coreagent: float,
+) -> float:
+    """An upper bound, per second, on how fast the dosed reagent's own rate responds to it.
+
+    That is `J_d = d(k*C_d^n_d*C_co^n_co)/dC_d = k*n_d*C_d^(n_d-1)*C_co^n_co`, bounded by evaluating
+    it at the concentrations' own bounds — `C_d <= dosed_moles / initial_volume` (every mole in the
+    smallest volume) and `C_co <= C_co,0` (the co-reagent is only consumed and diluted). At
+    `n_d = 1` the first bound drops out and this is the old `k * C_co^n_co` exactly.
+
+    **The order in the dosed reagent is in it, and it was not.** The bound used to be
+    `k * C_co^n_co` whatever `n_d` was — right only at `n_d = 1`, and not even dimensionally a rate
+    at `n_d = 2`, where it under-stepped a slow dose whose dosed reagent accumulates. An order below
+    one contributes nothing here because its derivative is unbounded as the reagent is used up, and
+    no step count covers that; `semibatch_accumulation` refuses that case by name when it happens.
+
+    **The co-reagent's partial derivative is deliberately left out.** The Jacobian is rank one and
+    its eigenvalue is `-(J_d + J_c)`, but `J_c` scales with `C_d`, which is small exactly when the
+    reaction is fast. Bounding it by `C_d`'s ceiling measured as refusing the worked dose at
+    `k = 50` — a case a fine grid answers at 3.22e-05 — for a stiffness it never reaches. The rare
+    slow dose where `J_c` does matter is caught by the divergence check rather than answered.
+    """
+    if order_in_dosed < 1.0:
+        return 0.0
+    return float(
+        rate_constant
+        * order_in_dosed
+        * max_dosed_concentration ** (order_in_dosed - 1.0)
+        * initial_coreagent_concentration**order_in_coreagent
+    )
+
+
+def _steps_for_stability(
+    *,
+    stiffness: float,
+    dose_time_seconds: float,
     requested: int,
 ) -> int:
     """The step count this dose actually needs, never fewer than `requested`.
 
     **A fixed step count reported a fast reaction as a perfectly safe one, and the clamps hid it.**
-    The dosed-reagent ODE is pseudo-first-order with eigenvalue `lambda = k * C_co^n_co`, largest at
-    `t = 0` where the co-reagent is undiluted. RK4 diverges once `h * lambda` passes
+    At first order in each reagent the dosed-reagent ODE is pseudo-first-order with eigenvalue
+    `lambda = k * C_co`, largest at `t = 0` where the co-reagent is undiluted; `_stiffness_bound`
+    gives the general case. RK4 diverges once `h * lambda` passes
     `RK4_REAL_STABILITY_LIMIT`, and the divergence went *negative* — where `max(dosed, 0.0)` turned
     it into `accumulated_fraction = 0.0`, i.e. "no unreacted dosed reagent at any instant in the
     dose". That is the number `tools.semibatch_accumulation` calls "the material a cooling failure
@@ -406,20 +453,16 @@ def _steps_for_stability(
     describe, and saying so is better than a zero.
 
     Args:
-        rate_constant: The rate constant, in the units the caller's concentrations imply.
+        stiffness: `_stiffness_bound`'s upper bound on the Jacobian's eigenvalue, per second.
         dose_time_seconds: How long the addition takes.
-        initial_coreagent_concentration: The co-reagent concentration before the dose starts, which
-            is where the eigenvalue is largest.
-        order_in_coreagent: Its order in the rate law.
         requested: The caller's step count, which is a floor rather than the answer.
 
     Returns:
         The step count to integrate with — `requested` when the problem is not stiff.
     """
-    eigenvalue: float = rate_constant * initial_coreagent_concentration**order_in_coreagent
-    if eigenvalue <= 0.0:
+    if stiffness <= 0.0:
         return requested
-    needed = math.ceil(dose_time_seconds * eigenvalue / RK4_REAL_STABILITY_LIMIT)
+    needed = math.ceil(dose_time_seconds * stiffness / RK4_REAL_STABILITY_LIMIT)
     return max(requested, needed)
 
 
@@ -488,19 +531,21 @@ def semibatch_accumulation(
     # **Derived from the problem, because the old fixed count reported a fast reaction as a safe
     # one** — see `_steps_for_stability` for the measurement. `steps` is the caller's floor, not the
     # answer.
-    steps = _steps_for_stability(
+    stiffness = _stiffness_bound(
         rate_constant=rate_constant,
-        dose_time_seconds=dose_time_seconds,
+        max_dosed_concentration=dosed_moles / initial_volume,
         initial_coreagent_concentration=initial_coreagent_concentration,
+        order_in_dosed=order_in_dosed,
         order_in_coreagent=order_in_coreagent,
-        requested=steps,
+    )
+    steps = _steps_for_stability(
+        stiffness=stiffness, dose_time_seconds=dose_time_seconds, requested=steps
     )
     if steps > MAX_INTEGRATION_STEPS:
-        eigenvalue = rate_constant * initial_coreagent_concentration**order_in_coreagent
         raise KineticsInputError(
-            f"this dose is too fast for this integrator to resolve: the reaction's "
-            f"pseudo-first-order"
-            f" rate is {eigenvalue:.3g} per second at the start of the dose, which would need "
+            f"this dose is too fast for this integrator to resolve: the reaction's rate responds "
+            f"to the concentrations at up to {stiffness:.3g} per second over the dose, which would "
+            "need "
             f"{steps:,} steps over {dose_time_seconds:g} s to integrate stably and the ceiling is "
             f"{MAX_INTEGRATION_STEPS:,}. A reaction this fast relative to the addition is "
             "mixing-limited — the accumulation is set by how fast the feed disperses, not by the "
@@ -518,13 +563,21 @@ def semibatch_accumulation(
     def volume_at(time: float) -> float:
         return initial_volume + volume_rate * min(time, dose_time_seconds)
 
+    def _rate(dosed_c: float, coreagent_c: float) -> float:
+        """The rate law, which is zero when either reagent is gone — whatever the orders.
+
+        `max(c, 0.0) ** n` alone is not that: `0.0 ** 0.0` is 1, so a rate law of order zero in
+        the dosed reagent kept consuming a reagent that was not there, and drove its own state
+        negative.
+        """
+        if dosed_c <= 0.0 or coreagent_c <= 0.0:
+            return 0.0
+        return float(rate_constant * dosed_c**order_in_dosed * coreagent_c**order_in_coreagent)
+
     def derivatives(time: float, dosed: float, coreagent: float) -> tuple[float, float]:
         """d(moles)/dt for both species. Consumption is one-to-one in the dosed reagent."""
         volume = volume_at(time)
-        dosed_c = max(dosed, 0.0) / volume
-        coreagent_c = max(coreagent, 0.0) / volume
-        rate = rate_constant * dosed_c**order_in_dosed * coreagent_c**order_in_coreagent
-        consumed = rate * volume
+        consumed = _rate(dosed / volume, coreagent / volume) * volume
         # The feed is unconditional, because this integration's domain **is** the dose: t runs from
         # 0 to `dose_time_seconds` and no further. A `time < dose_time_seconds` guard here reads as
         # defensive and is a defect — the last step's k4 stage evaluates at exactly
@@ -538,19 +591,50 @@ def semibatch_accumulation(
     # batch case, which `batch_conversion` answers and this does not duplicate.
     step = dose_time_seconds / steps
     dosed_moles_now, coreagent_now = 0.0, coreagent_moles_0
+
+    def point_at(index: int, dosed: float, coreagent: float) -> AccumulationPoint:
+        time = index * step
+        volume = volume_at(time)
+        return AccumulationPoint(
+            time_seconds=time,
+            dosed_fraction=min(feed_rate * time / dosed_moles, 1.0),
+            accumulated_fraction=max(dosed, 0.0) / dosed_moles,
+            concentration=max(dosed, 0.0) / volume,
+            rate=_rate(dosed / volume, coreagent / volume),
+        )
+
+    # Evenly spaced samples, one slot short of `PROFILE_POINTS` so the peak always fits beside them.
+    grid = PROFILE_POINTS - 1
+    stride = steps / (grid - 1)
+    sampled_indices = {round(sample * stride) for sample in range(grid)} | {steps}
     points: list[AccumulationPoint] = []
+    peak_index, peak_moles, peak_coreagent = 0, 0.0, coreagent_moles_0
 
     # **A negative mole count is a diverged integration, not a physical zero, and clamping it was
     # what turned the divergence above into a reassuring answer.** The tolerance is relative to the
     # whole dose and generous: RK4 round-off on a state that is legitimately at zero is many orders
     # below it, so anything past it is the instability `_steps_for_stability` now prevents. Kept as
-    # a
-    # belt rather than deleted, because the eigenvalue bound is taken at `t = 0` and a rate law with
-    # `order_in_dosed < 1` steepens as the dosed reagent is consumed.
+    # a belt rather than deleted, because an order below one has an unbounded Jacobian as its
+    # reagent runs out, which no step floor covers — and that case gets its own message below, so a
+    # reagent consumed as fast as it arrives is not misreported as a stiffness the floor missed.
     divergence_floor = -1e-9 * dosed_moles
 
     for index in range(steps + 1):
         time = index * step
+        if (dosed_moles_now < divergence_floor or coreagent_now < divergence_floor) and (
+            order_in_dosed < 1.0 or order_in_coreagent < 1.0
+        ):
+            raise KineticsInputError(
+                f"a reagent ran out {time:g} s into the dose, and with a rate law of order "
+                f"{order_in_dosed:g} in the dosed reagent and {order_in_coreagent:g} in the "
+                "co-reagent this integrator cannot follow it there: below first order the rate "
+                "does not fall to zero smoothly as a reagent is used up, so a fixed step "
+                "overshoots into a negative mole count. What it means physically is that the "
+                "reaction consumes that reagent as fast as it arrives — the accumulation is "
+                "feed-rate-limited, not set by the rate law. Size the dose from the heat-removal "
+                "duty instead (`thermalsafety`). This is refused rather than clamped to zero, "
+                "because a clamped zero reads as a dose that is safe at any rate."
+            )
         if dosed_moles_now < divergence_floor or coreagent_now < divergence_floor:
             raise KineticsInputError(
                 f"the integration went unstable {time:g} s into the dose (dosed reagent "
@@ -560,18 +644,10 @@ def semibatch_accumulation(
                 "it is reported rather than clamped to zero, because a clamped zero reads as no "
                 "accumulation at all and so as a dose that is safe at any rate."
             )
-        volume = volume_at(time)
-        dosed_c = max(dosed_moles_now, 0.0) / volume
-        coreagent_c = max(coreagent_now, 0.0) / volume
-        points.append(
-            AccumulationPoint(
-                time_seconds=time,
-                dosed_fraction=min(feed_rate * time / dosed_moles, 1.0),
-                accumulated_fraction=max(dosed_moles_now, 0.0) / dosed_moles,
-                concentration=dosed_c,
-                rate=rate_constant * dosed_c**order_in_dosed * coreagent_c**order_in_coreagent,
-            )
-        )
+        if dosed_moles_now > peak_moles:
+            peak_index, peak_moles, peak_coreagent = index, dosed_moles_now, coreagent_now
+        if index in sampled_indices:
+            points.append(point_at(index, dosed_moles_now, coreagent_now))
         if index == steps:
             break
         # Classical RK4 over the two-state system.
@@ -588,7 +664,10 @@ def semibatch_accumulation(
         dosed_moles_now += step * (k1a + 2 * k2a + 2 * k3a + k4a) / 6
         coreagent_now += step * (k1b + 2 * k2b + 2 * k3b + k4b) / 6
 
-    peak = max(points, key=lambda point: point.accumulated_fraction)
+    peak = point_at(peak_index, peak_moles, peak_coreagent)
+    if peak_index not in sampled_indices:
+        points.append(peak)
+        points.sort(key=lambda point: point.time_seconds)
     return SemiBatchProfile(
         points=tuple(points),
         peak_accumulation_fraction=peak.accumulated_fraction,

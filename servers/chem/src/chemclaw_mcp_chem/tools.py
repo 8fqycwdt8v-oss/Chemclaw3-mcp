@@ -381,11 +381,12 @@ async def describe_topology(smiles: str) -> Topology:
 
     **It is not free, and on a large molecule it is the most expensive tool on this server.**
     `tautomer_count` is an enumeration rather than a descriptor read, so this costs milliseconds on
-    a drug-sized molecule and seconds on a large one: measured, 346 ms on a 301-atom peptide,
-    839 ms on a 484-atom PAMAM G3 dendrimer and 2,793 ms on a 996-atom PAMAM G4 — where
-    `enumerate_protonation_states` on the same three costs 6 ms, 128 ms and 587 ms. It is still the
-    tool to ask first, because it answers for molecules the enumerations refuse; it is not a
-    free lookup and it is not cheaper than the call it is often used to avoid.
+    a drug-sized molecule and up to about a second on a large one: measured, 346 ms on a 301-atom
+    peptide and 839 ms on a 484-atom PAMAM G3 dendrimer, where `enumerate_protonation_states` costs
+    6 ms and 128 ms. Above `MAX_TAUTOMER_HEAVY_ATOMS` (500 heavy atoms by default) the tautomers
+    are not counted at all — `tautomer_count` is null with `tautomer_count_computed` false — and
+    every other field is still answered. It is still the tool to ask first, because it answers for
+    molecules the enumerations refuse; it is not a free lookup.
 
     How to read the answer:
 
@@ -395,7 +396,8 @@ async def describe_topology(smiles: str) -> Topology:
       of one. Above 1, resolve the form *before* computing anything else about the molecule,
       because every downstream number describes whichever form was assumed. **Null** means more
       than the cap, with `tautomer_count_saturated` saying so — it is emphatically tautomeric, and
-      it is not the number 64.
+      it is not the number 64. Null with `tautomer_count_computed` false means the molecule was too
+      large to count, which says nothing either way; ask about its tautomeric unit on its own.
     - **`unassigned_stereocentres` of 0** means a stereoisomer expansion returns one structure.
     - **`ionisable_acidic_sites` and `ionisable_basic_sites`**: one of either means `predict_pka`
       covers the question; both, or several, is the amphoteric/polyprotic case a microspecies
@@ -416,9 +418,11 @@ async def enumerate_tautomers(smiles: str) -> SpeciesSet:
     """List the tautomers of a molecule — the proton-shift isomers it can exist as.
 
     Structural, and cheap only relative to ranking the set: this is an enumeration rather than a
-    descriptor read, measured at 2,801 ms on a 996-atom dendrimer. Pass `smiles` from the result
-    straight to `rank_species` to find out which form actually dominates; this tool says only which
-    forms are possible.
+    descriptor read, and its cost grows faster than the molecule — so a molecule above
+    `MAX_TAUTOMER_HEAVY_ATOMS` (500 heavy atoms by default, about a second of work at the worst
+    shape measured) is refused naming the bound. Ask about the tautomeric unit on its own. Pass
+    `smiles` from the result straight to `rank_species` to find out which form actually dominates;
+    this tool says only which forms are possible.
 
     Use it before any other calculation on a molecule with a mobile proton between heteroatoms:
     heterocyclic N-H (pyrazoles, imidazoles, triazoles, purines), 1,3-dicarbonyls, amidines,
@@ -521,7 +525,10 @@ async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic"
 async def enumerate_degradants(smiles: str) -> DegradantSet:
     """Propose degradation products by applying forced-degradation transforms to the structure.
 
-    Structural (1,823 ms on a 996-atom dendrimer, milliseconds on a drug-sized molecule), and **a
+    Structural (milliseconds on a drug-sized molecule), and priced before it runs: every transform
+    match is one product built over the whole graph, so a molecule whose `matches x heavy atoms`
+    exceeds `MAX_DEGRADANT_MATCH_ATOM_PRODUCT` (100,000 by default, about a second of work) is
+    refused naming both numbers — ask about the repeat unit instead. And it is **a
     short list rather than a ranking or a prediction**: each entry says a transform *matches* the
     molecule's graph, not that the chemistry happens. Report it as candidates to screen, and say
     so — a transform can match a substructure the chemistry does not favour.

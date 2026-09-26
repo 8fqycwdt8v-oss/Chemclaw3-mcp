@@ -58,18 +58,49 @@ def test_a_complete_manifest_validates(tmp_path: Path) -> None:
     assert manifest.endpoint.state_changing == []
 
 
-def test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error(tmp_path: Path) -> None:
-    """The workaround that used to live at the call site, now stated once in the model.
+@pytest.mark.parametrize(
+    ("label", "endpoint"),
+    [
+        ("no transport", {k: v for k, v in ENDPOINT.items() if k != "transport"}),
+        ("a bare tools key", {**ENDPOINT, "tools": None}),
+        ("a bare read_only key", {**ENDPOINT, "read_only": None}),
+        ("a bare state_changing key", {**ENDPOINT, "state_changing": None}),
+        ("an empty tools list", {**ENDPOINT, "tools": [], "read_only": []}),
+        ("no tools key", {k: v for k, v in ENDPOINT.items() if k not in ("tools", "read_only")}),
+    ],
+)
+def test_an_endpoint_the_consumer_cannot_load_is_refused_here(
+    tmp_path: Path, label: str, endpoint: dict[str, object]
+) -> None:
+    """Each of these validated here once and aborts Chemclaw3's startup with a `ConnectorError`.
 
-    YAML gives `None` for a key with nothing under it, and `sorted(None)` is a `TypeError` naming a
-    line in the helper rather than the manifest. Coerced rather than refused, because `tools:` with
-    nothing under it means an empty list to whoever wrote it — and because
-    `assert_manifest_matches` has a far better sentence for "declares [] while the server serves
-    one" than any type error does.
+    Measured against the consumer's own `ConnectorManifest.model_validate`: no `transport:` is
+    `union_tag_not_found` (the endpoint is a discriminated union there), a bare list key is YAML's
+    `None` and a `list_type` error, and an empty or absent `tools` is refused by the classification
+    validator. This model used to *coerce* the bare keys to `[]`, which made this suite green on a
+    manifest the one reader that matters cannot load.
     """
-    manifest = dict(COMPLETE)
-    manifest["endpoint"] = {**ENDPOINT, "tools": None, "read_only": None}
-    assert load_manifest(_written(tmp_path, manifest)).endpoint.tools == []
+    with pytest.raises(ValueError, match="not a connector manifest"):
+        load_manifest(_written(tmp_path, {**COMPLETE, "endpoint": endpoint}))
+
+
+def test_a_bare_top_level_list_key_is_refused_as_the_consumer_refuses_it(tmp_path: Path) -> None:
+    """`skills:` with nothing under it is `None`, and the consumer's `list[str]` refuses `None`."""
+    with pytest.raises(ValueError, match="skills"):
+        load_manifest(_written(tmp_path, {**COMPLETE, "skills": None}))
+
+
+def test_default_enabled_is_a_field_the_fleet_can_declare(tmp_path: Path) -> None:
+    """The consumer's `default_enabled`, which a shadowing fleet manifest has to be able to say.
+
+    A fleet manifest wins the name collision over the consumer's own copy when this fleet's
+    `manifests/` comes first on `CHEMCLAW_CONNECTORS_DIR`. If the consumer's copy says `false` and
+    this model cannot represent the key, the shadow carries the default `true` and binds every tool
+    schema it declares on every model call.
+    """
+    assert load_manifest(_written(tmp_path, COMPLETE)).default_enabled is True
+    declared = load_manifest(_written(tmp_path, {**COMPLETE, "default_enabled": False}))
+    assert declared.default_enabled is False
 
 
 def test_a_key_this_fleet_invents_is_refused_here_rather_than_at_chemclaw3_s_startup(
