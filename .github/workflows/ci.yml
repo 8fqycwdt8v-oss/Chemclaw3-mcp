@@ -244,11 +244,16 @@ jobs:
 
       # A build and nothing else: no push, no registry. The Containerfiles' own checks run as part
       # of it — `rxnlabel` constructs RXNMapper with the hub switched off and maps a reaction.
+      # The server name reaches the shell through `env`, never spliced into the command: it is a
+      # directory name from the pull request's own tree, so a crafted one must stay a string.
       - name: Build servers/${{ matrix.server }}/Containerfile
+        env:
+          SERVER: ${{ matrix.server }}
+          REVISION: ${{ github.sha }}
         run: >-
-          docker build -f servers/${{ matrix.server }}/Containerfile
-          --build-arg CHEMCLAW_REVISION=${{ github.sha }}
-          -t chemclaw-mcp-${{ matrix.server }}:ci .
+          docker build -f "servers/$SERVER/Containerfile"
+          --build-arg "CHEMCLAW_REVISION=$REVISION"
+          -t "chemclaw-mcp-$SERVER:ci" .
 
       # **Started with no network at all**, which is the fleet's promise stated as a container
       # flag: whatever `/healthz` needs — a corpus, a checkpoint, a constructed model — has to be
