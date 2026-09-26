@@ -204,25 +204,204 @@ def test_an_instant_reaction_accumulates_nothing_and_an_inert_one_accumulates_ev
     assert inert.peak_accumulation_fraction == pytest.approx(1.0, abs=1e-3)
 
 
-def test_a_dose_too_fast_to_integrate_is_refused_rather_than_reported_as_zero() -> None:
-    """The complement of the limit above, and the reason it is a refusal and not a small number.
+def test_a_dose_past_the_explicit_ceiling_is_answered_by_the_stable_scheme() -> None:
+    """The dose that used to be refused as "too fast for this integrator" now has an answer.
 
-    Past `MAX_INTEGRATION_STEPS` the scheme cannot be made stable by taking more steps, and the old
-    code's answer was `accumulated_fraction = 0.0` at every point, `peak_at_seconds = 0.0`, and a
-    `basis` that said nothing was wrong — i.e. "no unreacted dosed reagent at any instant", which is
-    the number `tools.semibatch_accumulation` calls the material a cooling failure would have to
-    absorb. A reaction that fast relative to its addition is mixing-limited, which this ideal
-    perfectly-mixed model does not describe, so the refusal says that and names the server that
-    does.
+    At `k = 200` the worked dose needs ~465,000 RK4 steps to be stable, past
+    `MAX_INTEGRATION_STEPS`, so it was refused as mixing-limited — a refusal set by what an explicit
+    scheme can afford rather than by the chemistry. The reference is RK4 itself with the ceiling
+    lifted (465,000 steps, 8.0545086724e-06), which the stable scheme's fixed 2,000 steps meet to
+    9.3e-08. The mixing-limited warning the refusal carried is kept, as the answer's caveat.
     """
-    with pytest.raises(KineticsInputError) as refused:
-        _dose(rate_constant=200.0)
+    profile = _dose(rate_constant=200.0)
+    assert profile.method == reactors.METHOD_STABLE
+    assert profile.steps == reactors.STABLE_INTEGRATION_STEPS
+    assert profile.peak_accumulation_fraction == pytest.approx(8.0545086724e-06, rel=1e-6)
+    assert profile.dose_damkohler * reactors.RK4_REAL_STABILITY_LIMIT > (
+        reactors.RK4_REAL_STABILITY_LIMIT * reactors.MAX_INTEGRATION_STEPS
+    ), "the fixture is no longer past the RK4 ceiling, so this test no longer tests the switch"
 
-    message = str(refused.value)
-    assert "mixing-limited" in message, f"the refusal does not say what regime this is: {message}"
-    assert "thermalsafety" in message, "the refusal does not name where the question does belong"
-    assert str(reactors.MAX_INTEGRATION_STEPS) in message.replace(",", ""), (
-        "the refusal does not say what ceiling it hit"
+
+def test_a_dose_rk4_can_integrate_is_still_integrated_by_rk4() -> None:
+    """The switch is at the ceiling and nowhere else, so every answer RK4 gave is unchanged."""
+    for rate_constant in (0.02, 50.0):
+        assert _dose(rate_constant=rate_constant).method == reactors.METHOD_RK4
+    assert _stiff(rate_constant=2.5).method == reactors.METHOD_RK4
+    assert _stiff(rate_constant=2.6).method == reactors.METHOD_STABLE
+
+
+def _both(
+    *,
+    rate_constant: float,
+    dose_time_seconds: float,
+    initial_volume: float,
+    dosed_moles: float,
+    dosed_volume: float,
+    initial_coreagent_concentration: float,
+    order_in_dosed: float,
+) -> tuple[float, float]:
+    """The peak by the scheme the problem picks, and by the stable scheme forced."""
+    common = {
+        "rate_constant": rate_constant,
+        "dose_time_seconds": dose_time_seconds,
+        "initial_volume": initial_volume,
+        "dosed_moles": dosed_moles,
+        "dosed_volume": dosed_volume,
+        "initial_coreagent_concentration": initial_coreagent_concentration,
+        "order_in_dosed": order_in_dosed,
+    }
+    auto = reactors.semibatch_accumulation(
+        steps=reactors.DEFAULT_INTEGRATION_STEPS, force_stable=False, **common
+    )
+    assert auto.method == reactors.METHOD_RK4, "a regression fixture must be one RK4 answers"
+    stable = reactors.semibatch_accumulation(
+        steps=reactors.DEFAULT_INTEGRATION_STEPS, force_stable=True, **common
+    )
+    assert stable.method == reactors.METHOD_STABLE
+    return auto.peak_accumulation_fraction, stable.peak_accumulation_fraction
+
+
+@pytest.mark.parametrize(
+    ("rate_constant", "dose_time_seconds", "initial_volume", "dosed_moles", "dosed_volume",
+     "initial_coreagent_concentration", "order_in_dosed"),
+    [
+        pytest.param(0.02, 7200.0, 50.0, 40.0, 8.0, 0.9, 1.0, id="worked"),
+        pytest.param(50.0, 7200.0, 50.0, 40.0, 8.0, 0.9, 1.0, id="worked-k50"),
+        pytest.param(0.02, 3600.0, 0.1, 5.0, 0.0, 60.0, 1.0, id="stiff-k0.02"),
+        pytest.param(2.5, 3600.0, 0.1, 5.0, 0.0, 60.0, 1.0, id="stiff-k2.5"),
+        pytest.param(0.5, 3600.0, 1.0, 40.0, 0.5, 45.0, 2.0, id="second-order"),
+        pytest.param(1e-3, 3600.0, 1.0, 200.0, 0.0, 100.0, 2.0, id="second-order-slow"),
+    ],
+)  # fmt: skip
+def test_the_stable_scheme_agrees_with_rk4_on_every_fixture_rk4_answers(
+    rate_constant: float,
+    dose_time_seconds: float,
+    initial_volume: float,
+    dosed_moles: float,
+    dosed_volume: float,
+    initial_coreagent_concentration: float,
+    order_in_dosed: float,
+) -> None:
+    """The regression that lets the stable scheme be trusted where RK4 cannot check it.
+
+    Every fixture in this file that RK4 answers, integrated by both. Measured worst is 2.6e-07, on
+    the worked dose at `k = 50`; the tolerance is ten times that, on a number reported to four
+    figures — a coefficient typed wrong in the SDIRK tableau moves it by orders of magnitude.
+    """
+    rk4, stable = _both(
+        rate_constant=rate_constant,
+        dose_time_seconds=dose_time_seconds,
+        initial_volume=initial_volume,
+        dosed_moles=dosed_moles,
+        dosed_volume=dosed_volume,
+        initial_coreagent_concentration=initial_coreagent_concentration,
+        order_in_dosed=order_in_dosed,
+    )
+    assert stable == pytest.approx(rk4, rel=3e-6)
+
+
+def test_the_stable_scheme_converges_at_third_order_on_a_smooth_dose() -> None:
+    """The order, re-measured for the new scheme as the row asked, and not just a tolerance.
+
+    Alexander's SDIRK is third order: doubling the steps on the worked dose must improve the answer
+    by about 2^3 = 8 (measured 7.8). The floor is 5 — a scheme that had lost an order (a stage
+    weight typed wrong gives second order at best, 4x) is below it.
+    """
+    reference = _peak(20_000)
+
+    def error(steps: int) -> float:
+        stable = reactors.semibatch_accumulation(
+            rate_constant=_RATE_CONSTANT,
+            dose_time_seconds=_DOSE_TIME_SECONDS,
+            initial_volume=_INITIAL_VOLUME,
+            dosed_moles=_DOSED_MOLES,
+            dosed_volume=_DOSED_VOLUME,
+            initial_coreagent_concentration=_COREAGENT_CONCENTRATION,
+            steps=steps,
+            force_stable=True,
+        )
+        return abs(stable.peak_accumulation_fraction - reference) / reference
+
+    improvement = error(2_000) / error(4_000)
+    assert improvement > 5.0, f"doubling the steps improved the answer {improvement:.1f}x, not ~8x"
+
+
+@pytest.mark.parametrize("rate_constant", [1e2, 1e6, 1e12])
+def test_a_dose_that_reacts_as_it_arrives_lands_on_the_quasi_steady_limit(
+    rate_constant: float,
+) -> None:
+    """Far past the RK4 ceiling the answer has a closed form the scheme does not contain.
+
+    The feed reacts as fast as it arrives, so the unreacted reagent is `F / (k * C_co)`, and at the
+    end of the dose — where the co-reagent is lowest and the accumulation highest — that is a
+    fraction `1 / (k * C_co,end * t_dose)` of the charge. On the stiff fixture `C_co,end` is
+    (6 - 5) mol / 0.1 = 10. Measured agreement is 2.8e-06 at `k = 100`, where the limit's own
+    `1/(k*C_co*t)` correction is still visible, and 1e-9 beyond.
+    """
+    profile = _stiff(rate_constant=rate_constant)
+    assert profile.method == reactors.METHOD_STABLE
+    limit = 1.0 / (rate_constant * 10.0 * _STIFF_DOSE_SECONDS)
+    assert profile.peak_accumulation_fraction == pytest.approx(limit, rel=1e-5)
+    assert profile.peak_at_seconds == pytest.approx(_STIFF_DOSE_SECONDS)
+
+
+@pytest.mark.parametrize(
+    ("rate_constant", "order_in_coreagent"), [(1e2, 1.0), (1e6, 1.0), (1e6, 0.5)]
+)
+def test_a_co_reagent_used_up_mid_dose_leaves_exactly_the_excess(
+    rate_constant: float, order_in_coreagent: float
+) -> None:
+    """A fast reaction that runs out of co-reagent halfway leaves half the charge, exactly.
+
+    At `k = 100` the stable scheme's truncation left the co-reagent at -0.011 mol where it ran out
+    inside a step, which reported the peak 1.1e-04 low; moving the state back onto the conserved
+    line `n_d - n_co` makes it exact. All three were refused before, as too fast for RK4.
+    """
+    profile = reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=3600.0,
+        initial_volume=1.0,
+        dosed_moles=200.0,
+        dosed_volume=2.0,
+        initial_coreagent_concentration=100.0,
+        order_in_coreagent=order_in_coreagent,
+    )
+    assert profile.method == reactors.METHOD_STABLE
+    assert profile.peak_accumulation_fraction == pytest.approx(0.5, rel=1e-9)
+    assert all(point.accumulated_fraction >= 0.0 for point in profile.points)
+
+
+def test_the_start_of_a_stiff_dose_does_not_overshoot_into_a_false_peak() -> None:
+    """With a zero-order co-reagent the true profile rises monotonically to `F/k` and stays there.
+
+    The SDIRK stability function is negative at large `h*lambda`, so its first step from zero
+    overshot that plateau and the overshoot became the reported peak — 0.78% high at `k = 200`. The
+    backward-Euler start approaches from below.
+    """
+    rate_constant = 200.0
+    profile = reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=3600.0,
+        initial_volume=1.0,
+        dosed_moles=40.0,
+        dosed_volume=0.5,
+        initial_coreagent_concentration=45.0,
+        order_in_coreagent=0.0,
+    )
+    assert profile.method == reactors.METHOD_STABLE
+    plateau = 1.0 / (rate_constant * 3600.0)
+    assert profile.peak_accumulation_fraction <= plateau * (1.0 + 1e-9)
+    assert profile.peak_accumulation_fraction == pytest.approx(plateau, rel=1e-9)
+
+
+def test_the_stable_scheme_costs_a_fixed_step_count_however_fast_the_reaction() -> None:
+    """What bounds its cost inside the admission ceiling: the count does not follow the rate."""
+    counts = {_stiff(rate_constant=k).steps for k in (3.0, 1e3, 1e9, 1e15)}
+    assert counts == {reactors.STABLE_INTEGRATION_STEPS}
+    assert reactors.STABLE_INTEGRATION_STEPS * 100 <= reactors.MAX_INTEGRATION_STEPS, (
+        "the stable scheme does three implicit stages of about three Newton iterations each per "
+        "step, ~30x an RK4 step's work; at a hundredth of RK4's step ceiling its worst call stays "
+        "a small fraction of the one `engine/admission.py` sized the ceiling for"
     )
 
 

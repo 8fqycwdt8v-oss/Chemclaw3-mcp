@@ -8,7 +8,8 @@ requires-python = ">=3.11"
 # 200-step bisection precisely to keep its closure at the MCP transport and cited `props` for the
 # same choice. Only two servers in this fleet carry numpy or scipy — `calc`, behind a QM binary,
 # and `pyexec`, which *is* a sandbox toolbox — and neither reason transfers to closed-form reactor
-# algebra and a fixed-step RK4 over two state variables.
+# algebra and two fixed-step integrators (RK4, and an L-stable SDIRK for the stiff band) over two
+# state variables.
 #
 # What the heavier closure would have bought is the one tool deliberately not built: `fit_rate_law`,
 # a regression over time-course data. Splitting it out is what let this server stay at `math`. See

@@ -486,6 +486,13 @@ async def enumerate_stereoisomers(smiles: str) -> SpeciesSet:
     claim, and re-enumerating over it would offer the enantiomer of a compound somebody specified.
     A fully-specified input therefore comes back as itself.
 
+    **What this refuses is a cost as well as a count.** Each isomer is canonicalised over the whole
+    molecule, so a call whose `isomers it would build x heavy atoms` exceeds
+    `MAX_STEREO_ISOMER_ATOM_PRODUCT` (6,000 by default — 64 isomers up to 93 heavy atoms, two up to
+    the largest molecule this server parses) is refused before any isomer is built, naming both
+    numbers. More than 64 isomers is refused either way: assign the centres the question does not
+    turn on, or ask about the stereogenic fragment on its own.
+
     Args:
         smiles: The molecule, as SMILES.
 

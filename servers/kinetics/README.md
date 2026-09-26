@@ -69,7 +69,7 @@ is what let everything else stay at `math`:
   a server is a dependency closure as much as a capability. `props` made the same call before it.
 - **Only two servers in this fleet carry numpy or scipy**, and neither reason transfers: `calc`
   does real numerics behind a QM binary, and `pyexec` *is* a sandbox whose whole product is
-  shipping that toolbox to the agent. Closed-form reactor algebra and a fixed-step RK4 over two
+  shipping that toolbox to the agent. Closed-form reactor algebra and two fixed-step schemes over two
   state variables are not that.
 - **The probes do not carry fitting data anyway.** Chemclaw3's `process-chemistry.yaml` asks three
   kinetics questions; one references a dataset without pasting it, and the other two supply a
@@ -112,7 +112,11 @@ section used to argue the server out of a ceiling at 836 µs per call, which hel
 count was fixed; once `_steps_for_stability` derived it from the caller's rate and dose time the
 worst legal call became seconds of pure-Python CPU, and the tool was also running *on* the event
 loop, stalling `/healthz` for as long as it ran. The five closed-form tools stay ungated.
-`D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` has the measurement and why the
-integrator was not replaced instead.
+`D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` has the measurement.
+A dose too fast for RK4 at `reactors.MAX_INTEGRATION_STEPS` used to be refused as mixing-limited; it
+is now integrated by an L-stable SDIRK at a fixed 2,000 steps, costs under a tenth of a second
+whatever the rate, and comes back with `method` naming the scheme and a `caveat` that the
+perfectly-mixed number is a floor in that regime
+(`D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused`).
 A profile keeps at most `reactors.PROFILE_POINTS` points — evenly spaced samples, the end of the
 dose and the exact peak — so an integration's memory does not grow with its step count.

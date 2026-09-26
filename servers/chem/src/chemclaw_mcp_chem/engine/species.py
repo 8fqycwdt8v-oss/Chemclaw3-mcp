@@ -48,6 +48,7 @@ __all__ = [
     "MAX_MICROSTATES",
     "MAX_SITE_ATOM_PRODUCT",
     "MAX_STEREOISOMERS",
+    "MAX_STEREO_ISOMER_ATOM_PRODUCT",
     "MAX_TAUTOMERS",
     "MAX_TAUTOMER_HEAVY_ATOMS",
     "Degradant",
@@ -218,6 +219,65 @@ MAX_DEGRADANT_MATCH_ATOM_PRODUCT = env_bound(
         "below it even a drug-sized parent with one liability would be refused; far above it one "
         "call can hold a worker thread for tens of seconds, past the request timeout its caller is "
         "waiting on"
+    ),
+)
+
+
+#: The most `stereoisomers the enumerator would build x heavy atoms` one stereoisomer enumeration
+#: may spend.
+#:
+#: **`maxIsomers` bounds how many isomers are built, not what each one costs.** The enumerator stops
+#: one past `MAX_STEREOISOMERS`, and each isomer it builds is canonicalised over the whole graph —
+#: which is super-linear in the molecule. So the work is the isomer count times a whole-graph
+#: canonicalisation, and neither `MAX_MOLECULE_ATOMS` nor the output cap saw the product: a
+#: 1,991-atom polyol (994 open centres) built its 65 isomers and was *then* refused, after 10.2 s in
+#: the `cc3-gate` image. The isomer count is `min(2^n, MAX_STEREOISOMERS + 1)` for `n` open
+#: stereo elements — what `EnumerateStereoisomers` itself flips, counted by the same
+#: `FindPotentialStereo` it calls, before any isomer is built.
+#:
+#: **Priced on that count and not on the atom count alone**, because an atom bound refuses the
+#: wrong molecules: a 996-atom PAMAM G4 has no open centre and enumerates in 23 ms. The frontier,
+#: CPU for the whole `enumerate_stereoisomer_set` call, best of three, measured 2026-09-26 with
+#: RDKit 2025.09.3 on a loaded 4-core x86_64 laptop (load average 13-30, where this suite's own
+#: `test_the_worst_call_the_bound_admits_stays_inside_the_probe_budget` measured 5.96 s against the
+#: gate image's ~1.3 s) — so read the ratios rather than the milliseconds:
+#:
+#:     shape                        atoms  open  built  product   before           after
+#:     paclitaxel, no stereo           62    11     65    4,030     132 ms  cap      137 ms  cap
+#:     polyol                          92    45     65    5,980     218 ms  cap      223 ms  cap
+#:     polylactide                     91    18     65    5,915     166 ms  cap      142 ms  cap
+#:     six open centres                93     6     64    5,952     188 ms  64       204 ms  64
+#:     chain, two open              1,498     2      4    5,992   1,457 ms  4      1,452 ms  4
+#:     chain, nothing open          1,991     0      1    1,991   1,293 ms  1      1,252 ms  1
+#:     chain, one open              1,991     1      2    3,982   2,791 ms  2      2,880 ms  2
+#:     chain, two open              1,989     2      4    7,956   2,736 ms  4        526 ms  refused
+#:     polyol                       1,991   994     65  129,415  11,493 ms  cap      157 ms  refused
+#:
+#: ("cap" is the old refusal, after the isomers were built: more than `MAX_STEREOISOMERS`.)
+#:
+#: **The unbranched chain is the worst shape, and it is worst for a reason this bound does not
+#: price**: RDKit's canonical ranking of a 1,991-atom path is super-linear, so the parse, the count
+#: and the parent's own canonical SMILES cost 1.25 s here with no stereo work at all — which is why
+#: the worst admitted call (one open centre on that chain) is 2.3x the chain with none. The product
+#: under-prices that shape by the same super-linearity `MAX_SITE_ATOM_PRODUCT` documents for
+#: aromatics; a bound tight enough to refuse it at one open centre (below 3,982) would also refuse
+#: `paclitaxel` drawn without stereo (4,030) by cost rather than by the cap it reaches anyway, and
+#: every 32-isomer set above 124 atoms, which the cap would not.
+#:
+#: **What the bound changes is mostly the cost of a refusal, not which molecules are answered**:
+#: seven or more open elements build 65 isomers, and 65 non-degenerate isomers are past
+#: `MAX_STEREOISOMERS` — so the answer was a refusal already, and past this bound it now costs a
+#: parse and a count (157 ms on the 1,991-atom polyol) instead of 11.5 s. The one molecule the
+#: table shows moving from answered to refused is the two-centre 1,989-atom chain.
+MAX_STEREO_ISOMER_ATOM_PRODUCT = env_bound(
+    "CHEMCLAW_CHEM_MAX_STEREO_ISOMER_ATOM_PRODUCT",
+    default=6_000,
+    # 2-butanol, the textbook single stereocentre, is 5 heavy atoms and 2 isomers.
+    minimum=10,
+    consequence=(
+        "below it even 2-butanol — 5 heavy atoms, one open centre, two isomers — would be refused; "
+        "far above it one call can hold a worker thread for tens of seconds, past the request "
+        "timeout its caller is waiting on"
     ),
 )
 
@@ -649,6 +709,51 @@ def enumerate_microstates(smiles: str) -> SpeciesSet:
     )
 
 
+def _open_stereo_elements(mol: Chem.Mol) -> int:
+    """How many stereo elements `EnumerateStereoisomers(onlyUnassigned=True)` would flip.
+
+    Counted the way the enumerator counts them — `FindPotentialStereo`, keeping the unspecified and
+    unknown tetrahedral centres and double bonds, plus each non-absolute stereo group — so the price
+    is read off the same perception the work would use, not off a second one that could disagree.
+    """
+    elements = sum(
+        1
+        for info in Chem.FindPotentialStereo(mol)
+        if info.specified in (Chem.StereoSpecified.Unspecified, Chem.StereoSpecified.Unknown)
+        and info.type in (Chem.StereoType.Atom_Tetrahedral, Chem.StereoType.Bond_Double)
+    )
+    groups = sum(
+        1
+        for group in mol.GetStereoGroups()
+        if group.GetGroupType() != Chem.StereoGroupType.STEREO_ABSOLUTE
+    )
+    return elements + groups
+
+
+def _refuse_stereo_enumeration_past(mol: Chem.Mol, smiles: str) -> None:
+    """Raise when building this molecule's stereoisomers would cost more than one call may.
+
+    The enumerator builds `min(2^n, MAX_STEREOISOMERS + 1)` isomers for `n` open elements and
+    canonicalises each over the whole graph, so that count times the heavy atoms is what is priced
+    — see `MAX_STEREO_ISOMER_ATOM_PRODUCT`. A `ValueError`, so the wording reaches the model.
+    """
+    elements = _open_stereo_elements(mol)
+    # The exponent is clamped first, so a 994-centre polyol never builds 2^994 to compare it.
+    built = min(1 << min(elements, MAX_STEREOISOMERS.bit_length()), MAX_STEREOISOMERS + 1)
+    atoms = mol.GetNumHeavyAtoms()
+    if built * atoms > MAX_STEREO_ISOMER_ATOM_PRODUCT:
+        raise ValueError(
+            f"{echo(smiles)!r} has {elements} open stereo elements on {atoms} heavy atoms. The "
+            f"enumeration would build {built} isomers and canonicalise each over the whole graph, "
+            f"so the work is the product of those two numbers — {built * atoms:,} here, "
+            f"{built * atoms / MAX_STEREO_ISOMER_ATOM_PRODUCT:.1f}x the "
+            f"{MAX_STEREO_ISOMER_ATOM_PRODUCT:,} one call on this server may spend. This refuses "
+            "the cost, not the answer. Assign the centres the question does not turn on, ask "
+            "about the stereogenic fragment on its own, or raise "
+            "CHEMCLAW_CHEM_MAX_STEREO_ISOMER_ATOM_PRODUCT on this deployment."
+        )
+
+
 def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
     """Every stereoisomer of `smiles` at its *unassigned* centres, parent first.
 
@@ -658,9 +763,13 @@ def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
-        ValueError: more stereoisomers than `MAX_STEREOISOMERS`.
+        ValueError: more `isomers it would build x heavy atoms` than
+            `MAX_STEREO_ISOMER_ATOM_PRODUCT`, or more stereoisomers than `MAX_STEREOISOMERS`.
     """
     mol = require_molecule(smiles)
+    # Priced before the parent's own canonical SMILES, which on the worst shape is itself half a
+    # second: a refusal costs the parse and the count, nothing more.
+    _refuse_stereo_enumeration_past(mol, smiles)
     parent = _canonical(mol)
     # Two `type: ignore`s, and one below in `describe_molecule`: all the same `rdkit-stubs` gap
     # that `engine/chem.py` records for `Descriptors.MolWt` — the stub marks these untyped, and

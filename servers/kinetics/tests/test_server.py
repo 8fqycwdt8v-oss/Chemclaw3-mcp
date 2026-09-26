@@ -276,3 +276,36 @@ async def test_the_accumulation_profile_is_bounded_on_the_wire(running_server: s
             body["accumulation_at_end_of_dose"]
         )
         assert "no energy balance" in body["basis"]
+        assert body["method"] == "rk4"
+        assert body["caveat"] is None
+
+
+async def test_a_stiff_dose_is_answered_on_the_wire_with_its_method_and_caveat(
+    running_server: str,
+) -> None:
+    """The dose the server used to refuse as mixing-limited now answers, and still says so.
+
+    The warning the refusal carried is not lost with it: the answer names the stable scheme and
+    carries a caveat that the perfectly-mixed number is a floor in this regime, naming the server
+    the heat-removal question belongs to.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool(
+            "semibatch_accumulation_profile",
+            {
+                "rate_constant": 200.0,
+                "dose_time_seconds": 7200.0,
+                "initial_volume": 50.0,
+                "dosed_moles": 40.0,
+                "initial_coreagent_concentration": 0.9,
+                "dosed_volume": 8.0,
+            },
+        )
+        assert result.isError is False, result.content
+        body = result.structuredContent
+        assert body is not None
+        assert body["method"] == "sdirk3-l-stable"
+        assert body["peak_accumulation_fraction"] == pytest.approx(8.0545086724e-06, rel=1e-6)
+        assert "mixing-limited" in body["caveat"]
+        assert "thermalsafety" in body["caveat"]
+        assert "L-stable" in body["basis"]

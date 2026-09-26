@@ -27,11 +27,13 @@ about different processes, and keeping the tools apart is what stops one being q
 Every answer carries `basis`: the equation it came out of and the assumption that equation makes.
 
 The five closed-form tools are synchronous and cost microseconds. The integrator is the one that
-does real work, and its cost is set by the caller's rate constant and dose time: the step count is
-derived from the problem up to `reactors.MAX_INTEGRATION_STEPS`, so the worst legal call is seconds
-of pure-Python CPU. It therefore owes what `CLAUDE.md` says a slow tool owes — a bound on its input
-(that step ceiling), an offload so it does not run on the event loop, and a ceiling on how many run
-at once. `engine/admission.py` has the measurement and the derivation.
+does real work, and its cost is set by the caller's rate constant and dose time: the RK4 step count
+is derived from the problem up to `reactors.MAX_INTEGRATION_STEPS`, so the worst legal call is
+seconds of pure-Python CPU. Past that ceiling the dose goes to an L-stable scheme at a fixed
+`reactors.STABLE_INTEGRATION_STEPS`, which costs a tenth of a second whatever the rate. It therefore
+owes what `CLAUDE.md` says a slow tool owes — a bound on its input (that step ceiling), an offload
+so it does not run on the event loop, and a ceiling on how many run at once. `engine/admission.py`
+has the measurement and the derivation.
 """
 
 from __future__ import annotations
@@ -190,6 +192,20 @@ class AccumulationResult(BaseModel):
     peak_at_seconds: float
     accumulation_at_end_of_dose: float
     profile: list[ProfilePoint]
+    method: str = Field(
+        description=(
+            "Which scheme integrated this dose: 'rk4' (fixed-step RK4 at a step count derived "
+            "from the problem), or 'sdirk3-l-stable' (an L-stable implicit scheme, used when the "
+            "reaction is too fast relative to the addition for RK4 to integrate stably)."
+        )
+    )
+    caveat: str | None = Field(
+        default=None,
+        description=(
+            "Set when the reaction is fast enough relative to the addition that a perfectly-mixed "
+            "model stops describing the vessel. Read it before using the number."
+        ),
+    )
     basis: str
 
 
@@ -565,7 +581,9 @@ async def semibatch_accumulation_profile(
     absorb all at once, so the peak of this profile is the case a dose time is chosen against.
 
     Integrated numerically — the volume and both concentrations move together, so there is no
-    closed form.
+    closed form. `method` names the scheme; a reaction very fast relative to its addition comes
+    back from an L-stable implicit scheme with a `caveat` saying the perfectly-mixed number is a
+    floor there, because such a vessel is mixing-limited.
 
     **Isothermal**, which is the assumption to check before using the number. The vessel is taken as
     held at temperature, which is what a jacket is for. If the jacket cannot hold it, the batch
@@ -589,8 +607,8 @@ async def semibatch_accumulation_profile(
         profile.
 
     Raises:
-        ValueError: If a value is not positive or an order is negative, if the dose is too fast
-            for the integrator to resolve or runs a reagent out in a way it cannot follow, or if
+        ValueError: If a value is not positive or an order is negative, if the rate is too large
+            to represent in double precision or runs a reagent out in a way RK4 cannot follow, or if
             this pod is already running its ceiling of integrations — that last one is transient,
             and the identical call may be retried.
     """
@@ -607,6 +625,7 @@ async def semibatch_accumulation_profile(
         order_in_dosed=order_in_dosed,
         order_in_coreagent=order_in_coreagent,
     )
+    stable = profile.method == reactors.METHOD_STABLE
     return AccumulationResult(
         peak_accumulation_fraction=profile.peak_accumulation_fraction,
         peak_at_seconds=profile.peak_at_seconds,
@@ -619,8 +638,24 @@ async def semibatch_accumulation_profile(
             )
             for point in profile.points
         ],
+        method=profile.method,
+        caveat=(
+            f"The reaction can consume what is in the vessel about {profile.dose_damkohler:.3g} "
+            "times over the dose, so the accumulation here is the perfectly-mixed, quasi-steady "
+            "value: the feed reacts as fast as it arrives. A real vessel with a reaction this fast "
+            "is mixing-limited — the unreacted reagent is set by how fast the feed disperses, "
+            "which this model does not describe — so treat this as a floor, not a design figure, "
+            "and size the dose from the heat-removal duty (`thermalsafety`)."
+            if stable
+            else None
+        ),
         basis=(
-            "fixed-step RK4 over moles of both species with the volume rising linearly; ideal "
-            "isothermal semi-batch, perfect mixing, constant dose rate, no energy balance"
+            (
+                "L-stable three-stage SDIRK (Alexander 1977) at a fixed "
+                f"{profile.steps:,} steps over moles of both species, the volume rising linearly"
+                if stable
+                else "fixed-step RK4 over moles of both species with the volume rising linearly"
+            )
+            + "; ideal isothermal semi-batch, perfect mixing, constant dose rate, no energy balance"
         ),
     )

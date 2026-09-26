@@ -85,22 +85,6 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
   `servers/calc/Containerfile`.
 
-- [ ] **`enumerate_stereoisomers` is the one species tool left with no input bound.**
-  `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated the band on one
-  ceiling and measured what a ceiling cannot fix: four tools past a 30 s `request_timeout` or a 3 s
-  `readinessProbe.timeoutSeconds` in one call on legal 1,990-atom shapes. Three are now priced
-  before they run — `enumerate_tautomers` and `describe_topology`'s tautomer count by
-  `MAX_TAUTOMER_HEAVY_ATOMS`, `enumerate_degradants` by `MAX_DEGRADANT_MATCH_ATOM_PRODUCT`
-  (`servers/chem/tests/test_enumeration_cost_bounds.py`); re-measured on the merged engine, the
-  1,991-atom polyester and polyol refuse or answer in under 0.3 s. `enumerate_stereoisomers` does
-  not: the 1,991-atom polyol still costs **5.4 s** of CPU (10,226 ms in the ADR's image) before its
-  output cap refuses it, the defect `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` fixed
-  for `enumerate_protonation_states`. It needs a bound priced on what drives its cost — the
-  unassigned stereocentre count, not the atom count (a 996-atom PAMAM G4 is 23 ms) — measured first.
-  **Anchors:** `servers/chem/src/chemclaw_mcp_chem/engine/species.py`,
-  `servers/chem/src/chemclaw_mcp_chem/engine/admission.py`,
-  `servers/chem/tests/test_enumeration_cost_bounds.py`.
-
 - [ ] **The hand-written reaction classifier gates the Mixture-of-Experts priors, and the curated
   one this server already depends on is not wired to it.**
   `servers/rxnpredict`'s `engine/meta/classifier.py` is a 190-line ten-class classifier over a
@@ -137,15 +121,17 @@ decision leaves a record behind and the row goes.
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
   `servers/rxnpredict/tests/test_dataset.py`.
 
-- [ ] **`kinetics` refuses a semi-batch dose past `MAX_INTEGRATION_STEPS`, and a stable scheme
-  would answer it.** `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated` gave
-  `semibatch_accumulation_profile` an admission ceiling rather than a new integrator, because a
-  gate was owed either way. What the ceiling does not change is the refusal: a dose whose
-  stiffness bound times its dose time needs more than 200,000 explicit RK4 steps is turned away
-  as mixing-limited. An implicit or exponentially-fitted step for the linear part would be stable at any step and would
-  answer it, at the price of re-measuring the convergence order the current scheme was proven at.
-  Decide whether the stiff band is worth that, and do not close it by lowering the step ceiling.
-  **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py`,
+- [ ] **RK4's step floor in `kinetics` lands on its stability limit, where the transient barely
+  decays.** `_steps_for_stability` sets `h*lambda` to `RK4_REAL_STABILITY_LIMIT` exactly, the
+  point where RK4's amplification factor is 1. When the stiffness bound is tight — first order in
+  the dosed reagent and zero order in the co-reagent, so `lambda = k` for the whole dose — the
+  start-up transient decays slowly across the dose and the peak comes back low: measured
+  2026-09-26 at `k = 10.0005` (1 h, 40 mol into 1 volume), 2.7718e-05 against 2.7776e-05, 0.21%
+  low, the dangerous direction. A margin on the limit doubles RK4's step count and so its worst
+  legal call, which `engine/admission.py` sizes the ceiling on; routing floor-bound doses to the
+  stable scheme (`METHOD_STABLE`, measured 0.01% *high* on a neighbouring dose at `k = 10`) costs
+  about a tenth of a second but moves answers RK4 now gives. Decide which, measured.
+  **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py::RK4_REAL_STABILITY_LIMIT`,
   `servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`.
 
 - [ ] **`rxnpredict`'s per-class prior override still replaces the vendored corpus whole.**
