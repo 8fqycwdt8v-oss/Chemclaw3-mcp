@@ -31,6 +31,7 @@ killing the process group; these tests are the in-process half.
 
 from __future__ import annotations
 
+import time
 import types
 from pathlib import Path
 from typing import Any
@@ -273,7 +274,7 @@ def test_a_relaxation_the_budget_stops_says_how_far_it_got(
         elements=[8, 1, 1],
         positions=[[0.0, 0.0, 0.0], [1.3, 0.0, 0.0], [-0.3, 0.9, 0.0]],
     )
-    real_clock = budget_module.time.monotonic
+    real_clock = time.monotonic
     checks = {"count": 0}
 
     def clock() -> float:
