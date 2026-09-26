@@ -71,6 +71,13 @@ MAX_INTEGRATION_STEPS = 200_000
 #: one.
 RK4_REAL_STABILITY_LIMIT = 2.785
 
+#: How far above its quasi-steady value the dosed reagent's concentration is allowed for when the
+#: step floor is derived. The quasi-steady value is itself an upper bound on what the dose reaches
+#: (see `_dosed_concentration_bound`), so this is margin for RK4's transient and for the
+#: co-reagent's partial derivative `_stiffness_bound` leaves out, not a correction. It enters the
+#: stiffness as `margin^(n_d - 1)`: ten times the steps at second order, nothing at first order.
+QUASI_STEADY_MARGIN = 10.0
+
 #: What a call actually runs at, and it is a *tenth* of the cap for a reason the bug fix bought.
 #: While the feed-term discontinuity made convergence first-order, 2,000 steps was genuinely needed
 #: to reach four figures — so that is what the default was set to, before anybody had measured the
@@ -120,9 +127,22 @@ def _fraction(value: float, what: str) -> float:
     return value
 
 
+def _finite(value: float, what: str) -> float:
+    """Any input to a rate law, which must be a real number before any other check means anything.
+
+    `value <= 0.0` is False for NaN and for infinity alike, and pydantic's `gt=0` passes infinity,
+    which the MCP JSON parser accepts as the literal `Infinity`. So an infinite rate constant used
+    to reach `math.ceil` in the step floor and leave as an `OverflowError`, which `connector_app`
+    replaces with an opaque `error_id` rather than a sentence the caller can act on.
+    """
+    if not math.isfinite(value):
+        raise KineticsInputError(f"{what} must be a finite number; got {value}.")
+    return value
+
+
 def _positive(value: float, what: str) -> float:
-    """A rate constant, a time or a concentration that must be above zero."""
-    if value <= 0.0:
+    """A rate constant, a time or a concentration that must be finite and above zero."""
+    if _finite(value, what) <= 0.0:
         raise KineticsInputError(f"{what} must be greater than zero; got {value}.")
     return value
 
@@ -133,7 +153,7 @@ def _order(value: float) -> float:
     A negative order is real — an inhibiting product gives one — but the closed forms below are
     derived for `n >= 0` and would return a rising concentration for `n < 0` without saying so.
     """
-    if value < 0.0:
+    if _finite(value, "the reaction order") < 0.0:
         raise KineticsInputError(
             f"the reaction order must be zero or above; got {value}. A negative order (product "
             "inhibition) is real chemistry, and the integrated forms here are not derived for it: "
@@ -390,9 +410,9 @@ def _stiffness_bound(
     """An upper bound, per second, on how fast the dosed reagent's own rate responds to it.
 
     That is `J_d = d(k*C_d^n_d*C_co^n_co)/dC_d = k*n_d*C_d^(n_d-1)*C_co^n_co`, bounded by evaluating
-    it at the concentrations' own bounds — `C_d <= dosed_moles / initial_volume` (every mole in the
-    smallest volume) and `C_co <= C_co,0` (the co-reagent is only consumed and diluted). At
-    `n_d = 1` the first bound drops out and this is the old `k * C_co^n_co` exactly.
+    it at the concentrations' own bounds — `C_d` at `_dosed_concentration_bound` and
+    `C_co <= C_co,0` (the co-reagent is only consumed and diluted). At `n_d = 1` the first bound
+    drops out and this is the old `k * C_co^n_co` exactly.
 
     **The order in the dosed reagent is in it, and it was not.** The bound used to be
     `k * C_co^n_co` whatever `n_d` was — right only at `n_d = 1`, and not even dimensionally a rate
@@ -408,12 +428,61 @@ def _stiffness_bound(
     """
     if order_in_dosed < 1.0:
         return 0.0
-    return float(
-        rate_constant
-        * order_in_dosed
-        * max_dosed_concentration ** (order_in_dosed - 1.0)
-        * initial_coreagent_concentration**order_in_coreagent
-    )
+    try:
+        return float(
+            rate_constant
+            * order_in_dosed
+            * max_dosed_concentration ** (order_in_dosed - 1.0)
+            * initial_coreagent_concentration**order_in_coreagent
+        )
+    except OverflowError:
+        # A float `**` raises rather than returning infinity; an unrepresentable stiffness is one
+        # no step count covers, which `_steps_for_stability` refuses by name.
+        return math.inf
+
+
+def _dosed_concentration_bound(
+    *,
+    rate_constant: float,
+    feed_rate: float,
+    initial_volume: float,
+    dosed_moles: float,
+    initial_coreagent_concentration: float,
+    order_in_dosed: float,
+    order_in_coreagent: float,
+) -> float:
+    """The highest concentration of unreacted dosed reagent the step floor has to allow for.
+
+    **Not `dosed_moles / initial_volume`, which it was.** That is the whole charge present
+    unreacted in the starting volume — the one state a reacting dose never reaches — and at
+    `n_d > 1` it enters the stiffness as `C_d^(n_d-1)`. Measured at `n_d = 2, k = 0.5` (1 h dose of
+    40 mol into 1 against a co-reagent at 45), it put the floor at 2.3 million steps and refused as
+    "too fast for this integrator" a dose that 5,000 steps answers to eleven figures (0.0024630155).
+    A false refusal, in exactly the regime a dose time is chosen for.
+
+    The bound used instead is the quasi-steady concentration, where consumption matches the feed:
+    `C_d* = (F / (V * k * C_co^n_co))^(1/n_d)`. The dose starts at `C_d = 0` and cannot cross
+    `C_d*(t)` from below — at it the net feed is zero and dilution only lowers `C_d` — and
+    `V * C_d*` only grows as the volume rises and the co-reagent is used up, so `J_d = n_d*r/C_d` is
+    largest at the start's quasi-steady value. Evaluated at `V_0` and `C_co,0` it therefore bounds
+    `J_d` over the whole dose; `QUASI_STEADY_MARGIN` is headroom on top, and the total charge stays
+    the ceiling for a slow reaction whose quasi-steady value the dose never reaches. The negative-
+    mole check in `semibatch_accumulation` remains the backstop for anything this misses.
+
+    At `n_d < 1` the result is unused (`_stiffness_bound` returns zero), and `1/n_d` is undefined at
+    zero order, so the total charge is returned as-is.
+    """
+    total = dosed_moles / initial_volume
+    if order_in_dosed < 1.0:
+        return total
+    try:
+        quasi_steady = (
+            feed_rate
+            / (initial_volume * rate_constant * initial_coreagent_concentration**order_in_coreagent)
+        ) ** (1.0 / order_in_dosed)
+    except (OverflowError, ZeroDivisionError):
+        return total
+    return min(QUASI_STEADY_MARGIN * float(quasi_steady), total)
 
 
 def _steps_for_stability(
@@ -448,9 +517,10 @@ def _steps_for_stability(
 
     The floor is derived rather than raised to a new constant, because the number depends on the
     problem: a rate and a dose time somebody supplies cannot be covered by any fixed count. A call
-    that would still be unstable at `MAX_INTEGRATION_STEPS` is refused by the caller rather than
-    answered — a reaction that fast is mixing-limited, which is a regime this ideal model does not
-    describe, and saying so is better than a zero.
+    that would still be unstable at `MAX_INTEGRATION_STEPS` is refused here rather than answered —
+    a reaction that fast is mixing-limited, which is a regime this ideal model does not describe,
+    and saying so is better than a zero. That includes a stiffness too large to represent, which
+    used to reach `math.ceil` and leave as an `OverflowError` the caller saw only as an `error_id`.
 
     Args:
         stiffness: `_stiffness_bound`'s upper bound on the Jacobian's eigenvalue, per second.
@@ -459,11 +529,28 @@ def _steps_for_stability(
 
     Returns:
         The step count to integrate with — `requested` when the problem is not stiff.
+
+    Raises:
+        KineticsInputError: If no step count up to `MAX_INTEGRATION_STEPS` integrates it stably.
     """
     if stiffness <= 0.0:
         return requested
-    needed = math.ceil(dose_time_seconds * stiffness / RK4_REAL_STABILITY_LIMIT)
-    return max(requested, needed)
+    needed = dose_time_seconds * stiffness / RK4_REAL_STABILITY_LIMIT
+    if not needed <= MAX_INTEGRATION_STEPS:  # also true for an infinite or NaN `needed`
+        needed_text = f"{math.ceil(needed):,}" if math.isfinite(needed) else "unboundedly many"
+        raise KineticsInputError(
+            f"this dose is too fast for this integrator to resolve: the reaction's rate responds "
+            f"to the concentrations at up to {stiffness:.3g} per second over the dose, which would "
+            f"need {needed_text} steps over {dose_time_seconds:g} s to integrate stably and the "
+            f"ceiling is {MAX_INTEGRATION_STEPS:,}. A reaction this fast relative to the addition "
+            "is mixing-limited — the accumulation is set by how fast the feed disperses, not by "
+            "the rate law — and that is a regime this ideal, perfectly-mixed model does not "
+            "describe. Treat the accumulation as feed-rate-limited and size the dose from the "
+            "heat-removal duty instead; `thermalsafety` is the server for that question. This "
+            "refusal replaced a reported accumulation of zero, which read as a dose that is safe "
+            "at any rate."
+        )
+    return max(requested, math.ceil(needed))
 
 
 def semibatch_accumulation(
@@ -521,7 +608,7 @@ def semibatch_accumulation(
     _positive(initial_coreagent_concentration, "the co-reagent concentration")
     _order(order_in_dosed)
     _order(order_in_coreagent)
-    if dosed_volume < 0.0:
+    if _finite(dosed_volume, "the dosed volume") < 0.0:
         raise KineticsInputError(f"the dosed volume must not be negative; got {dosed_volume}.")
     if not 1 <= steps <= MAX_INTEGRATION_STEPS:
         raise KineticsInputError(
@@ -531,9 +618,18 @@ def semibatch_accumulation(
     # **Derived from the problem, because the old fixed count reported a fast reaction as a safe
     # one** — see `_steps_for_stability` for the measurement. `steps` is the caller's floor, not the
     # answer.
+    feed_rate = dosed_moles / dose_time_seconds
     stiffness = _stiffness_bound(
         rate_constant=rate_constant,
-        max_dosed_concentration=dosed_moles / initial_volume,
+        max_dosed_concentration=_dosed_concentration_bound(
+            rate_constant=rate_constant,
+            feed_rate=feed_rate,
+            initial_volume=initial_volume,
+            dosed_moles=dosed_moles,
+            initial_coreagent_concentration=initial_coreagent_concentration,
+            order_in_dosed=order_in_dosed,
+            order_in_coreagent=order_in_coreagent,
+        ),
         initial_coreagent_concentration=initial_coreagent_concentration,
         order_in_dosed=order_in_dosed,
         order_in_coreagent=order_in_coreagent,
@@ -541,22 +637,6 @@ def semibatch_accumulation(
     steps = _steps_for_stability(
         stiffness=stiffness, dose_time_seconds=dose_time_seconds, requested=steps
     )
-    if steps > MAX_INTEGRATION_STEPS:
-        raise KineticsInputError(
-            f"this dose is too fast for this integrator to resolve: the reaction's rate responds "
-            f"to the concentrations at up to {stiffness:.3g} per second over the dose, which would "
-            "need "
-            f"{steps:,} steps over {dose_time_seconds:g} s to integrate stably and the ceiling is "
-            f"{MAX_INTEGRATION_STEPS:,}. A reaction this fast relative to the addition is "
-            "mixing-limited — the accumulation is set by how fast the feed disperses, not by the "
-            "rate law — and that is a regime this ideal, perfectly-mixed model does not describe. "
-            "Treat the accumulation as feed-rate-limited and size the dose from the heat-removal "
-            "duty instead; `thermalsafety` is the server for that question. This refusal "
-            "replaced a "
-            "reported accumulation of zero, which read as a dose that is safe at any rate."
-        )
-
-    feed_rate = dosed_moles / dose_time_seconds
     volume_rate = dosed_volume / dose_time_seconds
     coreagent_moles_0 = initial_coreagent_concentration * initial_volume
 

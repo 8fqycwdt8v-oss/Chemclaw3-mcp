@@ -35,7 +35,7 @@ which is up to half a second of CPU, so it runs off the event loop behind an adm
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Any
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
 from mcp_server_kit.limits import env_bound
@@ -58,17 +58,6 @@ _admission = Admission(
         consequence="this pod would refuse every semi-batch integration it is asked for",
     )
 )
-
-
-def _release_slot(task: asyncio.Task[Any]) -> None:
-    """Give the slot back when the integration finishes, not when its caller stops waiting.
-
-    Retrieving the exception keeps a cancelled caller's failure from being logged at exit as
-    "never retrieved".
-    """
-    _admission.release()
-    if not task.cancelled():
-        task.exception()
 
 
 class RateConstantResult(BaseModel):
@@ -580,7 +569,7 @@ async def semibatch_accumulation_profile(
     # rather than when the caller stops waiting, because cancelling the await does not stop the
     # worker thread.
     _admission.acquire("semibatch_accumulation_profile")
-    task = asyncio.ensure_future(
+    profile = await _admission.hold(
         asyncio.to_thread(
             reactors.semibatch_accumulation,
             rate_constant=rate_constant,
@@ -591,10 +580,9 @@ async def semibatch_accumulation_profile(
             initial_coreagent_concentration=initial_coreagent_concentration,
             order_in_dosed=order_in_dosed,
             order_in_coreagent=order_in_coreagent,
-        )
+        ),
+        1,
     )
-    task.add_done_callback(_release_slot)
-    profile = await asyncio.shield(task)
     return AccumulationResult(
         peak_accumulation_fraction=profile.peak_accumulation_fraction,
         peak_at_seconds=profile.peak_at_seconds,

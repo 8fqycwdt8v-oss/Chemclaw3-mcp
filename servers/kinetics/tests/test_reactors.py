@@ -357,3 +357,123 @@ def test_the_stability_floor_carries_the_order_in_the_dosed_reagent() -> None:
         order_in_coreagent=1.0,
     )
     assert first_order == pytest.approx(1e-3 * 60.0), "first order must be the old bound exactly"
+
+
+def _second_order_dose(
+    *,
+    rate_constant: float,
+    dosed_moles: float,
+    initial_coreagent_concentration: float,
+    dosed_volume: float,
+    steps: int = reactors.DEFAULT_INTEGRATION_STEPS,
+) -> reactors.SemiBatchProfile:
+    """A 1 h dose into a volume of 1, second order in the dosed reagent and first in the other."""
+    return reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        dose_time_seconds=3600.0,
+        initial_volume=1.0,
+        dosed_moles=dosed_moles,
+        dosed_volume=dosed_volume,
+        initial_coreagent_concentration=initial_coreagent_concentration,
+        order_in_dosed=2.0,
+        order_in_coreagent=1.0,
+        steps=steps,
+    )
+
+
+def test_a_second_order_dose_that_reacts_as_it_arrives_is_answered_rather_than_refused() -> None:
+    """The step floor bounds `C_d` by what a dose reaches, not by the whole charge unreacted.
+
+    Bounding it by `dosed_moles / initial_volume` put this dose at 2.3 million steps and refused it
+    as "too fast for this integrator", while 5,000 steps answers it to eleven figures. The reference
+    is a 20,000-step integration, which agrees with a 190,000-step one to 1e-15.
+    """
+    profile = _second_order_dose(
+        rate_constant=0.5, dosed_moles=40.0, initial_coreagent_concentration=45.0, dosed_volume=0.5
+    )
+    assert profile.peak_accumulation_fraction == pytest.approx(0.0024630155, rel=1e-6)
+
+
+def test_a_slow_second_order_dose_is_not_under_stepped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The half the bound must still catch: a dose slow enough that its reagent accumulates.
+
+    Here the co-reagent runs out halfway, so half the charge is left unreacted — exactly, which is
+    the reference. `J_d = 2*k*C_d*C_co` is then far above `k*C_co`, and the bound that ignored the
+    order in the dosed reagent took 200 steps and diverged. The second half pins that direction, so
+    the first half is evidence that the floor is doing the work rather than the default count.
+    """
+    profile = _second_order_dose(
+        rate_constant=1e-3, dosed_moles=200.0, initial_coreagent_concentration=100.0, dosed_volume=0
+    )
+    assert profile.peak_accumulation_fraction == pytest.approx(0.5, rel=1e-6)
+
+    def order_blind(**bound: float) -> float:
+        return bound["rate_constant"] * bound["initial_coreagent_concentration"]
+
+    monkeypatch.setattr(reactors, "_stiffness_bound", order_blind)
+    with pytest.raises(KineticsInputError, match="went unstable"):
+        _second_order_dose(
+            rate_constant=1e-3,
+            dosed_moles=200.0,
+            initial_coreagent_concentration=100.0,
+            dosed_volume=0,
+        )
+
+
+_FLOAT_ARGUMENTS = (
+    "rate_constant",
+    "dose_time_seconds",
+    "initial_volume",
+    "dosed_moles",
+    "dosed_volume",
+    "initial_coreagent_concentration",
+    "order_in_dosed",
+    "order_in_coreagent",
+)
+
+
+@pytest.mark.parametrize("bad", [math.inf, math.nan])
+@pytest.mark.parametrize("argument", _FLOAT_ARGUMENTS)
+def test_a_non_finite_dose_input_is_refused_by_name(argument: str, bad: float) -> None:
+    """Infinity passes `gt=0` and `value <= 0.0`, and used to leave `math.ceil` as an overflow.
+
+    `connector_app` replaces an `OverflowError` with an opaque `error_id`; a `KineticsInputError`
+    reaches the caller as a sentence.
+    """
+    values = {
+        "rate_constant": 0.02,
+        "dose_time_seconds": 3600.0,
+        "initial_volume": 1.0,
+        "dosed_moles": 40.0,
+        "dosed_volume": 0.5,
+        "initial_coreagent_concentration": 45.0,
+        "order_in_dosed": 2.0,
+        "order_in_coreagent": 1.0,
+    }
+    values[argument] = bad
+    with pytest.raises(KineticsInputError, match="finite"):
+        reactors.semibatch_accumulation(
+            rate_constant=values["rate_constant"],
+            dose_time_seconds=values["dose_time_seconds"],
+            initial_volume=values["initial_volume"],
+            dosed_moles=values["dosed_moles"],
+            dosed_volume=values["dosed_volume"],
+            initial_coreagent_concentration=values["initial_coreagent_concentration"],
+            order_in_dosed=values["order_in_dosed"],
+            order_in_coreagent=values["order_in_coreagent"],
+        )
+
+
+def test_a_stiffness_too_large_to_represent_is_the_too_fast_refusal() -> None:
+    """Finite inputs whose bound overflows a float are refused as too fast, not as an overflow."""
+    with pytest.raises(KineticsInputError, match="too fast"):
+        reactors.semibatch_accumulation(
+            rate_constant=1e300,
+            dose_time_seconds=3600.0,
+            initial_volume=1.0,
+            dosed_moles=1.0,
+            dosed_volume=0.0,
+            initial_coreagent_concentration=1e200,
+            order_in_dosed=1.0,
+            order_in_coreagent=2.0,
+        )

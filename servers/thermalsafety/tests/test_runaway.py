@@ -273,3 +273,40 @@ def test_a_temperature_below_absolute_zero_is_refused_everywhere_it_is_taken() -
             jacket_temperature_c=20.0,
             mass_kg=100.0,
         )
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize(
+    "argument",
+    ["heat_of_reaction_kj_per_mol", "moles", "mass_kg", "specific_heat_kj_per_kg_k"],
+)
+def test_a_non_finite_input_to_the_adiabatic_rise_is_refused(argument: str, bad: float) -> None:
+    """NaN and infinity used to come back as a NaN or infinite rise — `null` over JSON.
+
+    Measured before the guard: `moles=NaN` answered NaN and `moles=Infinity` answered infinity,
+    because `value <= 0` is False for both. A safety number is a refusal or a number.
+    """
+    arguments = {
+        "heat_of_reaction_kj_per_mol": -150.0,
+        "moles": 10.0,
+        "mass_kg": 50.0,
+        "specific_heat_kj_per_kg_k": 1.9,
+    }
+    arguments[argument] = bad
+    with pytest.raises(ThermalInputError, match="finite"):
+        adiabatic_temperature_rise(**arguments)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_a_non_finite_temperature_or_rise_is_refused_rather_than_carried_into_mtsr(
+    bad: float,
+) -> None:
+    """`nan <= -273.15` is False, so a NaN process temperature passed the absolute-zero check."""
+    with pytest.raises(ThermalInputError, match="finite"):
+        mtsr(
+            process_temperature_c=bad, adiabatic_temperature_rise_k=10.0, accumulation_fraction=0.5
+        )
+    with pytest.raises(ThermalInputError, match="finite"):
+        mtsr(
+            process_temperature_c=20.0, adiabatic_temperature_rise_k=bad, accumulation_fraction=0.5
+        )

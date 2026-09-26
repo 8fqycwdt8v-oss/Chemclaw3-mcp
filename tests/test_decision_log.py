@@ -86,16 +86,18 @@ _RETIRED_BY_A_SQUASH = {
     "eb58363": "D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance",
 }
 # A test a merged record cites by name whose behaviour was reversed rather than renamed, mapped to
-# the test asserting the reversal. The record is
-# `D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about`, citing the test that
-# held a bare `tools:` key coerced to `[]`. Chemclaw3's own model refuses that key (`list_type`), so
-# a stand-in that coerced it went green on a manifest the consumer cannot load, and the stand-in now
-# refuses it too. Renaming the new test back would give it a name asserting the opposite of its
-# body. Checked in both directions below: a retired name that is defined again, or a replacement
-# that is not defined, fails.
+# `(the record that supersedes the decision, the test asserting the reversal)`. A reversed behaviour
+# is a reversed decision, and a merged record is never edited — so the row is valid only while the
+# superseding record exists, which is what stops this map becoming the place a decision is quietly
+# undone. The first row is `D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about`
+# citing the test that held a bare `tools:` key coerced to `[]`; Chemclaw3's own model refuses that
+# key (`list_type`), so the stand-in now refuses it too. Renaming the new test back would give it a
+# name asserting the opposite of its body. Checked in every direction below: a retired name defined
+# again, a replacement not defined, or a superseding record that is not on disk, fails.
 _RETIRED_CITATIONS = {
     "test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error": (
-        "test_an_endpoint_the_consumer_cannot_load_is_refused_here"
+        "D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses",
+        "test_an_endpoint_the_consumer_cannot_load_is_refused_here",
     ),
 }
 
@@ -446,7 +448,8 @@ def test_every_test_a_record_names_still_exists() -> None:
     authoritative while pointing at nothing, which is `CLAUDE.md`'s deleted port table one level in.
     A merged record is never edited, so when a rename genuinely retires a citation the fix is to
     rename the test back — or, if its behaviour was reversed and it is really gone, a row in
-    `_RETIRED_CITATIONS` naming the test that replaced it, which must itself resolve.
+    `_RETIRED_CITATIONS` naming the record that supersedes the decision and the test that replaced
+    it, both of which must resolve.
 
     **This half reads the function name only.** The file half is
     `test_a_record_names_the_file_its_test_lives_in`, which is a separate test because the two fail
@@ -461,12 +464,16 @@ def test_every_test_a_record_names_still_exists() -> None:
             if name not in defined and name not in _RETIRED_CITATIONS
         }
     )
-    for retired, replacement in _RETIRED_CITATIONS.items():
+    for retired, (superseding_record, replacement) in _RETIRED_CITATIONS.items():
         assert retired not in defined, (
             f"{retired} is defined again, so its `_RETIRED_CITATIONS` row is stale: delete it."
         )
         assert replacement in defined, (
             f"{retired} is retired in favour of {replacement}, which resolves to nothing."
+        )
+        assert (_DECISIONS / f"{superseding_record}.md").is_file(), (
+            f"{retired} is retired by {superseding_record}, which is not a record on disk: a "
+            "reversed behaviour is a reversed decision and needs the record that supersedes it."
         )
     assert not dangling, (
         f"test name(s) cited in docs/decisions/ that resolve to nothing: {dangling}. Rename the "

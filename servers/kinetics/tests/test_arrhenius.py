@@ -190,3 +190,32 @@ def test_this_module_returns_no_tmr_and_no_temperature() -> None:
     public = {name for name in dir(arrhenius) if not name.startswith("_")}
     for forbidden in ("tmr", "temperature_for", "d24", "criticality", "adiabatic", "runaway"):
         assert not any(forbidden in name.lower() for name in public), (forbidden, sorted(public))
+
+
+@pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
+@pytest.mark.parametrize(
+    "argument",
+    ["target_temperature_c", "reference_rate_constant", "reference_temperature_c", "activation"],
+)
+def test_a_non_finite_input_is_refused_by_name_rather_than_propagated(
+    argument: str, bad: float
+) -> None:
+    """`value <= 0.0` is False for NaN and infinity, and pydantic's `gt=0` passes infinity.
+
+    So these reached the arithmetic and came back as `inf`/`nan` in the answer, or as an exception
+    `connector_app` replaces with an opaque `error_id`.
+    """
+    values = {
+        "target_temperature_c": 60.0,
+        "reference_rate_constant": 1.0e-3,
+        "reference_temperature_c": 25.0,
+        "activation": 80.0,
+    }
+    values[argument] = bad
+    with pytest.raises(arrhenius.KineticsInputError, match="finite"):
+        arrhenius.rate_constant_at(
+            values["target_temperature_c"],
+            reference_rate_constant=values["reference_rate_constant"],
+            reference_temperature_c=values["reference_temperature_c"],
+            activation_energy_kj_per_mol=values["activation"],
+        )

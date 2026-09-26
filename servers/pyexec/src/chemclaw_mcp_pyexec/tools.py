@@ -62,18 +62,6 @@ _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
 
-def _release_slot(task: asyncio.Task[Any]) -> None:
-    """Give the slot back when the *work* finishes, not when whoever asked for it stops waiting.
-
-    Retrieving the exception is not tidiness: a shielded task whose awaiter was cancelled has nobody
-    left to receive its failure, and asyncio logs "exception was never retrieved" at exit for each
-    one — noise in the logs of exactly the incident this gate exists for.
-    """
-    _admission.release()
-    if not task.cancelled():
-        task.exception()
-
-
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how many programs run at once, refusing promptly when the pod is full.
 
@@ -92,9 +80,7 @@ def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, 
     @functools.wraps(work)
     async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
         _admission.acquire(work.__name__)
-        task = asyncio.ensure_future(work(*args, **kwargs))
-        task.add_done_callback(_release_slot)
-        return await asyncio.shield(task)
+        return await _admission.hold(work(*args, **kwargs), 1)
 
     setattr(_guarded, ADMISSION_MARKER, True)
     return _guarded

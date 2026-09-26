@@ -115,3 +115,10 @@ def test_a_missing_heat_transfer_coefficient_cannot_be_defaulted() -> None:
     del without["overall_heat_transfer_coefficient_w_per_m2_k"]
     with pytest.raises(TypeError):
         heat.time_constant(**without)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -1.0])
+def test_a_time_that_is_negative_or_not_finite_is_refused(bad: float) -> None:
+    """`time_seconds < 0.0` is False for NaN, which came back as a `null` temperature beside tau."""
+    with pytest.raises(UnitOpsInputError, match="the time"):
+        heat.time_constant(**VESSEL, time_seconds=bad)

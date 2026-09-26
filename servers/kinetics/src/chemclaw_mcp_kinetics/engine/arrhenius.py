@@ -75,6 +75,8 @@ def kelvin(celsius: float) -> float:
         KineticsInputError: If the temperature is below absolute zero — which is a units mistake
             (a kelvin figure entered as °C reads as -250 °C) far more often than a typo.
     """
+    if not math.isfinite(celsius):
+        raise KineticsInputError(f"a temperature must be a finite number; got {celsius} °C.")
     value = celsius - ABSOLUTE_ZERO_C
     if value <= 0.0:
         raise KineticsInputError(
@@ -85,7 +87,13 @@ def kelvin(celsius: float) -> float:
 
 
 def _positive(value: float, what: str) -> float:
-    """A rate constant, an energy or a time that must be above zero to mean anything."""
+    """A rate constant, an energy or a time that must be finite and above zero to mean anything.
+
+    Finite first, because `value <= 0.0` is False for NaN and infinity alike, and an infinite rate
+    constant passes pydantic's `gt=0` — the MCP JSON parser accepts the literal `Infinity`.
+    """
+    if not math.isfinite(value):
+        raise KineticsInputError(f"{what} must be a finite number; got {value}.")
     if value <= 0.0:
         raise KineticsInputError(f"{what} must be greater than zero; got {value}.")
     return value

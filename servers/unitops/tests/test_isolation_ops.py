@@ -336,3 +336,31 @@ def test_a_finite_input_that_overflows_a_power_law_is_refused_by_name() -> None:
             liquid_density_kg_per_m3=1000.0,
             liquid_viscosity_pa_s=1e-3,
         )
+
+
+def test_a_medium_time_that_overflows_is_refused_rather_than_answered_as_infinity() -> None:
+    """Only the cake term was guarded, so an overflowing medium term came back as `inf`/`null`.
+
+    Measured before the guard: `medium_resistance_per_m=1e308` with a viscosity of 10 answered an
+    infinite total time beside a cake fraction, an average flux and a final rate of exactly zero —
+    plausible-looking zeros next to a null.
+    """
+    with pytest.raises(UnitOpsInputError, match="medium filtration time"):
+        filtration.filtration_time(
+            filtrate_volume_m3=0.1,
+            **{**CAKE, "filtrate_viscosity_pa_s": 10.0},
+            medium_resistance_per_m=1.0e308,
+        )
+
+
+def test_a_filtration_time_that_underflows_to_zero_is_refused_rather_than_divided_by() -> None:
+    """A total of exactly 0.0 used to reach `cake_time / total` as a bare `ZeroDivisionError`."""
+    with pytest.raises(UnitOpsInputError, match="underflow"):
+        filtration.filtration_time(
+            filtrate_volume_m3=0.1,
+            **{
+                **CAKE,
+                "filtrate_viscosity_pa_s": 1.0e-200,
+                "specific_cake_resistance_m_per_kg": 1.0e-200,
+            },
+        )

@@ -166,3 +166,17 @@ def test_a_non_positive_measurement_is_refused_naming_which_one(
     """Each refusal names the measurement, because "invalid input" does not tell a chemist which."""
     with pytest.raises(peaks.PeakError, match=match):
         peaks.plate_count(convention="tangent", **kwargs)
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_a_non_finite_width_or_time_is_refused_rather_than_answered_as_null(bad: float) -> None:
+    """`value <= 0.0` is False for NaN and infinity, so both used to reach the arithmetic.
+
+    A NaN width gave a NaN plate count, which serialises as `null` in the tool's answer.
+    """
+    with pytest.raises(peaks.PeakError, match="finite"):
+        peaks.plate_count(10.0, bad, "tangent")
+    with pytest.raises(peaks.PeakError, match="finite"):
+        peaks.plate_count(bad, 0.2, "half_height")
+    with pytest.raises(peaks.PeakError, match="finite"):
+        peaks.retention_factor(bad, 1.0)

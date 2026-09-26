@@ -152,6 +152,19 @@ _VERY_DEFICIENT = (
 _ELEMENT_TOKEN = re.compile(r"([A-Z][a-z]?)(\d*)")
 _PLAIN_FORMULA = re.compile(r"(?:[A-Z][a-z]?\d*)+")
 
+#: Acronyms this screen's domain meets that are spelled entirely from real element symbols, so no
+#: rule over the string can tell them from a formula: `BPO` parses as one boron, one phosphorus and
+#: one oxygen and gets an OB% for that. Refused by name, with what the acronym stands for, because
+#: the symbol check below only catches an acronym with a letter that is not an element (`TNT`,
+#: `PETN`, `DMSO`). A list, and therefore not closed: any other all-element acronym still parses,
+#: and the composition and molar mass returned beside the balance are how a caller catches it.
+_ACRONYMS_THAT_SPELL_A_FORMULA: dict[str, str] = {
+    "BPO": "benzoyl peroxide, C14H10O4",
+    "CHP": "cumene hydroperoxide, C9H12O2",
+    "NC": "nitrocellulose, a polymer — write the repeat unit, e.g. C6H7N3O11 for the trinitrate",
+    "NaN": "a missing number rather than a compound",
+}
+
 
 class FormulaError(ValueError):
     """A molecular formula this module will not guess at.
@@ -220,9 +233,18 @@ def parse_formula(formula: str) -> dict[str, float]:
     symbols and counts, and each symbol must be in the table — `E`, `T`, `D`, `Me`, `Et` are named
     and refused. The post-parse check stays as the backstop for anything the library still invents.
 
+    **That catches an acronym only when one of its letters is not an element, and it said more.**
+    `BPO` (benzoyl peroxide) reads as {B, P, O}, `CHP` (cumene hydroperoxide) as {C, H, P}, `NC`
+    (nitrocellulose) as {C, N} and `NaN` as {N, Na}: every symbol is real, so no rule over the
+    string separates them from a formula without also refusing `HCN` or `COS`. The ones a process-
+    safety screen meets are refused by name from `_ACRONYMS_THAT_SPELL_A_FORMULA`; any other
+    all-element acronym still parses, and the composition and molar mass returned with the balance
+    are what let a caller see the misread.
+
     Raises:
         FormulaError: the string is empty, is not a run of element symbols and counts, names a
-            symbol outside `ALLOWED_ELEMENTS` (an abbreviation or acronym included), carries an
+            symbol outside `ALLOWED_ELEMENTS` (an abbreviation or acronym with a non-element letter
+            included), is one of the listed all-element acronyms, carries an
             element count of zero, or uses a notation (brackets or braces of any kind, a hydrate
             dot, a charge, a leading multiplier) this parser refuses rather than guesses at.
     """
@@ -256,6 +278,12 @@ def parse_formula(formula: str) -> dict[str, float]:
         )
 
     compact = "".join(text.split())
+    if compact in _ACRONYMS_THAT_SPELL_A_FORMULA:
+        raise FormulaError(
+            f"{formula!r} is an acronym ({_ACRONYMS_THAT_SPELL_A_FORMULA[compact]}), not a "
+            "molecular formula, though every letter in it is an element symbol; write the "
+            "formula itself"
+        )
     if not _PLAIN_FORMULA.fullmatch(compact):
         raise FormulaError(
             f"{formula!r} is not a molecular formula; expected element symbols and counts such as "

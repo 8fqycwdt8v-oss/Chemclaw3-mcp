@@ -1,6 +1,7 @@
 """How many semi-batch integrations this server runs at once — past the ceiling a caller is refused.
 
-**This server was argued out of a ceiling, and the argument stopped being true.** It rested on the
+**This server was argued out of a ceiling, and the argument stopped being true**
+(`D-2026-09-26-a-cost-the-caller-sets-is-a-cost-that-needs-a-ceiling`). It rested on the
 integrator costing 836 µs at its 200-step default. That is still the default, but the step count is
 no longer the default's to set: `reactors._steps_for_stability` derives a floor from the caller's
 rate constant, and `MAX_INTEGRATION_STEPS` was raised to 200,000 so a realistic stiff dose is

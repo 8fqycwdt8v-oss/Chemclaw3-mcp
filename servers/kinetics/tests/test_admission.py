@@ -97,11 +97,19 @@ async def test_the_slot_is_held_until_the_work_ends_not_until_the_caller_leaves(
 
 
 async def test_the_integration_does_not_run_on_the_event_loop(blocking: _Blocking) -> None:
-    """While an integration is in flight, the loop is still free to answer something else."""
+    """While an integration is in flight, the loop is still free to answer something else.
+
+    The clock starts before the call is scheduled, and the checks run while the stand-in is still
+    held. Timing only what follows `started` could not fail: an integration run on the loop would
+    block it for the stand-in's whole hold *before* `started` was observed, then return — so the
+    timed section afterwards was fast either way and the test passed, 30 s late. Here that defect
+    shows as a call already finished and an elapsed time of about the hold.
+    """
+    began = time.perf_counter()
     call = asyncio.ensure_future(tools.semibatch_accumulation_profile(**_DOSE))
     await asyncio.to_thread(blocking.started.wait, 5)
-    started = time.perf_counter()
-    await asyncio.sleep(0)
-    assert time.perf_counter() - started < 0.5
+    await asyncio.wait_for(asyncio.sleep(0.01), 1.0)
+    assert not call.done(), "the integration finished while held, so it ran on the event loop"
+    assert time.perf_counter() - began < 5.0, "the event loop was blocked by the integration"
     blocking.finish.set()
     await call

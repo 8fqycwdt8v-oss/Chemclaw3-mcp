@@ -35,7 +35,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from chemclaw_mcp_unitops.engine.validation import finite_result, non_negative, positive
+from chemclaw_mcp_unitops.engine.validation import (
+    UnitOpsInputError,
+    finite_result,
+    non_negative,
+    positive,
+)
 
 __all__ = ["CakeFiltration", "filtration_time"]
 
@@ -99,7 +104,8 @@ def filtration_time(
 
     Raises:
         UnitOpsInputError: If a volume, area, pressure, viscosity, resistance or loading is not
-            positive, or the medium resistance is negative.
+            positive, the medium resistance is negative, or a result overflows or underflows
+            a floating-point number.
     """
     positive(filtrate_volume_m3, "the filtrate volume")
     positive(filter_area_m2, "the filter area")
@@ -121,23 +127,41 @@ def filtration_time(
         ),
         "the cake filtration time",
     )
-    medium_time = (filtrate_viscosity_pa_s * medium_resistance_per_m * filtrate_volume_m3) / (
-        filter_area_m2 * pressure_drop_pa
+    medium_time = finite_result(
+        lambda: (
+            (filtrate_viscosity_pa_s * medium_resistance_per_m * filtrate_volume_m3)
+            / (filter_area_m2 * pressure_drop_pa)
+        ),
+        "the medium filtration time",
     )
-    total = cake_time + medium_time
+    total = finite_result(lambda: cake_time + medium_time, "the total filtration time")
+    # **Every term is a product of inputs, so it can underflow as well as overflow.** A total of
+    # exactly zero is not a fast filtration, it is a number too small for a float — and dividing by
+    # it below used to leave as a bare `ZeroDivisionError`, an opaque `error_id` to the caller.
+    if total <= 0.0:
+        raise UnitOpsInputError(
+            "the filtration time underflows to zero for these inputs, which is not a physical "
+            "answer; check the units of the viscosity and the specific cake resistance."
+        )
 
     # dV/dt at the end, from Darcy's law with the whole cake in place. Written from the differential
     # form rather than differentiated out of `total`, which is what lets `engine/selftest.py` check
     # one against a finite difference of the other.
-    final_rate = (filter_area_m2 * pressure_drop_pa) / (
-        filtrate_viscosity_pa_s
-        * (
-            specific_cake_resistance_m_per_kg
-            * dry_cake_per_filtrate_kg_per_m3
-            * filtrate_volume_m3
-            / filter_area_m2
-            + medium_resistance_per_m
-        )
+    final_rate = finite_result(
+        lambda: (
+            (filter_area_m2 * pressure_drop_pa)
+            / (
+                filtrate_viscosity_pa_s
+                * (
+                    specific_cake_resistance_m_per_kg
+                    * dry_cake_per_filtrate_kg_per_m3
+                    * filtrate_volume_m3
+                    / filter_area_m2
+                    + medium_resistance_per_m
+                )
+            )
+        ),
+        "the final filtration rate",
     )
     return CakeFiltration(
         total_time_seconds=total,
@@ -146,7 +170,11 @@ def filtration_time(
         cake_time_seconds=cake_time,
         medium_time_seconds=medium_time,
         cake_fraction_of_time=cake_time / total,
-        average_flux_m3_per_m2_h=filtrate_volume_m3 / filter_area_m2 / (total / 3600.0),
+        average_flux_m3_per_m2_h=finite_result(
+            lambda: filtrate_volume_m3 / filter_area_m2 / (total / 3600.0), "the average flux"
+        ),
         final_rate_m3_per_s=final_rate,
-        cake_mass_kg=dry_cake_per_filtrate_kg_per_m3 * filtrate_volume_m3,
+        cake_mass_kg=finite_result(
+            lambda: dry_cake_per_filtrate_kg_per_m3 * filtrate_volume_m3, "the cake mass"
+        ),
     )

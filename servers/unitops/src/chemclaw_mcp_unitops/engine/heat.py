@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from chemclaw_mcp_unitops.engine.validation import UnitOpsInputError, kelvin, positive
+from chemclaw_mcp_unitops.engine.validation import UnitOpsInputError, kelvin, non_negative, positive
 
 __all__ = ["APPROACH_AT_ONE_TIME_CONSTANT", "HeatTransferTransient", "time_constant"]
 
@@ -115,8 +115,9 @@ def time_constant(
 
     after: float | None = None
     if time_seconds is not None:
-        if time_seconds < 0.0:
-            raise UnitOpsInputError(f"the time must not be negative; got {time_seconds}.")
+        # `non_negative`, not a bare `< 0.0`: that comparison is False for NaN, which then came
+        # back as a NaN (`null`) temperature beside a valid time constant.
+        non_negative(time_seconds, "the time")
         after = jacket_temperature_c + gap * math.exp(-time_seconds / tau)
 
     to_target: float | None = None

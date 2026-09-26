@@ -11,6 +11,8 @@ read wrongly moves both numbers and is caught twice.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from chemclaw_mcp_thermalsafety.engine import oxygen_balance as oxygen_balance_module
 from chemclaw_mcp_thermalsafety.engine import selftest
@@ -334,6 +336,38 @@ def test_a_name_or_abbreviation_typed_for_a_formula_is_refused_not_expanded(
     assert Formula(typed).mass > 0
     with pytest.raises(FormulaError, match=named):
         oxygen_balance(typed)
+
+
+@pytest.mark.parametrize(
+    ("typed", "stands_for"),
+    [
+        ("BPO", "benzoyl peroxide"),
+        ("CHP", "cumene hydroperoxide"),
+        ("NC", "nitrocellulose"),
+        ("NaN", "missing number"),
+    ],
+)
+def test_an_acronym_spelled_from_real_element_symbols_is_refused_by_name(
+    typed: str, stands_for: str
+) -> None:
+    """The symbol check above cannot see these: every letter in them is an element.
+
+    Measured before the fix: `BPO` parsed as {B, P, O}, `CHP` as {C, H, P}, `NC` as {C, N} and
+    `NaN` as {N, Na}, each answered with an OB% for an unrelated composition. The premise is
+    driven through this parser's own symbol check, so the test says when the list stops being the
+    only thing refusing them.
+    """
+    assert all(symbol in ALLOWED_ELEMENTS for symbol in re.findall(r"[A-Z][a-z]?", typed)), (
+        "the premise is that every symbol is an element; the symbol check would refuse this anyway"
+    )
+    with pytest.raises(FormulaError, match=stands_for):
+        oxygen_balance(typed)
+
+
+def test_a_real_formula_made_only_of_one_letter_symbols_still_answers() -> None:
+    """The acronym refusal is a list rather than a shape rule, since a shape rule refuses these."""
+    for formula in ("HCN", "COS", "CO", "NO"):
+        assert oxygen_balance(formula).composition
 
 
 def test_the_formula_those_names_stand_for_still_answers() -> None:
