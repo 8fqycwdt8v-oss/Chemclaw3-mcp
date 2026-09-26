@@ -68,21 +68,6 @@ decision leaves a record behind and the row goes.
   `servers/calc/src/chemclaw_mcp_calc/engine/config.py`,
   `docs/decisions/D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects.md`.
 
-- [ ] **Neither heavy server pins its inference thread width, so a slot is a core only by
-  accident.** `torch.get_num_threads()` is sized from the machine's physical cores rather than from
-  the container's cgroup, and neither `servers/rxnpredict/Containerfile` nor
-  `servers/rxnlabel/Containerfile` sets `OMP_NUM_THREADS` — so on a large node one forward pass in a
-  two-core pod gets a thread count nobody chose. `D-2026-09-12-one-tool-call-is-not-one-thread`
-  charges each call what the process is *configured* to spend, which makes an unpinned pod go serial
-  rather than thrash: safe, and a smaller ceiling than the pod could support. Pinning
-  `OMP_NUM_THREADS=1` the way `servers/calc/Containerfile` does would let both ceilings mean more
-  than "one call at a time" — but it is a latency change to inference that **this repository has not
-  measured**, because torch is an optional extra no test environment here carries. The row is
-  therefore the measurement first: an image with the `models` extra, one forward pass pinned and
-  unpinned, on a two-core cgroup.
-  **Anchors:** `servers/rxnpredict/Containerfile`, `servers/rxnlabel/Containerfile`,
-  `servers/calc/Containerfile`.
-
 - [ ] **`enumerate_stereoisomers` is the one species tool left with no input bound.**
   `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated the band on one
   ceiling and measured what a ceiling cannot fix: four tools past a 30 s `request_timeout` or a 3 s
@@ -146,16 +131,6 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py`,
   `servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`.
 
-- [ ] **`rxnpredict`'s per-class prior override still replaces the vendored corpus whole.**
-  `D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it` made
-  `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS` an adjustment; `model_trust_priors_by_class` is left as
-  its documented override, so one class named in `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS_BY_CLASS`
-  drops every other class's calibrated weights from `data/trust_priors.json`, and nothing validates
-  its class labels against `classifier.ALL_CLASSES` or its predictor ids. Decide whether it merges
-  onto the corpus like the global table, or stays a whole replacement that at least validates.
-  **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/config.py`,
-  `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py`.
-
 ## 2 — Readiness, where it still stops
 
 - [ ] **A degraded `rxnlabel` row is stamped as though it were healthy, because the stamp Chemclaw3
@@ -179,18 +154,19 @@ decision leaves a record behind and the row goes.
 
 ## 3 — The gate itself
 
-- [ ] **One install in one image still re-resolves, and it is the heaviest closure in the fleet.**
-  `D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing` put every Containerfile on
-  `uv export --frozen ... --require-hashes`, and measured the result on `props`: 11 of 37 packages
-  differed before, 0 after. **`rxnlabel`'s runtime stage is the exception it names**: it installs
-  `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` straight from PyPI through the CPU-torch
-  `--extra-index-url`, so those two are version-pinned to the lock by
-  `tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read` and
-  their whole transitive closure — torch included — re-resolves on every build, with no hashes.
-  Folding them into the export means deciding which torch build ships (the lock resolves PyPI's, the
-  image deliberately takes the CPU index's), which is a measurement and an argument rather than a
-  line edit. Until then this is the one image whose closure `make deps-audit` does not describe.
-  **Anchors:** `servers/rxnlabel/Containerfile`, `tests/test_fleet.py`, `uv.lock`.
+- [ ] **Both model images ship PyPI's CUDA torch closure to CPU-only pods.** `rxnlabel` now installs
+  its `models` extra from the hashed lock export
+  (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`), as `rxnpredict` already did, and the
+  lock resolves torch from PyPI — whose linux wheel depends on the `nvidia-*`, `cuda-*` and
+  `triton` wheels. Summed from `uv.lock`'s recorded sizes for linux x86_64 / cp311, those are
+  ~2.2 GB of `rxnlabel`'s ~2.9 GB closure, for a GPU no pod in this fleet has. A
+  `[[tool.uv.index]]` for `download.pytorch.org/whl/cpu` with `explicit = true` and a linux-only
+  `torch` source would lock `+cpu` wheels by hash instead (2.13.0+cpu cp311 manylinux x86_64 is
+  published); what that costs is a re-lock for both servers and an answer to whether
+  `make deps-audit`'s `pip-audit` audits a `+cpu` local version or skips it — measure the second
+  before shipping the first.
+  **Anchors:** `servers/rxnlabel/Containerfile`, `servers/rxnpredict/Containerfile`, `uv.lock`,
+  `Makefile`.
 
 - [ ] **The cross-repository agreement runs nowhere automated, on either side.**
   `tests/test_consumer_agreement.py` closes the direction this tree was blind in — measured

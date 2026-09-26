@@ -640,7 +640,8 @@ make run-calc        # the heaviest one — a call here can be minutes or hours,
   (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`). Every Containerfile copies
   the lock and installs `uv export --frozen`'s output with `--require-hashes`; measured on `props`,
   the re-resolving form shipped 11 of 37 packages the audit had never seen, `mcp` 1.29.0 → 1.30.0
-  among them. `docs/BACKLOG.md` names the one install that is still outside it.
+  among them. `rxnlabel`'s models were the last install outside it, straight from an index by
+  version; `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash` refuses one.
 - **A published image needs the gate to have run on the revision it is built from.** Jenkins cannot
   see GitHub Actions, so `Preflight` refuses a publishing run with `RUN_GATE` off rather than
   claiming a control in another system

@@ -1380,13 +1380,15 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
     "and no image consumes it", and keeping that sentence after the diff that falsified it is the
     defect this repository writes ADRs about.
 
-    What is left for *this* test is the one install that still names packages straight from the
-    index — `rxnlabel`'s `"rxnmapper==0.4.3" "rxn-insight==0.1.3"`, which goes through PyPI's CPU
-    torch index rather than through the lock. It agreed with the audited version only by luck
-    before it was pinned, and the audit's argued vulnerability suppressions, each written against a
-    specific version, were being applied to versions nobody had checked. A specifier written into
-    an image is pinned, and pinned to the lock, so `uv lock` moving it is what proposes the bump in
-    a pull request.
+    It was written for the one install that named packages straight from the index —
+    `rxnlabel`'s `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` through PyPI's CPU torch index. That
+    pair agreed with the audited version only by luck before it was pinned, and the audit's argued
+    vulnerability suppressions, each written against a specific version, were being applied to
+    versions nobody had checked. **That install is gone** — the pair is the `models` extra, fetched
+    by hash from the lock export (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`) — and
+    `test_no_image_installs_what_the_lock_did_not_hash` now refuses any such install outright,
+    because a version pin was never a hash and its closure re-resolved regardless. This stays as
+    the narrower backstop: a literal specifier in an image is still pinned, and pinned to the lock.
     """
     text = "\n".join(containerfile_instructions((server / "Containerfile").read_text("utf-8")))
     locked = _locked_versions()
@@ -1403,6 +1405,222 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
             f"{server.name}/Containerfile pins {name}=={version} while uv.lock resolves "
             f"{expected}: the audited version and the shipped version have drifted apart"
         )
+
+
+# The one `pip install` in every build stage that names a package from the index without a hash:
+# pip itself and `uv`, the tool that *does* the export. It runs in a stage that is thrown away, it
+# installs nothing the final image carries, and `uv`'s range is argued in each Containerfile —
+# `--frozen` means the resolution cannot drift whichever `uv` runs. Written out whole rather than
+# matched by prefix, so a second package appended to it is a new unhashed install and fails.
+_BOOTSTRAP_INSTALL = 'python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1"'
+
+# Flags that point pip at an index other than the default, or at none it can verify. Any of them in
+# an image is a resolution the lock did not make, whatever else the line carries.
+_INDEX_FLAGS = ("--index-url", "--extra-index-url", "--trusted-host", " -i ")
+
+
+def unhashed_installs(instructions: list[str]) -> list[str]:
+    """Every `pip install`/`pip wheel` in `instructions` that could fetch something `uv.lock` did
+    not hash.
+
+    A pip invocation is accepted in exactly three shapes, which are the three every image in this
+    fleet is built from:
+
+    - **`--require-hashes -r <file>`** — the exported lock or the exported `build` group. pip in
+      hash-checking mode refuses any requirement without a hash and any artefact whose digest
+      differs, and it does not resolve: an unlisted dependency is an error, not a download.
+    - **`--no-index`** — the install from the wheelhouse the hashed pass filled.
+    - **`--no-deps` over local paths only** — the workspace pass, building this repository's own
+      two distributions from source already in the build context.
+
+    plus `_BOOTSTRAP_INSTALL`, verbatim. Anything else — a named package from the index, a bare
+    `pip install foo==1.0`, an `--extra-index-url` — is returned, because a version pin is not a
+    hash and its dependencies re-resolve on the day of the build.
+    """
+    offending: list[str] = []
+    for instruction in instructions:
+        if not instruction.startswith("RUN "):
+            continue
+        for raw in re.split(r"&&|;", instruction[len("RUN ") :]):
+            command = " ".join(raw.split())
+            if not re.search(r"\bpip3? (install|wheel|download)\b", command):
+                continue
+            if any(
+                flag in f" {command} " for flag in _INDEX_FLAGS
+            ) or not _fetches_nothing_unhashed(command):
+                offending.append(command)
+    return offending
+
+
+def _fetches_nothing_unhashed(command: str) -> bool:
+    """Whether one pip command is one of the accepted shapes `unhashed_installs` lists."""
+    hashed = "--require-hashes" in command and re.search(r"\s-r\s+\S", command) is not None
+    local = "--no-deps" in command and all(t.startswith("./") for t in _pip_targets(command))
+    return command == _BOOTSTRAP_INSTALL or hashed or "--no-index" in command or local
+
+
+# pip options that consume the next token as their value, so it is not a requirement.
+_PIP_VALUED = {
+    "-w",
+    "--wheel-dir",
+    "-f",
+    "--find-links",
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+}
+
+
+def _pip_targets(command: str) -> list[str]:
+    """The requirement arguments of one `pip install`/`pip wheel` command, quotes removed."""
+    tokens = command.split()
+    verb = next(i for i, token in enumerate(tokens) if token in {"install", "wheel", "download"})
+    targets: list[str] = []
+    skip = False
+    for token in tokens[verb + 1 :]:
+        if skip:
+            skip = False
+        elif token in _PIP_VALUED:
+            skip = True
+        elif not token.startswith("-"):
+            targets.append(token.strip("\"'"))
+    return targets
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_no_image_installs_what_the_lock_did_not_hash(server: Path) -> None:
+    """Every package an image installs came through a `--require-hashes` pass over the lock.
+
+    `test_every_image_installs_the_closure_the_audit_read` requires the hashed export to *exist*;
+    it never asked whether it was the only way in. `servers/rxnlabel/Containerfile` was the proof
+    that it was not: its build stage exported the lock and installed it hash-checked, and then its
+    runtime stage ran a third `pip install` of `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` through
+    PyPI's CPU-torch `--extra-index-url` — so those two were version-pinned and their whole closure,
+    torch included, re-resolved unhashed on every build, while every assertion above stayed green.
+    The models now come from the `models` extra in the same export
+    (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`), and this is what refuses the old
+    form back, in any image.
+    """
+    instructions = containerfile_instructions(
+        (server / "Containerfile").read_text(encoding="utf-8")
+    )
+    offending = unhashed_installs(instructions)
+    assert not offending, (
+        f"{server.name}/Containerfile installs from the index outside the hashed lock export: "
+        f"{offending!r}. A version pin is not a hash, and its dependencies re-resolve on the day "
+        "of the build — add the package to the server's dependencies or an extra, `uv lock`, and "
+        "let the `--require-hashes` pass fetch it"
+    )
+
+
+def test_the_unhashed_install_check_refuses_the_shapes_it_was_written_for() -> None:
+    """The bite test: the form `rxnlabel` shipped, and its near relatives, are each refused.
+
+    Without this, `unhashed_installs` could be weakened to return nothing and the parametrized
+    test above would go on passing over twelve real Containerfiles that no longer contain the
+    shape. So it is driven in the failing direction on synthetic instructions, and in the passing
+    direction on the four shapes every image is built from.
+    """
+    refused = [
+        # The exact install this test was written after.
+        "RUN python -m pip install --no-cache-dir --extra-index-url "
+        'https://download.pytorch.org/whl/cpu "rxnmapper==0.4.3" "rxn-insight==0.1.3"',
+        # The same pins with the index flag gone: still a resolution, still no hash.
+        'RUN python -m pip install --no-cache-dir "rxnmapper==0.4.3"',
+        # A hashed export with an extra index smuggled onto the same line.
+        "RUN python -m pip wheel --require-hashes -r /build/requirements.txt "
+        "--extra-index-url https://example.invalid/simple",
+        # Something appended to the bootstrap.
+        'RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" torch',
+        # `--no-deps` over a package name rather than a local path.
+        "RUN python -m pip wheel --no-deps --wheel-dir /wheels torch==2.13.0",
+    ]
+    for instruction in refused:
+        assert unhashed_installs([instruction]), f"accepted an unhashed install: {instruction}"
+
+    accepted = [
+        f"RUN {_BOOTSTRAP_INSTALL} && uv export --frozen --package x -o /build/requirements.txt "
+        "&& python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt "
+        "&& python -m pip wheel --no-cache-dir --wheel-dir /wheels "
+        "--require-hashes -r /build/requirements.txt "
+        "&& python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels "
+        './packages/mcp_server_kit "./servers/rxnlabel[models]"',
+        "RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels "
+        'mcp-server-kit "chemclaw-mcp-rxnlabel[models]" && rm -rf /wheels',
+    ]
+    assert unhashed_installs(accepted) == []
+
+
+def final_stage_env(instructions: list[str]) -> dict[str, str]:
+    """The `ENV` assignments of a Containerfile's last stage — what the running process inherits.
+
+    Only the `KEY=value` form is read, which is the only one this fleet writes; the legacy
+    `ENV KEY value` form would come back empty and fail the assertion that reads it, loudly.
+    """
+    last_from = max(i for i, line in enumerate(instructions) if line.startswith("FROM "))
+    env: dict[str, str] = {}
+    for line in instructions[last_from:]:
+        if line.startswith("ENV "):
+            for assignment in line[len("ENV ") :].split():
+                name, _, value = assignment.partition("=")
+                env[name] = value
+    return env
+
+
+# The three runtimes a torch image sizes itself from, pinned to one thread each in the image as
+# `servers/calc/Containerfile` pins its numerical stack. `OMP_NUM_THREADS` is the one torch's
+# intra-op pool reads at import; the other two are the BLAS libraries numpy and scipy may bring.
+_THREAD_PINS = {"OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"}
+
+
+def _images_carrying_torch() -> list[Path]:
+    """The servers whose locked closure — extras included — resolves torch."""
+    carrying = []
+    for server in server_dirs():
+        name = re.search(
+            r'^name\s*=\s*"([^"]+)"', (server / "pyproject.toml").read_text(encoding="utf-8"), re.M
+        )
+        assert name, f"{server.name}/pyproject.toml declares no distribution name"
+        if "torch" in _locked_closure(name.group(1)):
+            carrying.append(server)
+    return carrying
+
+
+def test_every_torch_image_pins_its_inference_thread_width() -> None:
+    """An image that can run torch pins its intra-op width; the node does not choose it.
+
+    `torch.get_num_threads()` is sized from the machine's cores, not from the container's cgroup,
+    so an unpinned forward pass in a two-core pod on a large node runs as many threads as the node
+    has — and both admission gates charge a call `inference_threads()`, which reads that number.
+    Unpinned, the charge was correct and the ceiling meant "one call at a time" on any node wider
+    than the pod, with every one of those threads contending for two cores. Pinned to one, a slot
+    is a core by construction and the ceiling admits `limits.cpu` forward passes
+    (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`, which has the measurement).
+
+    Derived from `uv.lock` rather than listed, so a third server whose closure grows torch owes the
+    pin the day it does; and the derivation is held non-vacuous by naming the two it finds today.
+    """
+    carrying = _images_carrying_torch()
+    assert {server.name for server in carrying} >= {"rxnpredict", "rxnlabel"}, (
+        "the torch-closure derivation no longer finds the two model servers, so this test would "
+        f"pass over none: it found {[server.name for server in carrying]}"
+    )
+    for server in carrying:
+        env = final_stage_env(
+            containerfile_instructions((server / "Containerfile").read_text(encoding="utf-8"))
+        )
+        missing = {k: v for k, v in _THREAD_PINS.items() if env.get(k) != v}
+        assert not missing, (
+            f"{server.name}/Containerfile's runtime stage carries torch and does not pin "
+            f"{sorted(missing)} to 1, so a forward pass's width is the node's core count"
+        )
+
+
+def test_the_env_reader_reads_the_runtime_stage_only() -> None:
+    """A pin in a thrown-away build stage reaches no running process, and must not satisfy it."""
+    text = "FROM a AS build\nENV OMP_NUM_THREADS=1\nFROM b\nENV MKL_NUM_THREADS=1 \\\n  X=2\n"
+    assert final_stage_env(containerfile_instructions(text)) == {"MKL_NUM_THREADS": "1", "X": "2"}
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)

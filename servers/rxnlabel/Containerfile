@@ -41,14 +41,15 @@ COPY servers/rxnlabel /build/servers/rxnlabel
 # version runs, and a `uv` that changed this CLI would fail the build loudly rather than
 # quietly ship a different closure.
 RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
-    && uv export --frozen --package chemclaw-mcp-rxnlabel --no-dev --no-emit-workspace \
-         --format requirements-txt -o /build/requirements.txt \
+    && uv export --frozen --package chemclaw-mcp-rxnlabel --extra models --no-dev \
+         --no-emit-workspace --format requirements-txt -o /build/requirements.txt \
     && uv export --frozen --only-group build --no-emit-workspace \
          --format requirements-txt -o /build/build-requirements.txt \
     && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
     && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
-    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/mcp_server_kit ./servers/rxnlabel
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels \
+        ./packages/mcp_server_kit "./servers/rxnlabel[models]"
 
 FROM python:3.11-slim
 
@@ -57,27 +58,27 @@ FROM python:3.11-slim
 ARG UID=1001
 RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
 
+# **The models come out of the same wheelhouse as everything else**, which is the change
+# `D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch` made. RXNMapper and Rxn-INSIGHT are the
+# `models` extra, and the build stage above exports that extra from `uv.lock` and fetches it
+# `--require-hashes` — so torch and the rest of their closure are the versions and the artefacts
+# `make deps-audit` read, and nothing in this stage resolves anything (`--no-index`).
+#
+# They used to be a third `pip install` straight from PyPI through the CPU-torch
+# `--extra-index-url`, pinned by version to the lock and to nothing else: their whole transitive
+# closure — torch, transformers and tokenizers among it — re-resolved on every build, unhashed,
+# and this was the one image whose closure the audit did not describe. The price of the fix is
+# which torch ships: the lock resolves PyPI's build, which carries the CUDA runtime wheels this
+# CPU-only pod never loads. Summed from `uv.lock`'s recorded wheel sizes for linux x86_64 /
+# cp311, that is ~2.2 GB of the ~2.9 GB of wheels, and `rxnpredict`'s image, which installs its
+# extras from the same lock, already ships the same. Locking a CPU torch source for both images
+# is its own row in `docs/BACKLOG.md`, because it re-keys the lock for two servers and the audit
+# of a `+cpu` local version is a separate question.
+# `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash` refuses the old form.
 COPY --from=build /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        mcp-server-kit chemclaw-mcp-rxnlabel \
+        mcp-server-kit "chemclaw-mcp-rxnlabel[models]" \
     && rm -rf /wheels
-
-# The models, and then their weights. `--extra-index-url` for the CPU build of torch: this server
-# does inference on a handful of reactions at a time in a background drain, and a CUDA closure is
-# ~2 GB of image for a GPU no pod in this fleet has.
-#
-# **Pinned to the versions `make deps-audit` reads**, not to this server's `pyproject.toml` bounds.
-# This is the one install in the fleet that is *outside* the lock: the build stage above exports
-# `uv.lock` and installs it `--require-hashes`, and these two come from PyPI's CPU-torch index,
-# which the lock does not carry. (This comment said "nothing here consumes `uv.lock`" for a wave,
-# thirty-eight lines below the `COPY pyproject.toml uv.lock /build/` that does.) An open `>=` here
-# meant the audited version and the shipped version agreed only by luck, and the audit's argued
-# suppressions were being applied to versions nobody had checked. `tests/test_fleet.py` keeps these
-# two literals equal to the lock; `uv lock` moving them is what proposes the bump, in a pull request
-# a person reads. Their transitive closure still re-resolves — `docs/BACKLOG.md` carries the row.
-RUN python -m pip install --no-cache-dir \
-        --extra-index-url https://download.pytorch.org/whl/cpu \
-        "rxnmapper==0.4.3" "rxn-insight==0.1.3"
 
 # The HuggingFace cache the bake writes and the runtime reads. Named explicitly and identically on
 # both sides: the bake runs as root, the server runs as the `app` UID, and an unset `HF_HOME`
@@ -114,6 +115,19 @@ EXPOSE 8865
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     MCP_EGRESS_GUARD=on
+
+# **One thread per forward pass, pinned here rather than left to the node**
+# (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`). torch sizes its intra-op pool
+# from the machine's cores, not from the container's CPU limit, so unpinned a forward pass in this
+# two-core pod runs as many threads as the node has. Measured on 2026-09-26 in a `--cpus=2`
+# container on an eight-core VM, torch 2.13.0 CPU: RXNMapper over 16 reactions took 4,014 ms
+# unpinned (8 threads) against 395 ms at one thread and 224 ms at two, and a T5-small-shaped
+# forward 3,993 / 1,359 / 860 ms — oversubscription, not parallelism. `inference_threads()` reads
+# the pinned width, so the admission gate charges one slot per forward pass and a slot is a core
+# by construction. Raise deliberately, on a pod sized for it; the gate follows without an edit.
+ENV OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
 
 # The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a

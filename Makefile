@@ -274,11 +274,13 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# of a build form that no longer exists. Rebuilt and re-measured at that commit: 0 version
 	@# differences against this export, in both directions, on every server whose image was built.
 	@#
-	@# What is *not* covered is named rather than implied: `servers/rxnlabel/Containerfile` installs
-	@# `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` straight from PyPI's CPU-torch index, which the
-	@# lock does not carry. That pair is held to the lock by version rather than by hash
-	@# (`tests/test_fleet.py::test_an_image_that_installs_from_the_index_pins_what_the_audit_read`),
-	@# their transitive closure re-resolves, and `docs/BACKLOG.md` carries the row.
+	@# There is no exception left. `servers/rxnlabel/Containerfile` used to install
+	@# `"rxnmapper==0.4.3" "rxn-insight==0.1.3"` straight from PyPI's CPU-torch index, pinned by
+	@# version only, with their transitive closure re-resolving; they are now its `models` extra,
+	@# fetched by hash from this same export
+	@# (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`), and
+	@# `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash` refuses any install
+	@# in any image that did not come through a `--require-hashes` pass.
 	@#
 	@# **`--all-packages --all-extras` is what makes this cover anything at all, and that is a
 	@# property of this workspace rather than a preference.** The root package declares
