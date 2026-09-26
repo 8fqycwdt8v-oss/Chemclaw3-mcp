@@ -112,8 +112,9 @@ def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, 
 
     @functools.wraps(work)
     async def _guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T:
-        charge = _admission.acquire(work.__name__, _batch_slots())
-        return await _admission.hold(work(*args, **kwargs), charge)
+        return await _admission.admit(
+            work(*args, **kwargs), lambda: _admission.acquire(work.__name__, _batch_slots())
+        )
 
     setattr(_guarded, ADMISSION_MARKER, True)
     return _guarded

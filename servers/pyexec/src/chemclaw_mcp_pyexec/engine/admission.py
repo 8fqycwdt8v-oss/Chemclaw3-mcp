@@ -74,17 +74,21 @@ class Admission(KitAdmission):
 
     unit = "run"
 
-    def acquire(self, what: str) -> None:
+    def acquire(self, what: str) -> int:
         """Take a slot, or refuse in terms the caller can act on.
 
         Args:
             what: The tool being asked for, named in the refusal.
 
+        Returns:
+            The slot taken, for `Admission.admit` to give back when the work ends.
+
         Raises:
             ValueError: the ceiling is already reached. Worded for whoever receives it — an agent
                 reading a tool error, which can retry or send a smaller analysis.
         """
-        if self.take().charged is None:
+        charged = self.take().charged
+        if charged is None:
             raise ValueError(
                 f"this server is already running {self.limit} analyses, which is its "
                 f"configured ceiling, so {what} was refused rather than queued: each run is a "
@@ -94,3 +98,4 @@ class Admission(KitAdmission):
                 "more memory — the per-run address-space bound is the pod's memory divided by "
                 "this number."
             )
+        return charged

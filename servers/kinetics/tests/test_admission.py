@@ -139,6 +139,27 @@ async def test_a_full_pod_refuses_the_next_integration_before_starting_it(
     assert blocking.peak == 1, "a refused call reached the integrator anyway"
 
 
+async def test_a_call_its_signature_refuses_leaves_the_ceiling_where_it_was(
+    one_slot: Admission, blocking: _BlockingIntegration
+) -> None:
+    """A malformed call must not cost a slot, or one of them turns a ceiling of one into an outage.
+
+    The gate used to charge before it built the coroutine, and calling an `async def` binds its
+    arguments on the spot, so the `TypeError` escaped between the charge and the only code that
+    gives a slot back. Driven before the fix: `in_flight` stayed at 1 and the next well-formed
+    dose was refused as if an integration were running.
+    """
+    with pytest.raises(TypeError):
+        await tools.semibatch_accumulation_profile(**_DOSE, not_an_argument=1.0)
+    assert one_slot.in_flight == 0, "the malformed call kept its slot"
+
+    blocking.finish.set()
+    result = await tools.semibatch_accumulation_profile(**_DOSE)
+    assert result.peak_accumulation_fraction > 0.0
+    await _settle()
+    assert one_slot.in_flight == 0
+
+
 async def test_the_slot_is_held_until_the_integration_finishes_not_until_the_caller_gives_up(
     one_slot: Admission, blocking: _BlockingIntegration
 ) -> None:

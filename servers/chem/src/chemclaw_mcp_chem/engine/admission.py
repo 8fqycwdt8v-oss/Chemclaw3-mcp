@@ -183,17 +183,21 @@ class Admission(KitAdmission):
 
     unit = "heavy call"
 
-    def acquire(self, what: str) -> None:
+    def acquire(self, what: str) -> int:
         """Take a slot, or refuse in terms the caller can act on.
 
         Args:
             what: The tool being asked for, named in the refusal.
 
+        Returns:
+            The slot taken, for `Admission.admit` to give back when the work ends.
+
         Raises:
             ValueError: the ceiling is already reached. Worded for whoever receives it — an agent
                 reading a tool error, or Chemclaw3 backing off.
         """
-        if self.take().charged is None:
+        charged = self.take().charged
+        if charged is None:
             raise ValueError(
                 f"this server is already running {self.limit} depictions or species "
                 f"enumerations, which is its configured ceiling, so {what} was refused rather "
@@ -203,3 +207,4 @@ class Admission(KitAdmission):
                 "the same serialised interpreter, making every one of them slower; this server "
                 "scales by replicas."
             )
+        return charged

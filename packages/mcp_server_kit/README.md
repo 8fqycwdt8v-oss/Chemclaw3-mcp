@@ -7,6 +7,7 @@ own `engine/`.
 | Module | What it is |
 | --- | --- |
 | `app.py` | `connector_app()` — the FastAPI app: `/healthz`, `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding and trace continuation, and tool-error sanitising. |
+| `finite.py` | Refuses a NaN or an infinity in any tool argument, on both channels it arrives by: the bare `NaN`/`Infinity`/`1e400` literals the transport would rewrite to `null` (an optional argument then reads "not declared"), and the strings `"nan"`/`"1e400"` pydantic coerces. Installed by `connector_app` on every served tool. |
 | `auth.py` | Bearer check on `/mcp` (probes stay open, comparison in bytes, fails closed), the caller log, the request counter and the request-body cap. All four are pure ASGI: `BaseHTTPMiddleware` cost ~1 ms per request and made the caller log's `duration_ms` time-to-SSE-headers. |
 | `schema_cache.py` | One compiled `jsonschema` validator per tool schema, instead of upstream re-checking the schema against the meta-schema on every call. The dominant per-call cost in the fleet: 10.75 → 2.15 ms of server CPU on `props.solvent_properties`. |
 | `executor.py` | The default `to_thread` pool, sized from the container's **cgroup** quota rather than from `os.cpu_count()` — which is the node's, so a `cpu: "1"` pod on a 64-core worker got 32 threads. |

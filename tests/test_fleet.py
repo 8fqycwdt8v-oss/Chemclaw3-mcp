@@ -4497,6 +4497,38 @@ def test_no_server_is_argued_out_of_a_ceiling_it_actually_has() -> None:
     )
 
 
+@pytest.mark.parametrize("server", sorted(_servers_with_a_ceiling()))
+def test_a_gated_call_its_signature_refuses_costs_no_slot(server: str) -> None:
+    """Every gated tool, in every server with a ceiling, builds its work before it charges for it.
+
+    All six gates charged first — `acquire`, then `work(*args, **kwargs)` — and calling an
+    `async def` binds its arguments on the spot, so a call the signature refused raised `TypeError`
+    between the charge and the only code that gives a slot back. Driven on `kinetics` before the
+    fix, one such call left `in_flight` at 1, which at a ceiling of one is a pod that refuses every
+    well-formed call for the rest of its life. `mcp_server_kit.limits.Admission.admit` takes the
+    already-built awaitable, so the order cannot be written backwards through it; this holds each
+    server to going through it, derived from the served surface rather than a list of tool names.
+    """
+    import asyncio
+
+    package = f"chemclaw_mcp_{server}"
+    tools = importlib.import_module(f"{package}.tools")
+    marker = importlib.import_module(f"{package}.engine.admission").ADMISSION_MARKER
+    gated = [
+        tool.fn
+        for tool in tools.server._tool_manager.list_tools()
+        if getattr(tool.fn, marker, False)
+    ]
+    assert gated, f"{server} ships a ceiling and gates none of its served tools"
+    for fn in gated:
+        with pytest.raises(TypeError):
+            asyncio.run(fn(not_an_argument_of_any_tool=1))
+        assert tools._admission.in_flight == 0, (
+            f"{server}'s {fn.__name__} kept a slot for a call that never started: the gate charges "
+            "before it builds the work. Route it through `_admission.admit(work(...), ...)`."
+        )
+
+
 def test_the_coverage_basis_is_every_distribution_this_workspace_ships() -> None:
     """A floor that silently narrows is worse than a lower floor.
 

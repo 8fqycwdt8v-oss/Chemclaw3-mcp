@@ -247,6 +247,64 @@ def test_hold_returns_the_result_and_releases_on_failure_without_an_unretrieved_
     assert "never retrieved" not in caplog.text
 
 
+def test_admit_charges_after_the_work_is_built_so_a_malformed_call_costs_nothing() -> None:
+    """The order is the point: a call its signature refuses fails before any slot is charged.
+
+    Every gated tool used to charge first and build the coroutine second, so the `TypeError` an
+    `async def` raises on binding escaped between the charge and `hold`, and the slot never came
+    back. With `admit` the argument is built at the call site, before this method can run.
+    """
+    import asyncio
+
+    budget = limits.Admission(1)
+
+    async def work(x: int) -> int:
+        return x
+
+    def charge() -> int:
+        taken = budget.take()
+        assert taken.charged is not None
+        return taken.charged
+
+    async def scenario() -> int:
+        with pytest.raises(TypeError):
+            await budget.admit(work(1, 2), charge)  # type: ignore[call-arg]
+        assert budget.in_flight == 0, "a call that never started kept its slot"
+        return await budget.admit(work(7), charge)
+
+    assert asyncio.run(scenario()) == 7
+    assert budget.in_flight == 0
+
+
+def test_a_refused_admission_closes_the_work_it_was_handed() -> None:
+    """A refusal leaves nothing charged and the coroutine closed, so nothing warns it was dropped.
+
+    Read off the coroutine's own state rather than off a captured warning: "never awaited" fires in
+    a finaliser, whose timing depends on who still holds the frame, and a test that waits for it
+    passes whenever the traceback outlives the assertion.
+    """
+    import asyncio
+    import inspect
+
+    budget = limits.Admission(1)
+
+    async def work() -> None:
+        raise AssertionError("refused work ran anyway")
+
+    def refuse() -> int:
+        raise ValueError("full")
+
+    pending = work()
+
+    async def scenario() -> None:
+        with pytest.raises(ValueError, match="full"):
+            await budget.admit(pending, refuse)
+
+    asyncio.run(scenario())
+    assert budget.in_flight == 0
+    assert inspect.getcoroutinestate(pending) == inspect.CORO_CLOSED
+
+
 def test_an_unset_bound_is_its_default() -> None:
     """The ordinary case: nothing in the environment, so the call site's own number stands."""
     assert limits.env_bound("MCP_A_BOUND_NOBODY_SETS", default=7, minimum=1, consequence="x") == 7
