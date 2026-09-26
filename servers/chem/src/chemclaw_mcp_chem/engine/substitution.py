@@ -6,7 +6,7 @@ which bond, which degradant. None produced one for the question a process chemis
 about an aromatic ring — *which position*: "which regioisomer does this nitration give", "what does
 moving the methyl do". Without an enumerator the candidate set is whatever compounds a model
 happened to write down, which is the thing *enumerate, then compute, and never the reverse* exists
-to stop. Chemclaw3's `docs/planning/BACKLOG.md` row "No substitution-product enumerator" is the
+to stop. Chemclaw3's planning backlog row "No substitution-product enumerator" is the
 request; this module is the primitive, and the template that chains it into `rank_species` is
 Chemclaw3's.
 
@@ -418,14 +418,14 @@ def _move(
     names = {
         (ring_atom, first): _group_name(mol, ring_atom, first) for ring_atom, first, _ in movable
     }
-    wanted = None
+    wanted: str | None = None
     if substituent is not None:
-        _group, wanted = _group_from_spec(substituent)
+        wanted = _group_from_spec(substituent)[1]
         if wanted not in names.values():
             present = sorted(set(names.values()))
             _refuse(
-                f"{echo(substituent)!r} (read as {wanted}) is not a group on an aromatic carbon of "
-                f"{echo(smiles)!r}. The movable groups there are: "
+                f"{echo(substituent)!r} (read as {echo(wanted)}) is not a group on an aromatic "
+                f"carbon of {echo(smiles)!r}. The movable groups there are: "
                 f"{', '.join(present) if present else 'none'}."
             )
 
@@ -467,8 +467,8 @@ def _add(
     positions = sorted({index for system in systems for index in _aromatic_ch(mol, system)})
     if not positions:
         _refuse(
-            f"{echo(smiles)!r} has no aromatic C-H, so there is no position to put {name} on. "
-            "This enumerator substitutes aromatic rings only."
+            f"{echo(smiles)!r} has no aromatic C-H, so there is no position to put "
+            f"{echo(name)} on. This enumerator substitutes aromatic rings only."
         )
     _refuse_past_cost(len(positions), atoms + group.GetNumHeavyAtoms(), smiles)
 
@@ -487,7 +487,9 @@ def _add(
             continue
         found[product] = (f"{name} at {site.label}", site.site_id)
     if not found:  # pragma: no cover - every aromatic C-H takes a single-bonded group
-        raise InvalidSmilesError(f"{name} could not be bonded to any position of {echo(smiles)!r}")
+        raise InvalidSmilesError(
+            f"{echo(name)} could not be bonded to any position of {echo(smiles)!r}"
+        )
     _refuse_past_cap(len(found), smiles)
     return SubstitutionSet(
         parent=parent,
