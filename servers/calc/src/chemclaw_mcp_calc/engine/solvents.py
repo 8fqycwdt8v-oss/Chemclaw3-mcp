@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from difflib import get_close_matches
 
+from mcp_server_kit.limits import echo
+
 __all__ = [
     "ALPB_SOLVENTS",
     "SUGGESTED_SOLVENTS",
@@ -217,7 +219,8 @@ def require_supported_solvent(name: str | None) -> None:
     if name is None or is_supported(name):
         return
     raise ValueError(
-        f"GFN2-xTB's ALPB solvation model has no parameters for {name!r}{did_you_mean(name)}. "
+        "GFN2-xTB's ALPB solvation model has no parameters for "
+        f"{echo(name)!r}{did_you_mean(name)}. "
         "It is an implicit model with a fixed set of parameterized solvents, so an unlisted one "
         "cannot be approximated — pick the closest supported solvent, or run in the gas phase. "
         f"Commonly used supported solvents: {', '.join(SUGGESTED_SOLVENTS)}."

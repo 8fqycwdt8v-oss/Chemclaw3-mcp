@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from mcp_server_kit.limits import echo
 from pydantic import BaseModel, Field
 from rdkit import Chem
 
@@ -237,7 +238,7 @@ def enumerate_cleavages(smiles: str, mode: CleavageMode = "homolytic") -> Cleava
     candidates = _distinct(mol, [bond for bond in mol.GetBonds() if _breakable(bond)])
     if len(candidates) > MAX_CLEAVAGES:
         raise ValueError(
-            f"{smiles!r} has {len(candidates)} breakable bonds, above the limit of "
+            f"{echo(smiles)!r} has {len(candidates)} breakable bonds, above the limit of "
             f"{MAX_CLEAVAGES}. Every one costs a reaction energy downstream, and a ranking over "
             "an arbitrary subset would report a weakest bond that is only the weakest of that "
             "subset. Name the bonds you want, or ask about a fragment of the molecule."

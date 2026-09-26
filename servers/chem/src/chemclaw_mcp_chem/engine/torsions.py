@@ -340,7 +340,14 @@ def _fills_the_azimuth(atom: Chem.Atom, count: int) -> bool:
 
 
 def _matched_pairs(mol: Chem.Mol, pattern: str) -> set[tuple[int, int]]:
-    """The bonds this SMARTS matches, as sorted index pairs of its first and last matched atoms."""
+    """The bonds this SMARTS matches, as sorted index pairs of its first and last matched atoms.
+
+    **Compiled per call on purpose, after measuring it.** The six `_KINDS` patterns cost 0.16-0.37
+    ms to parse against a whole `enumerate_torsion_candidates` of 2.2-5.7 ms on tyrosine and
+    3.5-10 ms on imatinib (`cc3-gate`, RDKit 2026.03.5): **4-8%**, and two of the six are recursive
+    SMARTS a shared cache would put under `RDK_BUILD_THREADSAFE_SSS`. See
+    `D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter`.
+    """
     # First and last matched atom, because that is where every pattern here puts the bond that
     # rotates: `[CX3](=[OX1])[NX3]` matches (C, O, N) and the amide bond is C-N, not C=O.
     query = Chem.MolFromSmarts(pattern)

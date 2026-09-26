@@ -34,7 +34,7 @@ which are Chemclaw3's and stay Chemclaw3's.
 
 from __future__ import annotations
 
-from mcp_server_kit.limits import atom_count_error, smiles_length_error
+from mcp_server_kit.limits import atom_count_error, echo, smiles_length_error
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 
@@ -56,19 +56,6 @@ class InvalidSmilesError(ValueError):
     for the chemist — they quote the string that was rejected — so they must be in the family that
     passes through.
     """
-
-
-_MAX_ECHO_CHARS = 120
-
-
-def _echo(smiles: str, limit: int = _MAX_ECHO_CHARS) -> str:
-    """The caller's string for a refusal message, truncated so a megastring cannot flood the log.
-
-    A refusal quotes what was rejected so a chemist can fix it, but a 500 KB invalid SMILES echoed
-    into three messages is a log-flooding channel in its own right. The head is enough to recognise;
-    the length is appended so nothing about the size is hidden.
-    """
-    return smiles if len(smiles) <= limit else f"{smiles[:limit]}… ({len(smiles)} chars)"
 
 
 def require_molecule(smiles: str) -> Chem.Mol:
@@ -101,7 +88,7 @@ def require_molecule(smiles: str) -> Chem.Mol:
     stripped = require_whole_string(smiles)
     mol = Chem.MolFromSmiles(stripped)
     if mol is None or mol.GetNumAtoms() == 0:
-        raise InvalidSmilesError(f"invalid SMILES: {_echo(smiles)!r}")
+        raise InvalidSmilesError(f"invalid SMILES: {echo(smiles)!r}")
     if reason := atom_count_error(mol.GetNumAtoms(), subject="this SMILES"):
         raise InvalidSmilesError(reason)
     return mol
@@ -125,7 +112,7 @@ def require_whole_string(smiles: str, what: str = "SMILES") -> str:
         InvalidSmilesError: `smiles` is empty, holds whitespace, or is not printable ASCII.
     """
     stripped = smiles.strip()
-    echoed = _echo(smiles)
+    echoed = echo(smiles)
     if not stripped or any(ch.isspace() for ch in stripped):
         raise InvalidSmilesError(f"invalid {what} (empty or contains whitespace): {echoed!r}")
     if not stripped.isascii():

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from mcp_server_kit.limits import echo
 from pydantic import BaseModel, Field
 
 from chemclaw_mcp_chem.engine.chem import molecular_weight
@@ -170,7 +171,7 @@ def _solvent_row(solvent: str, volumes: float, basis_mass_g: float, basis_mmol: 
     """
     match = resolve_compound_name(solvent)
     if match is None:
-        raise ValueError(f"could not resolve the solvent {solvent!r}")
+        raise ValueError(f"could not resolve the solvent {echo(solvent)!r}")
     density = density_of(solvent)
     if density is None:
         raise ValueError(

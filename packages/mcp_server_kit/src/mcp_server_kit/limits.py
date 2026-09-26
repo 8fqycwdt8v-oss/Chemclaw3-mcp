@@ -47,11 +47,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ATOMS_PER_KIB_OF_STACK",
+    "MAX_ECHO_CHARS",
     "MAX_MOLECULE_ATOMS",
     "MAX_SMILES_CHARS",
     "Admission",
     "Slots",
     "atom_count_error",
+    "echo",
     "env_bound",
     "env_ratio",
     "smiles_length_error",
@@ -346,6 +348,48 @@ def atom_count_error(
             "server; no real reagent approaches this size."
         )
     return None
+
+
+MAX_ECHO_CHARS = env_bound(
+    "MCP_MAX_ECHO_CHARS",
+    # Enough to recognise a structure by its head; `echo` appends the full length after it.
+    default=120,
+    # One character, because a refusal that quotes nothing of what it refused is one a chemist
+    # cannot match to the call that produced it; at `0` every echo would be an ellipsis and a count.
+    minimum=1,
+    consequence="a refusal would quote none of the input it refused",
+)
+
+
+def echo(text: str, *, limit: int | None = None) -> str:
+    """Caller-supplied text, bounded for quoting in a refusal: the head, then the full length.
+
+    **Every refusal that quotes what it was given goes through this, because of where a refusal
+    goes.** `connector_app` passes a `ValueError` to the model verbatim, so an unbounded echo is
+    unbounded caller-influenced text in the context window of the turn that asked — and a log line
+    nobody reads. `MAX_SMILES_CHARS` above is not that bound: it is 4,000 characters and exists to
+    stop a parse, so a structure inside it is an ordinary accepted call and was quoted whole.
+    Measured 2026-09-12 on `servers/calc`: `predict_pka` on `"C" * 1500` raised a 1,587-character
+    refusal where a bounded echo produces about two hundred.
+
+    **It lives here rather than in each server because four servers each declared it.** `chem`,
+    `calc`, `safety` and `rxnpredict` carried their own 120-character constant and their own copy of
+    this function, and most refusal sites in those servers interpolated the structure directly
+    anyway — the copies bounded the sites written beside them and nothing else. One config-driven
+    constant, `MCP_MAX_ECHO_CHARS`, is what `tests/test_fleet.py::
+    test_no_refusal_interpolates_caller_text_past_the_echo_bound` holds every refusal to.
+
+    Args:
+        text: The caller's string, as typed. Not stripped — what is quoted is what was sent.
+        limit: The characters of `text` kept before the ellipsis. `None` means `MAX_ECHO_CHARS`,
+            read at call time so a reimported module under a test's environment is what applies.
+
+    Returns:
+        `text` itself when it is at most `limit` characters; otherwise its first `limit` characters,
+        an ellipsis and `(<length> chars)`, so nothing about the size of the input is hidden.
+    """
+    bound = MAX_ECHO_CHARS if limit is None else limit
+    return text if len(text) <= bound else f"{text[:bound]}… ({len(text)} chars)"
 
 
 class Slots(NamedTuple):

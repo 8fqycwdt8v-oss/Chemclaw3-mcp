@@ -8,12 +8,15 @@ worth more than one whose reason is "it seemed important".
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError
 from chemclaw_mcp_chem.engine.species import (
+    _TRANSFORMS,
     MAX_STEREOISOMERS,
+    _compiled_transforms,
     describe_molecule,
     enumerate_degradant_candidates,
     enumerate_microstates,
@@ -263,3 +266,46 @@ class TestASaturatedCountIsNotAMeasurement:
         assert topology.tautomer_count is not None
         assert topology.tautomer_count > 1
         assert topology.tautomer_count_saturated is False
+
+
+class TestTheTransformTableIsCompiledOnce:
+    """`_TRANSFORMS` is a module constant and was re-parsed on every call; now it is not.
+
+    Read off the real cache's counters rather than a counted mock, following
+    `test_microstate_bound.py::test_each_pattern_is_compiled_once_per_process`.
+    """
+
+    def test_every_transform_compiles(self) -> None:
+        """A transform dropped at compile time is a degradant nobody is offered, with no error."""
+        assert len(_compiled_transforms()) == len(_TRANSFORMS)
+
+    def test_repeated_calls_build_the_table_once(self) -> None:
+        _compiled_transforms.cache_clear()
+        for substrate, _transform, _product in _TRANSFORM_CASES:
+            enumerate_degradant_candidates(substrate)
+        info = _compiled_transforms.cache_info()
+        assert info.misses == 1, f"the transform table was compiled {info.misses} times"
+        assert info.hits == len(_TRANSFORM_CASES) - 1
+
+    def test_the_shared_reactions_answer_correctly_under_concurrency(self) -> None:
+        """Three of the reactant templates are recursive SMARTS, matched from worker threads.
+
+        Every tool body runs in `asyncio.to_thread`, so sharing one compiled reaction across calls
+        is a concurrency claim — driven here rather than read off the build flag alone.
+        """
+        cases = [substrate for substrate, _, _ in _TRANSFORM_CASES]
+        expected = {smiles: enumerate_degradant_candidates(smiles) for smiles in cases}
+        wrong: list[str] = []
+
+        def worker(offset: int) -> None:
+            for step in range(60):
+                smiles = cases[(offset + step) % len(cases)]
+                if enumerate_degradant_candidates(smiles) != expected[smiles]:
+                    wrong.append(smiles)
+
+        threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not wrong, f"{len(wrong)} wrong answers from shared reactions under threads"

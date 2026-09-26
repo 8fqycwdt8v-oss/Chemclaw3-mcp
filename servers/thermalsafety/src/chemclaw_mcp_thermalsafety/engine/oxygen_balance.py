@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from mcp_server_kit.limits import echo
 from molmass import ELEMENTS, Formula
 from molmass import FormulaError as MolmassFormulaError
 
@@ -229,14 +230,16 @@ def parse_formula(formula: str) -> dict[str, float]:
     ):
         if character in text:
             raise FormulaError(
-                f"{formula!r} uses {what}, which this parser refuses rather than guesses at — "
+                f"{echo(formula)!r} uses {what}, which this parser refuses rather than guesses "
+                "at — "
                 f"{instead}"
             )
     if text[0].isdigit():
         # Measured against molmass 2026.1.8: `2H2O` is parsed as deuterium oxide, not as two
         # waters. A chemist writing a stoichiometric coefficient means the second.
         raise FormulaError(
-            f"{formula!r} starts with a count, which this parser refuses rather than guesses at — "
+            f"{echo(formula)!r} starts with a count, which this parser refuses rather than "
+            "guesses at — "
             "a leading number reads as an isotope mass number rather than as a multiplier; write "
             "the whole composition, e.g. 2H2O as H4O2"
         )
@@ -248,7 +251,8 @@ def parse_formula(formula: str) -> dict[str, float]:
         # is the sentence, and the rest is a pointer at a string the caller already has.
         reason = str(error).splitlines()[0]
         raise FormulaError(
-            f"{formula!r} is not a molecular formula ({reason}); expected element symbols and "
+            f"{echo(formula)!r} is not a molecular formula ({reason}); expected element symbols "
+            "and "
             "counts such as C7H5N3O6"
         ) from error
 
@@ -256,12 +260,12 @@ def parse_formula(formula: str) -> dict[str, float]:
     for symbol in composition:
         if symbol not in ALLOWED_ELEMENTS:
             raise FormulaError(
-                f"{formula!r} names element {symbol!r}, which is not in this server's "
+                f"{echo(formula)!r} names element {symbol!r}, which is not in this server's "
                 f"atomic-weight table; it holds {', '.join(sorted(ALLOWED_ELEMENTS))}"
             )
         counts[symbol] = float(composition[symbol].count)
     if not counts:
-        raise FormulaError(f"{formula!r} names no elements")
+        raise FormulaError(f"{echo(formula)!r} names no elements")
     return counts
 
 
@@ -286,7 +290,7 @@ def oxygen_balance(formula: str) -> OxygenBalance:
     composition = parse_formula(formula)
     mass = molar_mass(composition)
     if mass <= 0:
-        raise FormulaError(f"{formula!r} has a molar mass of {mass} g/mol")
+        raise FormulaError(f"{echo(formula)!r} has a molar mass of {mass} g/mol")
 
     carbon = composition.get("C", 0.0)
     hydrogen = composition.get("H", 0.0)
