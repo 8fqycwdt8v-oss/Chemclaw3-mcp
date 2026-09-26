@@ -122,14 +122,27 @@ decision leaves a record behind and the row goes.
   this row can run the comparison the change needs: a different class moves `effective_prior`,
   `consensus_score` and the candidate rank order, and that has to be measured on the probe corpus
   before anything lands.
-  **Start from the expectation that the incumbent wins.** Over one corpus the *incumbent* SMARTS
-  table led, **97.1% to 91.3%**. That run stopped before the arm that could overturn it — reactions
-  where a spectator or substituent carries the diagnostic group of a different class, which is the
-  false-positive mode a mapping-free table is structurally prone to and an atom-mapped classifier is
-  not — so two numbers on a corpus that favoured SMARTS is evidence about that corpus and not a
-  verdict. They are here because they point the opposite way from this row's framing: this may be a
-  swap not worth making, and the next session should expect to find that rather than assume the
-  curated table wins.
+  **The spectator arm has now been run, and on it the incumbent does not win** (2026-09-26, issue
+  #128 carries the corpus, the mapped reactions and every answer). Twelve reactions built so a
+  spectator or substituent carries another class's diagnostic group, plus one clean control per
+  class: the SMARTS table gets **5 of 12** traps and 8 of 8 controls — it calls a Boc-Lys-OH methyl
+  esterification, an aryl bromination and an ester saponification `amide_formation`, and a NaBH4
+  reduction `suzuki_coupling`, because each rule only asks whether its groups are *present*.
+  Rxn-INSIGHT's `NAME`, mapped onto `ALL_CLASSES` by keyword, gets **11 of 12** traps and **6 of
+  8** controls — it names neither a Fischer esterification of acetic acid nor benzene nitration
+  (`OtherReaction`). Rxn-INSIGHT when named, else SMARTS, gets 11 and 8. Read together with the
+  earlier 97.1% to 91.3% on a clean corpus, the two classifiers fail in opposite places and neither
+  is a drop-in replacement for the other; the hybrid is the candidate.
+  **What that run could not do, and what closing this row needs.** It gave Rxn-INSIGHT
+  **template-derived atom maps** (`keep_mapping=True`) because this machine has no torch wheel for
+  `rxnmapper`, so its figures are an upper bound — production maps with `rxnmapper`, whose errors
+  are exactly on crowded, multi-functional substrates like these. Three things, in order: (1) rerun
+  the #128 arm and the earlier clean corpus in the `rxn_insight` extra's image with `rxnmapper`
+  doing the mapping (about 20 s of CPU for twenty reactions here, without the mapper); (2) if the
+  hybrid still leads, write the `NAME`-to-`ALL_CLASSES` mapping as a reviewed table beside
+  `ALL_CLASSES`, since keyword matching over free-text names is itself a hand-written classifier;
+  (3) measure what the changed classes do to `effective_prior`, `consensus_score` and the candidate
+  rank order before anything lands. The SMARTS path stays as the no-extra fallback either way.
   **Anchors:** `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`,
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/predictors/conditions/rxn_insight.py`,
   `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/engine/naming.py`,
