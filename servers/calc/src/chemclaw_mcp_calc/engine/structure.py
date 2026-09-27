@@ -38,6 +38,7 @@ from chemclaw_mcp_calc.engine.xtb_engine import geometry, parse_molecule
 
 __all__ = [
     "Structure",
+    "atom_ceiling_error",
     "radical_multiplicity",
     "structure_from_mol",
     "structure_from_smiles",
@@ -118,15 +119,8 @@ class Structure(BaseModel):
             raise ValueError(f"{len(self.positions)} positions for {len(self.elements)} elements")
         if any(len(row) != 3 for row in self.positions):
             raise ValueError("every position must have exactly three coordinates")
-        if len(self.elements) > settings.xtb_max_atoms:
-            raise ValueError(
-                f"a structure of {len(self.elements)} atoms exceeds this server's limit of "
-                f"{settings.xtb_max_atoms}: every calculation here is at least one SCF over the "
-                "whole system and runs inside a conversation turn, so a system this size is "
-                "refused rather than started and abandoned. Run a smaller system, cut it to the "
-                "region the question is about, or raise CHEMCLAW_XTB_MAX_ATOMS on a deployment "
-                "with the memory for it — the ceiling is derived from this pod's own limit"
-            )
+        if reason := atom_ceiling_error(len(self.elements), subject="a structure"):
+            raise ValueError(reason)
         decimals = settings.xtb_geometry_decimals
         # `+ 0.0` normalizes the negative zero that rounding can produce, so two geometrically
         # identical structures cannot differ in their hash by a sign bit.
@@ -198,6 +192,26 @@ class Structure(BaseModel):
         return np.array(self.elements), np.array(self.positions)
 
 
+def atom_ceiling_error(atom_count: int, *, subject: str) -> str | None:
+    """Why `atom_count` atoms is over `xtb_max_atoms`, or `None` — one wording for both checks.
+
+    Shared by `Structure`'s validator and `structure_from_smiles`'s pre-embedding check, so the two
+    refusals of one limit cannot drift apart. `atom_count` is hydrogen-inclusive in both: the
+    validator counts `elements`, and the pre-check counts `parse_molecule`'s `AddHs` output, which
+    is exactly the atom list the embedding would turn into `elements`.
+    """
+    if atom_count <= settings.xtb_max_atoms:
+        return None
+    return (
+        f"{subject} of {atom_count} atoms exceeds this server's limit of "
+        f"{settings.xtb_max_atoms}: every calculation here is at least one SCF over the "
+        "whole system and runs inside a conversation turn, so a system this size is "
+        "refused rather than started and abandoned. Run a smaller system, cut it to the "
+        "region the question is about, or raise CHEMCLAW_XTB_MAX_ATOMS on a deployment "
+        "with the memory for it — the ceiling is derived from this pod's own limit"
+    )
+
+
 def structure_from_mol(
     mol: Chem.Mol,
     *,
@@ -261,6 +275,17 @@ def structure_from_smiles(
     """
     canonical = require_canonical_smiles(smiles)
     mol = parse_molecule(canonical)
+    # **Refused before the embedding, because `Structure`'s own ceiling is checked after it.** The
+    # validator runs on the finished `Structure` — after ETKDG and MMFF have done the work — and
+    # `chem.require_molecule` bounds only the *crash* (the kit's `MAX_MOLECULE_ATOMS`), not the
+    # cost. So every molecule between the two ceilings was embedded in full and then refused.
+    # Measured in the Linux gate image at the default ceiling of 450, "C"*150 (452 atoms, H
+    # included) cost **31.4 s of CPU** before the refusal and costs 0.01 s now; #47 measured the
+    # curve above it — 66.7 s at 602 atoms, 206 s at 902, roughly n^2.8. `embed_structure` and
+    # `calculation_key` hold no `_admitted` slot, so a few such calls own a pod. Counting the
+    # `AddHs` molecule makes this the same number the validator would have counted.
+    if reason := atom_ceiling_error(mol.GetNumAtoms(), subject=f"the molecule {echo(smiles)!r}"):
+        raise ValueError(reason)
     formal_charge = Chem.GetFormalCharge(mol)
     if charge is None:
         charge = formal_charge
