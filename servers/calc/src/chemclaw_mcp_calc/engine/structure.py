@@ -34,7 +34,7 @@ from rdkit import Chem
 from chemclaw_mcp_calc.engine.chem import require_canonical_smiles
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.ids import stable_hash
-from chemclaw_mcp_calc.engine.xtb_engine import geometry, parse_molecule
+from chemclaw_mcp_calc.engine.xtb_engine import atom_ceiling_error, geometry, parse_molecule
 
 __all__ = [
     "Structure",
@@ -190,26 +190,6 @@ class Structure(BaseModel):
     def arrays(self) -> tuple[np.ndarray, np.ndarray]:
         """Return (atomic numbers, positions in Angstrom) for the engine."""
         return np.array(self.elements), np.array(self.positions)
-
-
-def atom_ceiling_error(atom_count: int, *, subject: str) -> str | None:
-    """Why `atom_count` atoms is over `xtb_max_atoms`, or `None` — one wording for both checks.
-
-    Shared by `Structure`'s validator and `structure_from_smiles`'s pre-embedding check, so the two
-    refusals of one limit cannot drift apart. `atom_count` is hydrogen-inclusive in both: the
-    validator counts `elements`, and the pre-check counts `parse_molecule`'s `AddHs` output, which
-    is exactly the atom list the embedding would turn into `elements`.
-    """
-    if atom_count <= settings.xtb_max_atoms:
-        return None
-    return (
-        f"{subject} of {atom_count} atoms exceeds this server's limit of "
-        f"{settings.xtb_max_atoms}: every calculation here is at least one SCF over the "
-        "whole system and runs inside a conversation turn, so a system this size is "
-        "refused rather than started and abandoned. Run a smaller system, cut it to the "
-        "region the question is about, or raise CHEMCLAW_XTB_MAX_ATOMS on a deployment "
-        "with the memory for it — the ceiling is derived from this pod's own limit"
-    )
 
 
 def structure_from_mol(

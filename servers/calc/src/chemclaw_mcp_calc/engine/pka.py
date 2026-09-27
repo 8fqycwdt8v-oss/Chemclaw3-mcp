@@ -66,6 +66,7 @@ from chemclaw_mcp_calc.engine.structure import Structure
 from chemclaw_mcp_calc.engine.uncertainty import CalculationDomainError
 from chemclaw_mcp_calc.engine.xtb_engine import (
     HARTREE_TO_KCAL,
+    atom_ceiling_error,
     engine_version,
     geometry,
     gfn2_energy,
@@ -455,6 +456,16 @@ def predict_pka(job: PkaInput) -> PkaResult:
     key = pka_cache_key(PkaInput(smiles=canonical)).as_str()
 
     neutral = parse_molecule(canonical)
+    # **Refused before any embedding.** Neither branch below builds a `Structure` for the species it
+    # embeds first (the acid branch never does), so `Structure`'s ceiling was never reached and an
+    # acid of any size was embedded and run through GFN2 once per species. `geometry()` and
+    # `make_calculator()` now enforce the ceiling themselves, so this check is not what bounds the
+    # cost — it is here so the refusal names the caller's SMILES rather than "a molecule". A
+    # protonated form carries one more atom than `neutral`, and `geometry()` refuses that one.
+    if reason := atom_ceiling_error(
+        neutral.GetNumAtoms(), subject=f"the molecule {echo(job.smiles)!r}"
+    ):
+        raise ValueError(reason)
     formal_charge = Chem.GetFormalCharge(neutral)
     if formal_charge != 0:
         raise CalculationDomainError(
