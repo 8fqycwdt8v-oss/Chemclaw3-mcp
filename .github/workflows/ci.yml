@@ -255,6 +255,17 @@ jobs:
           --build-arg "CHEMCLAW_REVISION=$REVISION"
           -t "chemclaw-mcp-$SERVER:ci" .
 
+      # The size a pod pulls, printed so a dependency change that moves it is a number in this log
+      # rather than a guess from wheel sizes. `docker image inspect` reports the uncompressed image,
+      # which is what a node's disk holds; it was added to measure the CPU-torch switch for
+      # `rxnlabel` and `rxnpredict` (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`).
+      - name: Report the image's size
+        env:
+          SERVER: ${{ matrix.server }}
+        run: |
+          bytes=$(docker image inspect --format '{{.Size}}' "chemclaw-mcp-${SERVER}:ci")
+          echo "${SERVER}: image size ${bytes} bytes ($((bytes / 1000000)) MB)"
+
       # **Started with no network at all**, which is the fleet's promise stated as a container
       # flag: whatever `/healthz` needs — a corpus, a checkpoint, a constructed model — has to be
       # in the image. The credential env comes out of the manifest, as `Jenkinsfile`'s verify
