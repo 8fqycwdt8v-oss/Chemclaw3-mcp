@@ -156,3 +156,24 @@ decision leaves a record behind and the row goes.
   saying `retrosynthesis_multi_step` is a Chemclaw3 durable job rather than a synchronous tool —
   the first entry in the catalogue that needs one.
   **Anchors:** `MODULES.md`, `manifests/README.md`.
+
+## 4 — Dependencies held back from Dependabot
+
+- [ ] **rdkit 2026.3.6 moves torsion-handle literals both repositories assert, so it lands as a
+  coordinated pair or not at all.** Dependabot proposed it inside group bumps (#73, #137, closed
+  2026-09-27) where one repository cannot move alone: the handles `enumerate_torsions` returns are
+  pinned here and mirrored in Chemclaw3's calc tests. Open one PR per repository bumping rdkit and
+  re-deriving the literals, and merge them together; the agreement lane will red the first to land
+  otherwise. The same closure held back safe members that belong in a hand-made group — hatchling,
+  ruff, `mcp` 1.30 (still the 1.x line), pydantic, starlette, matplotlib and scikit-learn — and two
+  that need their own PR: torch 2.14 against the `+cpu` pin, and accelerate 1.15, which is never
+  imported and trips the suppression-expiry test for nothing.
+  **Anchors:** `servers/chem/tests/test_torsions.py`, `pyproject.toml`, `Makefile`.
+
+- [ ] **`run_python` does not tell the model that pandas 3 made copy-on-write mandatory.** PR #36
+  moved `pyexec` to pandas 3.0.5 (2026-09-27). First-party code is unaffected — results are encoded
+  through `.to_json()` — but model-written code now meets copy-on-write: chained assignment such as
+  `df[mask]["col"] = x` silently does nothing rather than raising, which is a quiet wrong answer and
+  the opposite of this fleet's refuse-rather-than-approximate rule. One sentence in the tool
+  docstring (use `.loc[mask, "col"] = x`) and a sandbox test that pins the behaviour close it.
+  **Anchors:** `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.
