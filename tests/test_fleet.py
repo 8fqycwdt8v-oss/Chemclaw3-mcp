@@ -1415,8 +1415,57 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
 _BOOTSTRAP_INSTALL = 'python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1"'
 
 # Flags that point pip at an index other than the default, or at none it can verify. Any of them in
-# an image is a resolution the lock did not make, whatever else the line carries.
-_INDEX_FLAGS = ("--index-url", "--extra-index-url", "--trusted-host", " -i ")
+# an image is a resolution the lock did not make, whatever else the line carries — with the one
+# exception `_names_only_locked_indexes` spells out.
+_INDEX_FLAGS = ("--index-url", "--extra-index-url", "--trusted-host", "-i")
+
+
+def _locked_registries() -> frozenset[str]:
+    """Every package index `uv.lock` records as the source of something it resolved."""
+    import tomllib
+
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    return frozenset(
+        str(entry["source"]["registry"])
+        for entry in lock["package"]
+        if "registry" in entry.get("source", {})
+    )
+
+
+def _index_flags(command: str) -> list[tuple[str, str]]:
+    """Every `(flag, value)` among `_INDEX_FLAGS` in one pip command, `=`-joined or spaced."""
+    tokens = [token.strip("\"'") for token in command.split()]
+    found: list[tuple[str, str]] = []
+    for position, token in enumerate(tokens):
+        flag, joined, value = token.partition("=")
+        if flag not in _INDEX_FLAGS:
+            continue
+        if not joined:
+            value = tokens[position + 1] if position + 1 < len(tokens) else ""
+        found.append((flag, value))
+    return found
+
+
+def _names_only_locked_indexes(command: str) -> bool:
+    """Whether every index flag in a hashed pass is an *extra* index `uv.lock` names as a source.
+
+    **The one index flag an image may carry**
+    (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`). The lock resolves `torch==2.13.0+cpu` from
+    PyTorch's CPU index on Linux, and `uv export` cannot write an index into the requirements file,
+    so the hashed pass has to be told where that wheel is. What makes it no resolution of pip's is
+    the shape around it: `--require-hashes -r <export>` refuses any artefact whose digest the lock
+    did not record, whichever index offered it. So the exception is exactly that pair — a hashed
+    pass, and only `--extra-index-url` values that are registries `uv.lock` itself records. An
+    `--index-url` (which would *replace* PyPI), a `--trusted-host`, or an index the lock never
+    resolved anything from stays refused.
+    """
+    flags = _index_flags(command)
+    hashed = "--require-hashes" in command and re.search(r"\s-r\s+\S", command) is not None
+    locked = _locked_registries()
+    return hashed and all(
+        flag == "--extra-index-url" and value.rstrip("/") in {r.rstrip("/") for r in locked}
+        for flag, value in flags
+    )
 
 
 def unhashed_installs(instructions: list[str]) -> list[str]:
@@ -1435,7 +1484,9 @@ def unhashed_installs(instructions: list[str]) -> list[str]:
 
     plus `_BOOTSTRAP_INSTALL`, verbatim. Anything else — a named package from the index, a bare
     `pip install foo==1.0`, an `--extra-index-url` — is returned, because a version pin is not a
-    hash and its dependencies re-resolve on the day of the build.
+    hash and its dependencies re-resolve on the day of the build. The single exception is an
+    `--extra-index-url` on the hashed shape naming a registry `uv.lock` records, which
+    `_names_only_locked_indexes` argues.
     """
     offending: list[str] = []
     for instruction in instructions:
@@ -1445,8 +1496,8 @@ def unhashed_installs(instructions: list[str]) -> list[str]:
             command = " ".join(raw.split())
             if not re.search(r"\bpip3? (install|wheel|download)\b", command):
                 continue
-            if any(
-                flag in f" {command} " for flag in _INDEX_FLAGS
+            if (
+                _index_flags(command) and not _names_only_locked_indexes(command)
             ) or not _fetches_nothing_unhashed(command):
                 offending.append(command)
     return offending
@@ -1461,6 +1512,10 @@ def _fetches_nothing_unhashed(command: str) -> bool:
 
 # pip options that consume the next token as their value, so it is not a requirement.
 _PIP_VALUED = {
+    "--extra-index-url",
+    "--index-url",
+    "-i",
+    "--trusted-host",
     "-w",
     "--wheel-dir",
     "-f",
@@ -1486,6 +1541,37 @@ def _pip_targets(command: str) -> list[str]:
         elif not token.startswith("-"):
             targets.append(token.strip("\"'"))
     return targets
+
+
+#: The distributions PyPI's linux torch wheel depends on and a CPU-only pod never loads.
+_CUDA_RUNTIME = re.compile(r"^(nvidia-|cuda-|triton$)")
+
+
+def test_the_lock_resolves_a_cpu_torch_for_the_cpu_only_pods() -> None:
+    """Linux torch comes from PyTorch's CPU index, and no CUDA runtime wheel is in the lock at all.
+
+    Every pod in this fleet is CPU-only, and PyPI's linux torch wheel drags ~2.2 GB of `nvidia-*`,
+    `cuda-*` and `triton` wheels into both model images
+    (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`). The fix is a source in the root
+    `pyproject.toml`, which binds only where a package names torch directly — so a new extra that
+    reaches torch transitively, or a source edited away, re-locks the CUDA build with nothing in a
+    Containerfile changing. This reads the lock rather than the source for that reason: the lock is
+    what the images install.
+    """
+    import tomllib
+
+    packages = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))["package"]
+    cuda = sorted(str(entry["name"]) for entry in packages if _CUDA_RUNTIME.match(entry["name"]))
+    assert not cuda, (
+        f"uv.lock resolves the CUDA runtime again: {cuda}. Some package reached PyPI's linux torch "
+        "— name torch directly in its extra so the root `pytorch-cpu` source binds, and re-lock"
+    )
+    torches = [entry for entry in packages if entry["name"] == "torch"]
+    assert torches, "uv.lock resolves no torch at all — this test would assert nothing"
+    linux = [entry for entry in torches if str(entry["version"]).endswith("+cpu")]
+    assert linux and all(
+        entry["source"].get("registry") == "https://download.pytorch.org/whl/cpu" for entry in linux
+    ), f"no +cpu torch from the CPU index in uv.lock: {[e['version'] for e in torches]}"
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -1528,9 +1614,22 @@ def test_the_unhashed_install_check_refuses_the_shapes_it_was_written_for() -> N
         'https://download.pytorch.org/whl/cpu "rxnmapper==0.4.3" "rxn-insight==0.1.3"',
         # The same pins with the index flag gone: still a resolution, still no hash.
         'RUN python -m pip install --no-cache-dir "rxnmapper==0.4.3"',
-        # A hashed export with an extra index smuggled onto the same line.
+        # A hashed export with an extra index smuggled onto the same line — one `uv.lock` never
+        # resolved anything from, spaced and `=`-joined.
         "RUN python -m pip wheel --require-hashes -r /build/requirements.txt "
         "--extra-index-url https://example.invalid/simple",
+        "RUN python -m pip wheel --require-hashes -r /build/requirements.txt "
+        "--extra-index-url=https://example.invalid/simple",
+        # The locked CPU index, but *replacing* PyPI rather than added to it.
+        "RUN python -m pip wheel --require-hashes -r /build/requirements.txt "
+        "--index-url https://download.pytorch.org/whl/cpu",
+        # The locked CPU index beside the locked one, and an unlocked one after it.
+        "RUN python -m pip wheel --require-hashes -r /build/requirements.txt "
+        "--extra-index-url https://download.pytorch.org/whl/cpu "
+        "--extra-index-url https://example.invalid/simple",
+        # The locked CPU index on an install that is not the hashed pass.
+        "RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels "
+        "--extra-index-url https://download.pytorch.org/whl/cpu torch==2.13.0+cpu",
         # Something appended to the bootstrap.
         'RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" torch',
         # `--no-deps` over a package name rather than a local path.
@@ -1544,6 +1643,7 @@ def test_the_unhashed_install_check_refuses_the_shapes_it_was_written_for() -> N
         "&& python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt "
         "&& python -m pip wheel --no-cache-dir --wheel-dir /wheels "
         "--require-hashes -r /build/requirements.txt "
+        "--extra-index-url https://download.pytorch.org/whl/cpu "
         "&& python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels "
         './packages/mcp_server_kit "./servers/rxnlabel[models]"',
         "RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels "
