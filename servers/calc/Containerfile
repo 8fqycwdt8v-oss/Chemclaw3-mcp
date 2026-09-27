@@ -113,6 +113,23 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit chemclaw-mcp-calc \
     && rm -rf /wheels
 
+# **`libgomp1`, because the locked tblite wheel links OpenMP and does not bundle it.** tblite 0.7.0's
+# manylinux_2_28 wheel vendors `libgfortran`, `libquadmath`, BLAS and LAPACK in `tblite.libs/`, but
+# `_libtblite.cpython-311-x86_64-linux-gnu.so` also names `libgomp.so.1` in `DT_NEEDED` — the one
+# entry in the wheel that is neither vendored nor in `python:3.11-slim`. So `import tblite.library`
+# failed to load the CFFI extension and re-raised it as `tblite C extension unimportable, cannot use
+# C-API`, uvicorn died importing `app.py` (via `engine/xtb_engine.py`), and nothing listened — found
+# by the first full-matrix run of CI's `images` job, because nothing before it started this image.
+# The `libgomp` under `/opt/sampling/lib` does not help: that prefix is found through the sampler
+# binaries' RPATH, not the loader path, and pointing `LD_LIBRARY_PATH` at it would put every conda
+# library ahead of the wheels' own for the whole process. The check after the install runs one GFN2
+# single point on H2 through the server's own engine, so a regression is a build failure.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "import sys, numpy as np; from chemclaw_mcp_calc.engine.xtb_engine import run_singlepoint; r = run_singlepoint('GFN2-xTB', np.array([1, 1]), np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]])); e = float(r['energy']); sys.exit(0 if e < 0 else f'implausible H2 energy {e}'); " \
+    && echo "tblite C-API loads and computes"
+
 # The samplers, read-only to the running user: nothing in this image writes into them, and a CREST
 # run works in a fresh temporary directory (`crest_cli`), never in its own installation.
 COPY --from=sampling /opt/sampling /opt/sampling

@@ -57,6 +57,23 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
         mcp-server-kit chemclaw-mcp-chem \
     && rm -rf /wheels
 
+# **Three system libraries, because this server draws.** `engine/depiction.py` imports RDKit's
+# `Draw` and `rdMolDraw2D` at module scope, and the locked RDKit wheel (2026.3.5, manylinux_2_28)
+# vendors its own cairo in `rdkit.libs/` but not what that cairo links: `libcairo` needs
+# `libXrender.so.1`, `libXext.so.6` and `libX11.so.6`, and the vendored `libfontconfig` needs
+# `libexpat.so.1` — the complete set of `DT_NEEDED` entries across the wheel's `.so` files that it
+# does not bundle and `python:3.11-slim` does not carry (`libX11` arrives as a dependency of the
+# first two). The same set `servers/rxnlabel/Containerfile` found for the same wheel. Without them
+# the image built, and uvicorn then died importing the app with `libXrender.so.1: cannot open
+# shared object file` — found by the first full-matrix run of CI's `images` job, because nothing
+# before it started this image. The check after the install draws one molecule through the
+# server's own renderer, so a regression is a build failure rather than a pod that never listens.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxrender1 libxext6 libexpat1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "import sys; from chemclaw_mcp_chem.engine.depiction import render_svg; svg = render_svg('c1ccccc1O'); sys.exit(0 if '<svg' in svg else 'render_svg drew no SVG'); " \
+    && echo "rdkit.Chem.Draw importable and drawing"
+
 USER ${UID}
 EXPOSE 8858
 
