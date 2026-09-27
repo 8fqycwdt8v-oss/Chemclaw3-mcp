@@ -133,35 +133,7 @@ decision leaves a record behind and the row goes.
   **Anchors:** `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py::RK4_REAL_STABILITY_LIMIT`,
   `servers/kinetics/src/chemclaw_mcp_kinetics/engine/admission.py`.
 
-## 2 — The gate itself
-
-- [ ] **Both model images ship PyPI's CUDA torch closure to CPU-only pods.** `rxnlabel` now installs
-  its `models` extra from the hashed lock export
-  (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`), as `rxnpredict` already did, and the
-  lock resolves torch from PyPI — whose linux wheel depends on the `nvidia-*`, `cuda-*` and
-  `triton` wheels. Summed from `uv.lock`'s recorded sizes for linux x86_64 / cp311, those are
-  ~2.2 GB of `rxnlabel`'s ~2.9 GB closure, for a GPU no pod in this fleet has. A
-  `[[tool.uv.index]]` for `download.pytorch.org/whl/cpu` with `explicit = true` and a linux-only
-  `torch` source would lock `+cpu` wheels by hash instead (2.13.0+cpu cp311 manylinux x86_64 is
-  published); what that costs is a re-lock for both servers and an answer to whether
-  `make deps-audit`'s `pip-audit` audits a `+cpu` local version or skips it — measure the second
-  before shipping the first.
-  **Anchors:** `servers/rxnlabel/Containerfile`, `servers/rxnpredict/Containerfile`, `uv.lock`,
-  `Makefile`.
-
-- [ ] **The cross-repository agreement runs nowhere automated, on either side.**
-  `tests/test_consumer_agreement.py` closes the direction this tree was blind in — measured
-  2026-09-14, a rename of `ich_impurity_limit` carried out *completely* here (server, manifest,
-  `tool-surface.json`, README, `MODULES.md` and the server's own 261 tests) left
-  `servers/safety/tests` and all 212 other fleet tests green and was caught only by that file. But
-  it needs a `Chemclaw3` checkout **with a built `.venv`**, and CI here clones neither, so in CI it
-  skips. The consumer's side has the mirror-image problem. Decide whether one of the two CI lanes
-  clones the other repository shallowly and builds it, or whether the honest arrangement is the
-  skip plus the terminal notice `conftest.py::pytest_terminal_summary` now prints — which is what
-  ships today.
-  **Anchors:** `tests/test_consumer_agreement.py`, `conftest.py`, `.github/workflows/ci.yml`.
-
-## 3 — Corpora that are not yet licensed to exist
+## 2 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA and `chembl` cannot be built until somebody has read what that obliges.**
   Attribution obligations follow the data into anything derived from it, which for this fleet means
@@ -171,7 +143,7 @@ decision leaves a record behind and the row goes.
   itself, which is why it sits here rather than stopping anything.
   **Anchors:** `MODULES.md`.
 
-## 4 — Consuming a server hosted elsewhere
+## 3 — Consuming a server hosted elsewhere
 
 - [ ] **`retro` cannot be consumed until six things are true of it, and this repository owes it a
   manifest.** **Other repository:** `chemclaw2_retrosynthesis` — its anchors are that repo's

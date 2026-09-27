@@ -96,6 +96,20 @@ chemclaw-mcp-kinetics = { workspace = true }
 chemclaw-mcp-suitability = { workspace = true }
 chemclaw-mcp-thermalsafety = { workspace = true }
 chemclaw-mcp-unitops = { workspace = true }
+# **Every pod in this fleet is CPU-only, so on Linux the lock resolves PyTorch's CPU build**
+# (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`). PyPI's linux torch wheel depends on the
+# `nvidia-*`, `cuda-*` and `triton` wheels — ~2.2 GB of `rxnlabel`'s ~2.9 GB closure, for a GPU no
+# pod has. Here rather than in the two servers because a workspace member inherits the root's
+# sources, and one declaration cannot drift from a second. It binds only where a package names
+# torch *directly*, which is why `rxnlabel`'s `models` extra declares it beside `rxnmapper`.
+# Linux only: macOS has no CUDA build to avoid, and PyPI's wheel is already the CPU one there.
+# `explicit = true` keeps the index to torch alone — nothing else may resolve from it.
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 100

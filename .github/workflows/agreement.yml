@@ -1,0 +1,104 @@
+name: Agreement
+
+# **The consumer's agreement suite, run against this tree before it merges**
+# (`D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge`).
+#
+# `Chemclaw3` reads this fleet's `main` on every one of its own CI runs — its `check` job checks
+# this repository out and runs `tests/test_sibling_manifest_agreement.py` against it. So a
+# disagreement *is* caught, but only after it has merged here, and it is caught as the consumer's
+# `main` going red: on 2026-09-27 #129 added `chem.enumerate_substitutions`, and every core check
+# failed until that repository's #468 declared the tool. This lane is the other half — the same
+# module, run against the pull request's own tree, so the author hears about it while the change
+# is still theirs.
+#
+# It runs `tests/test_consumer_agreement.py`, not the consumer's module directly, because that file
+# is where this repository already decided how to read the consumer's verdict: a skip, an xfail or
+# an empty selection over there is not a pass here. `CHEMCLAW3_AGREEMENT_REQUIRED` turns this
+# side's own skips into failures too, because in this job the checkout is the point.
+on:
+  pull_request:
+    # `labeled`/`unlabeled` beside the defaults, so adding `agreement:core-follows` re-runs the
+    # lane and records the choice on the pull request rather than in a re-push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # What the consumer's module reads of this tree, and what reads it. The manifests are the
+    # declared surface — `tests/test_fleet.py` already holds a server's served tools to its
+    # manifest, so a tool module that changes without its manifest fails there, not here.
+    paths:
+      - "servers/*/connector.yaml"
+      - "servers/*/tool-surface.json"
+      - "manifests/**"
+      - "manifests-internal/**"
+      - "packages/mcp_server_kit/src/mcp_server_kit/testing.py"
+      - "tests/test_consumer_agreement.py"
+      - ".github/workflows/agreement.yml"
+  # Nightly, because the consumer moves too: a bundle it re-declares, or a check it adds to the
+  # module this runs, is a disagreement no pull request here touched.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_PYTHON: "3.11"
+
+jobs:
+  agreement:
+    runs-on: ubuntu-latest
+    # Measured on the first runs: the consumer's locked closure is most of it.
+    timeout-minutes: 30
+    steps:
+      # Full history, because this job runs `pytest`, and `tests/test_delivery.py` holds every job
+      # that does to `fetch-depth: 0` — the reachability check it protects cannot run on depth 1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # No cache: the consumer's closure is gigabytes of wheels this repository's `check` job never
+      # installs, and a shared cache key would make one job evict the other's.
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+
+      # A shallow clone of the consumer's `main`, over anonymous HTTPS: the repository is public,
+      # so no token is involved and none reaches its build. `main` because that is what the
+      # consumer ships and what its own CI compares against this fleet's `main`.
+      - name: Clone Chemclaw3 main (shallow)
+        run: |
+          git clone --depth 1 --branch main --single-branch \
+            https://github.com/8fqycwdt8v-oss/Chemclaw3.git "${RUNNER_TEMP}/Chemclaw3"
+          git -C "${RUNNER_TEMP}/Chemclaw3" log -1 --format='Chemclaw3 main at %H (%cs) %s'
+
+      # `--locked`, the consumer's own spelling: its tests import `chemclaw` from its own
+      # environment, and `tests/test_consumer_agreement.py` runs them on that interpreter.
+      - name: Build the consumer's environment
+        working-directory: ${{ runner.temp }}/Chemclaw3
+        run: uv sync --locked
+
+      - name: Sync this workspace
+        run: uv sync --frozen
+
+      # With the label, a disagreement is reported and does not block: the author has said the
+      # consumer follows, in a pull request of its own. Without it, this step is the gate.
+      - name: Run the consumer's agreement against this tree
+        id: agree
+        continue-on-error: >-
+          ${{ github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'agreement:core-follows') }}
+        env:
+          CHEMCLAW3_REPO: ${{ runner.temp }}/Chemclaw3
+          CHEMCLAW3_AGREEMENT_REQUIRED: "1"
+        run: uv run --frozen pytest -p no:cacheprovider -q tests/test_consumer_agreement.py
+
+      - name: Record a disagreement the label let through
+        if: ${{ steps.agree.outcome == 'failure' }}
+        run: |
+          echo "::warning title=Chemclaw3 does not yet agree::Merged with agreement:core-follows. \
+          Chemclaw3's own CI reads this fleet's main and stays red until its matching pull \
+          request lands; the failure above names the files to change there."

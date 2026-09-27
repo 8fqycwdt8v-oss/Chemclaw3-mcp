@@ -39,6 +39,14 @@ COPY servers/rxnlabel /build/servers/rxnlabel
 # itself with, which is a smaller harm than a dropped corpus and is still a build whose output is a
 # function of the date (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
 #
+# **The one extra index is the one `uv.lock` names as torch's source, and it is on the hashed pass
+# only** (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`). The lock resolves `torch==2.13.0+cpu` from
+# PyTorch's CPU index for Linux, and `uv export` has no flag that writes an index into the
+# requirements file, so pip has to be told where that one wheel lives. It cannot choose anything
+# with it: `--require-hashes` rejects any artefact whose digest the lock did not record, whichever
+# index offered it. `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash`
+# accepts an index flag only in this shape and only naming a registry `uv.lock` records.
+#
 # `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
 # version runs, and a `uv` that changed this CLI would fail the build loudly rather than
 # quietly ship a different closure.
@@ -50,6 +58,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
     && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
     && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
+         --extra-index-url https://download.pytorch.org/whl/cpu \
     && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels \
         ./packages/mcp_server_kit "./servers/rxnlabel[models]"
 
@@ -84,13 +93,11 @@ RUN apt-get update \
 # They used to be a third `pip install` straight from PyPI through the CPU-torch
 # `--extra-index-url`, pinned by version to the lock and to nothing else: their whole transitive
 # closure — torch, transformers and tokenizers among it — re-resolved on every build, unhashed,
-# and this was the one image whose closure the audit did not describe. The price of the fix is
-# which torch ships: the lock resolves PyPI's build, which carries the CUDA runtime wheels this
-# CPU-only pod never loads. Summed from `uv.lock`'s recorded wheel sizes for linux x86_64 /
-# cp311, that is ~2.2 GB of the ~2.9 GB of wheels, and `rxnpredict`'s image, which installs its
-# extras from the same lock, already ships the same. Locking a CPU torch source for both images
-# is its own row in `docs/BACKLOG.md`, because it re-keys the lock for two servers and the audit
-# of a `+cpu` local version is a separate question.
+# and this was the one image whose closure the audit did not describe. The price of that fix was
+# which torch shipped: the lock resolved PyPI's build, which carries the CUDA runtime wheels this
+# CPU-only pod never loads — ~2.2 GB of the ~2.9 GB of wheels. The lock now resolves PyTorch's
+# `+cpu` build on Linux for this image and `rxnpredict`'s, still by hash
+# (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`, which records the measured image sizes).
 # `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash` refuses the old form.
 COPY --from=build /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
