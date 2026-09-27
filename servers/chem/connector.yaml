@@ -45,6 +45,7 @@ endpoint:
     token_env: CHEMCLAW_CHEM_TOKEN
   tools:
     - resolve_compound
+    - drive_undeclared_tool
     - stoichiometry_table
     - green_metrics
     - render_structure
@@ -67,6 +68,7 @@ endpoint:
   # to say "all four" outlived two additions.)
   read_only:
     - resolve_compound
+    - drive_undeclared_tool
     - stoichiometry_table
     - green_metrics
     - render_structure
