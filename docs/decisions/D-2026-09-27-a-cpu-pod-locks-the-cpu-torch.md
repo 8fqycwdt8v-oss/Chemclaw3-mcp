@@ -50,8 +50,11 @@ this one answers both.
 
 ## What it bought
 
-Measured by the same `images` step on this change's pull request: **`rxnlabel` AFTER_RXNLABEL and
-`rxnpredict` AFTER_RXNPREDICT**, with the offline `/healthz` smoke passing on both.
+Measured by the same `images` step on this change's pull request (#132, at `b812a29`):
+**`rxnlabel` 2,261,081,578 bytes and `rxnpredict` 3,063,906,221 bytes**, down from 8,792,004,407
+and 9,594,829,103 — about 6.5 GB less per image, uncompressed. The offline `/healthz` smoke passed
+on both, and `rxnlabel`'s build-time load check mapped a reaction on the CPU torch. `chem` and
+`calc` came out byte-identical in size to the baseline, as expected, since neither installs torch.
 
 ## What keeps it true
 
