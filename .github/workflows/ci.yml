@@ -187,6 +187,16 @@ jobs:
   # diff touches — every server when the shared inputs (`uv.lock`, the root `pyproject.toml`,
   # `packages/`) move — because a model image installs ~2.9 GB of torch wheels and costs a runner
   # most of its disk. The weekly schedule and a manual dispatch build them all.
+  #
+  # **Narrowing is what hid two broken images, so the rule for widening is two triggers longer.**
+  # This job arrived in a pull request that touched `rxnlabel` and `rxnpredict`, so those were the
+  # only images it ever built: `chem` (no `libXrender` for RDKit's drawing module) and `calc` (no
+  # `libgomp` for tblite's extension) had never started, and nothing said so until a manual
+  # full-matrix dispatch. The narrowing was right about what a diff can break and wrong about what
+  # it can *prove* — a change to the harness itself is a claim about every image. So every image is
+  # also built when the diff touches `.github/workflows/` (the smoke test changed, so every verdict
+  # it gave is stale), or changes a `FROM` line in any Containerfile (a base image moved — the
+  # system libraries a wheel links against live there, and every Containerfile here shares one).
   images-discover:
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
@@ -204,7 +214,11 @@ jobs:
           all=$(for f in servers/*/Containerfile; do basename "$(dirname "${f}")"; done)
           if [ -n "${BASE}" ]; then
             changed=$(git diff --name-only "${BASE}...HEAD")
-            if printf '%s\n' "${changed}" | grep -qE '^(uv\.lock|pyproject\.toml|packages/)'; then
+            if printf '%s\n' "${changed}" \
+                | grep -qE '^(uv\.lock|pyproject\.toml|packages/|\.github/workflows/)'; then
+              picked="${all}"
+            elif git diff "${BASE}...HEAD" -- 'servers/*/Containerfile' \
+                | grep -qE '^[+-][[:space:]]*FROM[[:space:]]'; then
               picked="${all}"
             else
               picked=$(for s in ${all}; do
@@ -282,7 +296,11 @@ jobs:
             sleep 2
           done
           echo "${SERVER}: ${body}"
-          docker logs smoke 2>&1 | tail -40
+          # Head and tail, because a startup crash puts its *cause* first: `calc`'s chained
+          # `ImportError` scrolled out of a tail-only window, leaving only the re-raise.
+          docker logs smoke > smoke.log 2>&1 || true
+          echo "--- first 60 lines of the container log"; head -n 60 smoke.log
+          echo "--- last 40 lines"; tail -n 40 smoke.log
           case "${body}" in
             "200 "*"${REVISION}"*) : ;;
             *) echo "${SERVER}: not ready offline, or /healthz lacks this build's revision" >&2

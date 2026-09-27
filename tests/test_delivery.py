@@ -329,3 +329,10 @@ def test_ci_builds_every_image_from_a_list_it_discovers() -> None:
         str(step.get("run", "")) for job in jobs.values() for step in job.get("steps", [])
     )
     assert "servers/*/Containerfile" in discovery, "no job discovers servers from the tree"
+    # The narrowing to touched servers is what let `chem` and `calc` ship images that never
+    # started: the job's own pull request built two servers and proved nothing about the rest. A
+    # change to the harness, or to a base image, is a claim about every image, so both widen.
+    for trigger in (r"\.github/workflows/", "FROM"):
+        assert trigger in discovery, (
+            f"image discovery no longer widens to every server on {trigger}"
+        )
