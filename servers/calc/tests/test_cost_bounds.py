@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import chemclaw_mcp_calc.engine.budget as budget_module
+import chemclaw_mcp_calc.engine.structure as structure_module
 import chemclaw_mcp_calc.engine.xtb_opt as xtb_opt
 import numpy as np
 import pytest
@@ -94,6 +95,38 @@ def test_the_ceiling_s_refusal_names_the_way_forward_its_own_docstring_states() 
     message = str(raised.value)
     assert "CHEMCLAW_XTB_MAX_ATOMS" in message
     assert "smaller system" in message
+
+
+def test_a_smiles_over_the_ceiling_is_refused_before_it_is_embedded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SMILES path refuses at parse time, not after ETKDG and MMFF have paid for the geometry.
+
+    `Structure`'s validator is the ceiling every path inherits, but it runs on the *finished*
+    structure — so a SMILES between `xtb_max_atoms` and the kit's crash guard was embedded in full
+    and then thrown away (#47 measured 67 s at 602 atoms, 206 s at 902). The embedder is replaced by
+    one that fails the test if reached, so this asserts the ordering and not just the refusal.
+
+    The count is hydrogen-inclusive, as the validator's is: an alkane chain of n carbons is 3n + 2
+    atoms, so the chain just over the ceiling is refused and the one at or under it is embedded.
+    """
+
+    def must_not_embed(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("embedded a molecule the ceiling should have refused first")
+
+    ceiling = settings.xtb_max_atoms
+    over = "C" * ((ceiling - 2) // 3 + 1)  # 3n + 2 > ceiling
+    monkeypatch.setattr(structure_module, "geometry", must_not_embed)
+    with pytest.raises(ValueError, match=r"exceeds this server's limit of") as raised:
+        structure_from_smiles(over)
+    message = str(raised.value)
+    assert f"{3 * len(over) + 2} atoms" in message
+    assert "CHEMCLAW_XTB_MAX_ATOMS" in message
+    assert len(message) < 1_000  # the SMILES is echoed through `limits.echo`, not verbatim
+
+    monkeypatch.undo()
+    under = "C" * ((ceiling - 2) // 3)  # 3n + 2 <= ceiling: the pre-check must let it through
+    assert structure_module.atom_ceiling_error(3 * len(under) + 2, subject="x") is None
 
 
 #: This server's own Deployment, which is where the memory the ceiling is derived from is declared.
