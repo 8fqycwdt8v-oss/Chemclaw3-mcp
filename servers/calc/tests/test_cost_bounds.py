@@ -38,17 +38,20 @@ from typing import Any
 
 import chemclaw_mcp_calc.engine.budget as budget_module
 import chemclaw_mcp_calc.engine.structure as structure_module
+import chemclaw_mcp_calc.engine.xtb_engine as xtb_engine
 import chemclaw_mcp_calc.engine.xtb_opt as xtb_opt
 import numpy as np
 import pytest
 import yaml
 from chemclaw_mcp_calc.engine.config import settings
+from chemclaw_mcp_calc.engine.pka import PkaInput, _conjugate_bases, _predict_acid_pka, predict_pka
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
-from chemclaw_mcp_calc.engine.xtb_engine import evaluate_point
+from chemclaw_mcp_calc.engine.xtb_engine import evaluate_point, geometry, parse_molecule
 from chemclaw_mcp_calc.engine.xtb_hessian import HessianSpec, compute_hessian
 from chemclaw_mcp_calc.engine.xtb_opt import OptSpec, optimize_structure
 from chemclaw_mcp_calc.engine.xtb_props import PropertiesSpec, compute_properties
 from mcp_server_kit.sessions import DEFAULT_MAX_SESSIONS, SESSION_COST_BYTES
+from rdkit import Chem
 
 
 def a_structure_of(atom_count: int) -> Structure:
@@ -127,6 +130,79 @@ def test_a_smiles_over_the_ceiling_is_refused_before_it_is_embedded(
     monkeypatch.undo()
     under = "C" * ((ceiling - 2) // 3)  # 3n + 2 <= ceiling: the pre-check must let it through
     assert structure_module.atom_ceiling_error(3 * len(under) + 2, subject="x") is None
+
+
+class _NoEmbedding:
+    """Stands in for `xtb_engine.AllChem`: any embedding or force-field call fails the test."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"AllChem.{name} reached for a molecule the ceiling should refuse")
+
+
+def _refuse_every_scf(*_args: object, **_kwargs: object) -> Any:
+    raise AssertionError("a tblite calculator was built for a system the ceiling should refuse")
+
+
+#: Acetic acid is 8 atoms H-inclusive (its anion 7); propionic acid is 11. With the ceiling set to
+#: 8 the pair straddles it, so both directions run in milliseconds rather than the 452-atom acid's
+#: minutes — the ceiling's *value* is not what these tests are about.
+_ACETIC, _PROPIONIC = "CC(=O)O", "CCC(=O)O"
+
+
+def test_geometry_itself_refuses_over_the_ceiling_before_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`geometry()` is the one place this server embeds, so it is where the ceiling is enforced.
+
+    `pka`'s acid branch embedded and ran GFN2 on raw `geometry()` output without ever building a
+    `Structure`, so neither `structure_from_smiles`'s pre-check nor the validator applied and an
+    acid of any size was accepted. Holding the ceiling at the embedder means a future caller cannot
+    skip it. Hydrogens count whether they are atoms (`AddHs`) or implicit, so forgetting `AddHs`
+    cannot under-count by two thirds of an alkane.
+    """
+    monkeypatch.setattr(settings, "xtb_max_atoms", 8)
+    monkeypatch.setattr(xtb_engine, "AllChem", _NoEmbedding())
+    for mol in (parse_molecule(_PROPIONIC), Chem.MolFromSmiles(_PROPIONIC)):
+        with pytest.raises(ValueError, match=r"a molecule of 11 atoms exceeds this server's limit"):
+            geometry(mol, seed=1)
+
+
+def test_every_scf_refuses_over_the_ceiling() -> None:
+    """`make_calculator` is where every SCF starts, so it is the backstop for coordinates that
+    never passed through `Structure` or `geometry()`."""
+    over = settings.xtb_max_atoms + 1
+    numbers = np.full(over, 2)
+    positions = np.array([[3.0 * index, 0.0, 0.0] for index in range(over)])
+    with pytest.raises(ValueError, match=rf"a system of {over} atoms exceeds"):
+        xtb_engine.make_calculator(settings.xtb_method, numbers, positions)
+
+
+def test_a_pka_acid_over_the_ceiling_is_refused_before_it_is_embedded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The acid branch of `predict_pka` — the path that had no ceiling — refuses without embedding.
+
+    Asserted twice: through `predict_pka` (whose own early check names the SMILES), and through
+    `_predict_acid_pka` directly, which is the branch as a future caller would reach it with no
+    check of its own — there only `geometry()`'s check stands between the call and the SCF.
+    """
+    monkeypatch.setattr(settings, "xtb_max_atoms", 8)
+    monkeypatch.setattr(xtb_engine, "AllChem", _NoEmbedding())
+    monkeypatch.setattr(xtb_engine, "Calculator", _refuse_every_scf)
+    with pytest.raises(ValueError, match=r"the molecule 'CCC\(=O\)O' of 11 atoms exceeds"):
+        predict_pka(PkaInput(smiles=_PROPIONIC))
+
+    acid = parse_molecule(_PROPIONIC)
+    with pytest.raises(ValueError, match=r"of 11 atoms exceeds this server's limit of 8"):
+        _predict_acid_pka(_PROPIONIC, acid, _conjugate_bases(acid), "v", "k")
+
+
+def test_a_pka_acid_at_the_ceiling_still_predicts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check refuses only what is over the line: an acid of exactly the ceiling computes."""
+    monkeypatch.setattr(settings, "xtb_max_atoms", 8)
+    result = predict_pka(PkaInput(smiles=_ACETIC))
+    assert result.site == "acid"
+    assert np.isfinite(result.pka)
 
 
 #: This server's own Deployment, which is where the memory the ceiling is derived from is declared.

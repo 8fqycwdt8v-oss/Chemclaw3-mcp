@@ -25,6 +25,7 @@ from rdkit.Chem import AllChem
 from scipy import constants
 from tblite.interface import Calculator
 
+from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.solvents import SUGGESTED_SOLVENTS
 
 # Re-exported: `xtb_opt` annotates the calculator it passes between its own helpers, and this module
@@ -34,6 +35,7 @@ __all__ = [
     "AU_TO_DEBYE",
     "HARTREE_TO_KCAL",
     "Calculator",
+    "atom_ceiling_error",
     "conformer_positions",
     "engine_version",
     "evaluate_point",
@@ -192,13 +194,52 @@ def conformer_positions(mol: Chem.Mol, conf_id: int = -1) -> tuple[np.ndarray, n
     return numbers, positions
 
 
+def atom_ceiling_error(atom_count: int, *, subject: str) -> str | None:
+    """Why `atom_count` atoms is over `xtb_max_atoms`, or `None` — one wording for every check.
+
+    Lives here, at the unit boundary, because the two places the cost is actually paid are here:
+    `geometry()` (ETKDG + MMFF) and `make_calculator()` (every SCF). Both call it, so no caller —
+    present or future — can embed or run xTB on a system the ceiling refuses, whether or not it
+    ever builds a `Structure`. `Structure`'s validator and `structure_from_smiles`'s pre-check call
+    it too (re-exported from `structure`) for their better-worded, SMILES-echoing refusals, and all
+    of them share one message so they cannot drift apart. `atom_count` is hydrogen-inclusive.
+    """
+    if atom_count <= settings.xtb_max_atoms:
+        return None
+    return (
+        f"{subject} of {atom_count} atoms exceeds this server's limit of "
+        f"{settings.xtb_max_atoms}: every calculation here is at least one SCF over the "
+        "whole system and runs inside a conversation turn, so a system this size is "
+        "refused rather than started and abandoned. Run a smaller system, cut it to the "
+        "region the question is about, or raise CHEMCLAW_XTB_MAX_ATOMS on a deployment "
+        "with the memory for it — the ceiling is derived from this pod's own limit"
+    )
+
+
+def _atoms_with_hydrogens(mol: Chem.Mol) -> int:
+    """`mol`'s atom count with every hydrogen counted, whether explicit atoms or implicit.
+
+    `geometry()`'s callers pass `AddHs` output, where each hydrogen is an atom and the heavy atoms'
+    `GetTotalNumHs()` is 0; a caller that forgot `AddHs` would otherwise be under-counted by every
+    hydrogen, which on an alkane is two thirds of the system.
+    """
+    return mol.GetNumAtoms() + sum(atom.GetTotalNumHs() for atom in mol.GetAtoms())
+
+
 def geometry(mol: Chem.Mol, seed: int, optimize: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """Embed a deterministic 3D geometry and return (atomic numbers, positions in Angstrom).
 
     Falls back to random-coordinate embedding if the default fails, then raises if that also fails.
     Optional MMFF pre-optimization is skipped when the force field lacks parameters for the molecule
     (a valid, common case) rather than erroring.
+
+    **Refuses a molecule over `xtb_max_atoms` before embedding it** — this is the choke point every
+    3D embedding in this server goes through, so the ceiling is enforced *here* rather than trusted
+    to each caller. Before it was, `pka`'s acid branch embedded and ran two or more GFN2 single
+    points on raw `geometry()` output without ever building a `Structure`, so no ceiling applied.
     """
+    if reason := atom_ceiling_error(_atoms_with_hydrogens(mol), subject="a molecule"):
+        raise ValueError(reason)
     work = Chem.Mol(mol)  # copy so the caller's molecule gets no conformer
     # `type: ignore` on each `AllChem` call below is `rdkit-stubs`' doing rather than a claim
     # about the calls: `AllChem` re-exports its C++ symbols dynamically, so the stub package
@@ -268,7 +309,12 @@ def make_calculator(
     the finite-difference Hessian — set the Hamiltonian up once and then call `energy_and_gradient`
     per step, instead of reconstructing a calculator per single point. `run_singlepoint` goes
     through it too, so the verbosity and solvation setup exist once.
+
+    It is also the one place every SCF starts, so it refuses a system over `xtb_max_atoms` — the
+    backstop for a caller that reaches tblite with coordinates that never passed `Structure`.
     """
+    if reason := atom_ceiling_error(len(numbers), subject="a system"):
+        raise ValueError(reason)
     calc = Calculator(method, numbers, positions * ANGSTROM_TO_BOHR, charge=charge, uhf=uhf)
     # tblite prints an SCF iteration table to stdout at its default verbosity, which would pollute
     # every request log and test run. It affects no numbers.
