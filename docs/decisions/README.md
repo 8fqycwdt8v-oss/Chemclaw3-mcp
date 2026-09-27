@@ -140,5 +140,8 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it](D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it.md) | One echo bound, and the refusals that bypassed the four copies of it |
 | [D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary](D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary.md) | The consumer's agreement module is the trust boundary |
 | [D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch](D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch.md) | rxnlabel's models install from the hashed lock, and ship the lock's torch |
+| [D-2026-09-27-a-cpu-pod-locks-the-cpu-torch](D-2026-09-27-a-cpu-pod-locks-the-cpu-torch.md) | The lock resolves PyTorch's CPU build on Linux, still by hash |
+| [D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a](D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a.md) | The CPU-torch record's branch commits are `27aa77a` |
+| [D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge](D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge.md) | The fleet runs the consumer's agreement suite before merge, and a deliberate lead is a label |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

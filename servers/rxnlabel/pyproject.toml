@@ -26,6 +26,13 @@ dependencies = [
 models = [
     "rxnmapper>=0.4",
     "rxn-insight>=0.1.2",
+    # Not imported here directly: declared so the workspace's CPU-torch source binds *for this
+    # server*. uv applies a source only to a direct requirement, and torch reaches this extra
+    # through `rxnmapper`. Measured: without this line the export is unchanged today, but only
+    # because `rxnpredict` names torch directly and a universal lock resolves one torch per
+    # platform — a property of the workspace, not of this server, and gone the day that extra
+    # moves (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`).
+    "torch>=2.1",
 ]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.27", "pyyaml>=6.0"]
 

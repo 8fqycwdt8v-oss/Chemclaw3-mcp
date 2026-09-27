@@ -84,6 +84,8 @@ _QUOTED_AS_UNREACHABLE = frozenset({"68083a4", "39ba4a7", "362e764", "1161473"})
 # place a stale citation goes to be forgotten.
 _RETIRED_BY_A_SQUASH = {
     "eb58363": "D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance",
+    "64201bd": "D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a",
+    "b812a29": "D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a",
 }
 
 

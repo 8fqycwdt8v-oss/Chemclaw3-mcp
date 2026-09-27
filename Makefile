@@ -313,12 +313,29 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# back from a log file: a second copy of the output is a second thing that can disagree with the
 	@# first. The one scratch file is an `mktemp` rather than a fixed name, because a predictable path
 	@# in a shared /tmp is a symlink somebody else can plant.
+	@#
+	@# **A local version is audited as its public release, and a package the database cannot
+	@# find fails the gate** (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`). The lock resolves
+	@# `torch==2.13.0+cpu` on Linux, and measured on 2026-09-27 `pip-audit` answers that line with
+	@# `Dependency not found on PyPI and could not be audited` — a *skip*, exit 0, `No known
+	@# vulnerabilities found` — so on the platform every image is built for, torch left the audit
+	@# while the gate stayed green. The `+cpu` build is the same source release as `2.13.0`, which
+	@# is what an advisory is filed against, so the `sed` strips the local segment. And since the
+	@# next local version would skip the same way, a not-found skip is now a failure rather than a
+	@# line in a table: the workspace's own editable members skip under a different reason, and
+	@# are the only skips this export carries.
 	@scratch=$$(mktemp -d); trap 'rm -rf "$$scratch"' EXIT; \
 	$(UV) export --all-packages --all-extras --group build --no-hashes --no-dev \
-	  --format requirements-txt > "$$scratch/requirements.txt"; \
+	  --format requirements-txt \
+	  | sed -E 's/^([A-Za-z0-9._-]+==[^ ;+]+)\+[A-Za-z0-9.]+/\1/' > "$$scratch/requirements.txt"; \
 	report=$$(uvx pip-audit --no-deps --disable-pip $(AUDIT_IGNORE) \
 	  -r "$$scratch/requirements.txt" 2>&1) && rc=0 || rc=$$?; \
 	printf '%s\n' "$$report"; \
+	if grep -q 'Dependency not found on PyPI' <<<"$$report"; then \
+	  echo "deps-audit: a locked package was skipped as not found on PyPI, so it was NOT audited."; \
+	  echo "deps-audit: a local version (+cpu) or a non-PyPI source needs mapping here. Failing."; \
+	  exit 1; \
+	fi; \
 	if [ $$rc -ne 0 ]; then \
 	  if grep -qE '$(AUDIT_FOUND)' <<<"$$report"; then exit $$rc; fi; \
 	  if ! grep -qE '$(AUDIT_UNREACHABLE)' <<<"$$report"; then exit $$rc; fi; \

@@ -70,7 +70,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
@@ -118,7 +118,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
@@ -185,8 +185,9 @@ jobs:
   # `tests/test_delivery.py` gives about `Jenkinsfile`: a written list is wrong by the next server,
   # and wrong in the direction that fails open. On a pull request it is narrowed to the servers the
   # diff touches — every server when the shared inputs (`uv.lock`, the root `pyproject.toml`,
-  # `packages/`) move — because a model image installs ~2.9 GB of torch wheels and costs a runner
-  # most of its disk. The weekly schedule and a manual dispatch build them all.
+  # `packages/`) move — because a model image is still 2-3 GB on CPU torch (measured in
+  # `D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`) and costs a runner that much disk twice over. The
+  # weekly schedule and a manual dispatch build them all.
   #
   # **Narrowing is what hid two broken images, so the rule for widening is two triggers longer.**
   # This job arrived in a pull request that touched `rxnlabel` and `rxnpredict`, so those were the
@@ -269,6 +270,17 @@ jobs:
           --build-arg "CHEMCLAW_REVISION=$REVISION"
           -t "chemclaw-mcp-$SERVER:ci" .
 
+      # The size a pod pulls, printed so a dependency change that moves it is a number in this log
+      # rather than a guess from wheel sizes. `docker image inspect` reports the uncompressed image,
+      # which is what a node's disk holds; it was added to measure the CPU-torch switch for
+      # `rxnlabel` and `rxnpredict` (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`).
+      - name: Report the image's size
+        env:
+          SERVER: ${{ matrix.server }}
+        run: |
+          bytes=$(docker image inspect --format '{{.Size}}' "chemclaw-mcp-${SERVER}:ci")
+          echo "${SERVER}: image size ${bytes} bytes ($((bytes / 1000000)) MB)"
+
       # **Started with no network at all**, which is the fleet's promise stated as a container
       # flag: whatever `/healthz` needs — a corpus, a checkpoint, a constructed model — has to be
       # in the image. The credential env comes out of the manifest, as `Jenkinsfile`'s verify
@@ -319,7 +331,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
 
