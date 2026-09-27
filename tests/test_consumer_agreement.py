@@ -32,6 +32,13 @@ property of a commit. Without one this skips with the reason in the message, and
 pass. What it must never do is *quietly* shrink: a checkout that is present while the module it
 would run is not is a **failure**, because that is a rename this side has to hear about.
 
+**And one lane makes it run before a merge.** `.github/workflows/agreement.yml` shallow-clones the
+consumer's `main`, builds its environment, and runs this file with `CHEMCLAW3_AGREEMENT_REQUIRED`
+set, under which a skip is a failure — on every pull request touching a manifest, a recorded
+surface or a tool module, and nightly. The consumer already runs its half against this fleet's
+`main` on every one of its own runs; what this adds is hearing about a disagreement *before* it
+reaches that `main` (`D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge`).
+
 What the arrangement costs, stated rather than implied. Two things:
 
 - The consumer's suite is the authority on what is compared, so a check deleted there is silently
@@ -54,6 +61,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 import yaml
@@ -81,6 +89,27 @@ CONSUMER_ENV_VARS = ("CHEMCLAW3_REPO", "CHEMCLAW_CORE_REPO")
 AGREEMENT_MODULE = "tests/test_sibling_manifest_agreement.py"
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: Set by `.github/workflows/agreement.yml`, the lane that clones the consumer and builds it. There
+#: the checkout is the point of the job, so a missing one is a broken lane rather than a machine
+#: without a sibling — and a skip would report green on exactly the run meant to be the evidence.
+REQUIRED_ENV = "CHEMCLAW3_AGREEMENT_REQUIRED"
+
+#: What a failure tells the author to change, in the consumer. Paths in *that* repository, named
+#: here because the author of a pull request in this one is the reader who has to open them.
+CONSUMER_FILES_TO_UPDATE = (
+    "src/chemclaw/connectors/<bundle>/connector.yaml — the consumer's copy of a bundle both trees "
+    "declare (tools, read_only, state_changing, auth.token_env, and every bundle-level key)",
+    "tests/test_sibling_manifest_agreement.py — `_ARGUED_DIVERGENCES`, and the per-seam declined "
+    "tables for the `calc` and `rxnlabel` backends (`servers/*/tool-surface.json` here)",
+)
+
+
+def skip_unless_required(message: str) -> NoReturn:
+    """Skip with `message` — or fail with it, where the lane exists to run this check."""
+    if os.environ.get(REQUIRED_ENV):
+        pytest.fail(f"{REQUIRED_ENV} is set, so a skip is a failure: {message}")
+    pytest.skip(message)
 
 
 def consumer_repo() -> tuple[Path | None, str]:
@@ -184,6 +213,24 @@ def test_an_inert_consumer_run_is_not_agreement() -> None:
         assert inert_outcome(green_but_empty) is not None, green_but_empty
 
 
+def test_a_missing_consumer_fails_where_the_lane_requires_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both directions of `skip_unless_required`, because the lane's whole claim rests on the first.
+
+    With `CHEMCLAW3_AGREEMENT_REQUIRED` set, a missing checkout must *fail*: that variable is set
+    only by the job that clones and builds the consumer, so a skip there means the clone or the
+    build did not happen and the job would otherwise report green having compared nothing. Without
+    it, the same call must skip, or every laptop without a sibling checkout goes red.
+    """
+    monkeypatch.setenv(REQUIRED_ENV, "1")
+    with pytest.raises(pytest.fail.Exception, match=REQUIRED_ENV):
+        skip_unless_required("no checkout")
+    monkeypatch.delenv(REQUIRED_ENV)
+    with pytest.raises(pytest.skip.Exception, match="no checkout"):
+        skip_unless_required("no checkout")
+
+
 def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None:
     """Run `Chemclaw3`'s agreement suite against *this* checkout, and fail on its failure.
 
@@ -204,7 +251,7 @@ def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None
     """
     interpreter, reason = consumer_python()
     if interpreter is None:
-        pytest.skip(
+        skip_unless_required(
             f"{CONSUMER_SKIP} the consumer's agreement suite was NOT run: {reason}. Nothing in "
             "this run is evidence about whether Chemclaw3 still reads the surface this tree "
             "declares."
@@ -226,8 +273,14 @@ def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None
         timeout=900,
     )
     output = f"{completed.stdout}\n{completed.stderr}"
+    update = "".join(f"\n  - {path}" for path in CONSUMER_FILES_TO_UPDATE)
     assert completed.returncode == 0, (
-        f"Chemclaw3 no longer agrees with the surface this tree declares.\n{output[-4000:]}"
+        f"Chemclaw3 no longer agrees with the surface this tree declares.\n{output[-4000:]}\n\n"
+        "If this change is meant — a tool added, renamed or reclassified here — the consumer has "
+        f"to follow, in Chemclaw3:{update}\n"
+        "Open that pull request, and label this one `agreement:core-follows` so the agreement "
+        "lane reports without blocking; the consumer's own CI stays red on this fleet's `main` "
+        "until it lands (D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge)."
     )
     inert = inert_outcome(output)
     assert inert is None, (
@@ -444,7 +497,7 @@ def test_the_stand_in_manifest_model_agrees_with_the_model_that_reads_a_manifest
     """
     interpreter, reason = consumer_python()
     if interpreter is None:
-        pytest.skip(
+        skip_unless_required(
             f"{CONSUMER_SKIP} the stand-in manifest model was NOT checked against the model that "
             f"reads a manifest: {reason}. Nothing in this run is evidence about whether they agree."
         )
