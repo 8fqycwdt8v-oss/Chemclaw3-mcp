@@ -88,6 +88,7 @@ through `asyncio.shield` and releasing on *its* completion rather than on the aw
 from __future__ import annotations
 
 from mcp_server_kit.limits import Admission as KitAdmission
+from mcp_server_kit.limits import AtCapacityError, at_capacity_marker
 
 __all__ = ["ADMISSION_MARKER", "AT_CAPACITY_MARKER", "Admission", "AtCapacityError"]
 
@@ -112,17 +113,7 @@ ADMISSION_MARKER = "__admission_gated__"
 # so a reword fails the test in the repository that made the change and nothing at all in the other
 # one. Nothing here detects drift; what the two tests give is that the change cannot be silent
 # where it is made, and the reword has to be carried across by whoever makes it.
-AT_CAPACITY_MARKER = "[calc-at-capacity]"
-
-
-class AtCapacityError(ValueError):
-    """This pod is full; the identical call may well succeed once a calculation finishes.
-
-    A `ValueError` so `mcp_server_kit` still treats it as a deliberately worded, caller-safe
-    refusal rather than replacing it with an internal-error notice — the family is the contract,
-    and narrowing it here would hide the message from the caller entirely. The subclass exists so
-    this server's own code and tests can catch saturation precisely instead of matching prose.
-    """
+AT_CAPACITY_MARKER = at_capacity_marker("calc")
 
 
 class Admission(KitAdmission):
@@ -139,6 +130,7 @@ class Admission(KitAdmission):
     """
 
     unit = "calculation"
+    server = "calc"
 
     def acquire(self, what: str, cost: int = 1) -> int:
         """Take `cost` slots, or refuse in terms the caller can act on.
@@ -162,8 +154,7 @@ class Admission(KitAdmission):
         """
         taken = self.take(cost)
         if taken.charged is None:
-            raise AtCapacityError(
-                f"{AT_CAPACITY_MARKER} "
+            raise self.refuse(
                 f"this server has {taken.free} of its {self.limit} calculation slots free and "
                 f"{what} needs {min(max(cost, 1), self.limit)}, so it was refused rather than "
                 "queued: a slot is one core, the calculations here are seconds to hours of CPU, "

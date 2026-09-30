@@ -30,6 +30,9 @@ from __future__ import annotations
 from prometheus_client import Counter, Gauge, Histogram
 
 __all__ = [
+    "ADMISSION_CEILING",
+    "ADMISSION_IN_FLIGHT",
+    "ADMISSION_REFUSED",
     "BUILD_INFO",
     "EGRESS_ALLOWED_HOSTS",
     "EGRESS_GUARD_ARMED",
@@ -116,6 +119,30 @@ SESSIONS_CEILING = Gauge(
 SESSIONS_REFUSED = Counter(
     "chemclaw_mcp_sessions_refused_total",
     "Session handshakes refused because the pod was already holding its ceiling.",
+    ("server",),
+)
+
+# The admission gate's occupancy, which is the signal an autoscaler should read on this fleet and
+# CPU is not: a `calc` pod holding all four slots on in-process xTB draws 1.37 cores, so a CPU
+# target reads a *full* pod as a third busy. `in_flight / ceiling` is exactly "how full", in the
+# unit the gate refuses in — a slot is a core — and the refusal counter is the lagging half that
+# says callers are already being turned away. Labelled by server only, for the rule this module
+# opens with: a slot count names no caller.
+ADMISSION_IN_FLIGHT = Gauge(
+    "chemclaw_mcp_admission_in_flight",
+    "Admission slots held right now by admitted work.",
+    ("server",),
+)
+
+ADMISSION_CEILING = Gauge(
+    "chemclaw_mcp_admission_ceiling",
+    "The configured admission ceiling, in slots.",
+    ("server",),
+)
+
+ADMISSION_REFUSED = Counter(
+    "chemclaw_mcp_admission_refused_total",
+    "Calls refused at admission because the pod's slots were all held.",
     ("server",),
 )
 

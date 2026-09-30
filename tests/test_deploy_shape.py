@@ -410,3 +410,64 @@ def test_the_scrape_hole_admits_the_namespace_this_platform_runs_prometheus_in(
         f"{sorted(SCRAPER_NAMESPACES)}. A missing one is a scrape that is dropped and reads as a "
         "server nobody calls; an extra one is a namespace nobody argued for."
     )
+
+
+def gated_server_dirs() -> list[Path]:
+    """Every server with an admission gate — the ones whose occupancy is a scaling signal.
+
+    Derived from the gate's module on disk rather than listed, so a seventh gated server owes the
+    KEDA alternative the day its `engine/admission.py` exists.
+    """
+    return [path for path in server_dirs() if list(path.glob("src/*/engine/admission.py"))]
+
+
+def _scaled_object(server: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ScaledObject and its TriggerAuthentication, in file order."""
+    docs = list(yaml.safe_load_all((server / "deploy" / "keda" / "scaledobject.yaml").read_text()))
+    kinds = [doc["kind"] for doc in docs]
+    assert kinds == ["ScaledObject", "TriggerAuthentication"], f"{server.name}: {kinds}"
+    return docs[0], docs[1]
+
+
+@pytest.mark.parametrize("server", gated_server_dirs(), ids=lambda path: path.name)
+def test_the_keda_alternative_is_the_hpa_with_a_better_signal(server: Path) -> None:
+    """Swapping the CPU HPA for the ScaledObject changes the signal and nothing else.
+
+    Same target, same floor, same ceiling, same behaviour and the same CPU target as a second
+    trigger — so adopting KEDA cannot quietly move a bound the rest of this file holds. The first
+    trigger has to read *this* server's admission occupancy: a query copied from another server
+    would scale this pod on a neighbour's load and report no error.
+    """
+    scaled, auth = _scaled_object(server)
+    hpa = _load(server / "deploy" / "hpa.yaml")["spec"]
+    spec = scaled["spec"]
+    assert spec["scaleTargetRef"]["name"] == _deployment(server)["metadata"]["name"]
+    assert spec["minReplicaCount"] == hpa["minReplicas"]
+    assert spec["maxReplicaCount"] == hpa["maxReplicas"]
+    assert spec["advanced"]["horizontalPodAutoscalerConfig"]["behavior"] == hpa["behavior"]
+
+    prometheus, cpu = spec["triggers"]
+    assert prometheus["type"] == "prometheus"
+    query = prometheus["metadata"]["query"]
+    for metric in ("chemclaw_mcp_admission_in_flight", "chemclaw_mcp_admission_ceiling"):
+        assert f'{metric}{{server="{server.name}"}}' in query, f"{server.name}: {query!r}"
+    assert prometheus["authenticationRef"]["name"] == auth["metadata"]["name"]
+    assert cpu["type"] == "cpu"
+    assert (
+        int(cpu["metadata"]["value"])
+        == (hpa["metrics"][0]["resource"]["target"]["averageUtilization"])
+    )
+
+
+def test_the_keda_alternative_is_not_applied_with_the_rest_of_deploy() -> None:
+    """Two autoscalers on one Deployment fight, so the ScaledObject must be opt-in by path.
+
+    `oc apply -f servers/<name>/deploy/` does not recurse, which is the whole mechanism: were the
+    ScaledObject beside `hpa.yaml`, the ordinary apply would install both.
+    """
+    stray = sorted(
+        str(path.relative_to(ROOT))
+        for path in SERVERS.glob("*/deploy/*.yaml")
+        if "ScaledObject" in path.read_text(encoding="utf-8")
+    )
+    assert not stray, f"a ScaledObject beside hpa.yaml is applied with it: {stray}"

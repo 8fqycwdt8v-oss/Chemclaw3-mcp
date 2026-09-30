@@ -53,7 +53,9 @@ import os
 import resource
 import threading
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, NamedTuple, TypeVar
+from typing import Any, ClassVar, NamedTuple, TypeVar
+
+from mcp_server_kit.metrics import ADMISSION_CEILING, ADMISSION_IN_FLIGHT, ADMISSION_REFUSED
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,9 @@ __all__ = [
     "MAX_MOLECULE_ATOMS",
     "MAX_SMILES_CHARS",
     "Admission",
+    "AtCapacityError",
     "Slots",
+    "at_capacity_marker",
     "atom_count_error",
     "echo",
     "effective_bounds",
@@ -500,6 +504,31 @@ class Slots(NamedTuple):
     free: int
 
 
+def at_capacity_marker(server: str) -> str:
+    """The token that opens every full-pod refusal from `server`: `[<server>-at-capacity]`.
+
+    A refused tool call crosses MCP as one text block with `isError` set and nothing else — no error
+    code, no structured payload — so the head of the message is the only channel a caller has for
+    telling "this pod is full, the identical call will succeed shortly" from "this input is wrong".
+    `calc` found that first and minted `[calc-at-capacity]`; every other gated server refused
+    with a plain `ValueError`, so a full `rxnpredict` or `pyexec` pod read to Chemclaw3 as bad
+    input and was never retried. One format for the fleet is what lets a caller queue and retry
+    *any* heavy tool rather than one: Chemclaw3 matches `[<name>-at-capacity]` at the head of the
+    message, and `calc`'s existing token is this function's value for `"calc"`, so nothing already
+    matching it changes.
+    """
+    return f"[{server}-at-capacity]"
+
+
+class AtCapacityError(ValueError):
+    """This pod is full; the identical call may well succeed once admitted work finishes.
+
+    A `ValueError` so `connector_app` still passes it to the caller verbatim as a deliberately
+    worded refusal rather than replacing it with an internal-error notice. Built by
+    `Admission.refuse`, which is what puts the marker at the head of the message.
+    """
+
+
 class Admission:
     """A ceiling on how much of a server may run at once: the counter, the clamp and the lock.
 
@@ -526,10 +555,12 @@ class Admission:
     A server subclasses this and adds the verb its call sites use:
 
         class Admission(mcp_server_kit.limits.Admission):
+            server = "mine"
+
             def acquire(self, what: str, cost: int = 1) -> int:
                 taken = self.take(cost)
                 if taken.charged is None:
-                    raise MyError(f"... {taken.free} of {self.limit} ...")
+                    raise self.refuse(f"... {taken.free} of {self.limit} ...")
                 return taken.charged
     """
 
@@ -539,13 +570,41 @@ class Admission:
     #: paragraph, and so not worth an `__init__` override.
     unit = "call"
 
-    def __init__(self, limit: int) -> None:
-        """Args: limit: the most slots that may be held at once. Must be at least one."""
+    #: The server this gate belongs to: the `server` label on the admission metrics and the name in
+    #: its at-capacity marker. A subclass sets it once, as it sets `unit`.
+    server: ClassVar[str] = ""
+
+    def __init__(self, limit: int, *, server: str | None = None) -> None:
+        """Args:
+        limit: the most slots that may be held at once. Must be at least one.
+        server: overrides the class's `server`; one of the two must name it, because an unnamed
+            gate would publish its occupancy under an empty label and refuse with a marker no
+            caller matches.
+        """
         if limit < 1:
             raise ValueError(f"an admission ceiling of {limit} would refuse every {self.unit}")
+        name = server or self.server
+        if not name:
+            raise ValueError("an admission gate must name its server")
+        self._name = name
         self._limit = limit
         self._lock = threading.Lock()
         self._in_flight = 0
+        ADMISSION_CEILING.labels(name).set(limit)
+        ADMISSION_IN_FLIGHT.labels(name).set(0)
+
+    @property
+    def marker(self) -> str:
+        """This gate's at-capacity token — see `at_capacity_marker`."""
+        return at_capacity_marker(self._name)
+
+    def refuse(self, sentence: str) -> AtCapacityError:
+        """The full-pod refusal: the server's own sentence, led by the fleet's marker.
+
+        Returned rather than raised, like `smiles_length_error`, so the `raise` stays at the call
+        site that owns the wording.
+        """
+        return AtCapacityError(f"{self.marker} {sentence}")
 
     @property
     def limit(self) -> int:
@@ -575,14 +634,17 @@ class Admission:
         with self._lock:
             free = self._limit - self._in_flight
             if charge > free:
+                ADMISSION_REFUSED.labels(self._name).inc()
                 return Slots(charged=None, free=free)
             self._in_flight += charge
+            ADMISSION_IN_FLIGHT.labels(self._name).set(self._in_flight)
             return Slots(charged=charge, free=free - charge)
 
     def release(self, cost: int = 1) -> None:
         """Give `cost` slots back. Never below zero, so one double release cannot open the gate."""
         with self._lock:
             self._in_flight = max(0, self._in_flight - cost)
+            ADMISSION_IN_FLIGHT.labels(self._name).set(self._in_flight)
 
     async def hold(self, work: Awaitable[_T], charged: int) -> _T:
         """Await admitted work, giving its slots back when the *work* ends, not its awaiter.

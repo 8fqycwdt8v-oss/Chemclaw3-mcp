@@ -88,6 +88,7 @@ class Admission(KitAdmission):
     """
 
     unit = "batch"
+    server = "rxnlabel"
 
     def acquire(self, what: str, cost: int = 1) -> int:
         """Take `cost` slots, or refuse in terms the caller can act on.
@@ -104,13 +105,13 @@ class Admission(KitAdmission):
             that is not always `cost`.
 
         Raises:
-            ValueError: the budget does not have room. Worded for whoever receives it: Chemclaw3's
+            AtCapacityError: the budget does not have room. Worded for its receiver: Chemclaw3's
                 labelling drain, which can back off and re-send the identical batch, or an agent
                 reading a tool error.
         """
         taken = self.take(cost)
         if taken.charged is None:
-            raise ValueError(
+            raise self.refuse(
                 f"this server has {taken.free} of its {self.limit} labelling slots free and "
                 f"{what} needs {min(max(cost, 1), self.limit)}, so it was refused rather than "
                 "queued: a slot is one core, a maximal batch is seconds to minutes of CPU, and a "
