@@ -201,6 +201,8 @@ class HttpEndpoint(BaseModel):
     def _queues_only_tools_it_serves(self) -> Self:
         """Refuse a queued name the endpoint does not serve, as the consumer does."""
         if self.queued is not None:
+            if len(set(self.queued.tools)) != len(self.queued.tools):
+                raise ValueError("`queued.tools` lists a tool more than once")
             unserved = sorted(set(self.queued.tools) - set(self.tools))
             if unserved:
                 raise ValueError(

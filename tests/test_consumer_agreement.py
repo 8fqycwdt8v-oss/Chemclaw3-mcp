@@ -367,6 +367,11 @@ def _manifest(**overrides: object) -> dict[str, object]:
     return {"name": "probe", "description": "a probe manifest", "endpoint": _ENDPOINT, **overrides}
 
 
+def _queued(**queued: object) -> dict[str, object]:
+    """A minimal manifest whose endpoint carries `queued` (inline wait 45 s unless overridden)."""
+    return _manifest(endpoint={**_ENDPOINT, "queued": {"inline_wait_seconds": 45, **queued}})
+
+
 #: `(label, document, verdict here, verdict over there)`. Where the two columns differ, the reason
 #: is one of the deliberate differences `ConnectorManifest`'s docstring lists and nothing else; the
 #: rows that used to differ *by accident* are the reason this table exists. The verdicts are written
@@ -428,6 +433,14 @@ _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
         True,
     ),
     ("no endpoint at all", {"name": "probe", "description": "d", "jobs": []}, False, False),
+    # `endpoint.queued`: the consumer routes these tools through its interactive queue, and every
+    # refusal it makes of the block has to be one this stand-in makes too.
+    ("a queued block", _queued(tools=["a_tool"]), True, True),
+    ("a queued name twice", _queued(tools=["a_tool", "a_tool"]), False, False),
+    ("a queued name not served", _queued(tools=["other_tool"]), False, False),
+    ("an empty queued list", _queued(tools=[]), False, False),
+    ("a zero inline wait", _queued(tools=["a_tool"], inline_wait_seconds=0), False, False),
+    ("an invented queued key", _queued(tools=["a_tool"], nonsense=1), False, False),
 )
 
 #: Read each document on the consumer's own interpreter and report accept/refuse, nothing else.

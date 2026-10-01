@@ -5140,16 +5140,28 @@ def _admission_gated_tools(server: Path) -> set[str]:
     return gated
 
 
-def _agent_facing_gated_servers() -> list[str]:
-    """Every server in `manifests/` (the ones Chemclaw3's agent can call) that has a gate."""
-    return sorted(
-        path.parent.name
-        for path in (ROOT / "manifests").glob("*/connector.yaml")
-        if _admission_gated_tools(SERVERS / path.parent.name)
-    )
+def _agent_facing_servers() -> list[str]:
+    """Every server in `manifests/` — the ones Chemclaw3's agent can call, gated or not."""
+    return sorted(path.parent.name for path in (ROOT / "manifests").glob("*/connector.yaml"))
 
 
-@pytest.mark.parametrize("name", _agent_facing_gated_servers())
+def test_the_gate_reader_finds_every_gated_server() -> None:
+    """`_admission_gated_tools` sees a gate wherever a server ships `engine/admission.py`.
+
+    Without this, a renamed decorator would empty every gated set at once, and the test below
+    would pass on every server by comparing an empty manifest list with an empty code list.
+    """
+    shipping = {
+        name
+        for name in _agent_facing_servers()
+        if any((SERVERS / name).glob("src/*/engine/admission.py"))
+    }
+    read = {name for name in _agent_facing_servers() if _admission_gated_tools(SERVERS / name)}
+    assert shipping, "no agent-facing server ships an admission gate; the reader is looking wrong"
+    assert read == shipping, f"gate shipped but not read: {sorted(shipping - read)}"
+
+
+@pytest.mark.parametrize("name", _agent_facing_servers())
 def test_a_server_queues_exactly_what_it_gates(name: str) -> None:
     """The manifest's `queued:` set is the server's admission-gated set, in both directions.
 
