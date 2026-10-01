@@ -407,9 +407,10 @@ async def test_a_time_budget_stop_carries_a_marker_the_caller_can_classify(
 
     The inline budget depends on what else the pod is running, so the same relaxation can finish
     idle and be stopped busy. Without a marker Chemclaw3 read it as an ordinary refusal: a screen
-    listed the item beside a structure that would not embed, and the ranking told the chemist to
-    remove or correct the form — the wrong remedy for a clock. Driven over the real transport, and
-    asserted on the literal rather than the constant, for the reason the capacity test gives.
+    listed the item beside a structure that would not embed, and a ranking could not say whether a
+    form needed correcting or more time. Driven over the real transport, and asserted on the
+    literal rather than the constant, for the reason the capacity test gives — and at the *head*
+    behind the transport's own prefix, because the head is the only position Chemclaw3 matches.
     """
     from chemclaw_mcp_calc.engine.config import settings
 
@@ -422,7 +423,7 @@ async def test_a_time_budget_stop_carries_a_marker_the_caller_can_classify(
         )
     assert result.isError is True
     content = str(result.content)
-    assert "[calc-time-budget]" in content
+    assert "Error executing tool relax_structure: [calc-time-budget] " in content
     assert "[calc-at-capacity]" not in content
     assert "exceeded this server's inline budget" in content, "the human half is still there"
 

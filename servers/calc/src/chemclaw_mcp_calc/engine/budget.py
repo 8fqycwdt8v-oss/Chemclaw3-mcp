@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 # **Why a stop needs a name of its own.** Wall clock depends on what else the pod is running, so the
 # same calculation can finish on an idle pod and be stopped on a busy one. Read as an ordinary
 # refusal, a caller reports it as a property of the molecule — and a screen that answers per item
-# lists it beside a structure that would not embed, with the remedy "remove or correct it", which
-# is the wrong advice for a clock.
+# lists it beside a structure that would not embed, with no way to say which of the two remedies
+# (correct the input, or give the calculation more time) applies to it.
 TIME_BUDGET_MARKER = "[calc-time-budget]"
 
 
