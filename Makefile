@@ -264,6 +264,18 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     this file: they are enabled on this repository and unaffected by
 #                     `--ignore-vuln`, so a patched `accelerate` also becomes a security-update pull
 #                     request here.
+#   CVE-2026-80047    transformers 4.57.6, **no fix in any release — the advisory's range runs
+#                     4.57.0 through 5.16.1**, so no bump, minor or major, reaches it. `load_custom_
+#                     generate()` writes a remotely fetched `custom_generate/generate.py` into
+#                     `~/.cache/huggingface/modules` *before* the `trust_remote_code` check; execution
+#                     stays gated, the file write does not. Unreachable here for the reasons the four
+#                     transformers entries above give, and one more that needs none of them: **nothing
+#                     calls it** — `load_custom_generate`, `custom_generate` and `trust_remote_code`
+#                     appear nowhere in `servers/` or `packages/` (grep, 2026-10-01). Were it called,
+#                     the fetch it depends on is refused by `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`,
+#                     the egress guard and the default-deny NetworkPolicy, and the cache it writes to
+#                     sits on a `readOnlyRootFilesystem: true` pod. The row in `pyproject.toml` pins this
+#                     to `transformers==4.57.6`, so the next bump re-opens this text.
 # Derived, so the ids exist once. An extraction that fails yields an empty list, which makes the
 # audit *stricter* rather than laxer — the only direction a build-time failure may take a gate.
 AUDIT_IGNORE := $(shell python3 -c 'import tomllib; print(" ".join("--ignore-vuln " + r["id"] for r in tomllib.load(open("pyproject.toml", "rb"))["tool"]["chemclaw"]["deps-audit"]["suppressions"]))')
