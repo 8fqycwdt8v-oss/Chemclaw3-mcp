@@ -38,7 +38,7 @@ import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 # `[testing]`-extra only: this module drives a *running* server, and a serving image never
 # imports it. `TID253` is the belt over `no_egress.network_imports`, whose per-server scan does
@@ -48,7 +48,7 @@ import yaml
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 __all__ = [
     "CONNECTOR_NAME_PATTERN",
@@ -141,6 +141,22 @@ class BearerAuth(BaseModel):
     token_env: str = Field(min_length=1)
 
 
+class QueuedDispatch(BaseModel):
+    """`endpoint.queued:` — the tools Chemclaw3 calls through a queue rather than directly.
+
+    Chemclaw3's `chemclaw.connectors.manifest.QueuedDispatch`, mirrored for the reason this module
+    mirrors anything: that model is `extra="forbid"`, so a key spelled differently here would abort
+    the consumer's startup. Which tools belong in it is this fleet's to say — a server gates its
+    heavy calls behind an admission ceiling, and `tests/test_fleet.py` holds the queued set to the
+    gated set — because a full pod is then a wait in the queue instead of a refusal.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tools: list[str] = Field(min_length=1)
+    inline_wait_seconds: float = Field(gt=0)
+
+
 class HttpEndpoint(BaseModel):
     """The `endpoint:` block, modelled the way the repository that reads it models it.
 
@@ -179,6 +195,18 @@ class HttpEndpoint(BaseModel):
     read_only: list[str] = Field(default_factory=list)
     state_changing: list[str] = Field(default_factory=list)
     knowledge_read: list[str] = Field(default_factory=list)
+    queued: QueuedDispatch | None = None
+
+    @model_validator(mode="after")
+    def _queues_only_tools_it_serves(self) -> Self:
+        """Refuse a queued name the endpoint does not serve, as the consumer does."""
+        if self.queued is not None:
+            unserved = sorted(set(self.queued.tools) - set(self.tools))
+            if unserved:
+                raise ValueError(
+                    f"`queued.tools` names tool(s) {unserved} the endpoint does not serve"
+                )
+        return self
 
 
 #: The cap `Chemclaw3` puts on every manifest text field

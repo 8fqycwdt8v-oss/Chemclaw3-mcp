@@ -91,3 +91,15 @@ endpoint:
     # group) to a set of SMILES, like the species enumerations above, and `read_only` for their
     # reason — what costs something is ranking the set, which is `calc`'s `rank_species`.
     - enumerate_substitutions
+  # The seven calls this server gates behind its admission ceiling, queued by Chemclaw3 rather than
+  # refused when the pod is full — exactly the gated set, which `tests/test_fleet.py` holds.
+  queued:
+    inline_wait_seconds: 45
+    tools:
+      - render_structure
+      - describe_topology
+      - enumerate_tautomers
+      - enumerate_protonation_states
+      - enumerate_stereoisomers
+      - enumerate_degradants
+      - enumerate_substitutions

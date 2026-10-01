@@ -5119,3 +5119,49 @@ def test_a_full_pod_says_so_in_the_fleet_s_one_format(name: str) -> None:
     with pytest.raises(AtCapacityError) as refused:
         gate.acquire("probe")
     assert str(refused.value).startswith(f"{at_capacity_marker(name)} ")
+
+
+def _admission_gated_tools(server: Path) -> set[str]:
+    """The tools a server's `tools.py` decorates with its admission gate, read from the tree.
+
+    An AST read rather than an import: the gate's decorator is `_admitted` — or, in `rxnpredict`,
+    a cost-specific `_admitted_<kind>` — in every gated server (the coverage tests beside each one
+    hold that), and importing `rxnpredict`'s tools would load its predictor stack to answer a
+    question about decorators.
+    """
+    gated: set[str] = set()
+    for path in server.glob("src/*/tools.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and any(
+                isinstance(d, ast.Name) and d.id.startswith("_admitted")
+                for d in node.decorator_list
+            ):
+                gated.add(node.name)
+    return gated
+
+
+def _agent_facing_gated_servers() -> list[str]:
+    """Every server in `manifests/` (the ones Chemclaw3's agent can call) that has a gate."""
+    return sorted(
+        path.parent.name
+        for path in (ROOT / "manifests").glob("*/connector.yaml")
+        if _admission_gated_tools(SERVERS / path.parent.name)
+    )
+
+
+@pytest.mark.parametrize("name", _agent_facing_gated_servers())
+def test_a_server_queues_exactly_what_it_gates(name: str) -> None:
+    """The manifest's `queued:` set is the server's admission-gated set, in both directions.
+
+    A gated tool left off the list is refused by a full pod straight into a chemist's turn; a tool
+    on it that is not gated pays ~80 ms of broker round trip for a slot nothing would ever deny.
+    Both are a drift between two declarations of one fact — what is heavy on this server — so the
+    manifest is held to the code that decides it.
+    """
+    manifest = yaml.safe_load((ROOT / "manifests" / name / "connector.yaml").read_text())
+    queued = set(((manifest.get("endpoint") or {}).get("queued") or {}).get("tools") or [])
+    gated = _admission_gated_tools(SERVERS / name)
+    assert queued == gated, (
+        f"{name}: missing from queued: {sorted(gated - queued)}, "
+        f"queued but not gated: {sorted(queued - gated)}"
+    )
