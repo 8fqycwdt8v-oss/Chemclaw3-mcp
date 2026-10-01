@@ -5119,3 +5119,61 @@ def test_a_full_pod_says_so_in_the_fleet_s_one_format(name: str) -> None:
     with pytest.raises(AtCapacityError) as refused:
         gate.acquire("probe")
     assert str(refused.value).startswith(f"{at_capacity_marker(name)} ")
+
+
+def _admission_gated_tools(server: Path) -> set[str]:
+    """The tools a server's `tools.py` decorates with its admission gate, read from the tree.
+
+    An AST read rather than an import: the gate's decorator is `_admitted` — or, in `rxnpredict`,
+    a cost-specific `_admitted_<kind>` — in every gated server (the coverage tests beside each one
+    hold that), and importing `rxnpredict`'s tools would load its predictor stack to answer a
+    question about decorators.
+    """
+    gated: set[str] = set()
+    for path in server.glob("src/*/tools.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and any(
+                isinstance(d, ast.Name) and d.id.startswith("_admitted")
+                for d in node.decorator_list
+            ):
+                gated.add(node.name)
+    return gated
+
+
+def _agent_facing_servers() -> list[str]:
+    """Every server in `manifests/` — the ones Chemclaw3's agent can call, gated or not."""
+    return sorted(path.parent.name for path in (ROOT / "manifests").glob("*/connector.yaml"))
+
+
+def test_the_gate_reader_finds_every_gated_server() -> None:
+    """`_admission_gated_tools` sees a gate wherever a server ships `engine/admission.py`.
+
+    Without this, a renamed decorator would empty every gated set at once, and the test below
+    would pass on every server by comparing an empty manifest list with an empty code list.
+    """
+    shipping = {
+        name
+        for name in _agent_facing_servers()
+        if any((SERVERS / name).glob("src/*/engine/admission.py"))
+    }
+    read = {name for name in _agent_facing_servers() if _admission_gated_tools(SERVERS / name)}
+    assert shipping, "no agent-facing server ships an admission gate; the reader is looking wrong"
+    assert read == shipping, f"gate shipped but not read: {sorted(shipping - read)}"
+
+
+@pytest.mark.parametrize("name", _agent_facing_servers())
+def test_a_server_queues_exactly_what_it_gates(name: str) -> None:
+    """The manifest's `queued:` set is the server's admission-gated set, in both directions.
+
+    A gated tool left off the list is refused by a full pod straight into a chemist's turn; a tool
+    on it that is not gated pays ~80 ms of broker round trip for a slot nothing would ever deny.
+    Both are a drift between two declarations of one fact — what is heavy on this server — so the
+    manifest is held to the code that decides it.
+    """
+    manifest = yaml.safe_load((ROOT / "manifests" / name / "connector.yaml").read_text())
+    queued = set(((manifest.get("endpoint") or {}).get("queued") or {}).get("tools") or [])
+    gated = _admission_gated_tools(SERVERS / name)
+    assert queued == gated, (
+        f"{name}: missing from queued: {sorted(gated - queued)}, "
+        f"queued but not gated: {sorted(queued - gated)}"
+    )

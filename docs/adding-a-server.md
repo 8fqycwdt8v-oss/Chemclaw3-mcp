@@ -78,6 +78,12 @@ variance between servers should be in what they compute, not in how they are sha
      ceiling after all. See
      `D-2026-09-15-the-eighth-server-arrived-with-the-shape-the-backlog-predicted`.
 
+     **What you gate, the manifest queues.** A server Chemclaw3's agent calls (one in `manifests/`)
+     lists its gated tools under `endpoint.queued:`, so a full pod becomes a short wait in
+     Chemclaw3's queue rather than a refusal in a chemist's turn — and refuses with
+     `Admission.refuse(...)`, whose `[<server>-at-capacity]` head is what that queue retries on.
+     `tests/test_fleet.py::test_a_server_queues_exactly_what_it_gates` holds the two lists equal.
+
 5. **You do not write a ceiling on sessions.** `mcp_server_kit` bounds those for every server at
    `MCP_MAX_SESSIONS`, because a session is the transport's object rather than a capability's: it
    costs the same measured 56.6 kB whatever the server serves, and no tool body can see it. Nothing
