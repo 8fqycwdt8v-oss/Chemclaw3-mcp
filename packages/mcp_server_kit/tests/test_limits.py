@@ -77,7 +77,7 @@ def test_a_cost_above_the_ceiling_takes_the_pod_exclusively_rather_than_being_un
     Clamping to `limit` admits it alone instead, which is the honest reading of "this one call is
     the pod's whole capacity".
     """
-    budget = limits.Admission(4)
+    budget = limits.Admission(4, server="test")
     taken = budget.take(cost=99)
     assert taken.charged == 4
     assert budget.in_flight == 4
@@ -86,7 +86,7 @@ def test_a_cost_above_the_ceiling_takes_the_pod_exclusively_rather_than_being_un
 
 def test_a_cost_of_zero_is_charged_one_so_nothing_runs_uncounted() -> None:
     """The clamp's lower half. A zero cost would make a tool invisible to its own ceiling."""
-    budget = limits.Admission(2)
+    budget = limits.Admission(2, server="test")
     assert budget.take(cost=0).charged == 1
     assert budget.in_flight == 1
 
@@ -98,7 +98,7 @@ def test_the_free_count_is_taken_under_the_lock_with_the_decision() -> None:
     read, another call can finish, and the message would name a capacity that existed only after
     the request it is explaining was turned away.
     """
-    budget = limits.Admission(3)
+    budget = limits.Admission(3, server="test")
     budget.take(cost=2)
     refused = budget.take(cost=2)
     assert refused.charged is None
@@ -107,7 +107,7 @@ def test_the_free_count_is_taken_under_the_lock_with_the_decision() -> None:
 
 def test_a_double_release_cannot_open_the_gate() -> None:
     """The floor at zero. Without it, releasing more than was taken mints slots out of nothing."""
-    budget = limits.Admission(2)
+    budget = limits.Admission(2, server="test")
     budget.take()
     budget.release()
     budget.release()
@@ -121,10 +121,11 @@ def test_a_double_release_cannot_open_the_gate() -> None:
 def test_a_ceiling_below_one_is_refused_at_construction_naming_the_server_s_own_noun() -> None:
     """`unit` is the one word each server keeps, so the operator reads their own vocabulary."""
     with pytest.raises(ValueError, match="would refuse every call"):
-        limits.Admission(0)
+        limits.Admission(0, server="test")
 
     class Renders(limits.Admission):
         unit = "depiction"
+        server = "test"
 
     with pytest.raises(ValueError, match="would refuse every depiction"):
         Renders(0)
@@ -140,7 +141,7 @@ def test_nothing_ever_waits() -> None:
     import threading
     import time
 
-    budget = limits.Admission(1)
+    budget = limits.Admission(1, server="test")
     assert budget.take().charged == 1
 
     elapsed: list[float] = []
@@ -165,7 +166,7 @@ def test_concurrent_takers_never_exceed_the_ceiling() -> None:
     """
     import threading
 
-    budget = limits.Admission(4)
+    budget = limits.Admission(4, server="test")
     granted: list[int] = []
     lock = threading.Lock()
     start = threading.Barrier(20)
@@ -195,7 +196,7 @@ def test_hold_releases_the_charge_when_the_work_ends_not_when_its_awaiter_is_can
     import asyncio
     import threading
 
-    budget = limits.Admission(4)
+    budget = limits.Admission(4, server="test")
     gate = threading.Event()
 
     async def scenario() -> tuple[int, int]:
@@ -225,7 +226,7 @@ def test_hold_returns_the_result_and_releases_on_failure_without_an_unretrieved_
     """A result passes through; a raise passes through too and still gives the slot back."""
     import asyncio
 
-    budget = limits.Admission(1)
+    budget = limits.Admission(1, server="test")
 
     async def answer() -> int:
         return 42
@@ -257,7 +258,7 @@ def test_admit_charges_after_the_work_is_built_so_a_malformed_call_costs_nothing
     """
     import asyncio
 
-    budget = limits.Admission(1)
+    budget = limits.Admission(1, server="test")
 
     async def work(x: int) -> int:
         return x
@@ -287,7 +288,7 @@ def test_a_refused_admission_closes_the_work_it_was_handed() -> None:
     import asyncio
     import inspect
 
-    budget = limits.Admission(1)
+    budget = limits.Admission(1, server="test")
 
     async def work() -> None:
         raise AssertionError("refused work ran anyway")
@@ -659,3 +660,51 @@ def test_a_settings_object_is_recorded_under_the_names_its_environment_reads(
     assert recorded["PROBE_ALIASED"] == 3
     assert "CHEMCLAW_PROBE_ENABLED" not in recorded
     assert "CHEMCLAW_PROBE_LABEL" not in recorded
+
+
+def test_an_unnamed_gate_is_refused_at_construction() -> None:
+    """A gate with no server would publish under an empty label and mint a marker nobody matches."""
+    with pytest.raises(ValueError, match="must name its server"):
+        limits.Admission(1)
+
+
+def test_a_full_pod_refusal_leads_with_the_fleet_marker() -> None:
+    """The head of the message is the only channel MCP gives a refusal, so the marker goes first.
+
+    `calc`'s pre-existing token is this format's value for `"calc"`, which is what keeps every
+    caller already matching it unchanged.
+    """
+    budget = limits.Admission(1, server="rxnpredict")
+    refusal = budget.refuse("this pod is full")
+    assert isinstance(refusal, ValueError)
+    assert isinstance(refusal, limits.AtCapacityError)
+    assert str(refusal) == "[rxnpredict-at-capacity] this pod is full"
+    assert limits.at_capacity_marker("calc") == "[calc-at-capacity]"
+
+
+def test_the_admission_gauges_follow_the_gate() -> None:
+    """Occupancy is what an autoscaler reads here, so the gauges must move with every take/release.
+
+    Driven through the real registry rather than the gate's own counter: the property an autoscaler
+    depends on is what `/metrics` says, not what the object believes.
+    """
+    from prometheus_client import REGISTRY
+
+    def sample(name: str) -> float | None:
+        return REGISTRY.get_sample_value(name, {"server": "gauge-probe"})
+
+    budget = limits.Admission(3, server="gauge-probe")
+    refused_before = sample("chemclaw_mcp_admission_refused_total") or 0.0
+    assert sample("chemclaw_mcp_admission_ceiling") == 3
+    assert sample("chemclaw_mcp_admission_in_flight") == 0
+
+    charged = budget.take(2).charged
+    assert charged == 2
+    assert sample("chemclaw_mcp_admission_in_flight") == 2
+
+    assert budget.take(2).charged is None
+    assert sample("chemclaw_mcp_admission_refused_total") == refused_before + 1
+    assert sample("chemclaw_mcp_admission_in_flight") == 2
+
+    budget.release(charged)
+    assert sample("chemclaw_mcp_admission_in_flight") == 0

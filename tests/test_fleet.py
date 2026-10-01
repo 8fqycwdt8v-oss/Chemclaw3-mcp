@@ -5092,3 +5092,30 @@ def test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why() -> None:
             "servers/ghs/README.md does not name GESTIS. The reason its corpus is PubChem LCSS and "
             "ECHA C&L has to travel with the server, or the next contributor reaches for GESTIS"
         )
+
+
+def _gated_servers() -> list[str]:
+    """Every server with an admission gate, from the gate modules on disk."""
+    return sorted(path.parents[3].name for path in SERVERS.glob("*/src/*/engine/admission.py"))
+
+
+@pytest.mark.parametrize("name", _gated_servers())
+def test_a_full_pod_says_so_in_the_fleet_s_one_format(name: str) -> None:
+    """Every gate refuses with `[<its own name>-at-capacity]` at the head of the message.
+
+    That token is the only thing that tells a caller "retry shortly" rather than "your input is
+    wrong", so a server that refuses without it has its full pods read as bad requests and never
+    retried — which is what five of six did before the format moved into the kit. Driven through
+    each server's real `acquire` on a full gate, because the property is what reaches the wire, and
+    a gate named after another server would mint a marker the caller attributes to the wrong pod.
+    """
+    import importlib
+
+    from mcp_server_kit.limits import AtCapacityError, at_capacity_marker
+
+    module = importlib.import_module(f"chemclaw_mcp_{name}.engine.admission")
+    gate = module.Admission(1)
+    assert gate.take().charged == 1
+    with pytest.raises(AtCapacityError) as refused:
+        gate.acquire("probe")
+    assert str(refused.value).startswith(f"{at_capacity_marker(name)} ")

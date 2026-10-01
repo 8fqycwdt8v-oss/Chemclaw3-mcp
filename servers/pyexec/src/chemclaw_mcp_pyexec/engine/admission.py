@@ -73,6 +73,7 @@ class Admission(KitAdmission):
     """
 
     unit = "run"
+    server = "pyexec"
 
     def acquire(self, what: str) -> int:
         """Take a slot, or refuse in terms the caller can act on.
@@ -84,12 +85,12 @@ class Admission(KitAdmission):
             The slot taken, for `Admission.admit` to give back when the work ends.
 
         Raises:
-            ValueError: the ceiling is already reached. Worded for whoever receives it — an agent
+            AtCapacityError: the ceiling is already reached. Worded for its receiver — an agent
                 reading a tool error, which can retry or send a smaller analysis.
         """
         charged = self.take().charged
         if charged is None:
-            raise ValueError(
+            raise self.refuse(
                 f"this server is already running {self.limit} analyses, which is its "
                 f"configured ceiling, so {what} was refused rather than queued: each run is a "
                 "whole core for up to its wall-clock limit, and a queued one would spend that "

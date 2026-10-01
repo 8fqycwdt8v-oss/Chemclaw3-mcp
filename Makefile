@@ -207,6 +207,16 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     so it is a measured migration rather than a lockfile edit — the `uv` updater in
 #                     `.github/dependabot.yml` is what proposes it, and 5.10.0 is further out than
 #                     the 5.0 the three above already wait on rather than a new reason to move.
+#   GHSA-x9r9-c232-4q39  transformers, affected through 5.8.1, no fixed release named
+#                     (CVE-2026-80047 — the spelling the audit reports it under; published
+#                     2026-10-01). `load_custom_generate()` writes a Hub repo's
+#                     `custom_generate/generate.py` into the module cache *before* the
+#                     `trust_remote_code` check, so declining the prompt still leaves the file.
+#                     Unreachable here for the reason the four above are, plus one of its own:
+#                     it needs a *fetch* from an attacker-controlled repository (offline flags,
+#                     default-deny egress, the guard), and nothing in `servers/`, `packages/`
+#                     or `scripts/` calls `load_custom_generate` or passes `trust_remote_code`
+#                     at all — measured with a grep over all three on 2026-10-01.
 #   CVE-2026-69112    accelerate 1.14.0 (PYSEC-2026-3804 — again the spelling the audit reports),
 #                     **no fix released — and 1.15.0 is not one**. Path traversal
 #                     in `load_checkpoint_in_model` / `load_checkpoint_and_dispatch`: a sharded

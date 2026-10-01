@@ -1,0 +1,83 @@
+# Optional: autoscale the `kinetics` server on admission occupancy instead of CPU — through KEDA, which
+# OpenShift ships as the "Custom Metrics Autoscaler" operator. **Not applied by `oc apply -f deploy/`**
+# (a subdirectory), and it must not be: KEDA builds its own HorizontalPodAutoscaler for the
+# Deployment, and two autoscalers on one workload fight. So adopting it is one deliberate swap:
+#
+#   oc delete hpa chemclaw-mcp-kinetics
+#   oc apply -f servers/kinetics/deploy/keda/
+#
+# and reverting is the reverse. `docs/autoscaling.md` has the reasoning; this header has the steps.
+#
+# **The signal is how full the pod is, in the unit its gate refuses in.** `in_flight / ceiling`
+# summed over the pods is "how many pods' worth of slots are busy", so a target of 0.7 per replica
+# means the same thing the CPU HPA's 70% was *meant* to mean — and CPU does not: a `calc` pod holding
+# all four slots on in-process xTB draws 1.37 cores, so a CPU target reads a full pod as a third
+# busy. When every slot is held the quotient is `replicas`, so the desired count is still
+# `replicas / 0.7` and the scale-up keeps going for as long as the pods stay full.
+#
+# The CPU trigger stays as the second signal: KEDA takes the highest recommendation, so a metric the
+# querier cannot serve never blocks a CPU-driven scale-up. Bounds and behaviour are the CPU HPA's,
+# held equal by `tests/test_deploy_shape.py`.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: chemclaw-mcp-kinetics
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-kinetics
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: chemclaw-mcp-kinetics
+  minReplicaCount: 2
+  maxReplicaCount: 4
+  pollingInterval: 15
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+        scaleUp:
+          stabilizationWindowSeconds: 60
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        # OpenShift's user-workload Prometheus, read through the querier's tenancy port — which
+        # answers only for the namespace named below, so set it to the one this server runs in.
+        serverAddress: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+        namespace: chemclaw
+        authModes: bearer
+        query: >-
+          sum(chemclaw_mcp_admission_in_flight{server="kinetics"})
+          / max(chemclaw_mcp_admission_ceiling{server="kinetics"})
+        threshold: "0.7"
+        # No sample (a fresh install before the first scrape) reads as idle rather than an error.
+        ignoreNullValues: "true"
+      authenticationRef:
+        name: chemclaw-mcp-kinetics-prometheus
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: "70"
+---
+# The credential KEDA presents to the querier: a ServiceAccount token with `cluster-monitoring-view`
+# (or a namespace `view` role on the tenancy port). The Secret is the operator's to create — this
+# repository ships no credential — under the name below, with the token in `token` and the service
+# CA in `ca.crt`.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: chemclaw-mcp-kinetics-prometheus
+  labels:
+    app.kubernetes.io/name: chemclaw-mcp-kinetics
+    app.kubernetes.io/part-of: chemclaw3
+spec:
+  secretTargetRef:
+    - parameter: bearerToken
+      name: chemclaw-mcp-kinetics-prometheus
+      key: token
+    - parameter: ca
+      name: chemclaw-mcp-kinetics-prometheus
+      key: ca.crt
