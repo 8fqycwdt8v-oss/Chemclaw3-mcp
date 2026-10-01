@@ -34,9 +34,31 @@ from dataclasses import dataclass, field
 
 from chemclaw_mcp_calc.engine.metrics import INLINE_BUDGET_EXCEEDED
 
-__all__ = ["Deadline"]
+__all__ = ["TIME_BUDGET_MARKER", "Deadline", "TimeBudgetError"]
 
 logger = logging.getLogger(__name__)
+
+# The token that tells a caller "stopped by this pod's clock", not "bad input" — the same channel
+# and the same placement as `admission.AT_CAPACITY_MARKER`, for the same reason: a refused tool call
+# carries no code and no structured payload, only text, and the head of that text is the one
+# position a caller's own quoted arguments cannot reach. Chemclaw3 transcribes this literal as
+# `core/mcp_session.SERVER_TIME_BUDGET`; each side pins only its own copy.
+#
+# **Why a stop needs a name of its own.** Wall clock depends on what else the pod is running, so the
+# same calculation can finish on an idle pod and be stopped on a busy one. Read as an ordinary
+# refusal, a caller reports it as a property of the molecule — and a screen that answers per item
+# lists it beside a structure that would not embed, with the remedy "remove or correct it", which
+# is the wrong advice for a clock.
+TIME_BUDGET_MARKER = "[calc-time-budget]"
+
+
+class TimeBudgetError(ValueError):
+    """The inline wall clock stopped this calculation; the input itself was not refused.
+
+    A `ValueError` so `connector_app` still passes the message to the caller verbatim — narrowing it
+    would replace an actionable sentence with a generic notice. The subclass exists so this server's
+    own code and tests can catch the stop precisely instead of matching prose.
+    """
 
 
 @dataclass(frozen=True)
@@ -88,7 +110,9 @@ class Deadline:
                 figures come from the loop, not from the caller, so they are safe in the message.
 
         Raises:
-            ValueError: the budget is spent. Worded for the model, which is what receives it.
+            TimeBudgetError: the budget is spent. A `ValueError`, worded for the model, which is
+                what receives it, and opening with `TIME_BUDGET_MARKER` so a caller can tell a stop
+                from a refusal of the input.
         """
         if self.elapsed <= self.seconds:
             return
@@ -102,7 +126,8 @@ class Deadline:
             self.seconds,
             reached,
         )
-        raise ValueError(
+        raise TimeBudgetError(
+            f"{TIME_BUDGET_MARKER} "
             f"a {what} exceeded this server's inline budget of {self.seconds:g}s (spent "
             f"{spent:.1f}s{reached}). This calculation runs inside a conversation turn and nothing "
             "here is cached, so it is stopped rather than left burning CPU for an answer the "

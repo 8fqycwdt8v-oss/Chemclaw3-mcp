@@ -398,3 +398,38 @@ async def test_a_domain_refusal_does_not_carry_the_capacity_marker(running_serve
         result = await session.call_tool("predict_pka", {"smiles": "C1CCNCC1"})
     assert result.isError is True
     assert "[calc-at-capacity]" not in str(result.content)
+
+
+async def test_a_time_budget_stop_carries_a_marker_the_caller_can_classify(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop by this pod's clock must be distinguishable from a refusal of the input *on the wire*.
+
+    The inline budget depends on what else the pod is running, so the same relaxation can finish
+    idle and be stopped busy. Without a marker Chemclaw3 read it as an ordinary refusal: a screen
+    listed the item beside a structure that would not embed, and the ranking told the chemist to
+    remove or correct the form — the wrong remedy for a clock. Driven over the real transport, and
+    asserted on the literal rather than the constant, for the reason the capacity test gives.
+    """
+    from chemclaw_mcp_calc.engine.config import settings
+
+    async with _session(running_server) as session:
+        embedded = await session.call_tool("embed_structure", {"smiles": "CCO"})
+        assert embedded.isError is False, embedded.content
+        monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 1e-9)
+        result = await session.call_tool(
+            "relax_structure", {"structure": embedded.structuredContent}
+        )
+    assert result.isError is True
+    content = str(result.content)
+    assert "[calc-time-budget]" in content
+    assert "[calc-at-capacity]" not in content
+    assert "exceeded this server's inline budget" in content, "the human half is still there"
+
+
+async def test_a_domain_refusal_does_not_carry_the_time_budget_marker(running_server: str) -> None:
+    """The other direction: a marker on every refusal would excuse a bad molecule as a slow pod."""
+    async with _session(running_server) as session:
+        result = await session.call_tool("predict_pka", {"smiles": "C1CCNCC1"})
+    assert result.isError is True
+    assert "[calc-time-budget]" not in str(result.content)

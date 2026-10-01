@@ -357,8 +357,13 @@ def test_the_optimizer_stops_when_the_inline_budget_is_spent(
     """
     monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 1e-6)
     water = structure_from_smiles("O")
-    with pytest.raises(ValueError, match=r"exceeded this server's inline budget"):
+    with pytest.raises(ValueError, match=r"exceeded this server's inline budget") as stopped:
         optimize_structure(OptSpec(engine="tblite"), water)
+    # A `TimeBudgetError` opening with the marker, so a caller can tell this stop from a refusal of
+    # the input; and the literal pinned here, because Chemclaw3 matches its own copy of it.
+    assert isinstance(stopped.value, budget_module.TimeBudgetError)
+    assert str(stopped.value).startswith(budget_module.TIME_BUDGET_MARKER)
+    assert budget_module.TIME_BUDGET_MARKER == "[calc-time-budget]"
 
 
 def test_a_relaxation_the_budget_stops_says_how_far_it_got(
