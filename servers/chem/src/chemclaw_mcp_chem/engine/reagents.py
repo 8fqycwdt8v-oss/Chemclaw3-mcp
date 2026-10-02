@@ -32,7 +32,7 @@ from typing import Literal
 from mcp_server_kit import Dataset, load_dataset, read_records
 from pydantic import BaseModel
 
-from chemclaw_mcp_chem.engine.chem import InvalidSmilesError, require_canonical_smiles
+from chemclaw_mcp_chem.engine.chem import InvalidSmilesError, require_dative_free_smiles
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -143,7 +143,7 @@ def _index() -> tuple[dict[str, tuple[str, str]], dict[str, str], dict[str, floa
     for row in read_records(dataset()):
         display, raw_smiles = row["name"].strip(), row["smiles"].strip()
         try:
-            smiles = require_canonical_smiles(raw_smiles)
+            smiles = require_dative_free_smiles(raw_smiles)
         except InvalidSmilesError as exc:
             raise ValueError(
                 f"reagent table entry {display!r} has unparseable SMILES: {exc}"
@@ -189,7 +189,7 @@ def resolve_compound_name(name: str) -> ResolvedCompound | None:
     # lenient one returns its input unparsed, which would resolve every unknown name to itself as
     # a fabricated structure — exactly the failure this module exists to prevent.
     try:
-        canonical = require_canonical_smiles(name)
+        canonical = require_dative_free_smiles(name)
     except InvalidSmilesError:
         return None
     return ResolvedCompound(
