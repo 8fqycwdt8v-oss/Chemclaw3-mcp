@@ -20,7 +20,7 @@ import math
 import pytest
 from chemclaw_mcp_chem.engine.chem import InvalidSmilesError, molecular_weight
 from chemclaw_mcp_chem.engine.depiction import RENDER_SIZE_PX, render_svg
-from chemclaw_mcp_chem.engine.reagents import density_of, resolve_compound_name
+from chemclaw_mcp_chem.engine.reagents import density_of, describe_miss, resolve_compound_name
 from chemclaw_mcp_chem.engine.stoichiometry import charge_table, green_metrics
 
 
@@ -63,6 +63,32 @@ class TestResolveCompound:
     def test_an_unknown_name_resolves_to_nothing(self, written: str) -> None:
         """`None` is a real answer. A guessed structure corrupts everything downstream of it."""
         assert resolve_compound_name(written) is None
+
+    @pytest.mark.parametrize("written", ["aniline", "4-bromoanisole", "phenylboronic acid"])
+    def test_a_miss_says_so_and_says_what_would_resolve(self, written: str) -> None:
+        """The live case: three common substrates came back as an empty string, audited `ok`.
+
+        The miss now names itself, the corpus searched, the absence of any name service, and the
+        way forward. It offers no suggestion for a name the table simply does not hold — a nearest
+        neighbour of "aniline" would be a substitution dressed as a hint.
+        """
+        miss = describe_miss(written)
+        assert miss.recognised is False
+        assert miss.query == written
+        assert miss.searched.startswith("bench-reagents v")
+        assert written in miss.reason
+        assert "no name-to-structure service" in miss.reason
+        assert "SMILES" in miss.accepts
+        assert miss.suggestions == []
+
+    @pytest.mark.parametrize(
+        ("written", "meant"),
+        [("dipaa", "N,N-diisopropylethylamine"), ("tetrahydrofurane", "tetrahydrofuran")],
+    )
+    def test_a_near_miss_is_offered_and_not_substituted(self, written: str, meant: str) -> None:
+        """A typo of a table spelling gets the table's name back as a question, not an answer."""
+        assert resolve_compound_name(written) is None
+        assert meant in describe_miss(written).suggestions
 
     @pytest.mark.parametrize(
         ("written", "formula_reading", "smiles_reading"),

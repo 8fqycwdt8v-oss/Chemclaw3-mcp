@@ -8,13 +8,15 @@ the test that would have caught each of the three defects Chemclaw3 recorded on 
 - a manifest that claimed a tool surface the server did not have.
 
 So it runs uvicorn on a loopback port and talks to it the way the agent will. One thing here is
-specific to `chem` and worth the extra test: `resolve_compound` returns `None` for an unknown name,
-and "the tool answered, and the answer is nothing" has to survive the wire as a *result* rather
-than as an error, or the agent will read a miss as a broken tool and start guessing structures.
+specific to `chem` and worth the extra test: `resolve_compound` answers an unknown name with a
+miss, and "the tool answered, and the name is not one it knows" has to survive the wire as a
+*result* rather than as an error — and as words rather than as nothing — or the agent will read a
+miss as a broken tool and start guessing structures.
 """
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -165,6 +167,39 @@ async def test_an_unknown_name_comes_back_as_a_result_not_an_error(running_serve
         result = await session.call_tool("resolve_compound", {"name": "unobtainium"})
         assert result.isError is False
         assert result.structuredContent == {"result": None}
+
+
+async def test_an_unknown_name_is_said_in_words_on_the_wire(running_server: str) -> None:
+    """The live defect: a miss used to arrive as *no content*, which the agent read as `""`.
+
+    FastMCP writes a `None` return as zero content blocks, so "aniline" reached the model as an
+    empty string and the audit recorded `ok` with an empty result. The text block is what every
+    client renders, so that is where the miss has to be said.
+    """
+    async with _session(running_server) as session:
+        result = await session.call_tool("resolve_compound", {"name": "aniline"})
+        assert result.isError is False
+        text = "".join(getattr(block, "text", "") for block in result.content)
+        assert text.strip(), "an unrecognised name came back with no text at all"
+        said = json.loads(text)
+        assert said["recognised"] is False
+        assert said["query"] == "aniline"
+        assert "SMILES" in said["accepts"]
+
+
+async def test_the_declared_output_schema_is_unchanged(running_server: str) -> None:
+    """Chemclaw3 was told this tool returns `ResolvedCompound | null`; the miss's words must not
+    widen that. Building the result by hand is what could, so the declaration is pinned here.
+    """
+    async with _session(running_server) as session:
+        listed = await session.list_tools()
+        (tool,) = [tool for tool in listed.tools if tool.name == "resolve_compound"]
+        assert tool.outputSchema is not None
+        assert tool.outputSchema["required"] == ["result"]
+        branches = tool.outputSchema["properties"]["result"]["anyOf"]
+        assert {"type": "null"} in branches
+        assert len(branches) == 2
+        assert set(tool.outputSchema["$defs"]) == {"ResolvedCompound"}
 
 
 async def test_a_charge_table_survives_the_wire(running_server: str) -> None:

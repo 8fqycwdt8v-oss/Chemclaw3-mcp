@@ -216,7 +216,9 @@ async def test_every_other_tool_stays_answerable_while_the_pod_is_rendering(
     running = asyncio.ensure_future(tools.render_structure("CCO"))
     await asyncio.to_thread(blocking.started.wait, 30)
 
-    assert (await tools.resolve_compound("water")).smiles
+    assert (await tools.resolve_compound("water")).structuredContent == {
+        "result": {"query": "water", "smiles": "O", "name": "water", "source": "synonym"}
+    }
     assert await tools.enumerate_torsions("CC(=O)Nc1ccccc1") is not None
 
     blocking.finish.set()

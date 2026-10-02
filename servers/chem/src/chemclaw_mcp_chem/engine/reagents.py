@@ -25,6 +25,7 @@ at call time.
 
 from __future__ import annotations
 
+from difflib import get_close_matches
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -39,8 +40,10 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 __all__ = [
     "ResolutionSource",
     "ResolvedCompound",
+    "UnrecognisedCompound",
     "dataset",
     "density_of",
+    "describe_miss",
     "resolve_compound_name",
 ]
 
@@ -60,6 +63,37 @@ class ResolvedCompound(BaseModel):
     # How the identity was established, so a caller (and the agent) can weigh it: `synonym` is the
     # curated table, `smiles` means the query already was a structure.
     source: ResolutionSource
+
+
+class UnrecognisedCompound(BaseModel):
+    """What a miss says on the wire: that it is one, what was searched, and what would resolve.
+
+    It exists because the miss used to be `None`, and FastMCP writes `None` as *no content at all*:
+    the agent received an empty string (audited as `ok`, result `""`) for "aniline", and had to
+    infer from silence that the tool had not recognised the name. Silence reads as a broken tool
+    as easily as a miss. This says it in words, and says what to pass instead.
+
+    `suggestions` are offered, never substituted: they are the table's own names whose spellings
+    are close to what was typed, for a caller who mistyped one ("dipaa"). A name with no near
+    neighbour gets none rather than the least-bad match, because "refuse rather than approximate"
+    applies to a hint as much as to an answer.
+    """
+
+    query: str
+    recognised: Literal[False] = False
+    # The corpus that was searched, as `name vVERSION`, so the miss is attributable like a hit.
+    searched: str
+    reason: str
+    accepts: str
+    suggestions: list[str]
+
+
+# How close a table spelling must be to the folded query to be offered as "did you mean". 0.8 on
+# `difflib`'s ratio catches a transposed or dropped letter in a short abbreviation (`dipaa` ->
+# `dipea`, `tetrahydrofurane` -> `tetrahydrofuran`) and offers nothing for a name the table simply
+# does not hold (`aniline`, `4-bromoanisole`).
+_SUGGESTION_CUTOFF = 0.8
+_MAX_SUGGESTIONS = 3
 
 
 # **The tokens that are a formula to a chemist and a different substance to RDKit.** Each row is
@@ -197,6 +231,42 @@ def resolve_compound_name(name: str) -> ResolvedCompound | None:
         smiles=canonical,
         name=by_structure.get(canonical, name),
         source="smiles",
+    )
+
+
+def describe_miss(name: str) -> UnrecognisedCompound:
+    """The explicit answer for a name `resolve_compound_name` did not resolve.
+
+    Honest about the limit as well as the miss: this server holds a small committed table and has
+    no name-to-structure service — no server in this fleet calls out at request time — so an
+    arbitrary compound name (a substrate, a building block, a product) cannot be resolved here at
+    all, and the way forward is a SMILES rather than a re-spelling.
+    """
+    table, _, _ = _index()
+    manifest = dataset()
+    substances = len(set(table.values()))
+    suggestions: list[str] = []
+    for key in get_close_matches(
+        _normalize(name), table, n=_MAX_SUGGESTIONS, cutoff=_SUGGESTION_CUTOFF
+    ):
+        display = table[key][1]
+        if display not in suggestions:
+            suggestions.append(display)
+    return UnrecognisedCompound(
+        query=name,
+        searched=f"{manifest.name} v{manifest.version}",
+        reason=(
+            f"{name.strip()!r} is not a name in this server's reagent table ({substances} "
+            "solvents, bases, catalysts, coupling agents and other bench reagents) and does not "
+            "parse as a SMILES. This server has no name-to-structure service and makes no outbound "
+            "lookup, so a compound name outside that table cannot be resolved here."
+        ),
+        accepts=(
+            "A SMILES string, or one of the table's names or abbreviations (e.g. THF, DIPEA, "
+            "K2CO3, Pd(dppf)Cl2). A SMILES you write out from the name yourself is your structure, "
+            "not one this table vouched for: tell the chemist so."
+        ),
+        suggestions=suggestions,
     )
 
 
