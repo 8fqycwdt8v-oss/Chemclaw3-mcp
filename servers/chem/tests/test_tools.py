@@ -103,6 +103,27 @@ class TestResolveCompound:
         assert match is not None
         assert (match.smiles, match.name, match.source) == ("CO", "methanol", "synonym")
 
+    def test_a_metal_complex_resolves_to_a_spelling_that_survives_resubmission(self) -> None:
+        """The live defect: a palladacycle came back as `[Pd]2(<-[NH2]...)` and did not survive.
+
+        The query is the Josiphos-type Pd G3 precatalyst exactly as the agent sent it on
+        2026-10-02. RDKit perceives its Pd-N bond as dative and writes `<-`; the agent re-typed
+        that as `<-NH2`, which nothing parses, and two `similar_molecules` calls failed on it. The
+        answer now carries no arrow, and resolving the answer returns the answer — which is the
+        property the agent was unsure of when it told the chemist the id might change.
+        """
+        query = (
+            "CC(P(C(C)(C)C)C(C)(C)C)C1=C(C([Fe]C2C=CC=C2)C=C1)[P]([Pd]3(OS(C)(=O)=O)C4=CC=CC=C4"
+            "C5=C([NH2]3)C=CC=C5)(C6CCCCC6)C7CCCCC7"
+        )
+        first = resolve_compound_name(query)
+        assert first is not None
+        assert "<-" not in first.smiles and "->" not in first.smiles, first.smiles
+        again = resolve_compound_name(first.smiles)
+        assert again is not None
+        assert again.smiles == first.smiles
+        assert molecular_weight(first.smiles) == pytest.approx(molecular_weight(query))
+
 
 class TestDensity:
     """A density is a fact about a substance, and its absence is load-bearing."""

@@ -41,7 +41,12 @@ ambiguous and a canonicalizer has to make a choice:
 from __future__ import annotations
 
 import pytest
-from chemclaw_mcp_chem.engine.chem import InvalidSmilesError, require_canonical_smiles
+from chemclaw_mcp_chem.engine.chem import (
+    InvalidSmilesError,
+    molecular_weight,
+    require_canonical_smiles,
+    require_dative_free_smiles,
+)
 
 # (what a caller writes, what Chemclaw3's require_canonical_smiles returns for it).
 CONTRACT: list[tuple[str, str]] = [
@@ -130,3 +135,92 @@ def test_a_megamolecule_is_refused_not_crashed() -> None:
     with pytest.raises(InvalidSmilesError):
         require_canonical_smiles("C" * 3000)
     assert require_canonical_smiles("CCO") == "CCO"
+
+
+# (what a caller writes, what `resolve_compound` returns, Chemclaw3's std12 `compound_id` of both).
+#
+# **Not part of the table above, and not to be pasted into Chemclaw3 as one.** Chemclaw3's
+# `require_canonical_smiles` writes these inputs with RDKit's dative arrow, exactly as this
+# server's copy does; the column here is `require_dative_free_smiles`, the spelling
+# `resolve_compound` hands the agent. What makes the two repositories agree on it is measured, and
+# was measured by running Chemclaw3's own functions on Chemclaw3 `14828d2d` (std12):
+#
+#     from chemclaw.core.chem import require_canonical_smiles as rcs, compound_id
+#     rcs(returned) == returned                      # True for every row
+#     compound_id(written) == compound_id(returned)  # True for every row; the id is column three
+#
+# So Chemclaw3 re-canonicalizing what this server returns gets the same string back, and its
+# compound key does not move when the agent passes the answer on instead of the question. The
+# first two rows are the live defect: the precatalyst as the agent wrote it, and as this server
+# used to answer it.
+DATIVE: list[tuple[str, str, str]] = [
+    (
+        "CC(P(C(C)(C)C)C(C)(C)C)C1=C(C([Fe]C2C=CC=C2)C=C1)[P]([Pd]3(OS(C)(=O)=O)C4=CC=CC=C4"
+        "C5=C([NH2]3)C=CC=C5)(C6CCCCC6)C7CCCCC7",
+        "CC(C1=C([P](C2CCCCC2)(C2CCCCC2)[Pd-]2([O]S(C)(=O)=O)[NH2+]c3ccccc3-c3cccc[c]32)"
+        "[CH]([Fe][CH]2C=CC=C2)C=C1)P(C(C)(C)C)C(C)(C)C",
+        "compound-b4ed44b921ee",
+    ),
+    (
+        "CC(C1=C([P](C2CCCCC2)(C2CCCCC2)[Pd]2(<-[NH2]c3ccccc3-c3cccc[c]32)[O]S(C)(=O)=O)"
+        "[CH]([Fe][CH]2C=CC=C2)C=C1)P(C(C)(C)C)C(C)(C)C",
+        "CC(C1=C([P](C2CCCCC2)(C2CCCCC2)[Pd-]2([O]S(C)(=O)=O)[NH2+]c3ccccc3-c3cccc[c]32)"
+        "[CH]([Fe][CH]2C=CC=C2)C=C1)P(C(C)(C)C)C(C)(C)C",
+        "compound-b4ed44b921ee",
+    ),
+    # An ammine written without an arrow and with one: RDKit perceives both as dative.
+    ("[NH3][Pt]([NH3])(Cl)Cl", "[NH3+][Pt-2]([NH3+])([Cl])[Cl]", "compound-c7e0fbfd706b"),
+    ("N->[Pt](<-N)(Cl)Cl", "[NH3+][Pt-2]([NH3+])([Cl])[Cl]", "compound-c7e0fbfd706b"),
+    # An aromatic donor: the case a plain single bond cannot spell, since a four-valent `n` fails.
+    (
+        "Cl[Pd](Cl)(<-n1ccccc1)<-n1ccccc1",
+        "[Cl][Pd-2]([Cl])([n+]1ccccc1)[n+]1ccccc1",
+        "compound-6ea96b20af98",
+    ),
+    (
+        "c1ccc(cc1)P(->[Pd](<-P(c1ccccc1)(c1ccccc1)c1ccccc1)(Cl)Cl)(c1ccccc1)c1ccccc1",
+        "[Cl][Pd-2]([Cl])([P+](c1ccccc1)(c1ccccc1)c1ccccc1)[P+](c1ccccc1)(c1ccccc1)c1ccccc1",
+        "compound-933600761ccd",
+    ),
+    # A pi donor keeps its arrow (no single-bond spelling means the same bond); the amine beside
+    # it is still rewritten, because each bond is decided on its own.
+    ("C=C->[Pt]<-N", "C=[CH2]->[Pt-][NH3+]", "compound-82a2cdf20772"),
+]
+
+
+@pytest.mark.parametrize(
+    ("written", "returned"), [row[:2] for row in DATIVE], ids=[row[1][:40] for row in DATIVE]
+)
+def test_a_dative_bond_is_returned_charge_separated(written: str, returned: str) -> None:
+    """One row of the dative table: the spelling the agent receives for a metal complex."""
+    assert require_dative_free_smiles(written) == returned
+
+
+@pytest.mark.parametrize(
+    "returned", [row[1] for row in DATIVE], ids=[row[1][:40] for row in DATIVE]
+)
+def test_the_returned_spelling_is_a_fixed_point(returned: str) -> None:
+    """Resubmitting the answer returns the answer, which is what makes it safe to pass on."""
+    assert require_dative_free_smiles(returned) == returned
+
+
+@pytest.mark.parametrize(("written", "returned"), [row[:2] for row in DATIVE])
+def test_the_rewrite_moves_no_atom_and_no_hydrogen(written: str, returned: str) -> None:
+    """A charge moved along a bond is a spelling; a hydrogen gained or lost would be a new compound.
+
+    The molecular weight is the cheap witness for both, and it is what a charge table weighs.
+    """
+    assert molecular_weight(returned) == pytest.approx(molecular_weight(written))
+
+
+@pytest.mark.parametrize(("written", "canonical"), CONTRACT, ids=[case[0] for case in CONTRACT])
+def test_without_a_dative_bond_the_two_spellings_are_one(written: str, canonical: str) -> None:
+    """The rewrite touches dative bonds and nothing else, so the contract table holds for it too."""
+    assert require_dative_free_smiles(written) == canonical
+
+
+@pytest.mark.parametrize("written", REFUSED)
+def test_the_dative_free_spelling_refuses_what_the_canonical_one_refuses(written: str) -> None:
+    """One parse gate for both spellings, so neither can accept what the other refuses."""
+    with pytest.raises(InvalidSmilesError):
+        require_dative_free_smiles(written)

@@ -149,6 +149,12 @@ async def resolve_compound(name: str) -> ResolvedCompound | None:
     the structure you meant. Only you know which it was; guessing put 30.61 g of methanol into a
     carbonylation charge list.
 
+    **A metal-ligand bond comes back charge-separated, never as a `->`/`<-` arrow.** A palladacycle
+    precatalyst is returned as `...[Pd-]...[NH2+]...` — the same structure and the same Chemclaw3
+    compound id as the dative spelling. Pass the returned SMILES on exactly as written, brackets
+    and charges included; resolving it again returns it unchanged. Only a π-donor (an alkene or
+    arene bound to a metal) keeps its arrow, because no single-bond spelling means that bond.
+
     Args:
         name: What the chemist wrote — a trivial name, an abbreviation, or a SMILES string.
 

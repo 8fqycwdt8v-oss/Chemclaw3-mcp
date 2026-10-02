@@ -30,6 +30,20 @@ that answers the *other* question, "is this the same compound?" — salts stripp
 neutralized, one tautomer per set — plus `compound_id` built on it. None of chem's four tools ever
 asked that question, so none of it is here: it keys the knowledge graph and the fingerprint index,
 which are Chemclaw3's and stay Chemclaw3's.
+
+**One spelling is added on top of the copy, not changed inside it**: `require_dative_free_smiles`,
+what `resolve_compound` hands back. RDKit's sanitizer turns a metal-ligand bond written as a plain
+single bond to an over-valent donor (`[NH2]` of a Buchwald palladacycle, `[NH3]` of cisplatin) into
+a *dative* bond, and its writer then spells that bond `<-`/`->`. That notation is legal and
+round-trips through RDKit, but it was measured going wrong in the agent's hands: handed
+`[Pd]2(<-[NH2]...)` it re-typed `<-NH2`, which nothing parses, and then reasoned about whether the
+compound id had changed. So the resolved structure writes each dative bond as the charge-separated
+single bond it stands for (`[Pd-]...[NH2+]`), a spelling every SMILES reader accepts. It is the
+*same structure*, measured against Chemclaw3 rather than argued: its `require_canonical_smiles`
+returns the charge-separated string unchanged, and its std12 `compound_id` is identical for the raw,
+the dative and the charge-separated spellings (see `tests/test_canonicalization_contract.py`).
+`require_canonical_smiles` itself stays a byte-for-byte copy, because its contract table must pass
+in both repositories.
 """
 
 from __future__ import annotations
@@ -42,6 +56,7 @@ __all__ = [
     "InvalidSmilesError",
     "molecular_weight",
     "require_canonical_smiles",
+    "require_dative_free_smiles",
     "require_molecule",
     "require_whole_string",
 ]
@@ -130,6 +145,47 @@ def require_canonical_smiles(smiles: str) -> str:
     name to itself as a fabricated structure.
     """
     return str(Chem.MolToSmiles(require_molecule(smiles)))
+
+
+def require_dative_free_smiles(smiles: str) -> str:
+    """Canonical SMILES with each dative bond written as a charge-separated single bond.
+
+    `require_canonical_smiles` with one difference, and only for a structure that has a dative bond:
+    each `D->A` becomes `[D+]-[A-]` before the string is written, with the hydrogen count of both
+    ends held where it was so no atom gains or loses one. Every other input gets exactly
+    `require_canonical_smiles`'s string. The output is a fixed point — it parses with no rewritable
+    dative bond left — so resubmitting what this returns returns it again.
+
+    The charge-separated form rather than a plain single bond, because a single bond does not
+    survive every donor: a pyridine nitrogen bonded to palladium is a four-valent aromatic `n`
+    that RDKit refuses outright, while `[n+]` beside `[Pd-2]` parses.
+
+    **A donor that cannot carry the charge keeps its arrow.** An alkene or arene written as a
+    π-donor (`C=C->[Pt]`, `c1ccccc1->[Cr]`) would need a four-bonded carbocation or a
+    non-kekulizable ring; there is no single-bond spelling of that bond that means the same thing,
+    and writing a sigma metal-carbon bond instead would hand back a different compound. Each bond is
+    rewritten on its own, so one such donor leaves the others in the molecule rewritten.
+
+    Raises:
+        InvalidSmilesError: `smiles` does not parse (see `require_molecule`).
+    """
+    mol = require_molecule(smiles)
+    for bond in list(mol.GetBonds()):
+        if bond.GetBondType() != Chem.BondType.DATIVE:
+            continue
+        candidate = Chem.RWMol(mol)
+        edited = candidate.GetBondWithIdx(bond.GetIdx())
+        for atom, shift in ((edited.GetBeginAtom(), 1), (edited.GetEndAtom(), -1)):
+            atom.SetNumExplicitHs(atom.GetTotalNumHs())
+            atom.SetNoImplicit(True)
+            atom.SetFormalCharge(atom.GetFormalCharge() + shift)
+        edited.SetBondType(Chem.BondType.SINGLE)
+        try:
+            Chem.SanitizeMol(candidate)
+        except Chem.MolSanitizeException:
+            continue  # the donor cannot hold the charge; this bond keeps its arrow (see above)
+        mol = candidate.GetMol()
+    return str(Chem.MolToSmiles(mol))
 
 
 def molecular_weight(smiles: str) -> float:

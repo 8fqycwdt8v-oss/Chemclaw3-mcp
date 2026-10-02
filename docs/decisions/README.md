@@ -144,5 +144,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a](D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a.md) | The CPU-torch record's branch commits are `27aa77a` |
 | [D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge](D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge.md) | The fleet runs the consumer's agreement suite before merge, and a deliberate lead is a label |
 | [D-2026-09-30-a-full-pod-says-so-in-one-format-and-occupancy-is-the-scaling-signal](D-2026-09-30-a-full-pod-says-so-in-one-format-and-occupancy-is-the-scaling-signal.md) | A full pod says so in one fleet-wide format, and admission occupancy is the scaling signal |
+| [D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow](D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow.md) | A resolved structure is written without a dative arrow |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3
