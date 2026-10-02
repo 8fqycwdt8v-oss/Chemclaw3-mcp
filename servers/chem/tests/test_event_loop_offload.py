@@ -71,7 +71,7 @@ def test_resolve_compound_looks_up_off_the_event_loop(monkeypatch: pytest.Monkey
 
     loop_thread, resolved = asyncio.run(_run())
 
-    assert resolved is not None
+    assert resolved.structuredContent["result"] is not None
     assert seen and seen[0] != loop_thread, (
         "resolve_compound_name ran on the event loop thread; its unknown-name path canonicalises "
         "through RDKit, so this is real synchronous work and not a dict lookup"

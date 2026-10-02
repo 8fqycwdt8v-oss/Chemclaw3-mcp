@@ -41,9 +41,10 @@ import asyncio
 import functools
 import os
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, ParamSpec, TypeVar
+from typing import Annotated, Any, ParamSpec, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 from mcp_server_kit.limits import env_bound
 
 from chemclaw_mcp_chem.engine import stoichiometry
@@ -56,7 +57,12 @@ from chemclaw_mcp_chem.engine.admission import (
 )
 from chemclaw_mcp_chem.engine.cleavage import CleavageMode, CleavageSet, enumerate_cleavages
 from chemclaw_mcp_chem.engine.depiction import render_svg
-from chemclaw_mcp_chem.engine.reagents import ResolvedCompound, resolve_compound_name
+from chemclaw_mcp_chem.engine.reagents import (
+    ResolvedCompound,
+    UnrecognisedCompound,
+    describe_miss,
+    resolve_compound_name,
+)
 from chemclaw_mcp_chem.engine.sites import SiteSet, describe_atom_sites
 from chemclaw_mcp_chem.engine.species import (
     DegradantSet,
@@ -132,16 +138,24 @@ def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, 
 
 
 @server.tool()
-async def resolve_compound(name: str) -> ResolvedCompound | None:
+async def resolve_compound(name: str) -> Annotated[CallToolResult, ResolvedCompound | None]:
     """Resolve a reagent name, abbreviation, or SMILES to its canonical structure.
 
     Use this whenever the chemist names a reagent in words ("DIPEA", "Pd(dppf)Cl2", "2-MeTHF")
     before calling any tool that needs a SMILES — the property calculators, the similarity search,
     and the substructure search all take structures, not names.
 
-    Returns `None` when the name is not recognised. That is a real answer: say the reagent is not
-    in the known set rather than guessing a structure, because a wrong structure would silently
-    corrupt every downstream calculation and search.
+    **It knows a small table of bench reagents, not compound names in general.** Solvents, bases,
+    catalysts, ligands, coupling agents and oxidants are in it; substrates and building blocks
+    ("aniline", "4-bromoanisole", "phenylboronic acid") are not, and there is no name-to-structure
+    service behind it — nothing here looks a name up anywhere. For anything outside the table, pass
+    the structure as a SMILES.
+
+    An unrecognised name comes back as `recognised: false` with the reason, what the tool accepts,
+    and — when the name is a near-miss of one in the table — `suggestions`. That is a real answer:
+    say the name was not resolved rather than guessing a structure, because a wrong structure would
+    silently corrupt every downstream calculation and search. A suggestion is a question to put to
+    the chemist, never a substitution.
 
     **A formula that is also a valid SMILES is refused, not resolved.** `CO`, `NO`, `CN` and every
     bare element symbol read as one substance to a chemist and another to the parser — `CO` is
@@ -159,14 +173,45 @@ async def resolve_compound(name: str) -> ResolvedCompound | None:
         name: What the chemist wrote — a trivial name, an abbreviation, or a SMILES string.
 
     Returns:
-        The canonical structure with the name it was recognised as, or `None` if unknown.
+        The canonical structure with the name it was recognised as, or for an unknown name the
+        explicit miss described above.
 
     Raises:
         ValueError: the name is one of the reviewed formula/SMILES collisions above.
     """
     # An unrecognised name falls through to an RDKit canonicalisation attempt, so this is not the
     # dictionary lookup it looks like.
-    return await asyncio.to_thread(resolve_compound_name, name)
+    answer = await asyncio.to_thread(_resolve_or_explain, name)
+    return _as_tool_result(answer)
+
+
+def _resolve_or_explain(name: str) -> ResolvedCompound | UnrecognisedCompound:
+    """The resolution, or the worded miss — both off the event loop in one hop."""
+    resolved = resolve_compound_name(name)
+    return describe_miss(name) if resolved is None else resolved
+
+
+def _as_tool_result(answer: ResolvedCompound | UnrecognisedCompound) -> CallToolResult:
+    """Put an answer on the wire with the declared structured shape and a text the agent can read.
+
+    **Why `resolve_compound` builds its own result.** Its miss used to be a bare `None`, and
+    FastMCP turns `None` into *no content blocks*: the agent was handed an empty string for
+    "aniline" and the audit recorded `ok` with an empty result. The miss now has words, in the
+    text block every client renders.
+
+    **Why the structured half still says `null` for a miss.** `structuredContent` is validated
+    against the declared output schema — `{"result": ResolvedCompound | null}` — and that schema is
+    what Chemclaw3 was told this tool returns. Widening it to carry the miss would be a contract
+    change on the other side of the seam for no reader that needs it; a structured consumer already
+    reads `null` as "not recognised". A hit is byte-identical to what FastMCP wrote before: the same
+    JSON text, and the same `{"result": {...}}`.
+    """
+    text = answer.model_dump_json(indent=2)
+    structured = answer.model_dump(mode="json") if isinstance(answer, ResolvedCompound) else None
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent={"result": structured},
+    )
 
 
 @server.tool()
