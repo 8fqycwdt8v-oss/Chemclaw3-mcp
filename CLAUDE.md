@@ -74,6 +74,9 @@ What such a server owes the fleet is the same contract, checked the same way:
 - **The no-egress posture, or an argued exemption.** A gateway calling its own backend Services is
   east-west traffic and fine. A predictor calling a third-party API at request time is not — which
   is one of the reasons `chemclaw2_forward` was forked rather than adopted.
+- **`/mcp` answering the name it is dialled by.** An SDK's DNS-rebinding guard can refuse a
+  Service-name `Host` with `421` while every probe stays green; verify with the `Host` header a
+  cluster caller sends, not with `127.0.0.1`.
 - **A row in `MODULES.md`** saying where it lives and what it costs to consume.
 
 The one thing they cannot inherit is `mcp_server_kit`, since they are not in this workspace. That is
@@ -99,7 +102,7 @@ Every server's `app.py` is three lines because `mcp_server_kit.connector_app` ow
 process's log configuration and the per-tool metrics**. The last two are there for the same reason
 as the rest: an observability decision taken one server at a time is taken in some of them, and
 before it moved here the fleet had no owned log configuration anywhere and no application metric at
-all. **Do not hand-roll a transport, and do not call `basicConfig` in a server.** Five things in
+all. **Do not hand-roll a transport, and do not call `basicConfig` in a server.** These things in
 that helper are non-obvious, and each is quiet when wrong:
 
 1. **The parent app must run the MCP session manager.** `FastMCP.streamable_http_app()` returns a
@@ -119,6 +122,11 @@ that helper are non-obvious, and each is quiet when wrong:
    server's `tools.py`, long before `app.py` runs, so anything that does not pass `force=True`
    loses to it silently — and the fleet keeps upstream's `"%(message)s"`: no timestamp, no level,
    no logger name, with a WARNING and an INFO byte-identical.
+6. **Upstream's DNS-rebinding guard admits a loopback `Host` only.** `FastMCP("x")` is configured
+   for `127.0.0.1` however uvicorn is bound, so every caller dialling a Service name got `421` on
+   `/mcp` — measured on a kind cluster, with `/healthz` green throughout. The guard stays on;
+   `MCP_ALLOWED_HOSTS` adds names to it, and every Deployment sets its own Service's `name:port`
+   (`D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`).
 
 ## Authentication and identity
 

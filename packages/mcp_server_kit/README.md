@@ -12,6 +12,7 @@ own `engine/`.
 | `schema_cache.py` | One compiled `jsonschema` validator per tool schema, instead of upstream re-checking the schema against the meta-schema on every call. The dominant per-call cost in the fleet: 10.75 → 2.15 ms of server CPU on `props.solvent_properties`. |
 | `executor.py` | The default `to_thread` pool, sized from the container's **cgroup** quota rather than from `os.cpu_count()` — which is the node's, so a `cpu: "1"` pod on a 64-core worker got 32 threads. |
 | `sessions.py` | The MCP session idle timeout `FastMCP` never passes, plus the hold-open that stops a four-hour CREST search being reaped as "idle". |
+| `rebinding.py` | Upstream's DNS-rebinding guard on `/mcp`, kept on and told the names this pod is dialled by. `FastMCP("x")` admits a loopback `Host` only, so a caller dialling a Service name got `421`; `MCP_ALLOWED_HOSTS` (`host:port` or `host:*`, comma-separated) adds to loopback, is validated at import, and is set in every shipped Deployment to its own Service. |
 | `identity.py` | The `X-Chemclaw-*` headers and the contextvars that carry them. Provenance, never authorization. |
 | `tracing.py` | The receiving half of Chemclaw3's `traceparent`: one span per tool call, under the caller's trace. Off unless `MCP_TRACING_ENABLED` says otherwise, and it constructs no exporter — the `otel` extra installs the API only. |
 | `datasets.py` | Vendored-corpus loading: every provenance field required, refresh owner and cadence included, checksum verified on load. |
