@@ -306,7 +306,9 @@ async def render_structure(smiles: str, highlight_atoms: list[int] | None = None
     """Draw a molecule or reaction as an SVG the chat surface can show inline.
 
     Use this when a structure is the answer, or when naming several related structures in prose
-    would be ambiguous — a chemist reads a drawing far faster than a SMILES string.
+    would be ambiguous — a chemist reads a drawing far faster than a SMILES string. **To show a set
+    of structures, prefer a `structures` artefact where `create_exhibit` is available**: the chat
+    draws those from SMILES itself, so no SVG passes through your context.
 
     **Use `highlight_atoms` to show which bond you are about to rotate.** Pass the `atoms` of an
     `enumerate_torsions` entry and the chemist sees the torsion drawn, which is the one form in
@@ -319,11 +321,9 @@ async def render_structure(smiles: str, highlight_atoms: list[int] | None = None
     different spelling is still in range, so the highlight lands on some other atom and looks like
     confirmation.
 
-    **A drawing that would not fit is refused, not cut down.** The SVG grows with the molecule —
-    ethanol is about 2,000 characters, a drug substance around 35,000, a 250-atom chain 126,000 —
-    and highlighting roughly doubles it, so the two levers when a structure is refused are dropping
-    the highlights and drawing a fragment instead of the whole thing. Nothing is truncated, because
-    half an SVG document draws nothing at all while still costing what it costs to read.
+    **A drawing that would not fit is refused, not cut down.** The SVG grows with the molecule — a
+    drug substance is about 35,000 characters — and highlighting roughly doubles it, so when one is
+    refused, drop the highlights or draw a fragment. Half an SVG draws nothing.
 
     Args:
         smiles: A molecule SMILES, or a reaction SMILES (`reactants>>products`).
