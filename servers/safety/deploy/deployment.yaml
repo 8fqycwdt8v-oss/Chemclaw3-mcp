@@ -71,6 +71,14 @@ spec:
           ports:
             - name: http
               containerPort: 8859
+          # **The name this pod is dialled by, so `/mcp` answers it.** Upstream's DNS-rebinding
+          # guard admits a loopback `Host` only, and a caller dialling this Service sends its
+          # `name:port`: measured on a kind cluster, every `/mcp` request was a 421 while `/healthz`
+          # stayed green. The guard stays on, and this adds that one name to it. Held to
+          # `service.yaml` by `tests/test_deploy_shape.py`; see `mcp_server_kit/rebinding.py`.
+          env:
+            - name: MCP_ALLOWED_HOSTS
+              value: "chemclaw-mcp-safety:8859"
           # The container-level context is what a Pod Security "restricted" admitter reads. Every
           # field here is deny-by-default: no privilege escalation, every Linux capability dropped,
           # the runtime's seccomp profile, and a non-root UID.

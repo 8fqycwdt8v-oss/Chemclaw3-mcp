@@ -276,7 +276,16 @@ On this side, each server ships:
 - `servers/<name>/deploy/networkpolicy.yaml` — default-deny egress, ingress from the Chemclaw3 pod
   and the Prometheus scraper only;
 - the bearer token as a plain Secret mounted into **both** pods under the same variable name
-  (`CHEMCLAW_PROPS_TOKEN` for `props`): Chemclaw3 reads it to send, the server reads it to verify.
+  (`CHEMCLAW_PROPS_TOKEN` for `props`): Chemclaw3 reads it to send, the server reads it to verify;
+- `MCP_ALLOWED_HOSTS` in `deploy/deployment.yaml`, set to the server's own Service `name:port`
+  (`chemclaw-mcp-props:8850`). `/mcp` sits behind upstream's DNS-rebinding guard, which admits a
+  loopback `Host` only, so without it every call through the Service is a `421 Misdirected Request`
+  — while `/healthz`, outside the MCP app, stays green and nothing else notices. **An address
+  Chemclaw3 dials by any other name needs that name added here too**: a namespace-qualified
+  `chemclaw-mcp-props.chemclaw-tools.svc:8850`, an ingress host, a port-forward to a non-loopback
+  name. Entries are comma-separated `host:port` or `host:*`; a URL, a missing port or a wildcard
+  host is refused at startup, naming the entry
+  (`D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`).
 
 ### The revision is a build argument, and forgetting it is silent
 

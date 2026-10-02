@@ -58,6 +58,11 @@ since):
   `NaN`/`Infinity` literals JSON does not have and hands an optional argument `None` for them;
   pydantic coerces the strings `"nan"` and `"1e400"`. `finite.py` refuses both — the raw body and
   every served tool's argument model — so no server has to remember it argument by argument.
+- **Upstream's DNS-rebinding guard admits a loopback `Host` only.** `FastMCP("x")` is configured
+  for `127.0.0.1` whatever uvicorn later binds, so every in-cluster caller dialling a Service name
+  was answered `421 Misdirected Request` on `/mcp` while `/healthz` stayed green. `rebinding.py`
+  keeps the guard on and adds the names listed in `MCP_ALLOWED_HOSTS`, which every shipped
+  Deployment sets to its own Service's `name:port`.
 - **`configure_logging()` must force, and must not run at import.** `FastMCP.__init__` calls
   `basicConfig` at import of the server's `tools.py`, so anything that does not pass `force=True`
   silently loses to it. But every server builds its app at *module scope*, so calling it from
@@ -114,6 +119,7 @@ from mcp_server_kit.identity import (
 from mcp_server_kit.limits import effective_bounds
 from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
+from mcp_server_kit.rebinding import apply_allowed_hosts
 from mcp_server_kit.schema_cache import install_validator_cache
 from mcp_server_kit.sessions import apply_session_ceiling, apply_session_idle_timeout
 from mcp_server_kit.tracing import tool_call_span
@@ -484,6 +490,8 @@ def connector_app(
     Raises:
         RuntimeError: `server` has already been wrapped by a previous `connector_app` call. This
             is not idempotent and cannot be — see `_claim_server`.
+        ValueError: `MCP_ALLOWED_HOSTS` holds an entry the DNS-rebinding guard cannot use — see
+            `rebinding.parse_allowed_hosts`.
     """
     _claim_server(server, name=name)
     if token_env:
@@ -510,6 +518,10 @@ def connector_app(
     # wrong axis and this comment used to name it as the right one — a refusal was an ERROR span
     # against a `refused` counter no matter which wrapper was outside which.
     _continue_trace_per_tool_call(server, name=name)
+    # Before `streamable_http_app()`, which is where upstream reads it. Upstream's own default
+    # admits a loopback `Host` only, so every caller dialling a Service name was answered 421 —
+    # see `rebinding.py`. Raises at import on an entry it cannot use, naming it.
+    apply_allowed_hosts(server)
     mcp_app = server.streamable_http_app()
     # After `streamable_http_app()`, because that is what lazily builds the session manager this
     # reaches into. It adds one more wrapper around `call_tool`, outside the ones above and

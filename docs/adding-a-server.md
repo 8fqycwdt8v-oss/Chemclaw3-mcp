@@ -280,6 +280,12 @@ What a *new server* still owes:
    default-deny egress policy does not select the workload and the no-egress promise is void for it;
    `tests/test_deploy.py` checks the two against each other. Set `readOnlyRootFilesystem: true`
    unless the server writes at runtime (`calc`'s scratch, `pyexec`'s sandbox) — those set it false.
+   **Rename its `MCP_ALLOWED_HOSTS` too**, to the new Service's `name:port`: upstream's
+   DNS-rebinding guard on `/mcp` admits a loopback `Host` only, so without it every in-cluster call
+   is a `421` while `/healthz` stays green.
+   `tests/test_deploy_shape.py::test_mcp_admits_the_host_its_own_service_is_dialled_by` derives the
+   value from `service.yaml`; `D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`
+   has why the guard is told the name rather than switched off.
 
 ## The tool docstrings
 
