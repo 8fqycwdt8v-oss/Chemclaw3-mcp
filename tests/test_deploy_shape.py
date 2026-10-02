@@ -34,6 +34,7 @@ from typing import Any
 
 import pytest
 import yaml
+from mcp_server_kit.rebinding import ALLOWED_HOSTS_ENV, parse_allowed_hosts
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVERS = ROOT / "servers"
@@ -276,6 +277,34 @@ def test_liveness_and_readiness_do_not_share_a_route(server: Path) -> None:
     assert readiness != liveness, (
         f"{server.name} points both probes at {readiness!r}, so shedding traffic and replacing the "
         "pod are one answer again"
+    )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_mcp_admits_the_host_its_own_service_is_dialled_by(server: Path) -> None:
+    """`MCP_ALLOWED_HOSTS` is this server's Service `name:port`, read off `service.yaml`.
+
+    Upstream's DNS-rebinding guard admits a loopback `Host` only, so a caller dialling the Service
+    — `http://chemclaw-mcp-<name>:<port>/mcp`, the short-name form Chemclaw3's chart ships — was
+    answered 421 on every `/mcp` request, measured on a kind cluster, while `/healthz` stayed green
+    (`D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`). The expected value
+    is derived from the Service rather than written here, so renaming a Service or moving its port
+    without carrying the allow-list along is red; and it is parsed by the kit's own reader, so a
+    value the pod would refuse at startup is red here first.
+    """
+    service = _load(server / "deploy" / "service.yaml")
+    port = service["spec"]["ports"][0]["port"]
+    expected = f"{service['metadata']['name']}:{port}"
+    env = {
+        entry["name"]: entry.get("value")
+        for entry in _pod_spec(server)["containers"][0].get("env", [])
+    }
+    assert ALLOWED_HOSTS_ENV in env, (
+        f"{server.name} sets no {ALLOWED_HOSTS_ENV}; every in-cluster `/mcp` call is a 421"
+    )
+    assert expected in parse_allowed_hosts(env[ALLOWED_HOSTS_ENV]), (
+        f"{server.name} admits {env[ALLOWED_HOSTS_ENV]!r}, which does not include its own Service "
+        f"address {expected!r}"
     )
 
 
