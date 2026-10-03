@@ -494,7 +494,7 @@ class TestTheCanonicalViewIsComputedOncePerCall:
     """`torsion_handle` re-canonicalised the whole molecule on every candidate bond.
 
     The same quadratic shape as `site_handle`, and the same measurement: 300 heavy atoms was 3.37 s
-    and 600 was 18.31 s, for a tool whose docstring says "Free: a graph operation, no calculation,
+    and 600 was 18.31 s, for a tool whose docstring said "Free: a graph operation, no calculation,
     no cache". The caller already had the canonical ranks and threw them away.
     """
 

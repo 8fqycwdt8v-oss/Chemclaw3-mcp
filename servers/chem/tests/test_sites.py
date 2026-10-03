@@ -320,7 +320,7 @@ class TestTheMoleculeIsCanonicalisedOncePerCallAndNotOncePerAtom:
 
     Two whole-molecule passes — `CanonicalRankAtoms` and `MolToSmiles` — per atom is quadratic in a
     server with no size bound anywhere: measured on a straight-chain alkane, 100 atoms was 0.18 s,
-    300 was 3.57 s, 600 was 18.46 s, and 1000 did not finish. Both are advertised to the model as
+    300 was 3.57 s, 600 was 18.46 s, and 1000 did not finish. Both were advertised to the model as
     "Free: a graph operation, no calculation, no cache", and both run in an uncancellable worker
     thread past the manifest's own 30 s budget.
     """
