@@ -627,3 +627,36 @@ def test_the_body_cap_admits_far_more_atoms_than_the_ceiling_at_every_formatting
             "being a wide margin, the transport bound has become the real ceiling and "
             "`Structure`'s own is no longer what protects the optimizer"
         )
+
+
+@pytest.mark.parametrize("program", ["xtb", "crest"])
+def test_a_subprocess_the_clock_killed_is_a_time_budget_stop_not_an_internal_fault(
+    monkeypatch: pytest.MonkeyPatch, program: str
+) -> None:
+    """A CLI run past its timeout is the same kind of stop as `Deadline`'s, and must say so.
+
+    As a `CliError` it reached `connector_app`'s sanitiser as "an internal error", which Chemclaw3
+    reads as an outage and retries — re-running hours of CREST against the same clock, the outcome
+    `TIME_BUDGET_MARKER` exists to prevent. Driven at the raise, with the kill itself stubbed:
+    `test_process_isolation.py` is where the kill is real.
+    """
+    import subprocess
+
+    import chemclaw_mcp_calc.engine.crest_cli as crest_cli
+    import chemclaw_mcp_calc.engine.xtb_cli as xtb_cli
+
+    def killed(argv: list[str], **_: Any) -> None:
+        raise subprocess.TimeoutExpired(argv, 1.0)
+
+    module = xtb_cli if program == "xtb" else crest_cli
+    monkeypatch.setattr(module, "run_isolated", killed)
+    structure = structure_from_smiles("CCO")
+    with pytest.raises(budget_module.TimeBudgetError) as stopped:
+        if program == "xtb":
+            monkeypatch.setattr(xtb_cli, "require_binary_path", lambda: "/usr/bin/xtb")
+            xtb_cli.run(structure, task="sp", method="GFN2-xTB")
+        else:
+            monkeypatch.setattr(crest_cli, "binary_path", lambda: "/usr/bin/crest")
+            crest_cli.run(structure, search="conformers", method="GFN2-xTB")
+    assert str(stopped.value).startswith("[calc-time-budget] ")
+    assert f"{program} " in str(stopped.value) and "timed out after" in str(stopped.value)
