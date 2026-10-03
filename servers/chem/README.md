@@ -8,8 +8,11 @@ reagents.
 
 Chemclaw3 ships its own in-tree `chem` connector, and `CLAUDE.md`'s exclusion table forbids a second
 answer to one question. This began as a **port**, not a duplicate: same manifest `name`, same tools,
-same argument names, same docstrings — the model-facing prose is carried over word for word, because
-several sentences in it exist to prevent a mistake that was measured in a live run.
+same argument names, and the model-facing rules carried over intact, because several of them exist to
+prevent a mistake that was measured in a live run. The prose has since been narrowed to the rules
+themselves (Chemclaw3-mcp#152): every model call that binds this server pays for it, so the
+measurement that earned a rule lives in the test that holds it, and
+`tests/test_prompt_cost.py` ratchets what the surface costs.
 `enumerate_torsions` is the one tool here Chemclaw3's bundle never had, added under
 `D-2026-08-26-a-torsion-is-named-not-indexed`; Chemclaw3's own manifest declares it too, so the two
 lists still agree.
