@@ -179,7 +179,7 @@ normalized over.
 upstream at all, and deliberately so: an external resolver (PubChem, OPSIN) is a request-time
 network call, which this repository does not permit and which the common case does not need.
 *Provenance:* **a port of Chemclaw3's own in-tree `chem` connector** — the same manifest name, the
-same argument names, the same model-facing docstrings, plus `enumerate_torsions`, which that bundle
+same argument names, the same model-facing rules (the prose since narrowed to them, #152), plus `enumerate_torsions`, which that bundle
 never had and whose name Chemclaw3's manifest now declares too. It is a replacement for
 that bundle rather than a second implementation, and the two cannot both answer:
 `CHEMCLAW_CONNECTOR_URLS` is keyed by name, and `CHEMCLAW_CONNECTORS_DIR` resolves a name collision

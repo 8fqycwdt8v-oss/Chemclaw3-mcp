@@ -87,6 +87,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel
 
+from chemclaw_mcp_calc.engine.budget import TIME_BUDGET_MARKER, TimeBudgetError
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.metrics import (
     PROCESS_GROUP_KILLS,
@@ -629,7 +630,8 @@ def run(
         The energy, plus the optimized geometry and/or Hessian the task produced.
 
     Raises:
-        CliError: the run timed out or exited non-zero.
+        TimeBudgetError: the run was killed at its timeout, opening with `TIME_BUDGET_MARKER`.
+        CliError: the run exited non-zero.
         ValueError: the binary is absent, or the method is not one this backend supports.
     """
     path = require_binary_path()
@@ -661,12 +663,14 @@ def run(
                 label=task,
             )
         except subprocess.TimeoutExpired as error:
-            # `CliError` is a `RuntimeError` by design, so this reaches `connector_app`'s sanitiser
-            # and is logged there as "a tool raised an unexpected exception" — indistinguishable
-            # from a genuine bug in the server. `run_isolated` has already logged the kill at
-            # WARNING and counted it, which is what separates the two.
-            raise CliError(
-                f"xtb {task} timed out after {settings.xtb_cli_timeout_seconds}s"
+            # **A stop by the clock, named as one**, like `budget.Deadline`'s. As a `CliError` it
+            # reached the sanitiser as an internal fault, which Chemclaw3 reads as an outage and
+            # retries — re-running the same work against the same clock, which is what
+            # `TIME_BUDGET_MARKER` exists to prevent. `run_isolated` has already logged the kill at
+            # WARNING and counted it.
+            raise TimeBudgetError(
+                f"{TIME_BUDGET_MARKER} xtb {task} timed out after "
+                f"{settings.xtb_cli_timeout_seconds}s"
             ) from error
         if completed.returncode != 0 and not _produced_everything(directory, task):
             tail = "\n".join(completed.stdout.splitlines()[-12:])

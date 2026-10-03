@@ -9,7 +9,8 @@ That repository measures it in its own CI, against this repository's `main` — 
 be heard there only after the merge that caused it (Chemclaw3-mcp#152: `chem` grew 2,027 tokens of
 description across seven tools and nothing here went red). This is the same quantity measured on
 this side, before the merge: the characters of each tool's `{name, description, inputSchema}`,
-which is within a few percent of Chemclaw3's chars/4 estimate of the converted schema.
+which is within a few percent of what Chemclaw3's `count_tokens_approximately` reads off the
+converted schema, divided by four.
 """
 
 from __future__ import annotations

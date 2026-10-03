@@ -58,6 +58,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from chemclaw_mcp_calc.engine.budget import TIME_BUDGET_MARKER, TimeBudgetError
 from chemclaw_mcp_calc.engine.chem import atomic_numbers, perceive_smiles
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.structure import Structure
@@ -281,7 +282,8 @@ def run(
         The ensemble members ordered by energy.
 
     Raises:
-        CliError: CREST is absent, timed out, exited non-zero, or wrote no ensemble.
+        TimeBudgetError: the search was killed at its timeout, opening with `TIME_BUDGET_MARKER`.
+        CliError: CREST is absent, exited non-zero, or wrote no ensemble.
         ValueError: the method is not one CREST accepts.
     """
     path = binary_path()
@@ -326,10 +328,12 @@ def run(
                 label=search,
             )
         except subprocess.TimeoutExpired as error:
-            # See the sibling in `xtb_cli`: `run_isolated` has already logged and counted the kill,
-            # so this raise is not the only record of a four-hour run being abandoned.
-            raise CliError(
-                f"crest {search} timed out after {settings.crest_timeout_seconds}s; "
+            # A stop by the clock, named as one — see the sibling in `xtb_cli`. `run_isolated` has
+            # already logged and counted the kill, so this raise is not the only record of a
+            # four-hour run being abandoned.
+            raise TimeBudgetError(
+                f"{TIME_BUDGET_MARKER} crest {search} timed out after "
+                f"{settings.crest_timeout_seconds}s; "
                 "a larger molecule needs a longer budget or a cheaper effort level"
             ) from error
         if completed.returncode != 0:

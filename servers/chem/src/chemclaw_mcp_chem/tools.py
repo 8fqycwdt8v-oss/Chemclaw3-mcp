@@ -4,9 +4,9 @@
 and this prose are what the agent reads before deciding whether to call a tool and what to pass
 it, and Chemclaw3 charges their whole token cost to every request it sends
 (`SERVED_ELSEWHERE_ALLOWANCE` there). So a docstring states the *rule* — the units, what the tool
-is not, which index to pass, the bound by name — and the measurement that earned the rule lives in
-the test that holds it, not here. Several rules exist because a live run got something wrong; the
-rule stays, and the anecdote is in the test.
+is not, which index to pass, the bound by name — and the measurement that earned the rule lives
+beside the code or in the test that holds it, not here. Several rules exist because a live run got
+something wrong; the rule stays, and the anecdote does not ride on every request.
 
 Every capability here is a pure function of its arguments plus a read of a vendored table: no
 store, no durable state, no network. A count is deliberately not written here — the sentence that
@@ -160,8 +160,8 @@ async def resolve_compound(name: str) -> Annotated[CallToolResult, ResolvedCompo
     readings, so pass the structure you meant.
 
     **A metal-ligand bond comes back charge-separated** (`...[Pd-]...[NH2+]...`), the same compound
-    as its dative spelling. Pass the returned SMILES on exactly as written; only a π-donor keeps
-    its arrow.
+    as its dative spelling, and resolving it again returns it unchanged. Pass the returned SMILES on
+    exactly as written; only an alkene or arene π-bound to a metal keeps its arrow.
 
     Args:
         name: What the chemist wrote — a trivial name, an abbreviation, or a SMILES string.
@@ -222,9 +222,9 @@ async def stoichiometry_table(
     charge?" from molecular weights and densities.
 
     **A charge specified in volumes goes in `solvents`/`volumes`**, never converted to equivalents
-    yourself — that conversion is the error this argument pair exists to remove. Pass each species
-    in the units it was *specified* in (acetic acid at 1.5 equiv, DMF as the Vilsmeier reagent, are
-    equivalents); each row's `role` reports which.
+    yourself — that conversion is the error this argument pair exists to remove. Nothing checks
+    which path a substance takes: pass it in the units it was *specified* in (acetic acid at 1.5
+    equiv or DMF as the Vilsmeier reagent go in `reagents`); each row's `role` reports which.
 
     Args:
         basis: The limiting reagent (name or SMILES); its mass sets the scale.
@@ -236,11 +236,11 @@ async def stoichiometry_table(
             length. A 4:1 THF/water mixture at 10 total volumes is `[8.0, 2.0]`.
 
     Returns:
-        One row per species with moles and mass in grams, and for solvents density (g/mL) and
-        volume (mL). Unresolvable reagents are listed in `unresolved` with no row, never a guessed
-        mass. A formula/SMILES collision (`CO`, a bare element), an unresolvable solvent or a
-        solvent with no density on file is an error, because a silently dropped row flatters every
-        mass metric derived from the table.
+        One row per species with the amount in mmol (`moles_mmol`) and the mass in g, and for
+        solvents density (g/mL) and volume (mL). Unresolvable reagents are listed in `unresolved`
+        with no row, never a guessed mass. A formula/SMILES collision (`CO`, a bare element), an
+        unresolvable solvent or a solvent with no density on file is an error, because a silently
+        dropped row flatters every mass metric derived from the table.
     """
     # One offload for the whole table rather than one per species: a 10-reagent charge table is
     # 11 RDKit parses, and hopping to a worker thread per parse would cost more than it saves.
@@ -268,7 +268,8 @@ async def green_metrics(
     Args:
         input_masses_g: Every charged species' mass in grams — reagents, catalyst **and solvent**
             (every row of the charge table). Omitting solvent is how these numbers get flattered.
-        product_mass_g: Isolated product mass in grams. Must be positive.
+        product_mass_g: Isolated product mass in grams. Must be positive, and not above the total
+            input — an unsound mass balance is refused.
 
     Returns:
         Both metrics plus the masses behind them.
@@ -293,8 +294,9 @@ async def render_structure(smiles: str, highlight_atoms: list[int] | None = None
     `describe_sites`, its returned canonical `smiles`); an index into a different spelling lands
     on another atom and looks like confirmation.
 
-    **A drawing that would not fit is refused, not cut down** — highlighting roughly doubles the
-    SVG, so drop the highlights or draw a fragment.
+    **A drawing that would not fit is refused, not cut down** — above `MAX_DEPICTION_ATOMS` (250
+    atoms by default) or `MAX_DEPICTION_CHARS` (50,000 characters of SVG). Highlighting roughly
+    doubles the SVG, so drop the highlights or draw a fragment.
 
     Args:
         smiles: A molecule SMILES, or a reaction SMILES (`reactants>>products`).
@@ -320,7 +322,8 @@ async def enumerate_torsions(smiles: str) -> list[Torsion]:
     wrong bond with no error.
 
     **Then confirm the bond before spending anything.** One match for what the chemist named:
-    proceed and say which, by `label`. Several: ask, listing the labels. None: say so.
+    proceed and say which, by `label`. Several: ask, listing the labels. None: say so, and list
+    what there is.
 
     A graph operation — no calculation and no cache.
 
@@ -356,12 +359,13 @@ async def describe_sites(smiles: str) -> SiteSet:
 
     Returns:
         `smiles`: the canonical form the indices are numbered against — usually **not** the string
-        you passed. Use this one for `render_structure` or a per-atom calculation. Then `sites`,
-        one per symmetry-distinct heavy atom: `site_id` is stable however the molecule is written
-        (carry it across turns); `atoms` are the heavy-atom indices and `hydrogens` the indices its
+        you passed. Use this one for `render_structure` or a per-atom calculation. Then `sites`, one
+        per symmetry-distinct heavy atom: `site_id` is stable however the molecule is written (carry
+        it across turns); `atoms` are the heavy-atom indices and `hydrogens` the indices its
         hydrogens take once made explicit (a C-H question is read on the hydrogen, reported on the
-        carbon); `scopes` filters by question (e.g. `ring_carbons`); `label`, `ring_position` and
-        `adjacent_ring_heteroatoms` make an answer sayable. Hydrogens are not sites of their own.
+        carbon); `scopes` tags which questions the site answers (filter on e.g. `ring_carbons`);
+        `label`, `ring_position` and `adjacent_ring_heteroatoms` make an answer sayable. Hydrogens
+        are not sites of their own.
     """
     return await asyncio.to_thread(describe_atom_sites, smiles)
 
@@ -373,9 +377,10 @@ async def describe_topology(smiles: str) -> Topology:
 
     Structural — no quantum calculation, and nothing here is a prediction. Ask it first when unsure
     whether an expensive search is worth it: the commonest waste is a conformer search on a rigid
-    molecule. It is **not** free: `tautomer_count` is an enumeration, up to about a second on a
-    large molecule. Above `MAX_TAUTOMER_HEAVY_ATOMS` (500 heavy atoms by default) tautomers are not
-    counted and every other field is still answered.
+    molecule — and it answers for molecules the enumerations refuse. It is **not** free:
+    `tautomer_count` is an enumeration, up to about a second on a large molecule. Above
+    `MAX_TAUTOMER_HEAVY_ATOMS` (500 heavy atoms by default) tautomers are not counted and every
+    other field is still answered.
 
     How to read the answer:
 
@@ -383,7 +388,8 @@ async def describe_topology(smiles: str) -> Topology:
       ensemble.
     - **`tautomer_count` 1**: no tautomer question. Above 1, resolve the form *before* computing
       anything else. **Null** with `tautomer_count_saturated`: more than the cap, emphatically
-      tautomeric. Null with `tautomer_count_computed` false: too large to count, says nothing.
+      tautomeric — not the number 64. Null with `tautomer_count_computed` false: too large to
+      count, says nothing either way; ask about the tautomeric unit on its own.
     - **`unassigned_stereocentres` 0**: a stereoisomer expansion returns one structure.
     - **`ionisable_acidic_sites` / `ionisable_basic_sites`**: one site means `predict_pka` covers
       it; several, or both kinds, is the polyprotic/amphoteric case for a microspecies profile.
@@ -432,8 +438,9 @@ async def enumerate_protonation_states(smiles: str) -> SpeciesSet:
     zwitterion's doubly-ionised form) come from calling this again on a result, so the 2^n
     expansion stays an explicit decision.
 
-    Refused when `ionisable sites x heavy atoms` exceeds `MAX_SITE_ATOM_PRODUCT` — a bound on the
-    work, not on how many states there are. The refusal names both numbers and three ways on.
+    Refused when `ionisable sites x heavy atoms` exceeds `MAX_SITE_ATOM_PRODUCT` (150,000 by
+    default) — a bound on the work, not on how many states there are; the refusal names both
+    numbers and three ways on. Also refused past 32 microstates.
 
     Args:
         smiles: The molecule, as SMILES. Give the neutral form where there is one.
@@ -450,7 +457,7 @@ async def enumerate_stereoisomers(smiles: str) -> SpeciesSet:
     """List the stereoisomers of a molecule at the centres its SMILES leaves *unassigned*.
 
     Structural. `rank_species` on the result answers the diastereomer question, never the
-    enantiomer one — enantiomers are isoenergetic and nothing here distinguishes them.
+    enantiomer one — enantiomers are isoenergetic and no calculation here distinguishes them.
 
     **Only unassigned centres are expanded**: defined stereochemistry is a claim, so a
     fully-specified input comes back as itself.
@@ -477,7 +484,8 @@ async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic"
     computes one balanced reaction per bond and answers "which bond breaks first".
 
     Acyclic single bonds only (breaking a ring bond gives a biradical, not two fragments), and
-    symmetry-equivalent bonds collapse to one entry.
+    symmetry-equivalent bonds collapse to one entry. Refused past `MAX_CLEAVAGES` (48) distinct
+    bonds: name the bonds that matter, or ask about a fragment.
 
     Args:
         smiles: The molecule, as SMILES.
@@ -486,8 +494,8 @@ async def enumerate_bond_cleavages(smiles: str, mode: CleavageMode = "homolytic"
 
     Returns:
         One entry per distinct bond, fragments carrying explicit radical electrons or charges.
-        `atoms` pairs number `parent` — the canonical form, hydrogens explicit — not the SMILES
-        you passed.
+        `atoms` number `parent` (canonical) once its hydrogens are made explicit — heavy atoms keep
+        `parent`'s indices and hydrogens follow — not the SMILES you passed.
     """
     return await asyncio.to_thread(enumerate_cleavages, smiles, mode)
 
@@ -501,10 +509,11 @@ async def enumerate_degradants(smiles: str) -> DegradantSet:
     the graph, not that the chemistry happens; report them so. Each names its transform, which is
     what a chemist can argue with ("N-oxidation" on a hindered amine). The transforms are the
     oxidative, hydrolytic and thermal routes an ICH Q1A study looks for first; the list is short and
-    not comprehensive.
+    not comprehensive: a degradant it does not propose is one nobody is offered.
 
-    Refused when `matches x heavy atoms` exceeds `MAX_DEGRADANT_MATCH_ATOM_PRODUCT` (100,000 by
-    default), naming both numbers — ask about the repeat unit instead.
+    Refused past 64 proposals, or when `matches x heavy atoms` exceeds
+    `MAX_DEGRADANT_MATCH_ATOM_PRODUCT` (100,000 by default), naming both numbers — ask about the
+    repeat unit instead.
 
     Args:
         smiles: The parent compound, as SMILES.
@@ -525,9 +534,9 @@ async def enumerate_substitutions(
     Structural. Pass `smiles` and `labels` from the result to `rank_species` (as `species` and
     `labels`, `ranking="custom"`) to rank the isomers by free energy.
 
-    - `move` (default): each substituent on an aromatic carbon is moved to every other aromatic C-H
-      of its ring system. The input is first, labelled "as given". `substituent` restricts which
-      group moves (`C` methyl, `OC` methoxy).
+    - `move` (default): each substituent on an aromatic carbon is moved, one at a time, to every
+      other aromatic C-H of its ring system. The input is first, labelled "as given". `substituent`
+      restricts which group moves (`C` methyl, `OC` methoxy); omit it to move every group.
     - `add`: `substituent` is put on each symmetry-distinct aromatic C-H once. The input is **not**
       in the result — it has a different formula.
 
@@ -537,10 +546,11 @@ async def enumerate_substitutions(
     **A ranking of this set is not a regioselectivity.** `rank_species` orders finished isomers by
     stability, while electrophilic aromatic substitution is usually decided kinetically at the sigma
     complex: say so whenever you report one. Not covered: aliphatic positions, a second
-    substitution (call again on a result), and a group on a ring nitrogen.
+    substitution (call again on a result), and a group on a ring nitrogen — for azole
+    N-alkylation, move the carbon substituents instead.
 
-    Refused above `MAX_SUBSTITUTION_HEAVY_ATOMS` (250 by default) or when `candidates x heavy
-    atoms` exceeds `MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT` (20,000 by default).
+    Refused above `MAX_SUBSTITUTION_HEAVY_ATOMS` (250 heavy atoms by default) or when `candidates x
+    heavy atoms` exceeds `MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT` (20,000 by default).
 
     Args:
         smiles: The molecule, as SMILES.
@@ -549,6 +559,7 @@ async def enumerate_substitutions(
 
     Returns:
         `smiles` and `labels`, positions named as `describe_sites` names them, and `sites` giving
-        each landing position's `site_id` on `parent`. Refuses rather than truncating past 64.
+        each landing position's `site_id` on `parent`. Refuses rather than truncating past 64
+        isomers.
     """
     return await asyncio.to_thread(enumerate_substitution_set, smiles, substituent, mode)
