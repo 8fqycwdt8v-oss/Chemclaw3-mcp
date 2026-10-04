@@ -10,8 +10,8 @@ and discovery is enablement unless `CHEMCLAW_CONNECTORS_ENABLED` narrows it. So 
 
 | Server | How Chemclaw3 actually reaches it |
 | --- | --- |
-| [`calc`](../servers/calc/) | From **inside** `science/calc/store.py::cached_compute`, as a backend on a cache miss. `CHEMCLAW_CALC_SERVER_URL`. |
-| [`rxnlabel`](../servers/rxnlabel/) | From a background corpus-labelling drain, through `rxnlabel_server_url` / `rxnlabel_server_token_env`. |
+| [`calc`](../servers/calc/) | From **inside** `science/calc/store.py::cached_compute`, as a backend on a cache miss. `CHEMCLAW_CALC_SERVER_URL`, `CHEMCLAW_CALC_SERVER_TOKEN_ENV` (→ `CHEMCLAW_CALC_TOKEN`). |
+| [`rxnlabel`](../servers/rxnlabel/) | From a background corpus-labelling drain. `CHEMCLAW_RXNLABEL_SERVER_URL`, `CHEMCLAW_RXNLABEL_SERVER_TOKEN_ENV` (→ `CHEMCLAW_RXNLABEL_TOKEN`). |
 
 Neither is dialled as a connector, and mounting either has a consequence with no error attached to
 it. `calc` carries a Chemclaw3 bundle's *name*, so first-directory-wins hands it the collision —
@@ -22,9 +22,7 @@ replaces them with 20 raw physics primitives that have no calculation cache, no 
 no calibration ledger behind them. `rxnlabel` puts internal batch primitives into the agent's prompt
 as tools to choose between.
 
-**Both of those used to be prevented by prose** — in block capitals, in the same five documents that
-supplied the copy-pasteable `export` that causes them. This directory is the fix, and it has two
-layers:
+This directory is what prevents both, in two layers:
 
 1. **No published `export` line names it.** `manifests/` holds only connectors, and
    `tests/test_fleet.py::test_the_directory_the_export_line_names_holds_only_connectors` replicates

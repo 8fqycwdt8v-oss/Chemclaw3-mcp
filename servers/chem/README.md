@@ -1,30 +1,25 @@
 # `chem` — bench chemistry over RDKit
 
-What do I weigh out, what is this compound, what does it look like, which bond can I rotate, and
-how green is this route. Five pure, deterministic tools over RDKit and a vendored table of 61 bench
-reagents.
+What do I weigh out, what is this compound, what does it look like, which bond can I rotate, how
+green is this route — and, for Chemclaw3's multi-step protocols, which species a structure can exist
+as. Pure, deterministic tools over RDKit and a vendored table of 61 bench reagents; port **8858**.
 
-## It replaces a Chemclaw3 bundle rather than adding a second one
+## Where it came from, and what Chemclaw3 holds of it
 
-Chemclaw3 ships its own in-tree `chem` connector, and `CLAUDE.md`'s exclusion table forbids a second
-answer to one question. This began as a **port**, not a duplicate: same manifest `name`, same tools,
-same argument names, and the model-facing rules carried over intact, because several of them exist to
-prevent a mistake that was measured in a live run. The prose has since been narrowed to the rules
-themselves (Chemclaw3-mcp#152): every model call that binds this server pays for it, so the
-measurement that earned a rule lives in the test that holds it, and
-`tests/test_prompt_cost.py` ratchets what the surface costs.
-`enumerate_torsions` is the one tool here Chemclaw3's bundle never had, added under
-`D-2026-08-26-a-torsion-is-named-not-indexed`; Chemclaw3's own manifest declares it too, so the two
-lists still agree.
+This began as a **port** of Chemclaw3's in-tree `chem` connector, not a duplicate: same manifest
+`name`, same tools, same argument names, and the model-facing rules carried over intact, because
+several of them exist to prevent a mistake that was measured in a live run. The prose has since been
+narrowed to the rules themselves (Chemclaw3-mcp#152): every model call that binds this server pays
+for it, so the measurement that earned a rule lives in the test that holds it, and
+`tests/test_prompt_cost.py` ratchets what the surface costs. `enumerate_torsions` and the species
+enumerations were added here after the port.
 
-The two cannot both answer, and that is enforced by Chemclaw3's own mechanism rather than by
-convention:
-
-- Bundles are addressed by name, so `CHEMCLAW_CONNECTOR_URLS` has one `chem` key.
-- `CHEMCLAW_CONNECTORS_DIR` is a `PATH`-style list and **the first directory wins a name
-  collision** (`connectors/registry.py::_bundle_dirs`, "first dir wins"). Putting this fleet's
-  `manifests/` ahead of Chemclaw3's own connectors directory is what makes this server the `chem`
-  the agent sees; leaving it behind keeps the in-tree bundle.
+Chemclaw3 no longer runs any `chem` code. What it keeps is a *declaration* —
+`connectors/chem/connector.yaml`, the same name and tool list, pointing at this server — because its
+validators and skills name these tools by string. So there is one implementation and one address
+(`CHEMCLAW_CONNECTOR_URLS` has one `chem` key); if this repository's `manifests/` is also on
+`CHEMCLAW_CONNECTORS_DIR`, the first directory wins the tool list and both describe this server
+(`docs/integration.md`).
 
 Moving it out here buys what the split is for: RDKit leaves the chat service's image, and the tool
 surface releases on its own cadence.
@@ -38,27 +33,72 @@ surface releases on its own cadence.
 | `green_metrics` | E-factor and PMI from the charged masses. |
 | `render_structure` | A molecule or reaction as an inline SVG, optionally with atoms highlighted. |
 | `enumerate_torsions` | Which bonds can be rotated, each with a handle that survives a rewritten SMILES. |
+| `describe_topology` | What the molecular graph is like, before an expensive search is spent on it — whether a search would find anything at all. |
+| `describe_sites` | A name for every atom, so a per-atom number can be reported as a *position*. |
+| `enumerate_tautomers` | The proton-shift isomers a molecule can exist as. |
+| `enumerate_protonation_states` | The protonation microstates — each ionisable site toggled, one at a time. |
+| `enumerate_stereoisomers` | The stereoisomers at the centres a SMILES leaves unassigned. |
+| `enumerate_bond_cleavages` | Every breakable bond and the two fragments breaking it would give. |
+| `enumerate_degradants` | Degradation products proposed by forced-degradation transforms. |
+| `enumerate_substitutions` | The regioisomers of a substitution series — the set a "which position" question ranks. |
 
-All five are `read_only`: pure functions of their arguments plus a read of a read-only table.
-Nothing here writes, spends real compute, or has an effect worth gating — which matters, because
-"what do we actually charge, and what does it cost in waste" has to be answerable *before* a plan is
-approved, not after.
+All of them are `read_only`: pure functions of their arguments plus a read of a read-only table, and
+nothing here writes — which matters, because "what do we actually charge, and what does it cost in
+waste" has to be answerable *before* a plan is approved, not after. **Read-only is not free**, though:
+`render_structure`, `describe_topology` and the tautomer, protonation, stereoisomer, degradant and
+substitution enumerations cost up to seconds of CPU on a legal molecule, so those seven share one
+admission ceiling (`engine/admission.py::GATED_TOOLS`) and the manifest lists them under `queued:` so
+Chemclaw3 waits for a slot rather than being refused. Each enumeration bounds its output and
+**refuses past the bound rather than truncating**.
 
 ## Running it
 
 ```sh
 make run-chem                             # from the repository root; 127.0.0.1:8858
-curl -s localhost:8858/healthz            # {"status":"ok","server":"chem"}
+curl -s localhost:8858/healthz            # {"status":"ok","server":"chem",…,"datasets":["bench-reagents@0.1.0"]}
 ```
 
-The bearer token is `CHEMCLAW_CHEM_TOKEN`, and the same variable name is read on both sides.
-Chemclaw3's in-tree bundle declares `auth: {mode: none}` because it was only ever dialled over
-loopback from the same pod; a server in another image is dialled across a network, so this one
-declares bearer and enforces it even on the loopback dev URL.
+The bearer token is `CHEMCLAW_CHEM_TOKEN`, and the same variable name is read on both sides. It is
+enforced even on the loopback dev URL; the in-tree bundle this was ported from declared
+`auth: {mode: none}` because it was only ever dialled over loopback from the same pod.
 
-`CHEMCLAW_CHEM_RENDER_SIZE_PX` (default 320) is the depiction's edge length in pixels — Chemclaw3
-carries the same knob as `settings.structure_render_size_px`, for deployments whose chat surface
-renders larger cards.
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8858 / `chemclaw-mcp-chem` |
+| Token | `CHEMCLAW_CHEM_TOKEN` |
+| Chemclaw3 | connector `chem`, declared there and enabled by default; its seven queued tools run through `connectors.chem.interactive` (sized 2 pods x 4 slots) |
+| Pod | requests 500m / 256Mi, limits 1 CPU / 512Mi; 2 → 6 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Readiness | `/healthz` loads and checksums `records.csv` (`bench-reagents@<version>`); a corrupt table is a 503 naming the file. |
+| Admission | `CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS` (4, derived from the pod's thread pool) over the seven gated tools; a full pod answers `[chem-at-capacity] …`. `CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS` is retired and refused at startup. |
+
+Every bound below is a startup-validated environment variable, reported under `bounds` on
+`/healthz`:
+
+| Variable | Default | Bounds |
+| --- | --- | --- |
+| `CHEMCLAW_CHEM_RENDER_SIZE_PX` | 320 | depiction edge length in pixels |
+| `CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS` | 250 | atoms in one drawing (2D layout is superlinear) |
+| `CHEMCLAW_CHEM_MAX_DEPICTION_CHARS` | 50,000 | SVG characters returned |
+| `CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT` | 150,000 | ionisable sites x atoms, for `enumerate_protonation_states` |
+| `CHEMCLAW_CHEM_MAX_TAUTOMER_HEAVY_ATOMS` | 500 | heavy atoms for tautomer enumeration |
+| `CHEMCLAW_CHEM_MAX_STEREO_ISOMER_ATOM_PRODUCT` | 6,000 | unassigned centres x atoms, for `enumerate_stereoisomers` |
+| `CHEMCLAW_CHEM_MAX_DEGRADANT_MATCH_ATOM_PRODUCT` | 100,000 | transform matches x atoms, for `enumerate_degradants` |
+| `CHEMCLAW_CHEM_MAX_SUBSTITUTION_HEAVY_ATOMS` | 250 | heavy atoms for `enumerate_substitutions` |
+| `CHEMCLAW_CHEM_MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT` | 20,000 | candidates x heavy atoms, for `enumerate_substitutions` |
+
+`MCP_MAX_SMILES_CHARS` and `MCP_MAX_MOLECULE_ATOMS` apply before any of these. A call past a bound is
+refused with a message naming the size, before the work starts — never truncated.
+
+The rest of this section is why the bounds are priced the way they are.
+
+`CHEMCLAW_CHEM_RENDER_SIZE_PX` (default 320) is the depiction's edge length in pixels — the knob
+Chemclaw3 carried as `settings.structure_render_size_px`, for deployments whose chat surface renders
+larger cards.
 
 Two bounds sit on `render_structure`, and they bound different things.
 `CHEMCLAW_CHEM_MAX_DEPICTION_ATOMS` (default 250) bounds what a drawing costs *this pod*, because
@@ -155,4 +195,4 @@ Chemclaw3's; none of these tools ever asked that question.
 It knows nothing about hazard, reactivity or whether a route will work. A charge table is
 arithmetic over molecular weights and densities: it will happily scale a reagent that decomposes
 under the conditions, and E-factor and PMI say nothing about toxicity, energy or cost. Hazard
-screening is Chemclaw3's `safety` connector; solvent properties are `props`.
+screening is this fleet's `safety` server; solvent properties are `props`.

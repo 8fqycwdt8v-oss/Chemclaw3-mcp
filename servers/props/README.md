@@ -49,12 +49,31 @@ microseconds, that one runs a semiempirical calculation per species per solvent 
 
 ```sh
 make run-props                            # from the repository root; 127.0.0.1:8850
-curl -s localhost:8850/healthz            # {"status":"ok","server":"props"}
+curl -s localhost:8850/healthz            # {"status":"ok","server":"props",…,"datasets":["process-solvents@0.2.0"]}
 ```
 
 The bearer token is `CHEMCLAW_PROPS_TOKEN`, and the same variable name is read on both sides —
 Chemclaw3 to send it, this server to verify it. It is enforced even on the loopback dev URL: a
 manifest whose auth mode changes with its address is one whose serving side gets it wrong.
+
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8850 / `chemclaw-mcp-props` |
+| Token | `CHEMCLAW_PROPS_TOKEN` |
+| Chemclaw3 | connector `props`, declared there with `default_enabled: false` — enable it with `connectors.props.enabled: true` |
+| Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
+| Own knobs | `CHEMCLAW_PROPS_MAX_TB_RATIO` (1.8) — the upper temperature bound as a multiple of the boiling point in kelvin, see below. A value below 1.01 is refused at startup, naming the variable. |
+| Readiness | `/healthz` loads and checksums `records.csv` and names it (`process-solvents@<version>`); a corrupt or missing table is a 503 naming the file and both hashes. |
+| Admission | none — a call is milliseconds of CPU; the session ceiling is the only per-pod bound. |
+
+Failure modes a caller sees are deliberate refusals, not faults: an unknown solvent is an error
+naming the corpus (never the nearest match), and a temperature below the melting point or above the
+`CHEMCLAW_PROPS_MAX_TB_RATIO` ceiling is refused.
 
 ## The data
 

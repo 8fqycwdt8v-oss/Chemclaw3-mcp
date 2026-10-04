@@ -6,13 +6,17 @@ own `engine/`.
 
 | Module | What it is |
 | --- | --- |
-| `app.py` | `connector_app()` — the FastAPI app: `/healthz`, `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding and trace continuation, and tool-error sanitising. |
+| `app.py` | `connector_app()` — the FastAPI app: `/healthz` (readiness: 503 with a reason when the server's `readiness` callable fails for a permanent cause, 200 with `degraded` for a transient one, plus `revision`, `bounds` and verified `datasets`), `/livez` (liveness: consults nothing), `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding and trace continuation, and tool-error sanitising. |
 | `finite.py` | Refuses a NaN or an infinity in any tool argument, on both channels it arrives by: the bare `NaN`/`Infinity`/`1e400` literals the transport would rewrite to `null` (an optional argument then reads "not declared"), and the strings `"nan"`/`"1e400"` pydantic coerces. Installed by `connector_app` on every served tool. |
 | `auth.py` | Bearer check on `/mcp` (probes stay open, comparison in bytes, fails closed), the caller log, the request counter and the request-body cap. All four are pure ASGI: `BaseHTTPMiddleware` cost ~1 ms per request and made the caller log's `duration_ms` time-to-SSE-headers. |
 | `schema_cache.py` | One compiled `jsonschema` validator per tool schema, instead of upstream re-checking the schema against the meta-schema on every call. The dominant per-call cost in the fleet: 10.75 → 2.15 ms of server CPU on `props.solvent_properties`. |
-| `executor.py` | The default `to_thread` pool, sized from the container's **cgroup** quota rather than from `os.cpu_count()` — which is the node's, so a `cpu: "1"` pod on a 64-core worker got 32 threads. |
-| `sessions.py` | The MCP session idle timeout `FastMCP` never passes, plus the hold-open that stops a four-hour CREST search being reaped as "idle". |
+| `executor.py` | The default `to_thread` pool, sized from the container's **cgroup** quota (plus `MCP_THREAD_POOL_HEADROOM`, 4; or `MCP_THREAD_POOL_SIZE` outright) rather than from `os.cpu_count()` — which is the node's, so a `cpu: "1"` pod on a 64-core worker got 32 threads. |
+| `sessions.py` | The MCP session idle timeout `FastMCP` never passes (`MCP_SESSION_IDLE_TIMEOUT_SECONDS`, 1800; `MCP_SESSION_UNUSED_TIMEOUT_SECONDS`, 60), the hold-open that stops a four-hour CREST search being reaped as "idle", and the per-pod session ceiling (`MCP_MAX_SESSIONS`, 1024) refused with 503 and `Retry-After`. |
 | `rebinding.py` | Upstream's DNS-rebinding guard on `/mcp`, kept on and told the names this pod is dialled by. `FastMCP("x")` admits a loopback `Host` only, so a caller dialling a Service name got `421`; `MCP_ALLOWED_HOSTS` (`host:port` or `host:*`, comma-separated) adds to loopback, is validated at import, and is set in every shipped Deployment to its own Service. |
+| `limits.py` | The structural-size guards every SMILES-taking server applies before canonicalising (`MCP_MAX_SMILES_CHARS`, `MCP_MAX_MOLECULE_ATOMS`, `MCP_MAX_ECHO_CHARS`), `env_bound`/`env_ratio` (how a server reads a resource bound and refuses one below its floor at startup), the record `/healthz` publishes as `bounds`, and `Admission` — the per-pod concurrency ceiling whose refusals start `[<server>-at-capacity]`. |
+| `degradation.py` | Classifies an exception a server answers *around* (`egress_refused`, `resource_exhausted`, `not_installed`, `failed`), counts it on `chemclaw_mcp_degraded_total`, and defines `PERMANENT_CAUSES` — the only causes that make `/healthz` answer 503. |
+| `metrics.py` | Every `chemclaw_mcp_*` series in one place: tool calls and durations, requests, unauthenticated requests, build info, readiness, sessions, admission, egress. No label ever carries an actor, a session or an argument. |
+| `logging.py` | `configure_logging()` (forced, from the lifespan): `MCP_LOG_LEVEL`, `MCP_LOG_FORMAT`, `MCP_LOG_JSON`, the correlation/session ids on every line, and redaction of registered secret values. |
 | `identity.py` | The `X-Chemclaw-*` headers and the contextvars that carry them. Provenance, never authorization. |
 | `tracing.py` | The receiving half of Chemclaw3's `traceparent`: one span per tool call, under the caller's trace. Off unless `MCP_TRACING_ENABLED` says otherwise, and it constructs no exporter — the `otel` extra installs the API only. |
 | `datasets.py` | Vendored-corpus loading: every provenance field required, refresh owner and cadence included, checksum verified on load. |
@@ -79,3 +83,6 @@ rejects for a server, and it left the most widely installed code in the reposito
 scan cannot buy: `import mcp_server_kit` reaches `httpx` through `mcp.shared.session` regardless, so
 the control that stops an outbound call is the runtime guard and the NetworkPolicy, not the absence
 of a client.
+
+Every environment variable this package reads, with its default, is tabulated for operators in
+[`docs/operations.md`](../../docs/operations.md#environment-what-every-server-reads).

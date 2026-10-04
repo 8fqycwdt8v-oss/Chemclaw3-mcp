@@ -146,3 +146,18 @@ has, and a server that shipped a default `s` would be inventing the compressibil
 measuring it. The honest version is a tool that takes `s` as an input alongside `alpha₀`, and that is
 worth building the day a site's filtration tests start arriving through an ELN. Until then the
 docstring says what the assumption costs and in which direction.
+
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8853 / `chemclaw-mcp-unitops` |
+| Token | `CHEMCLAW_UNITOPS_TOKEN` |
+| Chemclaw3 | connector `unitops`, declared there with `default_enabled: false` — enable it with `connectors.unitops.enabled: true` |
+| Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
+| Own knobs | none |
+| Readiness | `/healthz` checks the relations listed under "What it reads" and names the correlation revision (`unitops-correlations@<version>`); a relation that fails — two Zwietering exponents transposed, say — is a 503. |
+| Admission | none (see "Concurrency") |

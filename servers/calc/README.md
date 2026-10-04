@@ -91,9 +91,9 @@ answers, and there is no point at which half of it is a result. One tool, one ke
 
 ## Read this first: it is a backend, not a connector Chemclaw3 dials
 
-`chem` and `safety` are complete ports, so registering them on `CHEMCLAW_CONNECTORS_DIR` swaps one
-implementation for an identical one. **This server is different, and putting it on that path is
-wrong** — so it is not reachable from there any more. Its manifest is registered in
+`chem` and `safety` are complete ports, so Chemclaw3's declaration and this repository's manifest of
+each describe the same server and either may win on `CHEMCLAW_CONNECTORS_DIR`. **This server is
+different, and putting it on that path is wrong** — so it is not reachable from there any more. Its manifest is registered in
 `manifests-internal/`, which no published `export` line names, and declares `mount: backend`, a key
 Chemclaw3's `extra="forbid"` manifest model refuses; a deployment that points a path at that
 directory anyway fails at startup naming the file rather than serving a reduced surface.
@@ -112,12 +112,12 @@ the state:
 The name is still `calc`, because this repository requires the directory, the package suffix and the
 manifest `name` to be one string (`tests/test_fleet.py`). So registering this directory as a
 connector would let a *partial* port win the name collision — first directory wins, **with no
-error** — and take those six tools and every durable job off the agent's surface. The manifest here
+error** — and take those six tools, `compute_thermochemistry` and every durable job off the agent's surface. The manifest here
 is this repository's own declaration of the served surface, checked against the running server by
 `tests/test_server.py`; it is not an instruction to point Chemclaw3 at it.
 
 **Two things follow from that, and the second is the answer to "isn't twenty tools a lot?".**
-Because this server is never on the agent's surface, its tool count costs no prompt: the six
+Because this server is never on the agent's surface, its tool count costs no prompt: the
 structure-in primitives are addressed by Chemclaw3's activities and would only ever reach a model
 through the wiring the paragraph above already forbids. That is one more consequence of an existing
 rule rather than a caveat of its own — and it is why the primitives live here rather than in a
@@ -538,3 +538,37 @@ uv run pytest servers/calc -q      # ~17 s; every tool is exercised on a real SC
 
 `engine/` <- `tools.py` <- `app.py`, one-way. `tests/test_engine.py` imports no transport;
 `tests/test_server.py` runs the real app under uvicorn and talks MCP to it.
+
+## Operating it
+
+Build, deploy and the fleet-wide variables are in [`docs/operations.md`](../../docs/operations.md);
+what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8860 / `chemclaw-mcp-calc` |
+| Token | `CHEMCLAW_CALC_TOKEN` |
+| Chemclaw3 | **a backend, not a connector** (see "Read this first"): `CHEMCLAW_CALC_SERVER_URL` (chart: `http://chemclaw-mcp-calc:8860/mcp`), `CHEMCLAW_CALC_SERVER_TOKEN_ENV` (default `CHEMCLAW_CALC_TOKEN`), and the three client budgets `CHEMCLAW_CALC_SERVER_TIMEOUT_SECONDS` (900), `CHEMCLAW_CALC_ATOMIC_TIMEOUT_SECONDS` (3600), `CHEMCLAW_CALC_SAMPLING_TIMEOUT_SECONDS` (14400). Its queued calculations wait in `connectors.calc.interactive`, sized to 2 pods x 4 slots. |
+| Pod | requests 1 CPU / 1Gi, limits 4 CPU / 4Gi, a 4Gi `/tmp`; 2 → 8 replicas on CPU (or KEDA on admission, `deploy/keda/` — the better signal here, see `docs/autoscaling.md`) |
+| Image | `xtb` 6.7.1 and `crest` on `PATH`; `CHEMCLAW_XTB_ENGINE=tblite`, `CHEMCLAW_CREST_THREADS=4`, `OMP_NUM_THREADS=1` (and the BLAS equivalents) |
+| Readiness | `/healthz` derives a `calc_version`, and refuses (503) if `CHEMCLAW_XTB_ENGINE=xtb` names a binary the image lacks. `datasets` is `[]` (no corpus). |
+| Admission | `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` (4) slots, a slot being a core; a CREST search charges `CHEMCLAW_CREST_THREADS`. A full pod answers `[calc-at-capacity] …`. |
+
+The settings an operator is most likely to touch (`engine/config.py`, prefix `CHEMCLAW_`; every
+numeric one is reported under `bounds` on `/healthz`):
+
+| Variable | Default | What moving it does |
+| --- | --- | --- |
+| `CHEMCLAW_XTB_ENGINE` | `auto` (image: `tblite`) | which backend runs; **part of `calc_version`, so changing it re-keys every cached row and orphans the calibration ledger** |
+| `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` | 4 | cores of calculation per pod; raise only with the pod's CPU limit |
+| `CHEMCLAW_CREST_THREADS` | 0 (image: 4) | threads, and admission slots, per CREST search |
+| `CHEMCLAW_XTB_MAX_ATOMS` | 450 | largest structure any tool accepts (a memory bound, see "Cost") |
+| `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` | 150 | largest structure `compute_hessian` accepts |
+| `CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS` | 780 | in-process optimisation and Hessian budget (caller's 900 − 120) |
+| `CHEMCLAW_XTB_CLI_TIMEOUT_SECONDS` | 3480 | `xtb` binary budget (caller's 3600 − 120) |
+| `CHEMCLAW_CREST_TIMEOUT_SECONDS` | 14280 | CREST budget (caller's 14400 − 120) |
+| `CHEMCLAW_PKA_*`, `CHEMCLAW_SOLUBILITY_RMSE_LOG`, `CHEMCLAW_LOGD_*`, the other `CHEMCLAW_XTB_*` | see `engine/config.py` | scientific parameters; most enter `calc_version` or `params_hash`, so changing one is a deliberate recompute on the Chemclaw3 side |
+
+**Keep the timeouts in step with Chemclaw3's.** Each server budget is its caller's less 120 s, so
+the server refuses with a worded reason before the caller gives up. Raise a Chemclaw3 budget and this
+one together, or the caller abandons a calculation this pod is still running.

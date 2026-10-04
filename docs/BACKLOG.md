@@ -177,3 +177,17 @@ decision leaves a record behind and the row goes.
   the opposite of this fleet's refuse-rather-than-approximate rule. One sentence in the tool
   docstring (use `.loc[mask, "col"] = x`) and a sandbox test that pins the behaviour close it.
   **Anchors:** `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.
+
+## 5 — What the shipped deployment leaves to the operator
+
+- [ ] **No `deploy/deployment.yaml` references the bearer Secret, so the workload as shipped refuses
+  every `/mcp` call.** Each Deployment sets `MCP_ALLOWED_HOSTS` and nothing else; the variable its
+  manifest names as `auth.token_env` is left for an operator to inject (`docs/operations.md` §2 does
+  it with `oc set env --from=secret/...`). Fail-closed is the right direction, but `/healthz` stays
+  200 while every call is 401, so a missed step reads as a working pod. A `secretKeyRef` to a
+  conventionally named Secret (`chemclaw-mcp-<name>-token`, key = the `token_env`), held to the
+  manifest by `tests/test_deploy_shape.py` the way `MCP_ALLOWED_HOSTS` is held to `service.yaml`,
+  would make the shipped files complete; the open question is whether a site's Secret naming is the
+  fleet's to fix.
+  **Anchors:** `servers/props/deploy/deployment.yaml`, `tests/test_deploy_shape.py`,
+  `docs/operations.md`.

@@ -69,8 +69,9 @@ naming them and a version stamped `mapper@failed` / `namer@failed` — a third w
 `absent` and from a version number, so the row is stale against a healthy pod instead of equalling
 one. Each such answer is counted on `chemclaw_mcp_degraded_total`; see
 `D-2026-09-12-a-degradation-that-is-not-counted-is-a-degradation-nobody-sees`. An out-of-memory is
-counted and reported the same way but is **not** a reason to take the pod out, because readiness and
-liveness share `/healthz` here and a transient refusal would restart it into the same pressure.
+counted and reported the same way but is **not** a reason to take the pod out: it is transient, so
+`/healthz` answers 200 with `degraded` naming it, rather than shedding the pod's capacity onto its
+siblings under the same pressure. (Liveness is `/livez`, which consults none of this.)
 
 ## What this server deliberately does not answer
 
@@ -121,11 +122,30 @@ somebody is. The drain's right response to a refusal is to re-send the identical
 
 ## Running it
 
-```
-uv run uvicorn chemclaw_mcp_rxnlabel.app:app --host 127.0.0.1 --port 8865
+```sh
+make run-rxnlabel                 # 127.0.0.1:8865, dev token
 ```
 
+A plain `uv sync` does not install the `models` extra, so a dev server runs the RDKit-only path and
+`labeller_version` says so. The image installs the extra (RXNMapper pulls CPU torch).
+
 `CHEMCLAW_RXNLABEL_TOKEN` is enforced; unset, every `/mcp` request is refused with 401.
+
+## Operating it
+
+Build, deploy and the fleet-wide variables are in [`docs/operations.md`](../../docs/operations.md);
+what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8865 / `chemclaw-mcp-rxnlabel` |
+| Token | `CHEMCLAW_RXNLABEL_TOKEN` |
+| Chemclaw3 | **a backend, not a connector**: `CHEMCLAW_RXNLABEL_SERVER_URL` (chart: `http://chemclaw-mcp-rxnlabel:8865/mcp`), `CHEMCLAW_RXNLABEL_SERVER_TOKEN_ENV` (default `CHEMCLAW_RXNLABEL_TOKEN`), `CHEMCLAW_RXNLABEL_SERVER_TIMEOUT_SECONDS` (120). Keep Chemclaw3's `CHEMCLAW_LABEL_BATCH_SIZE` (200) at or below `CHEMCLAW_RXNLABEL_MAX_BATCH`. |
+| Pod | requests 500m / 1Gi, limits 2 CPU / 3Gi; 2 → 4 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Own knobs | `CHEMCLAW_RXNLABEL_MAX_BATCH` (500), `CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES` (2) — see "What bounds this pod" |
+| Image | installs the `models` extra with the hub switched off (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`) and pins `OMP_NUM_THREADS=1` |
+| Readiness | `/healthz` labels a fixture reaction end to end. An absent optional model is ready; an installed one that will not construct, or that raises on the fixture, is a 503 naming it. `datasets` is `[]` (no corpus). |
+| Admission | a full pod answers `[rxnlabel-at-capacity] …`; the drain re-sends the identical batch |
 
 ## Chemclaw3 reaches this by configuration, not by discovery
 

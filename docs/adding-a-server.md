@@ -14,9 +14,9 @@ variance between servers should be in what they compute, not in how they are sha
 3. **Claim a name and a port in `MODULES.md`,** in this same pull request. The name is used four
    times and they must match: directory, package suffix, manifest `name:`, and the key Chemclaw3
    addresses it by.
-4. **Decide whether the tool is request/response or orchestration.** This used to read "decide
-   whether any tool can exceed ~20 s", and that was the wrong question — duration is not the
-   property this fleet promises. `servers/calc` runs CREST searches that take hours.
+4. **Decide whether the tool is request/response or orchestration** — not how long it takes:
+   duration is not the property this fleet promises, and `servers/calc` runs CREST searches that
+   take hours.
 
    The property is **statelessness**: a tool takes its arguments, computes, and returns. It holds no
    job record, offers no resumption, and if it is interrupted the caller simply calls again. A
@@ -62,9 +62,10 @@ variance between servers should be in what they compute, not in how they are sha
      call time rather than assuming it.
 
      **Whether a tool is gated is not the manifest's `read_only`/`state_changing` split**, even
-     though `servers/calc` derives it from exactly that. `render_structure` is `read_only` and
-     correctly so — drawing a molecule changes nothing — and it is the one tool in `servers/chem`
-     that holds the interpreter long enough to need a ceiling. Cost and mutability are different
+     though `servers/calc` derives it from exactly that. Every `servers/chem` tool is `read_only` and
+     correctly so — drawing a molecule or enumerating its tautomers changes nothing — and seven of
+     them (`render_structure`, `describe_topology` and the heavy enumerations) cost up to seconds of
+     CPU on a legal molecule and share a ceiling. Cost and mutability are different
      axes. What every server here does instead is derive the gated set from its *served* surface and
      name the ungated exceptions, so a heavy tool added next year is gated or its `test_admission.py`
      says so.
@@ -231,14 +232,11 @@ What a *new server* still owes:
    that checks a component *constructed*, or that a version string could be *derived*, passes a
    component that builds and then fails on every call.
 
-   **And decide what is permanent before you refuse.** This paragraph used to read "every
-   `deploy/deployment.yaml` here points `readinessProbe` and `livenessProbe` at the same `/healthz`,
-   so an unready answer restarts the pod" — which was true when it was written and is false for all
-   eleven now: readiness is `/healthz` and liveness is `/livez`, which
-   `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` holds in both
-   directions and in their inequality. The reason it matters is the same either way. An unready
-   answer sheds traffic and is undone by the next passing probe; only `/livez` can kill the
-   container, and it consults nothing. A signal that flips under memory pressure must not reach
+   **And decide what is permanent before you refuse.** Every Deployment's `readinessProbe` is on
+   `/healthz` and its `livenessProbe` on `/livez`, and
+   `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` holds both and
+   their inequality. An unready answer sheds traffic and is undone by the next passing probe; only
+   `/livez` can kill the container, and it consults nothing. A signal that flips under memory pressure must not reach
    either one as a refusal: refuse only for `mcp_server_kit.degradation.PERMANENT_CAUSES`, count the
    rest, and answer 200 with `degraded` naming a transient cause
    (`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe`).
@@ -275,8 +273,8 @@ What a *new server* still owes:
 
 6. **`deploy/deployment.yaml`**, copied from any server and renamed. It carries the pod hardening —
    `runAsNonRoot`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`,
-   `automountServiceAccountToken: false`, resource requests/limits, and a `/healthz` readiness and
-   liveness probe. Its pod-template label **must equal** the NetworkPolicy's `podSelector`, or the
+   `automountServiceAccountToken: false`, resource requests/limits, a `readinessProbe` on `/healthz`
+   and a `livenessProbe` on `/livez`. Its pod-template label **must equal** the NetworkPolicy's `podSelector`, or the
    default-deny egress policy does not select the workload and the no-egress promise is void for it;
    `tests/test_deploy.py` checks the two against each other. Set `readOnlyRootFilesystem: true`
    unless the server writes at runtime (`calc`'s scratch, `pyexec`'s sandbox) — those set it false.
@@ -316,9 +314,16 @@ notices that it does not. Copy the call from any existing server — it needs th
 manifest and the token the fixture put in the environment, and it drives the anonymous caller, a
 wrong token, a wrong scheme, the credential serving, and the declared variable unset.
 
-Finally, update `MODULES.md`'s status row. **There is nothing to update in `CLAUDE.md`**, and this
-line used to say there was: it named "the port table in `CLAUDE.md`", a table deleted for publishing
-two taken ports as free, and `tests/test_fleet.py::test_claude_md_holds_no_second_port_registry`
-reds the moment anybody follows the instruction. A checklist whose last step is refused by the suite
-is worse than a missing step — it is read as authority, and the failure arrives after the work.
-`MODULES.md` is the registry and the only file the port tests read.
+Finally, update the documents an operator reads:
+
+- `MODULES.md` — the status row, and the server's row in "What the built fleet costs to run";
+- `docs/operations.md` §3 — its port, Service address, token variable and how Chemclaw3 reaches it;
+- the server's own `README.md` — an **Operating it** section like every other server's: port and
+  Service, token, the Chemclaw3 wiring, pod resources, every own environment variable with its
+  default, what `/healthz` verifies, and its admission ceiling or why it has none.
+
+**There is nothing to update in `CLAUDE.md`**: it holds no port table
+(`tests/test_fleet.py::test_claude_md_holds_no_second_port_registry`), and `MODULES.md` is the
+registry and the only file the port tests read. If the agent should see the server's tools, its
+manifest also needs a declaration on the Chemclaw3 side (or a mount of `manifests/<name>` there) —
+that is a pull request in that repository.

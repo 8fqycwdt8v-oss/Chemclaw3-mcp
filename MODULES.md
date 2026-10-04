@@ -44,7 +44,14 @@ autoscaler runs to its maximum on a single request.
 | `rxnpredict` | 2 → 4 | 500m / 2Gi | 1 CPU, 4 Gi | 2 CPU, 8 Gi |
 | `pyexec` | 2 → 6 | 1 / 512Mi | 2 CPU, 1 Gi | 6 CPU, 3 Gi |
 | `calc` | 2 → 8 | 1 / 1Gi | 2 CPU, 2 Gi | 8 CPU, 8 Gi |
-| **fleet** | | | **8 CPU, 10.5 Gi** | **23 CPU, 26.5 Gi** |
+| `thermalsafety` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| `kinetics` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| `unitops` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| `suitability` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| **fleet** | | | **10 CPU, 12.5 Gi** | **27 CPU, 30.5 Gi** |
+
+The rows are read off each `servers/<name>/deploy/deployment.yaml` and `hpa.yaml`; when one moves,
+this table moves in the same pull request.
 
 **`calc` is the row that costs money, and it is the one that had to.** An admission slot there is a
 core, so one pod was four cores of semiempirical capacity for the whole platform: measured, 60
@@ -172,7 +179,7 @@ rather than truncating**: a partial set silently redefines the universe a downst
 normalized over.
 
 *Tools:* `resolve_compound`, `stoichiometry_table`, `green_metrics`, `render_structure`,
-`enumerate_torsions`, `describe_topology`, `enumerate_tautomers`, `enumerate_protonation_states`,
+`enumerate_torsions`, `describe_topology`, `describe_sites`, `enumerate_tautomers`, `enumerate_protonation_states`,
 `enumerate_stereoisomers`, `enumerate_bond_cleavages`, `enumerate_degradants`,
 `enumerate_substitutions` — all `read_only`.
 *Offline:* a vendored, checksummed CSV of 61 reagents under 87 spellings (CC0), plus RDKit. No
@@ -401,7 +408,7 @@ and an oxygen-balance screen for energetic functionality.
 
 *Tools:* `adiabatic_temperature_rise`, `mtsr`, `tmr_ad`, `stoessel_criticality_class`,
 `heat_removal_capacity`, `semenov_critical_ambient`, `oxygen_balance_screen`.
-*Offline:* first-party formulas; no corpus needed — the only server here with no `data/` directory.
+*Offline:* first-party formulas plus `molmass`'s atomic weights (pinned in `uv.lock`); no `data/` directory and no corpus.
 *Note:* complements the `safety` server above, which screens *structures* for hazard alerts. This one
 takes DSC/RC1/ARC numbers and answers "what happens if the cooling fails". The two belong apart:
 `safety` answers from cited tables and needs RDKit, this one is arithmetic over numbers the chemist

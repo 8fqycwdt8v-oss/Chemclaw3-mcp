@@ -67,7 +67,7 @@ is what let everything else stay at `math`:
 - **The precedent is in the server next door.** `thermalsafety` hand-rolled a 200-step bisection
   rather than call `scipy.optimize.brentq`, with the reason in a comment beside its gas constant:
   a server is a dependency closure as much as a capability. `props` made the same call before it.
-- **Only two servers in this fleet carry numpy or scipy**, and neither reason transfers: `calc`
+- **Only two servers in this fleet declare numpy or scipy**, and neither reason transfers: `calc`
   does real numerics behind a QM binary, and `pyexec` *is* a sandbox whose whole product is
   shipping that toolbox to the agent. Closed-form reactor algebra and two fixed-step schemes over two
   state variables are not that.
@@ -81,7 +81,7 @@ is what let everything else stay at `math`:
 is the shape the probes imply and which nothing in this family delivers yet. At that point the
 question is whether `fit_rate_law` belongs here — making this image the third-heaviest closure in
 the fleet — or in its own server, and whether the lockfile can express Cantera under
-`uv export --frozen --require-hashes`, which `docs/BACKLOG.md` already records one image failing.
+`uv export --frozen` with `--require-hashes`, which is how every image here installs.
 
 ## What it reads
 
@@ -120,3 +120,17 @@ perfectly-mixed number is a floor in that regime
 (`D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused`).
 A profile keeps at most `reactors.PROFILE_POINTS` points — evenly spaced samples, the end of the
 dose and the exact peak — so an integration's memory does not grow with its step count.
+
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8852 / `chemclaw-mcp-kinetics` |
+| Token | `CHEMCLAW_KINETICS_TOKEN` |
+| Chemclaw3 | connector `kinetics`, declared there with `default_enabled: false`; `semibatch_accumulation_profile` is `queued:`, so enabling it also runs `connectors.kinetics.interactive` (2 pods x 3 slots) |
+| Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Own knobs | `CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS` (3) — integrations in flight per pod; a full pod answers `[kinetics-at-capacity] …` |
+| Readiness | `/healthz` recomputes the four relations above and names the formula revision (`kinetics-formulas@<version>`); a relation that has moved is a 503. |
