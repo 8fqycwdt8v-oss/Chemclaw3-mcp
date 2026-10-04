@@ -90,7 +90,8 @@ What the shipped Deployment wires, per server, and what an operator therefore do
 
 What is still an operator's: applying those manifests, **putting the bearer's key into
 `chemclaw-secrets`** (a missing key keeps the pod from starting), replacing the placeholder
-`chemclaw3/chemclaw-mcp-<name>:latest` image — which nothing publishes — with a published digest
+`registry.invalid/chemclaw-mcp-<name>:unset` image — unresolvable by design, so it fails to pull
+rather than resolving to somebody else's — with a published digest
 (`operations.md` §2 does it in a kustomize overlay), and driving the *release*: see below.
 
 ## Where the rollout is

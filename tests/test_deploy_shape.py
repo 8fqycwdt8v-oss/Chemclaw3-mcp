@@ -607,12 +607,19 @@ def test_the_pod_runs_under_whatever_uid_the_platform_assigns(server: Path) -> N
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_the_image_is_the_one_placeholder_the_overlay_rewrites(server: Path) -> None:
-    """Every Deployment names `chemclaw3/chemclaw-mcp-<name>:latest`, and nothing else.
+    """Every Deployment names `registry.invalid/chemclaw-mcp-<name>:unset`, and nothing else.
 
     Raw manifests cannot know a site's registry, so the image is a placeholder the deploy step
     rewrites to a published digest — kustomize `images:` in `docs/operations.md` §2 and in
     Chemclaw3's `deploy/kind/render-fleet.sh`, both matching on exactly this name. A server whose
     string drifted would be skipped by that rewrite without an error and applied unrewritten.
+
+    **And the placeholder must be unresolvable, which the previous one was not.** It read
+    `chemclaw3/chemclaw-mcp-<name>:latest`: a short name, which a node expands against its
+    configured search registries — Docker Hub on most of them — so applied unrewritten it pulled
+    whatever a third party had registered under a namespace this fleet does not own. `.invalid` is
+    reserved by RFC 2606 and never resolves, so the same mistake is an `ErrImagePull` naming it.
     """
     image = _pod_spec(server)["containers"][0]["image"]
-    assert image == f"chemclaw3/chemclaw-mcp-{server.name}:latest", f"{server.name}: {image!r}"
+    expected = f"registry.invalid/chemclaw-mcp-{server.name}:unset"
+    assert image == expected, f"{server.name}: {image!r}"

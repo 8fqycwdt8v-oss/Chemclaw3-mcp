@@ -55,7 +55,7 @@ server's copy to one shape:
 
 | File | What it is |
 | --- | --- |
-| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, `runAsNonRoot` with **no pinned UID/GID** (the platform assigns one), the bearer from `chemclaw-secrets` under the manifest's `auth.token_env`, the placeholder image `chemclaw3/chemclaw-mcp-<name>:latest`, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
+| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, `runAsNonRoot` with **no pinned UID/GID** (the platform assigns one), the bearer from `chemclaw-secrets` under the manifest's `auth.token_env`, the unresolvable placeholder image `registry.invalid/chemclaw-mcp-<name>:unset`, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
 | `service.yaml` | `chemclaw-mcp-<name>`, port `http` = the server's port. |
 | `networkpolicy.yaml` | Denies all egress. Allows ingress on the server's port from pods labelled `app.kubernetes.io/name: chemclaw` **in the same namespace**, and from the `monitoring` / `openshift-user-workload-monitoring` namespaces. |
 | `hpa.yaml` | CPU HPA, `minReplicas: 2`. |
@@ -100,8 +100,8 @@ oc patch secret chemclaw-secrets --type merge \
 # 2. The workload. `-f <dir>` does not recurse, so keda/ is not applied.
 oc apply -f servers/$NAME/deploy/
 
-# 3. Pin the image you built. The manifest's `chemclaw3/chemclaw-mcp-<name>:latest` is a
-#    placeholder nothing publishes; never run it unrewritten.
+# 3. Pin the image you built. The manifest's `registry.invalid/chemclaw-mcp-<name>:unset` is a
+#    placeholder that cannot resolve (`.invalid` is reserved); never run it unrewritten.
 oc set image deployment/chemclaw-mcp-$NAME server=<registry>/chemclaw-mcp-$NAME@sha256:<digest>
 ```
 
@@ -129,7 +129,7 @@ resources:
   - <path-to-Chemclaw3-mcp>/servers/props/deploy/pdb.yaml
   - <path-to-Chemclaw3-mcp>/servers/props/deploy/servicemonitor.yaml
 images:
-  - name: chemclaw3/chemclaw-mcp-props     # matches the placeholder exactly
+  - name: registry.invalid/chemclaw-mcp-props     # matches the placeholder exactly
     newName: <registry>/chemclaw-mcp-props
     digest: sha256:<digest>
 ```
@@ -212,8 +212,8 @@ label. The chart takes either `egressDestinations` or `allowAnyDestination: true
 release already on the latter needs no entry.
 
 `props`, `thermalsafety`, `kinetics`, `unitops` and `suitability` declare `default_enabled: false`
-on the Chemclaw3 side (their copies here do not yet; see below). `pyexec`, which only this
-repository declares, carries `default_enabled: false` here. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not bound. Naming one
+on both sides, Chemclaw3's copy and this repository's. `pyexec`, which only this repository
+declares, carries `default_enabled: false` here. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not bound. Naming one
 with `connectors.<name>.enabled: true` binds it. Each bound connector adds its tool schemas to the
 prompt of every model call, so enable only what a site uses.
 
@@ -247,12 +247,10 @@ secrets:
 
 **Mount only the bundles you need, and never `manifests-internal/`.** The chart prepends the mount
 to `CHEMCLAW_CONNECTORS_DIR`, and the first directory wins a name collision. A manifest from this
-repository therefore replaces Chemclaw3's copy of the same connector. Of the opt-in servers only
-`pyexec`'s manifest here carries `default_enabled: false`; the other five do not yet (Chemclaw3's
-`tests/test_sibling_manifest_agreement.py` records that difference as argued, so the two repositories
-have to change it together). A mounted `props` (for example) is therefore bound on every turn when
-`CHEMCLAW_CONNECTORS_ENABLED` is empty — a chart release never renders it empty, but any other wiring
-should name the set. Bundle skills are still merged from every directory with the same name.
+repository therefore replaces Chemclaw3's copy of the same connector. Every opt-in server's
+manifest here carries `default_enabled: false`, the same as Chemclaw3's copy, so a mounted `props`
+(for example) stays unbound when `CHEMCLAW_CONNECTORS_ENABLED` is empty. A chart release never
+renders it empty anyway. Bundle skills are still merged from every directory with the same name.
 
 ### `calc` and `rxnlabel`: backends, never connectors
 
@@ -341,7 +339,7 @@ not show an error. Its tools are missing from the turn.
 | Chemclaw3 raises `MissingConnectorCredential` | The token is unset on the **Chemclaw3** pod. | Add it to Chemclaw3's secret (`secrets.optionalKeys`). |
 | Pod stuck in `CreateContainerConfigError` naming `CHEMCLAW_<NAME>_TOKEN` | The key is missing from `chemclaw-secrets` (the reference is deliberately not optional), or the Secret is in another namespace. | Add the key (§2, step 1) in the release's namespace. |
 | No pods; ReplicaSet event `unable to validate against any security context constraint` | Something re-added a pinned `runAsUser`/`runAsGroup`/`fsGroup` (an old overlay); the shipped Deployments pin none. | Remove the pin from the overlay; `restricted-v2` assigns the UID. |
-| `ErrImagePull` / `ImagePullBackOff` on `chemclaw3/chemclaw-mcp-<name>:latest` | The placeholder image was applied unrewritten. | Pin the published digest (§2, step 3 or the overlay's `images:`). |
+| `ErrImagePull` / `ImagePullBackOff` on `registry.invalid/chemclaw-mcp-<name>:unset` | The placeholder image was applied unrewritten. It is unresolvable by design, so it fails here rather than pulling an image nobody reviewed. An overlay written for an older revision still names `chemclaw3/chemclaw-mcp-<name>`, matches nothing now, and leaves this placeholder in place. | Pin the published digest (§2, step 3 or the overlay's `images:`). |
 | Pod not Ready; `/healthz` **503** with `reason` naming a file and two hashes | A vendored corpus failed its checksum: `… does not match the approved checksum: manifest says <a>, file is <b>`. | The image holds a file different from the one reviewed. Rebuild from a clean checkout. Never edit `dataset.json` in place to match. |
 | `/healthz` 503 naming `no dataset manifest` / `no records file` / a missing provenance field | The image is missing a corpus or its `dataset.json`. | Rebuild. The `Containerfile` copies the whole server directory. |
 | `/healthz` 503 on `calc`: `CHEMCLAW_XTB_ENGINE selects the xtb binary and this image has none on PATH` | `CHEMCLAW_XTB_ENGINE=xtb` on an image without `xtb`. | Unset it (the image pins `tblite`) or use the shipped image, which includes the binary. |
