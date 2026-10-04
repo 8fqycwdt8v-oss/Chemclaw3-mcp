@@ -41,12 +41,9 @@ binds exactly what it names, in that order, and replaces the default set — so 
 **When two manifests carry one name, the first directory on `CHEMCLAW_CONNECTORS_DIR` wins the tool
 surface outright** (`connectors/registry.py::_bundle_dirs`) — no merge, no warning. Prepending this
 repository's `manifests/` therefore makes *this* repository's copy authoritative for every name in
-it, which is useful for testing a tool-surface change before Chemclaw3's copy follows, and has one
-consequence to know about: of the opt-in servers only `pyexec`'s manifest here carries
-`default_enabled: false`, so with an empty `CHEMCLAW_CONNECTORS_ENABLED` the other five become
-enabled by default once their copy here wins the name. Chemclaw3 records that difference as argued
-(`tests/test_sibling_manifest_agreement.py::_ARGUED_DIVERGENCES`), so closing it is a change both
-repositories make together. A bundle's `skills/` and `profiles/` are merged
+it, which is useful for testing a tool-surface change before Chemclaw3's copy follows. Every
+opt-in server's manifest here carries `default_enabled: false` too, the same as Chemclaw3's copy,
+so which copy wins does not change what an empty `CHEMCLAW_CONNECTORS_ENABLED` binds. A bundle's `skills/` and `profiles/` are merged
 from every directory carrying the name, winner first (`registry._bundle_content_dirs`), so
 Chemclaw3's `safety-screening` skill survives whichever `safety` manifest wins. Chemclaw3's
 `tests/test_sibling_manifest_agreement.py` compares the two copies' bundle-level keys.
@@ -324,8 +321,8 @@ hand-run build that drops the `--build-arg` is the remaining way to get `"unknow
 For the eight connectors Chemclaw3 declares itself, none: its image already carries them. For
 `pyexec`, mount `manifests/pyexec/connector.yaml` as a ConfigMap through the chart's
 `extraConnectors.bundles` (prepended to `CHEMCLAW_CONNECTORS_DIR`). Mounting more of `manifests/`
-is allowed and makes this repository's copy win each name it carries, with the `default_enabled`
-consequence described [above](#what-chemclaw3-already-declares). `manifests-internal/` is never a
+is allowed and makes this repository's copy win each name it carries
+([above](#what-chemclaw3-already-declares)). `manifests-internal/` is never a
 path to add: it is the directory whose contents must not be discovered.
 
 **`calc` and `rxnlabel` deploy like the rest and are registered like none of them.** Same images,
@@ -345,7 +342,7 @@ seam:
 | The agent answers a solvent question from memory, with no `source` | The connector is unreachable and degraded silently. Check `/readyz`. |
 | Every MCP call returns 401 | The token env var is unset or differs between the two pods. It fails closed by design. |
 | The server accepts connections then hangs on the first call | The MCP session manager is not running — the mount-does-not-run-a-lifespan trap. `connector_app` handles it; a hand-rolled transport does not. |
-| `props` (or another opt-in connector) is bound on every turn although nothing enabled it | This repository's `manifests/` is on `CHEMCLAW_CONNECTORS_DIR` and its copy won the name; of the opt-in manifests only `pyexec`'s carries `default_enabled: false` here. Mount only the bundles you mean to bind, or name the set in `CHEMCLAW_CONNECTORS_ENABLED`. |
+| `props` (or another opt-in connector) is bound on every turn although nothing enabled it | A manifest that won the name does not carry `default_enabled: false` — a hand-copied or older `connector.yaml` ahead of both repositories' copies on `CHEMCLAW_CONNECTORS_DIR`. Mount only the bundles you mean to bind, or name the set in `CHEMCLAW_CONNECTORS_ENABLED`. |
 | Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. For `pyexec`, mount its manifest. |
 | `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | A `calc` manifest from this fleet reached `CHEMCLAW_CONNECTORS_DIR` and its partial port won the name collision. It cannot come from `manifests/` — check for a hand-copied `connector.yaml`, or a path pointing into `manifests-internal/`. |
 | Chemclaw3 refuses to start with `invalid manifest: ... mount ... Extra inputs are not permitted` | `manifests-internal/` is on `CHEMCLAW_CONNECTORS_DIR`. That is the guard working: those servers are addressed by configuration (`CHEMCLAW_CALC_SERVER_URL`, `CHEMCLAW_RXNLABEL_SERVER_URL`), never discovered. Remove the path. |

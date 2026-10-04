@@ -79,11 +79,12 @@ spec:
           # **A placeholder, never a pull target.** This repository publishes nothing under this
           # name: raw manifests cannot know a site's registry, so the deploy step rewrites it to
           # the published digest (kustomize `images:` matches exactly this
-          # `chemclaw3/chemclaw-mcp-<name>` string; `docs/operations.md` §2). Applied unrewritten,
-          # a node resolves it against whatever registry it searches for short names, which is
-          # not a build anybody here reviewed.
+          # `registry.invalid/chemclaw-mcp-<name>` string; `docs/operations.md` §2). `.invalid` is
+          # reserved (RFC 2606) and can never resolve, so a manifest applied unrewritten fails
+          # with `ErrImagePull` instead of pulling whatever a third party registered under a
+          # short name on a public registry.
           # `tests/test_deploy_shape.py` holds the string to one shape across the fleet.
-          image: chemclaw3/chemclaw-mcp-calc:latest
+          image: registry.invalid/chemclaw-mcp-calc:unset
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

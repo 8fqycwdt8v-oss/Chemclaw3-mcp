@@ -50,3 +50,9 @@ endpoint:
     - boiling_point_at_pressure
     - solvent_swap_candidates
     - compare_solvent_properties
+
+# **Off unless a deployment names it in `CHEMCLAW_CONNECTORS_ENABLED`**, the same as Chemclaw3's own
+# copy of this bundle (`D-2026-09-20-declaring-a-capability-and-binding-it-are-different-decisions`
+# there). Every bound tool's schema is charged to every model call, so without the flag a deployment
+# that put `manifests/` first with no enable-list bound this bundle on every turn. Naming it overrides.
+default_enabled: false
