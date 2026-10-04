@@ -19,24 +19,23 @@ package, and a stoichiometric oxygen-balance screen.
 
 ## What data it reads
 
-**None.** This is the only server in the fleet with no `data/` directory and no `dataset.json`, and
-that is a property rather than an omission: every number here is closed-form arithmetic over the
-standard library's `math` plus a seventeen-element atomic-weight table defined in
-`engine/oxygen_balance.py`. There is nothing to refresh, nothing to checksum and nobody who owns a
-corpus refresh for it.
+**No vendored corpus.** There is no `data/` directory and no `dataset.json`: every number here is
+closed-form arithmetic over the standard library's `math`, and the atomic weights behind the oxygen
+balance come from the `molmass` distribution (BSD-3, no required dependencies) pinned in `uv.lock`.
+There is nothing to refresh on a schedule.
 
-Two consequences follow, and both are asserted rather than described:
+It still has a readiness probe, and the probe **runs the arithmetic**: `engine/selftest.py` puts
+published explosives oxygen balances and hand-computed runaway cases through the real public
+functions and refuses if any answer has moved — a transposed digit in a band boundary or a weight
+table is exactly the failure a corpus checksum exists to catch, and being in Python rather than a CSV
+makes it harder to corrupt, not impossible. `/healthz` names what it verified as
+`thermalsafety-constants@<revision>+molmass-<version>`, so two pods built against different
+`molmass` releases are told apart. `tests/test_server.py` drives the probe with a wrong weight and
+reads the 503 back.
 
-- **`app.py` passes no `readiness=` callable**, so `/healthz` is a constant 200 here where it is a
-  real load check everywhere else. A probe could only verify that a module imports, which the
-  process proved by starting —
-  `D-2026-09-12-a-readiness-check-that-does-not-run-the-thing-is-not-a-readiness-check` is about
-  exactly that shape. `tests/test_server.py` asserts the *absence*, reading `app.py` as a syntax
-  tree, so whoever adds a corpus here finds that test red and decides deliberately instead of
-  inheriting a probe that always says yes.
-- **`tests/test_no_egress.py` earns the positive half more cheaply than any other server.** There is
-  nothing that *could* be fetched lazily, so running one of each kind of calculation with the guard
-  armed is the whole proof.
+`tests/test_no_egress.py` earns the positive half of the offline claim cheaply here: there is
+nothing that *could* be fetched lazily, so running one of each kind of calculation with the guard
+armed is the whole proof.
 
 ## Who refreshes it
 
@@ -44,7 +43,8 @@ Nobody, and there is nothing to refresh. The formulas are textbook — Stoessel,
 Chemical Processes* (Wiley, 2008) for the criticality classification and MTSR; Townsend & Tou,
 *Thermochimica Acta* 37 (1980) 1–30 for TMR_ad; Semenov's heat balance for the critical ambient;
 Bretherick's *Handbook of Reactive Chemical Hazards* (8th ed., §2.3.3) for the oxygen-balance
-screening bands. A change to any of them is a change to the code, in a reviewed pull request, with
+screening bands. A change to any of them — or a `molmass` bump, which `uv.lock` makes deliberate —
+is a change to the code, in a reviewed pull request, with
 the published values in `tests/test_oxygen_balance.py` and the hand-computed ones in
 `tests/test_runaway.py` as the check.
 
@@ -117,6 +117,17 @@ A tool added here that grows real work must revisit both paragraphs.
 make run-thermalsafety      # 127.0.0.1:8851, dev token
 ```
 
-The manifest is symlinked from [`../../manifests/thermalsafety/`](../../manifests/thermalsafety/);
-registering it with Chemclaw3 is one entry in `CHEMCLAW_CONNECTOR_URLS` and no code change on either
-side.
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8851 / `chemclaw-mcp-thermalsafety` |
+| Token | `CHEMCLAW_THERMALSAFETY_TOKEN` |
+| Chemclaw3 | connector `thermalsafety`, declared there with `default_enabled: false` — enable it with `connectors.thermalsafety.enabled: true` |
+| Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
+| Own knobs | none |
+| Readiness | `/healthz` runs the self-test above; a moved answer is a 503 |
+| Admission | none (see "Cost") |

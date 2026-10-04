@@ -1,5 +1,8 @@
 # `docs/`
 
+- [`operations.md`](operations.md) — **start here to run the fleet**: build an image, deploy a
+  server to OpenShift/Kubernetes, wire it into Chemclaw3, verify it, and troubleshoot it (421, 401,
+  503 readiness, session and admission refusals, egress refusals, checksum failures).
 - [`integration.md`](integration.md) — wiring a Chemclaw3 checkout to this fleet, in dev and in a
   cluster, plus the failure modes worth knowing (chiefly: an unreachable connector degrades
   silently rather than erroring).

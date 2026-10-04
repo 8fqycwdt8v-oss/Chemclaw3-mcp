@@ -4,29 +4,21 @@ Three questions a chemist asks separately, kept separate, each answered from a c
 a citation on it. **Nothing here is a clearance, a classification, or a risk assessment**, and every
 result says so in its own payload rather than only in these docs.
 
-## It replaces a Chemclaw3 bundle rather than adding a second one
+## Where it came from, and what Chemclaw3 holds of it
 
-Chemclaw3 ships its own in-tree `safety` connector, and `CLAUDE.md`'s exclusion table forbids a
-second answer to one question. This is a **port**, not a duplicate: same manifest `name`, same three
-tools, same argument names, same docstrings — the model-facing prose is carried over word for word,
-because every disclaimer in it exists to prevent a mistake that was measured in a live run (an
-invented ICH M7 class and purge factor, a palladium PDE recited from training, "no hazards detected"
-told six times to a chemist about to sign a risk assessment).
+This is a **port** of Chemclaw3's in-tree `safety` connector, not a duplicate: same manifest `name`,
+same three tools, same argument names, same docstrings — the model-facing prose is carried over word
+for word, because every disclaimer in it exists to prevent a mistake that was measured in a live run
+(an invented ICH M7 class and purge factor, a palladium PDE recited from training, "no hazards
+detected" told six times to a chemist about to sign a risk assessment).
 
-The two cannot both answer, and that is enforced by Chemclaw3's own mechanism rather than by
-convention:
-
-- Bundles are addressed by name, so `CHEMCLAW_CONNECTOR_URLS` has one `safety` key.
-- `CHEMCLAW_CONNECTORS_DIR` is a `PATH`-style list and **the first directory wins a name collision**
-  (`connectors/registry.py::_bundle_dirs`, "first dir wins"). Putting this fleet's `manifests/` ahead
-  of Chemclaw3's own connectors directory is what makes this server the `safety` the agent sees.
-
-**One thing does not come with the port, and it is not an oversight.** Chemclaw3's bundle ships
-`skills/safety-screening/SKILL.md` — the *judgment* about which of these three tools answers which
-question, and how to report what comes back. A skill is architecture layer 3 in that repository and
-this fleet has no equivalent seam, so the SKILL.md stays there and this manifest declares no
-`skills:`. Keep it reachable when wiring this server up: the tools are deterministic and have no
-opinion, and the judgment is the half that lives in the skill.
+Chemclaw3 no longer runs any `safety` code. What it keeps is a *declaration* —
+`connectors/safety/connector.yaml`, the same name and tool list, pointing at this server — and,
+beside it, `skills/safety-screening/SKILL.md`: the *judgment* about which of these three tools
+answers which question and how to report what comes back. A skill is architecture layer 3 in that
+repository and this fleet has no equivalent seam, so this manifest declares no `skills:`. Chemclaw3
+reads a bundle's skills from every directory carrying the bundle's name, so the skill stays loaded
+even when this repository's `manifests/` is mounted ahead of its own and wins the tool list.
 
 ## Tools
 
@@ -70,23 +62,36 @@ answer. `tests/test_server.py` asserts all three on the wire.
 
 ```sh
 make run-safety                            # from the repository root; 127.0.0.1:8859
-curl -s localhost:8859/healthz             # {"status":"ok","server":"safety"}
+curl -s localhost:8859/healthz             # {"status":"ok","server":"safety",…,"datasets":[five corpora]}
 ```
 
-The bearer token is `CHEMCLAW_SAFETY_TOKEN`, and the same variable name is read on both sides.
-Chemclaw3's in-tree bundle declares `auth: {mode: none}` because it was only ever dialled over
-loopback from the same pod; a server in another image is dialled across a network, so this one
-declares bearer and enforces it even on the loopback dev URL.
+The bearer token is `CHEMCLAW_SAFETY_TOKEN`, and the same variable name is read on both sides. It is
+enforced even on the loopback dev URL; the in-tree bundle this was ported from declared
+`auth: {mode: none}` because it was only ever dialled over loopback from the same pod.
 
-`CHEMCLAW_SAFETY_MAX_COMPONENTS` (default 64) bounds a component list. Chemclaw3 carries the same
-knob as `settings.safety_max_components`, and the number is not arbitrary: both screens check their
-pair rules as a cross-product, so 13 KiB of SMILES was measured producing 251,000 flags and blocking
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8859 / `chemclaw-mcp-safety` |
+| Token | `CHEMCLAW_SAFETY_TOKEN` |
+| Chemclaw3 | connector `safety`, declared there and enabled by default |
+| Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
+| Own knobs | `CHEMCLAW_SAFETY_MAX_COMPONENTS` (64), below; `MCP_MAX_SMILES_CHARS` / `MCP_MAX_MOLECULE_ATOMS` per structure |
+| Readiness | `/healthz` loads and checksums all five corpora — `hazard-screening-rules`, `genotoxicity-structural-alerts`, `ich-q3c-residual-solvents`, `ich-q3d-elemental-impurities`, `bench-reagents` — and names each with its version; any one failing is a 503 naming the file. An unready `safety` pod must not take traffic: a screen that errors is a control the answer gets written without. |
+| Admission | none — the bound that matters is the component count. |
+
+`CHEMCLAW_SAFETY_MAX_COMPONENTS` (default 64) bounds a component list, and the number is not
+arbitrary: both screens check their pair rules as a cross-product, so 13 KiB of SMILES was measured producing 251,000 flags and blocking
 a serving connector's event loop for 2.48 s. An oversized list is **refused, never truncated** — a
 screen that silently dropped components would report "no rule matched" for chemistry it never looked
 at.
 
-`safety_rules_path` has **no** counterpart here, deliberately. Chemclaw3 let a site point at its own
-rule table; here the table is a vendored corpus with a checksum, because a swapped-in table would be
+There is **no** setting for a site's own rule table, deliberately. Chemclaw3's in-tree bundle had
+one (`safety_rules_path`); here the table is a vendored corpus with a checksum, because a swapped-in table would be
 a different set of claims wearing the same citations. Extending it is a pull request.
 
 ## The data
@@ -168,10 +173,9 @@ table of literal strings all three must produce, derived by running Chemclaw3's 
 ## What was left behind in the port
 
 - **`science/safety/notes.py`** and its ~370 lines of tests. It extracted structures from
-  knowledge-graph notes for Chemclaw3's `kg-validate` hazard gate — the check that makes an
-  agent-authored procedure document its flags before a pull request merges. That gate is a property
-  of a knowledge graph in a git repository, and this repository has neither. A server answers
-  questions; it does not gate a pull request.
+  knowledge-graph notes for Chemclaw3's `kg-validate` hazard gate, which Chemclaw3 has since retired
+  (`D-2026-08-15-safety-is-a-tool-not-a-gate` there). A gate over a knowledge graph in a git
+  repository was never this server's business: a server answers questions.
 - **`at_least(severity, threshold)`.** Its two callers were that gate and the agent-side tool. With
   the gate gone it has none, and a helper with no caller is the shape of a control that is claimed
   rather than enforced.

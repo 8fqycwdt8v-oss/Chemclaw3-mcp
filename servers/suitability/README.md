@@ -121,3 +121,18 @@ and 29.8 µs for the report, most of which is pydantic building the result model
 pinned thread. The two list inputs are bounded (`MAX_INJECTIONS`, `MAX_PEAKS`) so the cost cannot
 run away unpriced, which is a different bound from a concurrency ceiling and the one this server
 actually needs.
+
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8892 / `chemclaw-mcp-suitability` |
+| Token | `CHEMCLAW_SUITABILITY_TOKEN` |
+| Chemclaw3 | connector `suitability`, declared there with `default_enabled: false` — enable it with `connectors.suitability.enabled: true` |
+| Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
+| Own knobs | none |
+| Readiness | `/healthz` recomputes the plate-count and resolution constants from their definitions and publishes `suitability-constants@<version>` with a digest of the allowance table; a constant that no longer reproduces is a 503. |
+| Admission | none (see "Concurrency") |

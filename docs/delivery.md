@@ -6,9 +6,9 @@ publishes them by digest, and reports those digests. It does not deploy anything
 ## Why the pipeline exists at all
 
 `.github/workflows/ci.yml` checks the source: the suite, the same suite with the network taken away,
-and the fleet invariants. All seven `Containerfile`s were exercised by **nothing** — which, for a
-repository whose central promise is "every server answers from data baked into its image", was the
-least checked thing in the tree.
+and the fleet invariants. It never builds a `Containerfile` — and for a repository whose central
+promise is "every server answers from data baked into its image", the image is the thing to check.
+This pipeline is what does.
 
 ## What it does
 
@@ -19,6 +19,22 @@ least checked thing in the tree.
 | Build and publish | One image per server, via Chemclaw3's shared `build_and_push` (buildah, podman, kaniko or docker), tagged `chemclaw-mcp-<name>` and published **by digest**. |
 | Verify every image answers | Starts each image and asks it two questions no source file can answer. |
 | Report the digests | `mcp-digests.txt`, one `server=sha256:…` per line, for the Chemclaw3 release job's `MCP_DIGESTS` parameter. |
+
+## Parameters
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `IMAGE_REGISTRY` | empty | Registry and org, e.g. `image-registry.openshift-image-registry.svc:5000/chemclaw`. Empty builds only. |
+| `SERVERS` | empty | Space-separated subset. Empty means every `servers/*/Containerfile`. |
+| `IMAGE_BUILDER` | `autodetect` | `buildah`, `podman`, `kaniko` or `docker`. OpenShift agents have no Docker socket. `kaniko` cannot build without pushing, so it skips the verify stage. |
+| `DRY_RUN` | `true` | Build and verify without publishing. |
+| `RUN_GATE` | `false` | Run `make check` and `make offline-run` here. **Required to publish**: Preflight refuses `DRY_RUN=false` with a registry and the gate off, because this pipeline cannot see whether GitHub Actions passed on that revision. |
+| `REGISTRY_CREDENTIALS_ID` | `chemclaw-registry` | Jenkins username/password credential for the registry. |
+| `CHEMCLAW3_REPO` / `CHEMCLAW3_BRANCH` | the Chemclaw3 repository / `main` | Where the shared `deploy/jenkins/lib` build library comes from. |
+
+Images are named `chemclaw-mcp-<name>` and tagged with the first twelve characters of the commit;
+each build passes `--build-arg CHEMCLAW_REVISION=<full sha>`. The same build by hand is in
+[`operations.md`](operations.md#1-build-an-image).
 
 ## The two things only a running image can prove
 
@@ -42,17 +58,11 @@ it entirely — they read `readinessProbe` and `livenessProbe` off the Pod spec 
 a `docker run` locally is the only place that line has ever executed. It is kept because it is right
 for the local case and costs nothing; it must not be read as the cluster's probe.
 
-**The Pod spec is not the operator's to write any more, and these four lines said it was.** Every
-server ships `deploy/deployment.yaml`, `deploy/hpa.yaml` and `deploy/pdb.yaml` beside the `Service`
-and the `ServiceMonitor` — `docs/adding-a-server.md` lists all six as required and
-`tests/test_fleet.py::test_a_server_ships_the_whole_set` is what requires them. This section
-previously said the images ship "no readiness probe and no liveness probe at all" and told an
-operator to wire `livenessProbe` "on the same route, on a longer period", which is the exact shape
-`tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` forbids: on
-`/healthz`, a broken *optional* component is a kill after `periodSeconds x failureThreshold` rather
-than a pod leaving its Service, and a restart cannot recreate a missing checkpoint. So the
-instruction recreated the `CrashLoopBackOff` that
-`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` was written for.
+**The Pod spec ships with each server.** Every server has `deploy/deployment.yaml`, `deploy/hpa.yaml`
+and `deploy/pdb.yaml` beside the `Service`, the `NetworkPolicy` and the `ServiceMonitor` —
+`docs/adding-a-server.md` lists them as required and
+`tests/test_fleet.py::test_a_server_ships_the_whole_set` is what requires them. Applying them is
+[`operations.md`](operations.md) §2.
 
 What the shipped Deployment wires, per server, and what an operator therefore does not:
 
@@ -70,10 +80,8 @@ What the shipped Deployment wires, per server, and what an operator therefore do
   the `HorizontalPodAutoscaler` and `PodDisruptionBudget` that make a rollout or a node drain
   something other than a total outage of that capability.
 
-What is still an operator's is applying those manifests and driving the *release*: see below. Six
-near-identical files per server is what a chart would replace, and this document does not say what
-the `BACKLOG.md` row over in Chemclaw3 currently reads, because nothing here can re-read it
-(`D-2026-09-19-a-claim-about-another-repository-is-checked-by-re-reading-it`).
+What is still an operator's: applying those manifests, **creating the bearer Secret and injecting
+it** (the Deployment references none — `operations.md` §2), and driving the *release*: see below.
 
 ## Where the rollout is
 
@@ -83,5 +91,7 @@ Deployment an operator created, driven from the Chemclaw3 checkout by
 `deploy/jenkins/README.md`, and `D-2026-08-26-a-release-is-a-descriptor-and-a-target` for why the
 fleet is rolled out **before** the core that dials it.
 
-A chart for the fleet — the servers differ only in name, port and token env — is a
-`BACKLOG.md` row over there. Until it exists, a release can change a server's bytes and nothing else.
+Until the fleet has a chart — the servers differ only in name, port and token env — a release can
+change a server's bytes and nothing else; a change to a Deployment's env or resources is an
+`oc apply` of `servers/<name>/deploy/` (then `oc set image` again, because the applied manifest
+carries a placeholder image).

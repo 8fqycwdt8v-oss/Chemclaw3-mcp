@@ -22,7 +22,9 @@ enforced rather than requested.
 | [`packages/mcp_server_kit/`](packages/mcp_server_kit/) | The shared shape: FastAPI transport, bearer auth, identity logging, vendored datasets, the egress guard. |
 | [`manifests/`](manifests/) | One directory per **connector**, holding its `connector.yaml`. Point `CHEMCLAW_CONNECTORS_DIR` here — and only here. |
 | [`manifests-internal/`](manifests-internal/) | The two servers Chemclaw3 must not discover — `calc` and `rxnlabel`. Reached by configuration, never mounted. |
-| [`docs/integration.md`](docs/integration.md) | Wiring a Chemclaw3 checkout to this fleet. |
+| [`docs/operations.md`](docs/operations.md) | **Running it**: build an image, deploy a server, wire it into Chemclaw3, verify, troubleshoot. |
+| [`docs/integration.md`](docs/integration.md) | Wiring a Chemclaw3 checkout to this fleet, in depth — including the `calc` cache seam. |
+| [`docs/delivery.md`](docs/delivery.md) | The Jenkins pipeline that builds, verifies and publishes the images. |
 | [`docs/adding-a-server.md`](docs/adding-a-server.md) | The checklist for a new server. |
 
 ## Quickstart
@@ -38,41 +40,56 @@ make run-props           # the reference server on 127.0.0.1:8850
 With the server running:
 
 ```sh
-curl -s localhost:8850/healthz            # {"status":"ok","server":"props"}
+curl -s localhost:8850/healthz            # {"status":"ok","server":"props","revision":…,"bounds":{…},"datasets":["process-solvents@0.2.0"]}
+curl -s localhost:8850/livez              # {"status":"alive",…}
 curl -si localhost:8850/mcp | head -1     # HTTP/1.1 401 Unauthorized — the bearer check
 ```
 
+Every server has a `make run-<name>` target on its own port with a `dev-token` default; a full MCP
+tool call by `curl` is in [`docs/operations.md`](docs/operations.md#4-verify).
+
 `make offline-run` runs the same suite inside a network namespace with no route off the host. It is
 the strongest form of the no-egress claim, because it does not trust this repository's own code:
-it takes the network away and checks every answer is unchanged. It is the **only** cover for the two
+it takes the network away and checks every answer is unchanged. It is the **only** cover for the
 egress channels no static scan reaches — a child process, and a `ctypes` call into libc — so
-`make check` now runs it too, wherever the kernel allows an unprivileged network namespace, and
-names it on screen where it does not. A gate that silently omits a layer reads exactly like one that
-ran it.
+`make check` runs it too wherever the kernel allows an unprivileged network namespace, and names it
+on screen where it does not.
+
+## Running it in a cluster
+
+[`docs/operations.md`](docs/operations.md) is the runbook: building an image (`podman build -f
+servers/<name>/Containerfile --build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD) .` from the
+repository root), applying `servers/<name>/deploy/`, the bearer Secret the shipped Deployment does
+**not** wire for you, every environment variable with its default, how to verify a pod, and a
+troubleshooting table for the failures that look like something else (a `421` from the
+DNS-rebinding guard, a `401` from an unset token, a readiness `503` naming a corpus checksum).
 
 ## Wiring it to Chemclaw3
 
-Two environment variables, no code change:
+No code change on either side. Chemclaw3 already ships a `connector.yaml` for `chem`, `safety`,
+`rxnpredict`, `props`, `thermalsafety`, `kinetics`, `unitops` and `suitability`, so for those it needs
+only an address and the token, under the same variable name the server verifies:
 
 ```sh
-export CHEMCLAW_CONNECTORS_DIR="/path/to/Chemclaw3-mcp/manifests:<chemclaw's own connectors dir>"
-export CHEMCLAW_CONNECTOR_URLS='{"props":"http://127.0.0.1:8850/mcp"}'
-export CHEMCLAW_PROPS_TOKEN=dev-token     # the same variable both sides read
+export CHEMCLAW_CONNECTOR_URLS='{"props":"http://127.0.0.1:8850/mcp"}'   # Helm: connectors.<name>.url
+export CHEMCLAW_PROPS_TOKEN=dev-token                                     # the same variable both sides read
 ```
 
-Then, in the Chemclaw3 checkout, `make connector-validate` resolves the manifest and the front door
-picks the tools up on the next turn. Full instructions, including the Helm side and the
-degrades-silently failure mode to watch for, are in [`docs/integration.md`](docs/integration.md).
+`pyexec` is the connector Chemclaw3 does not declare: its manifest comes from this repository's
+[`manifests/`](manifests/), prepended to `CHEMCLAW_CONNECTORS_DIR` (Helm: `extraConnectors`).
+Full instructions, including the five connectors that ship disabled and the degrades-silently failure
+mode to watch for, are in [`docs/operations.md`](docs/operations.md#3-wire-it-into-chemclaw3) and
+[`docs/integration.md`](docs/integration.md).
 
-**Two servers are wired differently, and the export line above no longer reaches them.** `calc` is
-not a connector Chemclaw3 dials: it holds the *physics* behind that bundle's calculators and durable
-jobs, and is called from inside Chemclaw3's own `cached_compute` on a cache miss. `rxnlabel` is
-reached the same way, by a background corpus drain. Mounting `calc` would let a partial surface win
-the `calc` name collision and take the calibration ledger, the calculation cache, the artifact store
-and every durable calc job off the agent's surface — with no error, which is exactly why prose was
-not enough. Their manifests live in [`manifests-internal/`](manifests-internal/), which no `export`
-line names, and each declares `mount: backend` — a key Chemclaw3's manifest model refuses, so
-pointing a path there anyway is a startup error naming the file rather than a silent swap.
+**Two servers are not connectors at all.** `calc` holds the *physics* behind Chemclaw3's own `calc`
+bundle and is called from inside its `cached_compute` on a cache miss (`CHEMCLAW_CALC_SERVER_URL`);
+`rxnlabel` is called by a background corpus drain (`CHEMCLAW_RXNLABEL_SERVER_URL`). Mounting
+`calc`'s manifest would let a partial surface win the `calc` name collision and take the calibration
+ledger, the calculation cache, the artifact store and every durable calc job off the agent's
+surface — with no error. So their manifests live in [`manifests-internal/`](manifests-internal/),
+which nothing tells you to mount, and each declares `mount: backend` — a key Chemclaw3's manifest
+model refuses, so pointing a path there anyway is a startup error naming the file rather than a
+silent swap.
 
 `calc` is also the server that shows what this fleet does and does not promise: it may run for
 hours, and it may not hold state. See [`servers/calc/README.md`](servers/calc/README.md).
