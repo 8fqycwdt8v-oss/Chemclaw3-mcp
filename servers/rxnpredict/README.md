@@ -41,8 +41,7 @@ All six are `read_only`.
 ## Running it
 
 ```sh
-CHEMCLAW_RXNPREDICT_TOKEN=dev-token \
-  uv run uvicorn chemclaw_mcp_rxnpredict.app:app --host 127.0.0.1 --port 8857
+make run-rxnpredict      # 127.0.0.1:8857, dev token
 ```
 
 With no predictor extras installed the server starts, serves its tools, and reports every predictor
@@ -83,6 +82,36 @@ slower than it would have been alone.
 thread, and the first is how a caller finds out what this build has — including why a consensus was
 refused or thin. `engine/admission.py` has the argument; `tests/test_admission.py` drives it.
 
+## Operating it
+
+Build, deploy, wiring and the fleet-wide variables are in
+[`docs/operations.md`](../../docs/operations.md); what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8857 / `chemclaw-mcp-rxnpredict` |
+| Token | `CHEMCLAW_RXNPREDICT_TOKEN` |
+| Chemclaw3 | connector `rxnpredict`, declared there and enabled by default; the four prediction tools are `queued:`, run through `connectors.rxnpredict.interactive` (2 pods x 2 slots) |
+| Pod | requests 500m / 2Gi, limits 2 CPU / 4Gi; 2 → 4 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Image | `reaction_t5_v2` and `rxn_insight`, weights baked at build; `HF_HOME=/opt/models/hf`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models`, `OMP_NUM_THREADS=1` |
+| Readiness | `/healthz` loads and checksums `trust_priors.json` (`rxnpredict-trust-priors@<version>`) and checks the predictor registry: a predictor this image carries that failed to load (`failed`, `egress_refused`), or an allow-list naming an unregistered predictor, is a 503. A predictor whose extra is simply not installed is ready. |
+| Admission | a full pod answers `[rxnpredict-at-capacity] …` |
+
+`CHEMCLAW_RXNPREDICT_*` settings (`engine/config.py`), each reported under `bounds` where numeric:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS` | `*` | comma list of forward predictors to serve, or `*` for every one that registered |
+| `CHEMCLAW_RXNPREDICT_ENABLED_CONDITIONS_MODELS` | `*` | the same for condition predictors |
+| `CHEMCLAW_RXNPREDICT_DISABLED_MODELS` | empty | predictor ids forced off, whatever the allow-lists say |
+| `CHEMCLAW_RXNPREDICT_MODEL_DIR` | the package's `data/models` (image: `/opt/models`) | where baked weights are read from; read-only |
+| `CHEMCLAW_RXNPREDICT_DEVICE` | `auto` | `cpu`, `cuda`, `cuda:0` or `auto` |
+| `CHEMCLAW_RXNPREDICT_DEFAULT_TOP_K` | 5 | candidates per prediction when the caller names none (1–50) |
+| `CHEMCLAW_RXNPREDICT_CACHE_ENABLED` / `_CACHE_MAX_ENTRIES` | `true` / 2048 | the in-process LRU of predictions |
+| `CHEMCLAW_RXNPREDICT_USE_CLASS_PRIORS` | `true` | weight votes by per-reaction-class priors when available |
+| `CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS_BY_CLASS` | empty | a JSON adjustment laid over `trust_priors.json`, validated against the known classes and predictors |
+| `CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS` | 2 | admission slots per pod (a slot is a core) |
+
 ## The predictors, and which ones this image carries
 
 The shipped image installs **`reaction_t5_v2`** and **`rxn_insight`** — upstream's Phase A, and the
@@ -104,7 +133,10 @@ human obtained this file" is exactly what a README is for:
 | `chemformer` | a fine-tuned Chemformer checkpoint (`MolecularAI/MolBART`) | `CHEMFORMER_MODEL_PATH` |
 | `parrot` | `wangxr0526/Parrot`, cloned with its checkpoint | `PARROT_MODEL_PATH` |
 | `reagents_mt` | `Academich/reagents` release checkpoint | `REAGENTS_MT_MODEL_PATH` |
-| `askcos_condition` | `askcos-core` from MIT's distribution | — |
+| `graphrxn` | `jidushanbojue/GraphRXN`, installed on `PYTHONPATH` with its checkpoint | `GRAPHRXN_MODEL_PATH` |
+| `two_stage_dnn` | the Chen & Li (2024) supplementary code on `PYTHONPATH` | `TWO_STAGE_DNN_MODEL_PATH` |
+| `askcos_condition` | `askcos-core` from MIT's distribution | `ASKCOS_CONTEXT_MODEL_PATH` (optional) |
+| `rxn_insight` | ships in its wheel (the `rxn_insight` extra) | — |
 
 ## Offline, and how that is made true
 

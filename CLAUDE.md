@@ -23,7 +23,7 @@ and no core edit is needed. So the target every server here is built against is:
 | `packages/mcp_server_kit/` | The shape every server has, written once: transport, auth, identity, trace continuation, datasets, the egress guard. |
 | `manifests/` | One directory per **connector** holding its `connector.yaml` (a symlink). What `CHEMCLAW_CONNECTORS_DIR` points at, and only what may safely go there. |
 | `manifests-internal/` | The same, for the servers Chemclaw3 must **not** discover — `calc` (a backend behind `cached_compute`) and `rxnlabel` (a background drain's primitives). No published `export` line names it, and each manifest here declares `mount: backend`, a key Chemclaw3's `extra="forbid"` manifest model refuses. |
-| `docs/` | How to wire this fleet to Chemclaw3, the checklist for adding a server, the decision record (`docs/decisions/`) and the open queue (`docs/BACKLOG.md`). |
+| `docs/` | How to build, deploy, operate and troubleshoot the fleet (`docs/operations.md`), how to wire it to Chemclaw3, the checklist for adding a server, the decision record (`docs/decisions/`) and the open queue (`docs/BACKLOG.md`). |
 | `scripts/` | Operational scripts outside any server's runtime; `scripts/README.md` lists them, and a test reads that list against the directory. |
 | `tests/` | The fleet-level invariants no single server can see about itself. |
 | `MODULES.md` | The catalogue and the authoritative port registry. |
@@ -130,7 +130,7 @@ that helper are non-obvious, and each is quiet when wrong:
 
 ## Authentication and identity
 
-- **Bearer on `/mcp`; `/healthz` and `/metrics` stay open.** A kubelet probe and a Prometheus
+- **Bearer on `/mcp`; `/healthz`, `/livez` and `/metrics` stay open.** A kubelet probe and a Prometheus
   scrape have no identity. The exposition is the default registry's — `python_info` and the
   `process_*` collectors — **plus this fleet's own per-tool counters and latencies**
   (`packages/mcp_server_kit/src/mcp_server_kit/metrics.py`), and it carries nothing about a

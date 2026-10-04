@@ -123,9 +123,11 @@ somebody is. The drain's right response to a refusal is to re-send the identical
 ## Running it
 
 ```sh
-make run-rxnlabel                               # 127.0.0.1:8865, dev token; RDKit-only path
-uv sync --package chemclaw-mcp-rxnlabel --extra models   # optional: RXNMapper + Rxn-INSIGHT (pulls torch)
+make run-rxnlabel                 # 127.0.0.1:8865, dev token
 ```
+
+A plain `uv sync` does not install the `models` extra, so a dev server runs the RDKit-only path and
+`labeller_version` says so. The image installs the extra (RXNMapper pulls CPU torch).
 
 `CHEMCLAW_RXNLABEL_TOKEN` is enforced; unset, every `/mcp` request is refused with 401.
 

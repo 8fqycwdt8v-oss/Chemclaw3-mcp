@@ -54,7 +54,7 @@ server's copy to one shape:
 
 | File | What it is |
 | --- | --- |
-| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, non-root UID 1001, read-only root filesystem, all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
+| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, non-root UID 1001, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
 | `service.yaml` | `chemclaw-mcp-<name>`, port `http` = the server's port. |
 | `networkpolicy.yaml` | Denies all egress. Allows ingress on the server's port from pods labelled `app.kubernetes.io/name: chemclaw` **in the same namespace**, and from the `monitoring` / `openshift-user-workload-monitoring` namespaces. |
 | `hpa.yaml` | CPU HPA, `minReplicas: 2`. |
@@ -73,6 +73,13 @@ There is no chart. A release changes an image with `oc set image`. Chemclaw3's
   fleet in a separate namespace, first add a `namespaceSelector` peer to every policy, then use the
   qualified address. In the other order the connector resolves and then times out.
 - The `ServiceMonitor` CRD, for the scrape. Without it, skip that one file.
+- **On OpenShift, the pinned user IDs.** Every Deployment sets `runAsUser`, `runAsGroup` and
+  `fsGroup` to `1001` (the image's `app` user). The default `restricted-v2` SCC assigns a UID from
+  the namespace's range and rejects a pod that pins one outside it, so the ReplicaSet reports
+  `unable to validate against any security context constraint`. Either remove the three fields in
+  an overlay (keep `runAsNonRoot: true`; the servers write only to the `/tmp` `emptyDir`, and `/healthz` is
+  the check that an arbitrary UID works — on `pyexec` it forks a real sandbox run), or grant the `nonroot-v2` SCC to the namespace's `default` ServiceAccount
+  (`oc adm policy add-scc-to-user nonroot-v2 -z default`). The overlay below does the first.
 
 ### Steps
 
@@ -94,7 +101,7 @@ oc set env deployment/chemclaw-mcp-$NAME --from=secret/chemclaw-mcp-$NAME-token
 oc set image deployment/chemclaw-mcp-$NAME server=<registry>/chemclaw-mcp-$NAME@sha256:<digest>
 ```
 
-`kubectl` takes the same verbs. Two cautions:
+`kubectl` takes the same verbs. Two cautions, and the overlay that removes both:
 
 - **Step 3 is required.** If the token variable is unset, the server returns 401 to every `/mcp`
   request, and `/healthz` still reports ready. That is the fail-closed design, but in a cluster it
@@ -103,6 +110,42 @@ oc set image deployment/chemclaw-mcp-$NAME server=<registry>/chemclaw-mcp-$NAME@
 - **Re-applying `deployment.yaml` resets `image:` to the placeholder**, because `image:` is in the
   applied manifest. Run step 4 again after any `oc apply`, or keep the digest in a kustomize
   overlay. The env from step 3 is kept, because it is not in the applied manifest.
+
+**The durable form is a kustomize overlay** kept in your deployment repository, which pins the
+image, wires the token from the Secret, and (on OpenShift) drops the pinned IDs — so `oc apply -k`
+is repeatable and nothing depends on remembering steps 3 and 4:
+
+```yaml
+# overlays/props/kustomization.yaml
+resources:
+  - <path-to-Chemclaw3-mcp>/servers/props/deploy/deployment.yaml
+  - <path-to-Chemclaw3-mcp>/servers/props/deploy/service.yaml
+  - <path-to-Chemclaw3-mcp>/servers/props/deploy/networkpolicy.yaml
+  - <path-to-Chemclaw3-mcp>/servers/props/deploy/hpa.yaml
+  - <path-to-Chemclaw3-mcp>/servers/props/deploy/pdb.yaml
+  - <path-to-Chemclaw3-mcp>/servers/props/deploy/servicemonitor.yaml
+images:
+  - name: chemclaw3/chemclaw-mcp-props
+    newName: <registry>/chemclaw-mcp-props
+    digest: sha256:<digest>
+patches:
+  - target: {kind: Deployment, name: chemclaw-mcp-props}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: CHEMCLAW_PROPS_TOKEN
+          valueFrom: {secretKeyRef: {name: chemclaw-mcp-props-token, key: CHEMCLAW_PROPS_TOKEN}}
+      # OpenShift restricted-v2 only: let the SCC assign the UID/GID.
+      - op: remove
+        path: /spec/template/spec/securityContext/runAsUser
+      - op: remove
+        path: /spec/template/spec/securityContext/runAsGroup
+      - op: remove
+        path: /spec/template/spec/securityContext/fsGroup
+```
+
+Only the pod-level `securityContext` pins IDs; the container-level one does not.
 
 ### Environment: what every server reads
 
@@ -173,9 +216,10 @@ secrets:
 The secret named by `secrets.name` (default `chemclaw-secrets`) must hold `CHEMCLAW_PROPS_TOKEN`
 with **the same value** as the server's secret from §2.
 
-The egress peer above matches every pod labelled `part-of: chemclaw3`, and Chemclaw3's own pods
-carry that label too. Use a narrower `matchExpressions` on `app.kubernetes.io/name` if you want the
-rule limited to the fleet.
+The egress peer above matches the pods every `servers/*/deploy/deployment.yaml` labels
+`app.kubernetes.io/part-of: chemclaw3` in the same namespace; Chemclaw3's own chart does not use that
+label. The chart takes either `egressDestinations` or `allowAnyDestination: true`, never both — a
+release already on the latter needs no entry.
 
 `props`, `thermalsafety`, `kinetics`, `unitops` and `suitability` declare `default_enabled: false`
 on the Chemclaw3 side. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not bound. Naming one
@@ -301,6 +345,7 @@ not show an error. Its tools are missing from the turn.
 | `/mcp` returns **403** `Invalid Origin header` | A browser-style `Origin` header that does not match an allowed host. | Server-to-server callers do not send `Origin`. If a proxy adds one, strip it, or add the host to `MCP_ALLOWED_HOSTS` (origins follow hosts). |
 | Every `/mcp` call is **401** `unauthorized` | The token variable is unset on the server (fail closed), or the two sides hold different values or different variable names. | `oc set env deployment/chemclaw-mcp-<name> --list` must show `CHEMCLAW_<NAME>_TOKEN`. Compare with the Chemclaw3 secret. `chemclaw_mcp_unauthenticated_requests_total` counts these. |
 | Chemclaw3 raises `MissingConnectorCredential` | The token is unset on the **Chemclaw3** pod. | Add it to Chemclaw3's secret (`secrets.optionalKeys`). |
+| No pods; ReplicaSet event `unable to validate against any security context constraint` | OpenShift `restricted-v2` rejects the pinned `runAsUser`/`runAsGroup`/`fsGroup: 1001`. | Remove them in an overlay (§2) or grant `nonroot-v2` to the ServiceAccount. |
 | Pod not Ready; `/healthz` **503** with `reason` naming a file and two hashes | A vendored corpus failed its checksum: `… does not match the approved checksum: manifest says <a>, file is <b>`. | The image holds a file different from the one reviewed. Rebuild from a clean checkout. Never edit `dataset.json` in place to match. |
 | `/healthz` 503 naming `no dataset manifest` / `no records file` / a missing provenance field | The image is missing a corpus or its `dataset.json`. | Rebuild. The `Containerfile` copies the whole server directory. |
 | `/healthz` 503 on `calc`: `CHEMCLAW_XTB_ENGINE selects the xtb binary and this image has none on PATH` | `CHEMCLAW_XTB_ENGINE=xtb` on an image without `xtb`. | Unset it (the image pins `tblite`) or use the shipped image, which includes the binary. |

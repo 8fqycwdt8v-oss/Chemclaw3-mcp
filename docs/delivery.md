@@ -81,7 +81,10 @@ What the shipped Deployment wires, per server, and what an operator therefore do
   something other than a total outage of that capability.
 
 What is still an operator's: applying those manifests, **creating the bearer Secret and injecting
-it** (the Deployment references none — `operations.md` §2), and driving the *release*: see below.
+it** (the Deployment references none), replacing the placeholder `chemclaw3/chemclaw-mcp-<name>:latest`
+image with a published digest, and on OpenShift removing the pinned `runAsUser`/`runAsGroup`/
+`fsGroup: 1001` that the `restricted-v2` SCC rejects — `operations.md` §2 does all three in one
+kustomize overlay — and driving the *release*: see below.
 
 ## Where the rollout is
 

@@ -265,3 +265,21 @@ buried in the counter that exists to describe callers. What the probe checks is 
 make run-pyexec                 # 127.0.0.1:8899 with a dev token
 uv run pytest servers/pyexec    # the sandbox suite; a count is not written here, it drifts
 ```
+
+## Operating it
+
+Build, deploy and the fleet-wide variables are in [`docs/operations.md`](../../docs/operations.md);
+what is particular to this server:
+
+| | |
+| --- | --- |
+| Port / Service | 8899 / `chemclaw-mcp-pyexec` |
+| Token | `CHEMCLAW_PYEXEC_TOKEN` |
+| Chemclaw3 | connector `pyexec`, **not declared by Chemclaw3**: mount `manifests/pyexec/connector.yaml` through `extraConnectors.bundles`, add `connectors.pyexec` with its `url` and `interactive` worker (`run_python` is `queued:`), `networkPolicy.egressPorts.pyexec: 8899` and the token in `secrets.optionalKeys` — `docs/operations.md` §3 has the values |
+| Pod | requests 1 CPU / 512Mi, limits 2 CPU / 2Gi; 2 → 6 replicas on CPU (or KEDA on admission, `deploy/keda/`). The memory **limit** is load-bearing: `RLIMIT_AS` is derived from it, so `(limit − 256 MiB) / CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` is what each run may allocate. Below 768 MiB per run the pod logs a WARNING at startup and analyses that import the scientific stack fail. |
+| Own knobs | `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` (2); the per-run limits in "Bounds" are code defaults in `engine/limits.py`, not variables |
+| Readiness | `/healthz` runs one trivial program through the real sandbox, once per process; a broken interpreter or unwritable scratch directory is a 503 naming the reason. `datasets` is `[]`. |
+| Admission | a full pod answers `[pyexec-at-capacity] …` |
+
+A program that runs out of wall clock, CPU or memory comes back as a result with the limit named —
+that is the sandbox working, not the server failing.
