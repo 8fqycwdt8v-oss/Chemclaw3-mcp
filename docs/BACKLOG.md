@@ -178,16 +178,19 @@ decision leaves a record behind and the row goes.
   docstring (use `.loc[mask, "col"] = x`) and a sandbox test that pins the behaviour close it.
   **Anchors:** `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.
 
-## 5 — What the shipped deployment leaves to the operator
+## 5 — Changes both repositories have to make together
 
-- [ ] **No `deploy/deployment.yaml` references the bearer Secret, so the workload as shipped refuses
-  every `/mcp` call.** Each Deployment sets `MCP_ALLOWED_HOSTS` and nothing else; the variable its
-  manifest names as `auth.token_env` is left for an operator to inject (`docs/operations.md` §2 does
-  it with `oc set env --from=secret/...`). Fail-closed is the right direction, but `/healthz` stays
-  200 while every call is 401, so a missed step reads as a working pod. A `secretKeyRef` to a
-  conventionally named Secret (`chemclaw-mcp-<name>-token`, key = the `token_env`), held to the
-  manifest by `tests/test_deploy_shape.py` the way `MCP_ALLOWED_HOSTS` is held to `service.yaml`,
-  would make the shipped files complete; the open question is whether a site's Secret naming is the
-  fleet's to fix.
-  **Anchors:** `servers/props/deploy/deployment.yaml`, `tests/test_deploy_shape.py`,
-  `docs/operations.md`.
+- [ ] **The five opt-in manifests both trees declare do not carry `default_enabled: false` here.**
+  `props`, `thermalsafety`, `kinetics`, `unitops` and `suitability` are off by default in Chemclaw3
+  and default to on in this fleet's copies, so a deployment that puts `manifests/` first on
+  `CHEMCLAW_CONNECTORS_DIR` with an empty `CHEMCLAW_CONNECTORS_ENABLED` binds all five on every
+  model call (`pyexec`, which only this fleet declares, already carries the flag). Adding the key
+  here alone was measured on 2026-10-04: Chemclaw3's agreement suite then fails on its own stale-row
+  tripwire ("recorded as an argued divergence and the two trees now agree"), and
+  `tests/test_consumer_agreement.py` runs that suite against this checkout, so this fleet's gate
+  goes red too. The order that keeps both gates green is: Chemclaw3 first lets those five
+  `_ARGUED_DIVERGENCES` rows accept agreement (and stops deriving its e2e opt-in set from them), then
+  this repository adds the key, then Chemclaw3 deletes the rows.
+  **Other repository:** `Chemclaw3` — `tests/test_sibling_manifest_agreement.py`'s
+  `_ARGUED_DIVERGENCES` and `test_the_e2e_lane_binds_no_opt_in_bundle_by_default`.
+  **Anchors:** `servers/props/connector.yaml`, `tests/test_consumer_agreement.py`.

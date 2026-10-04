@@ -119,7 +119,9 @@ def test_the_pod_is_hardened() -> None:
     pod_sc = spec["securityContext"]
     assert pod_sc["runAsNonRoot"] is True
     assert pod_sc["seccompProfile"]["type"] == "RuntimeDefault"
-    assert int(pod_sc["runAsUser"]) >= 1000
+    # No pinned UID: OpenShift's `restricted-v2` assigns one and rejects any other, and
+    # `runAsNonRoot` above is the property that matters (`tests/test_deploy_shape.py`).
+    assert not {"runAsUser", "runAsGroup", "fsGroup"} & set(pod_sc)
 
     container = spec["containers"][0]
     csc = container["securityContext"]

@@ -147,5 +147,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow](D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow.md) | A resolved structure is written without a dative arrow |
 | [D-2026-10-02-an-unrecognised-name-is-said-in-words](D-2026-10-02-an-unrecognised-name-is-said-in-words.md) | An unrecognised name is said in words |
 | [D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name](D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name.md) | The rebinding guard stays on and is told the Service name |
+| [D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads](D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads.md) | A Deployment reads its bearer from the Secret its caller reads |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

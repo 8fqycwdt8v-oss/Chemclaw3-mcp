@@ -79,12 +79,19 @@ What the shipped Deployment wires, per server, and what an operator therefore do
 - the `Service` and the `ServiceMonitor`, which are what tells Prometheus to scrape `/metrics`, and
   the `HorizontalPodAutoscaler` and `PodDisruptionBudget` that make a rollout or a node drain
   something other than a total outage of that capability.
+- the bearer: the variable the manifest names as `auth.token_env`, from a non-optional
+  `secretKeyRef` into `chemclaw-secrets` (key = the variable name) — the Secret Chemclaw3's chart
+  reads, so both halves hold one value.
+- a security context `restricted-v2` admits: `runAsNonRoot` with no pinned UID, GID or fsGroup, so
+  OpenShift assigns them. The image is built for that — a numeric `USER` in group 0 and
+  `HOME=/tmp`, the one writable mount.
 
-What is still an operator's: applying those manifests, **creating the bearer Secret and injecting
-it** (the Deployment references none), replacing the placeholder `chemclaw3/chemclaw-mcp-<name>:latest`
-image with a published digest, and on OpenShift removing the pinned `runAsUser`/`runAsGroup`/
-`fsGroup: 1001` that the `restricted-v2` SCC rejects — `operations.md` §2 does all three in one
-kustomize overlay — and driving the *release*: see below.
+`tests/test_deploy_shape.py` holds the last two against every server's manifest and `Containerfile`.
+
+What is still an operator's: applying those manifests, **putting the bearer's key into
+`chemclaw-secrets`** (a missing key keeps the pod from starting), replacing the placeholder
+`chemclaw3/chemclaw-mcp-<name>:latest` image — which nothing publishes — with a published digest
+(`operations.md` §2 does it in a kustomize overlay), and driving the *release*: see below.
 
 ## Where the rollout is
 

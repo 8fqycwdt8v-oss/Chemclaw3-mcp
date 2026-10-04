@@ -59,10 +59,11 @@ on screen where it does not.
 
 [`docs/operations.md`](docs/operations.md) is the runbook: building an image (`podman build -f
 servers/<name>/Containerfile --build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD) .` from the
-repository root), applying `servers/<name>/deploy/`, the bearer Secret the shipped Deployment does
-**not** wire for you, every environment variable with its default, how to verify a pod, and a
+repository root), applying `servers/<name>/deploy/`, the key the shipped Deployment reads its
+bearer from (`chemclaw-secrets`, the Secret Chemclaw3's chart reads), pinning the placeholder image
+to a digest, every environment variable with its default, how to verify a pod, and a
 troubleshooting table for the failures that look like something else (a `421` from the
-DNS-rebinding guard, a `401` from an unset token, a readiness `503` naming a corpus checksum).
+DNS-rebinding guard, a `401` from a mismatched token, a readiness `503` naming a corpus checksum).
 
 ## Wiring it to Chemclaw3
 

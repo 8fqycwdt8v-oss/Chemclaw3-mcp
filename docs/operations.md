@@ -27,8 +27,9 @@ podman build -f servers/props/Containerfile \
   result; do not switch to a re-resolving install.
 - **`--build-arg CHEMCLAW_REVISION` is the only way the revision gets in.** Leave it out and the
   image still builds, but `/healthz` and the MCP `initialize` handshake report `"revision":"unknown"`.
-- The runtime stage runs as UID 1001 with `MCP_EGRESS_GUARD=on`, `EXPOSE`s the server's port, and
-  starts `uvicorn chemclaw_mcp_<name>.app:app --host 0.0.0.0 --port <port>`.
+- The runtime stage runs as the numeric UID 1001 in group 0 (any UID a platform assigns works the
+  same, §2), sets `HOME=/tmp` and `MCP_EGRESS_GUARD=on`, `EXPOSE`s the server's port, and starts
+  `uvicorn chemclaw_mcp_<name>.app:app --host 0.0.0.0 --port <port>`.
 - **Heavy images**: `calc` installs `xtb` and `crest` from conda-forge in a separate stage and pins
   `CHEMCLAW_XTB_ENGINE=tblite` (see `servers/calc/README.md`). `rxnpredict` and `rxnlabel` add the
   CPU torch index and bake model weights into the image at build time, then set `HF_HUB_OFFLINE=1`.
@@ -54,7 +55,7 @@ server's copy to one shape:
 
 | File | What it is |
 | --- | --- |
-| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, non-root UID 1001, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
+| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, `runAsNonRoot` with **no pinned UID/GID** (the platform assigns one), the bearer from `chemclaw-secrets` under the manifest's `auth.token_env`, the placeholder image `chemclaw3/chemclaw-mcp-<name>:latest`, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
 | `service.yaml` | `chemclaw-mcp-<name>`, port `http` = the server's port. |
 | `networkpolicy.yaml` | Denies all egress. Allows ingress on the server's port from pods labelled `app.kubernetes.io/name: chemclaw` **in the same namespace**, and from the `monitoring` / `openshift-user-workload-monitoring` namespaces. |
 | `hpa.yaml` | CPU HPA, `minReplicas: 2`. |
@@ -73,13 +74,17 @@ There is no chart. A release changes an image with `oc set image`. Chemclaw3's
   fleet in a separate namespace, first add a `namespaceSelector` peer to every policy, then use the
   qualified address. In the other order the connector resolves and then times out.
 - The `ServiceMonitor` CRD, for the scrape. Without it, skip that one file.
-- **On OpenShift, the pinned user IDs.** Every Deployment sets `runAsUser`, `runAsGroup` and
-  `fsGroup` to `1001` (the image's `app` user). The default `restricted-v2` SCC assigns a UID from
-  the namespace's range and rejects a pod that pins one outside it, so the ReplicaSet reports
-  `unable to validate against any security context constraint`. Either remove the three fields in
-  an overlay (keep `runAsNonRoot: true`; the servers write only to the `/tmp` `emptyDir`, and `/healthz` is
-  the check that an arbitrary UID works — on `pyexec` it forks a real sandbox run), or grant the `nonroot-v2` SCC to the namespace's `default` ServiceAccount
-  (`oc adm policy add-scc-to-user nonroot-v2 -z default`). The overlay below does the first.
+- **The bearer in `chemclaw-secrets`.** Every Deployment reads the variable its manifest names as
+  `auth.token_env` from the Secret `chemclaw-secrets`, key = that variable name — the Secret
+  Chemclaw3's chart reads (`secrets.name`), so both halves hold one value. The reference is not
+  `optional`: if the key is missing the pod stays in `CreateContainerConfigError` rather than
+  starting and refusing every call. If your release renamed `secrets.name`, patch the
+  `secretKeyRef.name` in your overlay.
+- **No SCC grant on OpenShift.** No Deployment pins `runAsUser`, `runAsGroup` or `fsGroup`, so the
+  default `restricted-v2` SCC assigns a UID from the namespace's range (GID 0) and admits the pod.
+  The images are built for that: a numeric `USER` in group 0, `HOME=/tmp`, and nothing written
+  outside the `/tmp` `emptyDir`. `/healthz` is the check that an assigned UID works — on `pyexec`
+  it forks a real sandbox run.
 
 ### Steps
 
@@ -87,33 +92,32 @@ There is no chart. A release changes an image with `oc set image`. Chemclaw3's
 NAME=props                                      # the server
 TOKEN_ENV=CHEMCLAW_PROPS_TOKEN                  # its manifest's auth.token_env (table in §3)
 
-# 1. The bearer secret. The key name is the variable name, which lets step 3 inject it unchanged.
-oc create secret generic chemclaw-mcp-$NAME-token \
-  --from-literal=$TOKEN_ENV="$(openssl rand -hex 32)"
+# 1. The bearer, in the Secret Chemclaw3 reads (skip if the key is already there; §3 needs the
+#    same value on the Chemclaw3 side). Key = variable name, which the Deployment references.
+oc patch secret chemclaw-secrets --type merge \
+  -p "{\"stringData\":{\"$TOKEN_ENV\":\"$(openssl rand -hex 32)\"}}"
 
 # 2. The workload. `-f <dir>` does not recurse, so keda/ is not applied.
 oc apply -f servers/$NAME/deploy/
 
-# 3. Give the token to the server. The shipped Deployment does NOT reference a Secret.
-oc set env deployment/chemclaw-mcp-$NAME --from=secret/chemclaw-mcp-$NAME-token
-
-# 4. Pin the image you built (the manifest says :latest as a placeholder).
+# 3. Pin the image you built. The manifest's `chemclaw3/chemclaw-mcp-<name>:latest` is a
+#    placeholder nothing publishes; never run it unrewritten.
 oc set image deployment/chemclaw-mcp-$NAME server=<registry>/chemclaw-mcp-$NAME@sha256:<digest>
 ```
 
-`kubectl` takes the same verbs. Two cautions, and the overlay that removes both:
+`kubectl` takes the same verbs. Two cautions, and the overlay that removes the second:
 
-- **Step 3 is required.** If the token variable is unset, the server returns 401 to every `/mcp`
-  request, and `/healthz` still reports ready. That is the fail-closed design, but in a cluster it
-  looks like a working server. Chemclaw3 needs the **same value** under the **same variable name**
-  (§3).
+- **Step 1 is required.** Without the key the pod never starts (`CreateContainerConfigError`
+  naming it). With a key whose value differs from Chemclaw3's, `/mcp` answers 401 while `/healthz`
+  stays ready — the fail-closed design, which in a cluster looks like a working server.
 - **Re-applying `deployment.yaml` resets `image:` to the placeholder**, because `image:` is in the
-  applied manifest. Run step 4 again after any `oc apply`, or keep the digest in a kustomize
-  overlay. The env from step 3 is kept, because it is not in the applied manifest.
+  applied manifest. Run step 3 again after any `oc apply`, or keep the digest in a kustomize
+  overlay.
 
 **The durable form is a kustomize overlay** kept in your deployment repository, which pins the
-image, wires the token from the Secret, and (on OpenShift) drops the pinned IDs — so `oc apply -k`
-is repeatable and nothing depends on remembering steps 3 and 4:
+image by digest — so `oc apply -k` is repeatable and nothing depends on remembering step 3. The
+bearer and the OpenShift-compatible security context are already in the shipped Deployment, so the
+overlay needs nothing else:
 
 ```yaml
 # overlays/props/kustomization.yaml
@@ -125,27 +129,13 @@ resources:
   - <path-to-Chemclaw3-mcp>/servers/props/deploy/pdb.yaml
   - <path-to-Chemclaw3-mcp>/servers/props/deploy/servicemonitor.yaml
 images:
-  - name: chemclaw3/chemclaw-mcp-props
+  - name: chemclaw3/chemclaw-mcp-props     # matches the placeholder exactly
     newName: <registry>/chemclaw-mcp-props
     digest: sha256:<digest>
-patches:
-  - target: {kind: Deployment, name: chemclaw-mcp-props}
-    patch: |-
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: CHEMCLAW_PROPS_TOKEN
-          valueFrom: {secretKeyRef: {name: chemclaw-mcp-props-token, key: CHEMCLAW_PROPS_TOKEN}}
-      # OpenShift restricted-v2 only: let the SCC assign the UID/GID.
-      - op: remove
-        path: /spec/template/spec/securityContext/runAsUser
-      - op: remove
-        path: /spec/template/spec/securityContext/runAsGroup
-      - op: remove
-        path: /spec/template/spec/securityContext/fsGroup
 ```
 
-Only the pod-level `securityContext` pins IDs; the container-level one does not.
+`tests/test_deploy_shape.py` holds every Deployment to that one placeholder string, so an
+`images:` entry written this way cannot silently miss.
 
 ### Environment: what every server reads
 
@@ -155,7 +145,7 @@ resolved. Use `/healthz`, not the manifest, to see what an overlay or a `set env
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `CHEMCLAW_<NAME>_TOKEN` | **unset → every `/mcp` call is 401** | The bearer the server verifies. Its exact name is the manifest's `auth.token_env`. |
+| `CHEMCLAW_<NAME>_TOKEN` | **unset → every `/mcp` call is 401** | The bearer the server verifies. Its exact name is the manifest's `auth.token_env`; the shipped Deployment sets it from `chemclaw-secrets`. |
 | `MCP_ALLOWED_HOSTS` | loopback only | Extra `Host` values `/mcp` accepts, comma-separated `host:port` or `host:*`. Each shipped Deployment sets its own Service (`chemclaw-mcp-props:8850`). Add any other name callers use. A URL, a missing port or a wildcard host stops startup with a message naming the entry. |
 | `MCP_MAX_SESSIONS` | `1024` | Live MCP sessions per pod. A handshake past this gets **503** with `Retry-After: 10`. `0` = unbounded. |
 | `MCP_SESSION_IDLE_TIMEOUT_SECONDS` | `1800` | How long an unused session lives before it is reaped. Time inside a running tool call does not count as idle. `0` = never reaped. |
@@ -213,8 +203,8 @@ secrets:
   optionalKeys: {propsToken: CHEMCLAW_PROPS_TOKEN}   # chem/safety/calc/rxnpredict/rxnlabel already have a slot
 ```
 
-The secret named by `secrets.name` (default `chemclaw-secrets`) must hold `CHEMCLAW_PROPS_TOKEN`
-with **the same value** as the server's secret from §2.
+The secret named by `secrets.name` (default `chemclaw-secrets`) must hold `CHEMCLAW_PROPS_TOKEN`.
+It is the same Secret the server's Deployment reads (§2), so the two sides hold one value.
 
 The egress peer above matches the pods every `servers/*/deploy/deployment.yaml` labels
 `app.kubernetes.io/part-of: chemclaw3` in the same namespace; Chemclaw3's own chart does not use that
@@ -222,7 +212,8 @@ label. The chart takes either `egressDestinations` or `allowAnyDestination: true
 release already on the latter needs no entry.
 
 `props`, `thermalsafety`, `kinetics`, `unitops` and `suitability` declare `default_enabled: false`
-on the Chemclaw3 side. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not bound. Naming one
+on the Chemclaw3 side (their copies here do not yet; see below). `pyexec`, which only this
+repository declares, carries `default_enabled: false` here. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not bound. Naming one
 with `connectors.<name>.enabled: true` binds it. Each bound connector adds its tool schemas to the
 prompt of every model call, so enable only what a site uses.
 
@@ -256,9 +247,12 @@ secrets:
 
 **Mount only the bundles you need, and never `manifests-internal/`.** The chart prepends the mount
 to `CHEMCLAW_CONNECTORS_DIR`, and the first directory wins a name collision. A manifest from this
-repository therefore replaces Chemclaw3's copy of the same connector. This repository's manifests do
-not carry `default_enabled: false`, so mounting `props` (for example) binds it on every turn even
-with `enabled: false`. Bundle skills are still merged from every directory with the same name.
+repository therefore replaces Chemclaw3's copy of the same connector. Of the opt-in servers only
+`pyexec`'s manifest here carries `default_enabled: false`; the other five do not yet (Chemclaw3's
+`tests/test_sibling_manifest_agreement.py` records that difference as argued, so the two repositories
+have to change it together). A mounted `props` (for example) is therefore bound on every turn when
+`CHEMCLAW_CONNECTORS_ENABLED` is empty — a chart release never renders it empty, but any other wiring
+should name the set. Bundle skills are still merged from every directory with the same name.
 
 ### `calc` and `rxnlabel`: backends, never connectors
 
@@ -343,9 +337,11 @@ not show an error. Its tools are missing from the turn.
 | --- | --- | --- |
 | `/mcp` returns **421** `Invalid Host header`; `/healthz` is 200 | The `Host` header (the name the caller dialled) is not in `MCP_ALLOWED_HOSTS`. Upstream's DNS-rebinding guard accepts loopback by default. | Add the dialled `host:port` to `MCP_ALLOWED_HOSTS`. The shipped Deployment sets only the Service short name. A qualified name, a Route or a renamed Service each need an entry. |
 | `/mcp` returns **403** `Invalid Origin header` | A browser-style `Origin` header that does not match an allowed host. | Server-to-server callers do not send `Origin`. If a proxy adds one, strip it, or add the host to `MCP_ALLOWED_HOSTS` (origins follow hosts). |
-| Every `/mcp` call is **401** `unauthorized` | The token variable is unset on the server (fail closed), or the two sides hold different values or different variable names. | `oc set env deployment/chemclaw-mcp-<name> --list` must show `CHEMCLAW_<NAME>_TOKEN`. Compare with the Chemclaw3 secret. `chemclaw_mcp_unauthenticated_requests_total` counts these. |
+| Every `/mcp` call is **401** `unauthorized` | The two sides hold different values or different variable names — e.g. the server reads a different Secret than Chemclaw3 (a renamed `secrets.name` not carried into the overlay). | `oc set env deployment/chemclaw-mcp-<name> --list` must show the manifest's `auth.token_env` from `chemclaw-secrets`. Compare with the Chemclaw3 secret. `chemclaw_mcp_unauthenticated_requests_total` counts these. |
 | Chemclaw3 raises `MissingConnectorCredential` | The token is unset on the **Chemclaw3** pod. | Add it to Chemclaw3's secret (`secrets.optionalKeys`). |
-| No pods; ReplicaSet event `unable to validate against any security context constraint` | OpenShift `restricted-v2` rejects the pinned `runAsUser`/`runAsGroup`/`fsGroup: 1001`. | Remove them in an overlay (§2) or grant `nonroot-v2` to the ServiceAccount. |
+| Pod stuck in `CreateContainerConfigError` naming `CHEMCLAW_<NAME>_TOKEN` | The key is missing from `chemclaw-secrets` (the reference is deliberately not optional), or the Secret is in another namespace. | Add the key (§2, step 1) in the release's namespace. |
+| No pods; ReplicaSet event `unable to validate against any security context constraint` | Something re-added a pinned `runAsUser`/`runAsGroup`/`fsGroup` (an old overlay); the shipped Deployments pin none. | Remove the pin from the overlay; `restricted-v2` assigns the UID. |
+| `ErrImagePull` / `ImagePullBackOff` on `chemclaw3/chemclaw-mcp-<name>:latest` | The placeholder image was applied unrewritten. | Pin the published digest (§2, step 3 or the overlay's `images:`). |
 | Pod not Ready; `/healthz` **503** with `reason` naming a file and two hashes | A vendored corpus failed its checksum: `… does not match the approved checksum: manifest says <a>, file is <b>`. | The image holds a file different from the one reviewed. Rebuild from a clean checkout. Never edit `dataset.json` in place to match. |
 | `/healthz` 503 naming `no dataset manifest` / `no records file` / a missing provenance field | The image is missing a corpus or its `dataset.json`. | Rebuild. The `Containerfile` copies the whole server directory. |
 | `/healthz` 503 on `calc`: `CHEMCLAW_XTB_ENGINE selects the xtb binary and this image has none on PATH` | `CHEMCLAW_XTB_ENGINE=xtb` on an image without `xtb`. | Unset it (the image pins `tblite`) or use the shipped image, which includes the binary. |

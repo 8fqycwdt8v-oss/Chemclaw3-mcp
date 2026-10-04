@@ -55,17 +55,25 @@ spec:
       # a result anywhere until the call returns. `tests/test_deploy_shape.py` holds the
       # derivation, in both directions, for every server.
       terminationGracePeriodSeconds: 60
+      # **No pinned `runAsUser`, `runAsGroup` or `fsGroup`.** OpenShift's default `restricted-v2`
+      # SCC assigns a UID from the namespace's range and rejects any other, so a pinned 1001 left
+      # the ReplicaSet with no pods at all. `runAsNonRoot` is what the hardening needs, and the
+      # image's numeric `USER` is what lets the kubelet verify it on a plain cluster; the process
+      # writes only to the `/tmp` `emptyDir` below, which is writable whatever UID it is handed.
+      # `tests/test_deploy_shape.py` holds both halves for every server.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1001
-        runAsGroup: 1001
-        fsGroup: 1001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: server
-          # Replaced at deploy time with the registry path for this build; the tag is pinned by the
-          # release pipeline, not left at a floating `latest` in production.
+          # **A placeholder, never a pull target.** This repository publishes nothing under this
+          # name: raw manifests cannot know a site's registry, so the deploy step rewrites it to
+          # the published digest (kustomize `images:` matches exactly this
+          # `chemclaw3/chemclaw-mcp-<name>` string; `docs/operations.md` §2). Applied unrewritten,
+          # a node resolves it against whatever registry it searches for short names, which is
+          # not a build anybody here reviewed.
+          # `tests/test_deploy_shape.py` holds the string to one shape across the fleet.
           image: chemclaw3/chemclaw-mcp-pyexec:latest
           imagePullPolicy: IfNotPresent
           ports:
@@ -79,6 +87,18 @@ spec:
           env:
             - name: MCP_ALLOWED_HOSTS
               value: "chemclaw-mcp-pyexec:8899"
+            # **The bearer `/mcp` verifies, under the name the manifest's `auth.token_env`
+            # declares.** Without it the server fails closed and every call is a 401 while
+            # `/healthz` stays green. `chemclaw-secrets` is the Secret Chemclaw3's chart reads,
+            # keyed by variable name, so both halves hold one value; the fleet runs in the
+            # release's namespace. Not `optional`: a missing key keeps the pod from starting
+            # rather than letting it serve refusals. Held to the manifest by
+            # `tests/test_deploy_shape.py`.
+            - name: CHEMCLAW_PYEXEC_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: chemclaw-secrets
+                  key: CHEMCLAW_PYEXEC_TOKEN
           # The container-level context is what a Pod Security "restricted" admitter reads. Every
           # field here is deny-by-default: no privilege escalation, every Linux capability dropped,
           # the runtime's seccomp profile, and a non-root UID.

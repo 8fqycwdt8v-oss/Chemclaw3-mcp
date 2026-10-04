@@ -201,7 +201,12 @@ def _pod_thread_pool_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> i
     quota = tmp_path / "cpu.max"
     quota.write_text(f"{int(_pod_cpu_limit_cores() * 100_000)} 100000\n", encoding="utf-8")
     monkeypatch.setattr(executor, "_CGROUP_V2_CPU_MAX", quota)
-    declared = {entry["name"]: str(entry["value"]) for entry in _container().get("env", [])}
+    # Literal values only: a `valueFrom` entry (the bearer, from a Secret) is not a sizing knob.
+    declared = {
+        entry["name"]: str(entry["value"])
+        for entry in _container().get("env", [])
+        if "value" in entry
+    }
     for knob in ("MCP_THREAD_POOL_SIZE", "MCP_THREAD_POOL_HEADROOM"):
         if knob in declared:
             monkeypatch.setenv(knob, declared[knob])

@@ -116,7 +116,8 @@ servers/<name>/
 ├── deploy/networkpolicy.yaml    # policyTypes includes Egress; egress: []
 ├── deploy/service.yaml          # one port named `http`; what the ServiceMonitor resolves through
 ├── deploy/servicemonitor.yaml   # path /metrics, port: http — a *name*, not a number
-├── deploy/deployment.yaml       # the workload: runAsNonRoot, drop ALL caps, seccomp, limits, no SA token
+├── deploy/deployment.yaml       # the workload: runAsNonRoot with no pinned UID, drop ALL caps, seccomp,
+│                                # limits, no SA token, the manifest's token_env from chemclaw-secrets
 ├── deploy/hpa.yaml              # replicas are the only scaling axis here; state the metric and why
 ├── deploy/pdb.yaml              # maxUnavailable: 1 — a drain must not take every replica at once
 │                                # — pod label must equal the NetworkPolicy podSelector
