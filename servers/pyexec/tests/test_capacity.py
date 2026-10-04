@@ -58,8 +58,13 @@ def _container() -> dict[str, Any]:
 
 
 def _declared_env() -> dict[str, str]:
-    """The container's `env:` as a mapping — empty today, and that is exactly the drift to catch."""
-    return {entry["name"]: str(entry["value"]) for entry in _container().get("env", [])}
+    """The container's literal `env:` values — none a sizing knob today, the drift to catch."""
+    # Literal values only: a `valueFrom` entry (the bearer, from a Secret) is not a sizing knob.
+    return {
+        entry["name"]: str(entry["value"])
+        for entry in _container().get("env", [])
+        if "value" in entry
+    }
 
 
 def pod_memory_limit_bytes() -> int:

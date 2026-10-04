@@ -393,9 +393,10 @@ _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
     ("top-level profiles", _manifest(profiles=["a-profile"]), True, True),
     ("top-level note_types", _manifest(note_types=["job-result"]), True, True),
     ("top-level relations", _manifest(relations=["computed-from"]), True, True),
-    # The consumer's switch for a declared-but-unbound bundle. No fleet manifest declares it (the
-    # consumer argues that divergence in `_ARGUED_DIVERGENCES`), but it is a real field there, so
-    # refusing it here would be the false refusal this table exists to catch.
+    # The consumer's switch for a declared-but-unbound bundle. `pyexec`, which only this fleet
+    # declares, sets it; the five bundles both trees declare do not (the consumer argues that
+    # divergence in `_ARGUED_DIVERGENCES`). Refusing it here would be the false refusal this table
+    # exists to catch.
     ("default_enabled: false", _manifest(default_enabled=False), True, True),
     # Still refused on both sides, which is what makes the row above a widening rather than a hole.
     ("an invented key", _manifest(nonsense=["x"]), False, False),

@@ -103,10 +103,14 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
 
 FROM python:3.11-slim
 
-# A fixed high UID rather than a name: OpenShift assigns an arbitrary UID from the namespace range,
-# and the process must own nothing it needs to write.
+# **A numeric UID, in group 0, with `HOME` on the scratch mount** — the OpenShift arbitrary-UID
+# convention. The number is what lets a kubelet verify `runAsNonRoot` against the image; no
+# Deployment pins it, because `restricted-v2` assigns a UID from the namespace's range (always
+# with GID 0) and rejects any other. Such a UID has no `/etc/passwd` entry, so a runtime would set
+# `HOME=/`; `/tmp` is the one path every Deployment mounts writable, whatever the UID.
 ARG UID=1001
-RUN useradd --uid ${UID} --create-home --shell /usr/sbin/nologin app
+RUN useradd --uid ${UID} --gid 0 --create-home --shell /usr/sbin/nologin app
+ENV HOME=/tmp
 
 COPY --from=build /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \

@@ -42,8 +42,11 @@ binds exactly what it names, in that order, and replaces the default set — so 
 surface outright** (`connectors/registry.py::_bundle_dirs`) — no merge, no warning. Prepending this
 repository's `manifests/` therefore makes *this* repository's copy authoritative for every name in
 it, which is useful for testing a tool-surface change before Chemclaw3's copy follows, and has one
-consequence to know about: these manifests do not carry `default_enabled: false`, so every connector
-in the mounted directory becomes enabled by default. A bundle's `skills/` and `profiles/` are merged
+consequence to know about: of the opt-in servers only `pyexec`'s manifest here carries
+`default_enabled: false`, so with an empty `CHEMCLAW_CONNECTORS_ENABLED` the other five become
+enabled by default once their copy here wins the name. Chemclaw3 records that difference as argued
+(`tests/test_sibling_manifest_agreement.py::_ARGUED_DIVERGENCES`), so closing it is a change both
+repositories make together. A bundle's `skills/` and `profiles/` are merged
 from every directory carrying the name, winner first (`registry._bundle_content_dirs`), so
 Chemclaw3's `safety-screening` skill survives whichever `safety` manifest wins. Chemclaw3's
 `tests/test_sibling_manifest_agreement.py` compares the two copies' bundle-level keys.
@@ -295,11 +298,12 @@ On this side, each server ships:
   `host:*`; a URL, a missing port or a wildcard host is refused at startup, naming the entry
   (`D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`).
 
-What it does **not** ship is the bearer Secret, and the Deployment does not reference one: the
-operator creates it and injects it (`oc set env --from=secret/...`, `operations.md` §2), and gives
-the same value to Chemclaw3 under the same variable name (`CHEMCLAW_PROPS_TOKEN` for `props`) —
-Chemclaw3 reads it to send, the server reads it to verify. A server whose variable is unset refuses
-every `/mcp` call with 401 while `/healthz` stays green.
+It also wires the bearer: the variable the manifest names as `auth.token_env`
+(`CHEMCLAW_PROPS_TOKEN` for `props`), from a `secretKeyRef` into `chemclaw-secrets` with that
+variable as the key — the Secret Chemclaw3's chart reads (`secrets.name`), in the same namespace, so
+Chemclaw3 reads it to send and the server reads it to verify, one value. What the operator supplies
+is the key in that Secret (`operations.md` §2); without it the pod does not start, which is louder
+than a server that starts and refuses every `/mcp` call with 401 while `/healthz` stays green.
 
 ### The revision is a build argument, and forgetting it is silent
 
@@ -341,8 +345,8 @@ seam:
 | The agent answers a solvent question from memory, with no `source` | The connector is unreachable and degraded silently. Check `/readyz`. |
 | Every MCP call returns 401 | The token env var is unset or differs between the two pods. It fails closed by design. |
 | The server accepts connections then hangs on the first call | The MCP session manager is not running — the mount-does-not-run-a-lifespan trap. `connector_app` handles it; a hand-rolled transport does not. |
+| `props` (or another opt-in connector) is bound on every turn although nothing enabled it | This repository's `manifests/` is on `CHEMCLAW_CONNECTORS_DIR` and its copy won the name; of the opt-in manifests only `pyexec`'s carries `default_enabled: false` here. Mount only the bundles you mean to bind, or name the set in `CHEMCLAW_CONNECTORS_ENABLED`. |
 | Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. For `pyexec`, mount its manifest. |
-| `props` (or another opt-in connector) is bound on every turn although nothing enabled it | This repository's `manifests/` is on `CHEMCLAW_CONNECTORS_DIR` and its copy won the name; these manifests carry no `default_enabled: false`. Mount only the bundles you mean to bind, or name the set in `CHEMCLAW_CONNECTORS_ENABLED`. |
 | `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | A `calc` manifest from this fleet reached `CHEMCLAW_CONNECTORS_DIR` and its partial port won the name collision. It cannot come from `manifests/` — check for a hand-copied `connector.yaml`, or a path pointing into `manifests-internal/`. |
 | Chemclaw3 refuses to start with `invalid manifest: ... mount ... Extra inputs are not permitted` | `manifests-internal/` is on `CHEMCLAW_CONNECTORS_DIR`. That is the guard working: those servers are addressed by configuration (`CHEMCLAW_CALC_SERVER_URL`, `CHEMCLAW_RXNLABEL_SERVER_URL`), never discovered. Remove the path. |
 | Every calculation recomputes; the cache never hits | The key was derived locally instead of read from `calculation_key`, or a `CALCULATION_EPOCH` was bumped on either side (which invalidates every row deliberately — the two compose). The parts `store.get` needs come back from that tool ready to use; nothing on the Chemclaw3 side should be assembling one. |

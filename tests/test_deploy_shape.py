@@ -500,3 +500,119 @@ def test_the_keda_alternative_is_not_applied_with_the_rest_of_deploy() -> None:
         if "ScaledObject" in path.read_text(encoding="utf-8")
     )
     assert not stray, f"a ScaledObject beside hpa.yaml is applied with it: {stray}"
+
+
+# The Secret Chemclaw3's chart reads (`deploy/helm/chemclaw/values.yaml` `secrets.name`), keyed by
+# variable name. The fleet runs in the release's namespace, so one Secret holds both halves of every
+# bearer and the two sides cannot hold different values.
+BEARER_SECRET = "chemclaw-secrets"
+
+
+def _manifest_token_env(server: Path) -> str:
+    """The variable the server's own `connector.yaml` declares as its bearer."""
+    token_env = _load(server / "connector.yaml")["endpoint"]["auth"]["token_env"]
+    assert isinstance(token_env, str) and token_env, f"{server.name} declares no token_env"
+    return token_env
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_bearer_is_wired_from_the_secret_the_manifest_names(server: Path) -> None:
+    """The Deployment hands the server exactly its manifest's `token_env`, from `chemclaw-secrets`.
+
+    The server fails closed, so a Deployment that sets no bearer serves a 401 to every `/mcp` call
+    while `/healthz` stays 200 — every Deployment here shipped that way, with the variable left for
+    an operator step a missed apply reads as a working pod. The expected name is the manifest's
+    rather than a `CHEMCLAW_<NAME>_TOKEN` convention, because the manifest is what the serving side
+    and Chemclaw3 both read. Not `optional`: a missing key is a pod that never starts
+    (`CreateContainerConfigError`), which is loud, instead of one that starts and refuses.
+    """
+    token_env = _manifest_token_env(server)
+    from_secrets = {
+        entry["name"]: entry["valueFrom"]["secretKeyRef"]
+        for entry in _pod_spec(server)["containers"][0].get("env", [])
+        if "secretKeyRef" in (entry.get("valueFrom") or {})
+    }
+    assert set(from_secrets) == {token_env}, (
+        f"{server.name} reads {sorted(from_secrets)} from a Secret; its manifest's bearer is "
+        f"{token_env!r} and nothing else is a credential this server verifies"
+    )
+    ref = from_secrets[token_env]
+    assert ref["name"] == BEARER_SECRET, (
+        f"{server.name} reads its bearer from {ref['name']!r}, not {BEARER_SECRET!r}, so it and "
+        "Chemclaw3 can hold different values"
+    )
+    assert ref["key"] == token_env, f"{server.name}: key {ref['key']!r} is not {token_env!r}"
+    assert ref.get("optional", False) is False, (
+        f"{server.name} marks its bearer optional, so a missing key starts a pod that refuses "
+        "every call instead of one that never starts"
+    )
+
+
+_PINNED_IDS = ("runAsUser", "runAsGroup", "fsGroup")
+
+
+def _final_stage_user_and_home(server: Path) -> tuple[str, str | None]:
+    """The runtime stage's `USER`, with `ARG` defaults substituted, and its `ENV HOME`."""
+    lines = (server / "Containerfile").read_text(encoding="utf-8").splitlines()
+    last_from = max(i for i, line in enumerate(lines) if line.startswith("FROM "))
+    args: dict[str, str] = {}
+    user, home = "", None
+    for line in lines[last_from:]:
+        if line.startswith("ARG ") and "=" in line:
+            name, _, value = line[len("ARG ") :].partition("=")
+            args[name.strip()] = value.strip()
+        elif line.startswith("USER "):
+            user = re.sub(r"\$\{(\w+)\}", lambda m: args.get(m.group(1), m.group(0)), line[5:])
+        elif line.startswith("ENV HOME="):
+            home = line[len("ENV HOME=") :].strip()
+    return user.strip(), home
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_pod_runs_under_whatever_uid_the_platform_assigns(server: Path) -> None:
+    """No pinned UID, GID or fsGroup; non-root still enforced; the image verifiable as non-root.
+
+    OpenShift's default `restricted-v2` SCC assigns a UID from the namespace's range and rejects
+    any other, so a Deployment pinning `runAsUser: 1001` got no pods at all
+    (`unable to validate against any security context constraint`). What hardening needs is
+    `runAsNonRoot`, and the kubelet can verify that only against a *numeric* image `USER` — so the
+    image half is held here too. And an assigned UID has no `/etc/passwd` entry, so `HOME` must be
+    set in the image to a path this Deployment mounts writable, or it defaults to an unwritable `/`.
+    """
+    spec = _pod_spec(server)
+    container = spec["containers"][0]
+    for where, context in (
+        ("pod", spec["securityContext"]),
+        ("container", container["securityContext"]),
+    ):
+        pinned = sorted(set(_PINNED_IDS) & set(context))
+        assert not pinned, f"{server.name}: the {where} securityContext pins {pinned}"
+        assert context["runAsNonRoot"] is True, f"{server.name}: {where} runAsNonRoot is not true"
+
+    user, home = _final_stage_user_and_home(server)
+    assert user.isdigit() and int(user) > 0, (
+        f"{server.name}/Containerfile's runtime USER is {user!r}; only a non-zero number lets "
+        "the kubelet verify runAsNonRoot"
+    )
+    writable = {
+        mount["mountPath"]
+        for mount in container.get("volumeMounts", [])
+        if any(v["name"] == mount["name"] and "emptyDir" in v for v in spec.get("volumes", []))
+    }
+    assert home in writable, (
+        f"{server.name}/Containerfile sets HOME={home!r}, which is not one of the emptyDir mounts "
+        f"{sorted(writable)} — an assigned UID could not write there"
+    )
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_image_is_the_one_placeholder_the_overlay_rewrites(server: Path) -> None:
+    """Every Deployment names `chemclaw3/chemclaw-mcp-<name>:latest`, and nothing else.
+
+    Raw manifests cannot know a site's registry, so the image is a placeholder the deploy step
+    rewrites to a published digest — kustomize `images:` in `docs/operations.md` §2 and in
+    Chemclaw3's `deploy/kind/render-fleet.sh`, both matching on exactly this name. A server whose
+    string drifted would be skipped by that rewrite without an error and applied unrewritten.
+    """
+    image = _pod_spec(server)["containers"][0]["image"]
+    assert image == f"chemclaw3/chemclaw-mcp-{server.name}:latest", f"{server.name}: {image!r}"
