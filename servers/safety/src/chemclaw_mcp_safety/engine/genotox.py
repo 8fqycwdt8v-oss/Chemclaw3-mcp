@@ -1,25 +1,11 @@
 """Genotoxicity structural alerts — DNA-reactive motifs, never an ICH M7 classification.
 
-Why this exists. `screen.py` holds sixteen process-safety rules and not one word about
-mutagenicity. In a Chemclaw3 live run two questions that need exactly that — mutagenic-impurity
-alerts, and nitrosamine risk — were answered by fabrication, one of them inventing acceptable-intake
-limits and a worked purge factor. Alerts themselves are data with a long published history, so the
-gap was a missing table, not a missing model.
-
-**Why a second module and a second table rather than more rows in `rules.yaml`.** The two screens
-answer different questions. `screen_hazards` answers "is this safe to run today". This one answers
-"will this need a control strategy" — a regulatory-toxicology question whose controls are analytical
-and whose audience is different. Conflating them is what turns a hazard screen into an ICH M7
-verdict, which is precisely the fabrication above. It would also break the process-safety screen:
-nitrobenzene is an ordinary reagent that table is right to pass and this one is right to flag.
-
-**The line the code enforces.** A structural alert is a motif and is encoded here. An ICH M7 class,
-a purge factor and an acceptable-intake limit are outputs of a model this system does not have (two
-complementary (Q)SARs plus an Ames corpus and expert review). So no alert carries any of the three,
-and `AlertResult.verdict` states on *every* result — hit or miss — that a flag is an alert for
-expert assessment and not a classification. That sentence lives in the payload rather than only in a
-tool docstring for the reason `ScreenResult.verdict` documents: the payload is what is in the
-context window when the answer gets written.
+A separate table from `screen.py` because the questions differ: process safety asks "is this safe to
+run today", this asks "will this need a control strategy" (nitrobenzene passes one and is flagged by
+the other). A structural alert is a motif and is encoded here; an ICH M7 class, a purge factor and
+an acceptable intake come from (Q)SAR models and expert review this system does not have, so no
+alert carries them. `AlertResult.verdict` says so on every result, hit or miss, because the payload
+is what is in the context window when the answer is written.
 """
 
 from __future__ import annotations
@@ -46,17 +32,12 @@ __all__ = [
     "screen_genotoxic_alerts",
 ]
 
-# The alert table, vendored like every other corpus here. Chemclaw3 kept this one out of its
-# settings while the hazard rules were configurable, on the argument that a site extends the
-# process-safety table with its own knowledge while nobody has their own published alert set — and
-# a swapped-in alert table would change what the disclaimer below is attached to. This repository
-# now applies that argument to both tables.
+# The alert table, vendored and checksummed; not configurable, since a swapped table would change
+# what the disclaimer is attached to.
 ALERTS_DIR = Path(__file__).resolve().parent.parent / "data" / "genotox"
 ALERTS_FILE = "genotox_alerts.yaml"
 
-# Repeated on every result, hit or miss. The exact four things the system cannot produce are named,
-# because "expert assessment required" alone reads as a formality and did not stop the live run
-# producing a class and a purge factor anyway.
+# Repeated on every result, hit or miss, naming exactly what the system cannot produce.
 _NOT_A_CLASSIFICATION = (
     "An alert is a DNA-reactive structural motif requiring expert assessment. It is NOT an ICH M7 "
     "class, an acceptable intake, a purge factor, or a (Q)SAR prediction — this system has none of "
@@ -99,9 +80,7 @@ class AlertResult(BaseModel):
     def verdict(self) -> str:
         """What a reader must be told about this result, present on a hit *and* on a miss.
 
-        The empty case is the dangerous one: "no alerts" reads as "not mutagenic", which is a (Q)SAR
-        conclusion drawn from a ten-row table. So the miss says what the absence actually means, in
-        the same words the hit uses about what a flag does not mean.
+        A miss is the dangerous case: "no alerts" must not read as "not mutagenic".
         """
         if not self.alerts:
             return (
@@ -149,8 +128,8 @@ class AlertTable(BaseModel):
 def _load_alerts() -> tuple[AlertTable, dict[str, Chem.Mol]]:
     """Parse and compile the alert table once per process (it is a vendored, checksummed file).
 
-    Patterns are keyed by `<alert id>` for structural alerts and `<pair id>:left` / `:right` for
-    formation pairs, the same convention `screen.py` uses, so the two tables read alike.
+    Patterns are keyed `<alert id>`, or `<pair id>:left` / `:right` for formation pairs, as in
+    `screen.py`.
     """
     table = read_table(ALERTS_DIR, ALERTS_FILE, AlertTable)
     patterns = {alert.id: compile_smarts(alert.smarts, alert.id) for alert in table.structural}
@@ -163,28 +142,20 @@ def _load_alerts() -> tuple[AlertTable, dict[str, Chem.Mol]]:
 def screen_genotoxic_alerts(component_smiles: list[str]) -> AlertResult:
     """Match one molecule, or every component of a route, against the alert table.
 
-    Pass the whole route rather than one step: the formation-pair alert can only see components
-    given to it together, so a nitrosating agent introduced two steps later is structurally
-    invisible to a per-step call.
+    Pass the whole route: a formation pair is only visible among components given together.
 
     Args:
         component_smiles: One SMILES per species — the molecule alone, or every reactant, reagent,
-            solvent and product whose meeting is being assessed.
+        solvent and product whose meeting is being assessed.
 
     Raises:
-        SafetyRulesError: a component does not parse in full — the refusal names the component's
-            position in the list given, since a route is a list and "one of these is unusable" is
-            not something a chemist can act on — the alert table is malformed, or the list is empty
-            or longer than `MAX_COMPONENTS`.
+        SafetyRulesError: A component does not parse in full (named by its position), the alert
+        table is malformed, or the list is empty or longer than `MAX_COMPONENTS`.
     """
     require_screenable_size(component_smiles, what="a genotoxicity screen")
     table, patterns = _load_alerts()
-    # `parse_components` rather than a bare RDKit parse, and shared with the hazard screen for the
-    # reason `require_screenable_size` is shared: RDKit reads `"CCO O=[N+]([O-])c1ccccc1"` as
-    # ethanol and discards the nitroarene after the space, so this screen used to answer "no
-    # structural alert matched" about a molecule the caller never named. On a result whose verdict
-    # spends three lines explaining that an empty list is not a negative mutagenicity prediction,
-    # being wrong about *which molecule* the list is empty for is the worse half of the sentence.
+    # `parse_components`, shared with the hazard screen, so a truncating parse cannot report an
+    # empty alert list about a molecule the caller never named.
     molecules = parse_components(component_smiles)
     alerts = [
         GenotoxAlert(
@@ -215,7 +186,6 @@ def screen_genotoxic_alerts(component_smiles: list[str]) -> AlertResult:
             for b in right
             if a != b
         )
-    # Deduplicated after canonicalizing: `molecules` is keyed on the caller's spelling, so a route
-    # listing one substance two ways would otherwise appear as two entities.
+    # Deduplicated after canonicalising, since `molecules` is keyed on the caller's spelling.
     canonical = list(dict.fromkeys(str(Chem.MolToSmiles(m)) for m in molecules.values()))
     return AlertResult(alerts=alerts, screened=canonical)

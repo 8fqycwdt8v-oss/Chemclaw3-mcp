@@ -1,26 +1,10 @@
 """The dataset validates itself, because a hand-compiled table is a table with typos in it.
 
-This is the part of the reference server most worth copying. A vendored corpus is reviewed once and
-then trusted for years, and the realistic failure is not a wrong *decision* about what to include —
-it is a transposed digit in row 31 that nobody ever looks at again. Three of the checks below are
-internal-consistency arguments strong enough to catch that:
-
-- **CAS check digits.** A CAS number carries its own checksum, so a mistyped one is detectable
-  without consulting anything.
-- **Formula against molecular weight — and it is no longer here.** The two columns are written
-  independently in the row and must agree, but checking that needs a periodic table, and the
-  seventeen-element one this file used to carry a sixth of was a third copy of a number the fleet
-  already holds twice. It moved to `tests/test_fleet_*.py`, to
-  `test_the_three_answers_to_molecular_mass_agree`, which weighs each row's formula with
-  `servers/thermalsafety`'s table *and* its SMILES with
-  RDKit — a stronger check than this file could make, because it reconciles three servers rather
-  than one column against a local constant.
-- **Antoine constants against the boiling point.** The constants and the boiling point are also
-  written independently; if the fit does not reproduce 1 atm at the tabulated bp, one of them is
-  wrong. This is what makes it safe to carry Antoine constants for only some rows: a bad set fails
-  here rather than answering a distillation question.
-
-The rest are structural — closed vocabularies, no duplicate lookups, required fields present.
+The realistic failure in a vendored corpus is a transposed digit nobody looks at again. The
+internal-consistency checks here catch that: CAS check digits, and Antoine constants that must
+reproduce 1 atm at the tabulated boiling point (which is what makes partial Antoine coverage
+safe). Formula against molecular weight is checked fleet-wide in
+`test_the_three_answers_to_molecular_mass_agree`. The rest are structural.
 """
 
 from __future__ import annotations
@@ -60,10 +44,8 @@ def test_every_row_has_a_valid_cas_number() -> None:
 def test_antoine_constants_reproduce_the_tabulated_boiling_point() -> None:
     """Every Antoine row must put 1 atm at its own boiling point, within 2 °C.
 
-    The strongest check in this file: it validates two independently written groups of numbers
-    against each other. A row that fails is not a modelling disagreement — it is a wrong constant,
-    and the right response is to fix it or drop the constants and let the Clausius-Clapeyron
-    fallback answer (which the tools already label as the weaker method).
+    Two independently written groups of numbers checked against each other. A failure is a wrong
+    constant: fix it, or drop the constants and let the weaker Clausius-Clapeyron fallback answer.
     """
     checked = 0
     for solvent in records.all_solvents():
@@ -136,19 +118,11 @@ def test_hansen_distance_is_a_metric_on_the_table() -> None:
     assert correlations.hansen_distance(thf, metthf) < correlations.hansen_distance(thf, water)
 
 
-# --- Two more independent screens, each of which caught a live defect in this table ---
+# --- Two screens on the numbers a process decision turns on ---
 #
-# The three checks above validate the *identity* columns (CAS, formula, MW) and the Antoine sets.
-# Nothing validated the numbers a process decision actually turns on. These two do, each by
-# relating a column to a *different* column written at a different time:
-#
-# - a closed-cup flash point is by definition the temperature at which the vapour above the liquid
-#   first reaches its lower flammable limit, so the modelled vapour fraction there must land on a
-#   real LFL. It caught acetic acid's dimerisation-suppressed dHvap (15.8 vol% against an LFL of
-#   4.0%) from a direction no vapour-pressure test was looking at;
-# - Beerbower's `dP = 37.4*mu/sqrt(Vm)` is the only independent handle on the Hansen polar term.
-#   `mu` is written nowhere in this corpus, so the screen shares no input with the column it
-#   checks. It caught dimethyl carbonate at dP = 8.6 where 3.9 is published.
+# Each relates a column to a different, independently written one: the closed-cup flash point must
+# put the modelled vapour at a real LFL, and Beerbower's `dP = 37.4*mu/sqrt(Vm)` checks the Hansen
+# polar term against a dipole moment the corpus does not carry.
 
 # Vapour fraction, in volume percent of one atmosphere, that a closed-cup flash point implies.
 # Real LFLs for organic solvents run about 0.8-8 vol%; the band is widened to 15 to keep this a
@@ -207,20 +181,16 @@ DIPOLE_MOMENT_DEBYE = {
 
 # How far a tabulated dP may sit from its Beerbower estimate before the row is called suspect.
 #
-# Beerbower is a rough correlation, so the bound is set from this table rather than from theory:
-# across the 41 other rows the residuals run -3.28 (NMP) to +3.31 (formic acid), mean -0.74 with a
-# standard deviation of 1.38, while dimethyl carbonate's wrong value was +4.89 out — 4.1 sigma, and
-# the largest in the table by 1.6. Four sits between the two with headroom on both sides: it is a
-# screen for a transcription error, not a second measurement of the Hansen triple.
+# Set from this table's own residual spread (a rough correlation): a screen for a transcription
+# error, not a second measurement of the Hansen triple.
 MAX_BEERBOWER_RESIDUAL = 4.0
 
 
 def test_the_flash_point_implies_a_real_lower_flammable_limit() -> None:
     """At a closed-cup flash point the modelled vapour must sit at the solvent's LFL.
 
-    Two independently written columns — the flash point, and whatever drives the vapour pressure
-    (Antoine constants or dHvap) — are forced to agree through a physical definition. A dHvap that
-    is wrong by a factor of several cannot survive it, which is how acetic acid's was found.
+    Forces the flash point and the vapour-pressure inputs (Antoine or dHvap) to agree through a
+    physical definition, so a dHvap wrong by a factor of several cannot survive.
     """
     checked = 0
     for solvent in records.all_solvents():
@@ -241,9 +211,8 @@ def test_the_flash_point_implies_a_real_lower_flammable_limit() -> None:
 def test_the_hansen_polar_term_agrees_with_beerbower() -> None:
     """`dP = 37.4*mu/sqrt(Vm)` against a dipole moment this corpus does not contain.
 
-    The Hansen triple has no internal check — the three numbers are transcribed together from the
-    same table, so a typo in one is invisible to the other two. This is the one relation that
-    brings an outside number to bear on it.
+    The Hansen triple is transcribed as a unit and has no internal check; this brings an outside
+    number to bear on it.
     """
     worst: tuple[float, str] = (0.0, "")
     for solvent in records.all_solvents():

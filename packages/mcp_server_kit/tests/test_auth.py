@@ -1,8 +1,6 @@
 """The credential is checked, the probes stay open, and a misconfigured server serves nothing.
 
-Chemclaw3's incident is the reason each of these exists: `BearerAuth` lived only on the sending
-side, so a deployment mounted a secret, recorded the control as enabled, and served every tool to
-anything that could reach the pod. The middleware is only real if a test proves the refusal.
+The middleware is only a control if a test proves the refusal.
 """
 
 from __future__ import annotations
@@ -52,10 +50,8 @@ async def _call(app: FastAPI, method: str, path: str, **kwargs: object) -> httpx
 async def test_every_probe_route_is_open(monkeypatch: pytest.MonkeyPatch, path: str) -> None:
     """A kubelet probe and a Prometheus scrape have no identity, and carry nothing to protect.
 
-    Parametrized over `OPEN_PATHS` rather than naming `/healthz`, because the set grew: `/livez` was
-    added when liveness stopped sharing the readiness route, and a liveness probe refused with 401
-    kills the container — the loudest way there is to get an exemption wrong. A fourth route added
-    without a credential decision is covered the day it appears.
+    Parametrized over `OPEN_PATHS` so a new open route is covered the day it appears; a liveness
+    probe refused with 401 kills the container.
     """
     monkeypatch.setenv(TOKEN_ENV, "s3cret")
     response = await _call(_app(token_env=TOKEN_ENV), "GET", path)
@@ -102,9 +98,8 @@ async def test_a_missing_env_var_fails_closed(monkeypatch: pytest.MonkeyPatch) -
 async def test_a_non_ascii_header_is_refused_not_crashed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Comparing as `str` would raise TypeError here — a 500 any remote party could trigger.
 
-    Sent as raw bytes, because that is how it arrives on the wire: Starlette decodes headers as
-    latin-1, so a byte above 0x7F reaches the comparison as a non-ASCII `str`. An httpx `str`
-    header would be rejected by the client before it ever left, which would test nothing.
+    Sent as raw bytes: Starlette decodes headers as latin-1, so a byte above 0x7F reaches the
+    comparison as a non-ASCII `str`. An httpx `str` header would be rejected client-side.
     """
     monkeypatch.setenv(TOKEN_ENV, "s3cret")
     response = await _call(
@@ -140,20 +135,10 @@ async def test_an_oversized_body_is_refused(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_a_probe_path_with_a_trailing_slash_is_not_refused(
     monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
-    """`OPEN_PATHS` was an exact-match set, so `/healthz/` returned 401 instead of being served.
+    """A probe path with a trailing slash is exempt from the credential check.
 
-    Not a security hole — the opposite — but a diagnosable condition turned into an undiagnosable
-    one: a kubelet `httpGet` configured as `path: /healthz/` would never make the pod ready, while
-    the server log said "refused an unauthenticated request to /healthz/", which reads as a
-    credential problem and is not.
-
-    **This test can only see half of that, and saying so is the point.** The app here carries the
-    middleware and nothing else, so what it proves is that `_is_open` exempts the path — the
-    decision this module owns. It used to assert `status_code != 401` and stop there, which a
-    **404** satisfies: measured against every server under real uvicorn, that is exactly what
-    `GET /healthz/` returned, because `connector_app` mounts the MCP transport at `/` and the
-    mount swallows the redirect. Whether the probe actually *answers* is a property of the route
-    table, and it is asserted as a 200 over a real socket in
+    Otherwise a kubelet probe on `/healthz/` never goes ready and the log reads as a credential
+    problem. This proves only the middleware's exemption; that the route actually answers 200 is
     `test_connector_app.py::test_a_probe_path_with_a_trailing_slash_answers`.
     """
     monkeypatch.setenv(TOKEN_ENV, "s3cret")

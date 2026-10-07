@@ -77,12 +77,7 @@ class AggregatedConditionsPrediction(BaseModel):
 
 
 # ---------- Response envelopes ----------
-#
-# There are no *request* envelopes here. `ForwardRequest` and `ConditionsRequest` used to sit
-# beside these with `top_k: Field(ge=1, le=50)` on them, imported by nothing: the served tools
-# take their arguments directly, so the bound read as present in review and was absent at
-# runtime. It now lives on the tool signatures in `tools.py`, which is the only schema a caller
-# ever sees.
+# Request bounds (`top_k`) live on the tool signatures in `tools.py`, the only schema a caller sees.
 
 
 class ForwardResponse(BaseModel):

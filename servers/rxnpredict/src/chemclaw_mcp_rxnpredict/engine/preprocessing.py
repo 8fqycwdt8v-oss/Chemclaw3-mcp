@@ -13,9 +13,8 @@ logger = logging.getLogger(__name__)
 def canonical_smiles(smiles: str) -> str:
     """Return canonical SMILES via RDKit. Raises ValueError if invalid.
 
-    Refuses an over-length string or an over-large molecule *before* canonicalisation: `MolToSmiles`
-    on a large linear molecule overflows the C stack (an uncatchable SIGSEGV that kills the pod).
-    See `mcp_server_kit.limits`.
+    Size bounds are checked before canonicalisation: `MolToSmiles` on a huge linear molecule
+    overflows the C stack (SIGSEGV). See `mcp_server_kit.limits`.
     """
     from rdkit import Chem  # local import: RDKit is heavy
 
@@ -64,13 +63,8 @@ def build_reaction_smiles(reactants: str, product: str, agents: str = "") -> str
 def canonical_reaction_input(s: str) -> str:
     """Canonicalise a possibly `>`-segmented reaction input string.
 
-    Splits on `>`, canonicalises the dot-separated SMILES in each segment, and
-    rejoins preserving the segment structure. Empty segments stay empty.
-
-    Unlike taking only `s.split(">")[0]`, this keeps reagent/agent context
-    distinct so two chemically different inputs (e.g. `A.B>reagent>` vs `A.B`)
-    do not collapse to the same string. Raises ValueError if any segment is
-    invalid.
+    Each segment is canonicalised separately and the segment structure kept, so `A.B>reagent>` and
+    `A.B` stay distinct. Raises ValueError if any segment is invalid.
     """
     segments = s.split(">")
     canon = [canonical_multi_smiles(seg.strip()) if seg.strip() else "" for seg in segments]

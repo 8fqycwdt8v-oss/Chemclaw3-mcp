@@ -1,9 +1,7 @@
-"""This server's own code holds no way to call out. Three lines, and every server ships them.
+"""This server's own code holds no way to call out.
 
-The scan covers the whole package — engine, tools and transport — because the rule is about the
-server, not about one layer of it. `app.py` names loopback in its docstring, which the scanner
-exempts on purpose: showing somebody how to reach the server they are running is documentation,
-while naming somebody else's host is the thing being forbidden.
+The scan covers the whole package. A loopback address in `app.py`'s docstring is exempt by
+design: naming the server you run is documentation, naming somebody else's host is forbidden.
 """
 
 from __future__ import annotations

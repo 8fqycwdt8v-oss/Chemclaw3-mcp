@@ -1,24 +1,10 @@
 """The `rxnpredict` MCP tool surface: what will this reaction give, and under what conditions.
 
-**These docstrings are the prompt.** They say what each tool is for, what its arguments mean in a
-chemist's terms, and — the part most easily left out — what the answer is *not* evidence of. A
-consensus product from a set of sequence models is a literature-shaped guess, not a result; every
-docstring here says so, because the number that reaches a chemist without that sentence attached is
-the one that gets believed.
-
-Two properties of this server shape every tool below:
-
-- **It is an ensemble, and the spread is information.** `per_model` and `contributing_models` come
-  back with every prediction precisely so the agent can say "four of five models agree" or "only the
-  rule-based one produced this". A consensus of one is not a consensus, and `n_models_succeeded`
-  is how you tell. A consensus of *none* is not an answer at all, and the ensemble tools refuse
-  rather than return one — see `_survivors`, which is the floor under that degradation.
-- **Predictors that are not installed are reported, not hidden.** `list_available_models` names
-  every predictor this build knows about, whether it loaded, and why not. An answer computed from
-  one predictor when the deployment expected five is a silent degradation otherwise.
-
-Inference is CPU-bound and runs in a worker thread (`BasePredictor.predict` uses
-`asyncio.to_thread`), so a slow model does not block the event loop serving the other requests.
+The tool docstrings are the prompt and state what an answer is not evidence of: a consensus from
+sequence models is a literature-shaped guess, not a result. Every prediction returns `per_model`,
+`contributing_models` and `n_models_succeeded` so the agent can report agreement; a consensus of
+none is refused (`_survivors`). `list_available_models` names every predictor and why it did not
+load. Inference runs in worker threads so the event loop stays free.
 """
 
 from __future__ import annotations
@@ -68,16 +54,9 @@ logger = logging.getLogger(__name__)
 
 server = FastMCP("rxnpredict")
 
-# The pod's ceiling on concurrent inference, built at import; a test that needs a different ceiling
-# replaces this attribute rather than the variable, because the number a gate enforces and the
-# number it was built from must be the same number. `engine/admission.py` has the measurement — one
-# ensemble call is one worker thread *per enabled predictor*, measured at six — and the argument for
-# refusing rather than queueing.
-#
-# `0` is the value an operator is most likely to try, because `MCP_MAX_SESSIONS=0` means "no
-# ceiling" one layer down. Here it means "serve nothing", and `Admission` refuses it with a message
-# naming the ceiling rather than the variable that set it — a CrashLoopBackOff and a number whose
-# source the operator has to guess.
+# The pod's ceiling on concurrent inference, built at import so the gate enforces the number it was
+# built from; a test replaces this attribute, not the variable. `env_bound` refuses `0`, which here
+# would mean "serve nothing". See `engine/admission.py`.
 _MAX_CONCURRENT_PREDICTIONS = env_bound(
     "CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS",
     default=DEFAULT_MAX_CONCURRENT_PREDICTIONS,
@@ -90,26 +69,18 @@ _P = ParamSpec("_P")
 
 # The largest `top_k` a caller may ask any tool here for.
 #
-# **It has to be on the tool signature, because that is the only schema a caller ever sees.** The
-# same bound was already written on `ForwardRequest`/`ConditionsRequest` in `engine/schemas.py`,
-# which nothing imports — so it read as present in review and was absent at runtime, and the served
-# input schema was a bare `{"default": 5, "type": "integer"}`. `reaction_t5` passes `top_k` into
-# `num_beams` and `num_return_sequences`, so an unbounded integer is an unbounded allocation inside
-# a worker thread that a client timeout cannot stop; and a negative one reached
-# `sorted_candidates[:top_k]`, which dropped the only prediction and returned a `consensus` that
-# contradicted `per_model`.
+# It must be on the tool signatures, the only schema a caller sees: `reaction_t5` passes `top_k`
+# into beam search, so an unbounded value is an unbounded allocation, and a negative one would
+# truncate the consensus.
 MAX_TOP_K = 50
 
 TopK = Annotated[int, Field(ge=1, le=MAX_TOP_K)]
 
-# Import every predictor module once, here, so `list_available_models` is truthful from the first
-# request and a missing optional dependency is a recorded reason rather than a stack trace.
+# Import every predictor module once so `list_available_models` is truthful from the first request.
 discover_predictors()
 
-# Then register any deterministic doubles the configuration named. After discovery, never before:
-# a real predictor of the same name must win, and `register_requested` skips names already in the
-# registry. This is what gives `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a` a working tool
-# surface with no model weights; with no double named, it registers nothing.
+# Then register any doubles the configuration named. After discovery, so a real predictor of the
+# same name wins.
 register_requested()
 
 
@@ -185,10 +156,8 @@ def _served_names(predictors: list[object]) -> set[str]:
 def _not_served(kind: str, model_name: str, served: list[object]) -> ValueError:
     """The error for a predictor this deployment does not serve — absent *or* switched off.
 
-    One function decides what is served, for the ensemble tools and for the single-model ones.
-    They used to disagree: the ensemble narrowed the registry through `_select`, while these looked
-    the predictor up in the raw registry and called it, so a predictor an operator had disabled
-    after a bad checkpoint bake stayed reachable through a declared, advertised `read_only` tool.
+    The single-model tools use the same served set as the ensembles, so a disabled predictor is
+    unreachable through every tool.
     """
     names = ", ".join(sorted(_served_names(served))) or "none"
     return ValueError(
@@ -212,13 +181,8 @@ def _single_model_slots() -> int:
 def _forward_ensemble_slots() -> int:
     """What one `predict_forward_reaction` costs, in cores: fan-out width times thread width.
 
-    The fan-out is real and measured — `asyncio.gather` over every enabled predictor, six worker
-    threads in flight for six predictors — so a call-counting charge would under-count by whatever
-    the deployment's enabled-model list happens to hold.
-
-    **Read from the deployment's own enabled list rather than from the caller's `models`
-    argument**, deliberately: a charge a caller can lower by naming fewer models is a ceiling a
-    caller can walk past, and the exposure this gate bounds is the pod's rather than one request's.
+    Read from the deployment's enabled list, not the caller's `models` argument, so a caller cannot
+    lower the charge.
     """
     return max(1, len(_forward_predictors(None))) * inference_threads()
 
@@ -233,20 +197,10 @@ def _admitted(
 ) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how much inference runs at once, refusing promptly when the pod is full.
 
-    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
-    `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the served
-    surface instead of against a second hand-kept list here.
-
-    **The slot is released when the work finishes, not when the caller stops waiting**, and
-    `asyncio.shield` is what buys that. Cancelling the awaiting coroutine does not stop the worker
-    threads underneath it — and an ensemble has one per predictor — so releasing on cancellation
-    would hand slots to a retry while the original forward passes were still running, which is the
-    precise failure this gate is for.
-
-    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
-    from `inspect.signature`, which follows `__wrapped__` back to the real signature and resolves
-    its annotations against *that* function's module. Without it every tool here would advertise
-    `(*args, **kwargs)`.
+    Stamped with `ADMISSION_MARKER` so `tests/test_admission.py` checks the gated set against the
+    served surface. `asyncio.shield` releases slots when the work finishes, not when the caller
+    stops waiting, since cancellation does not stop the worker threads. `functools.wraps` is
+    required: FastMCP builds the argument schema from the wrapped signature.
     """
 
     @functools.wraps(work)
@@ -280,37 +234,22 @@ def _survivors(
 ) -> dict[str, list[_Prediction]]:
     """Pair each predictor with its result, drop the ones that failed, and refuse if none is left.
 
-    **One predictor failing must not cost the ensemble; every predictor failing must not cost the
-    caller the truth.** `gather(..., return_exceptions=True)` degrades an ensemble one model at a
-    time, which is right, and it kept degrading all the way to nothing: with every installed
-    predictor raising, both tools returned `consensus: []`, `per_model: {}`,
-    `n_models_succeeded: 0` and no error at all. So a vanished checkpoint mount — or the egress
-    guard refusing every weight fetch, which arrives as `EgressForbidden`, an `OSError` — read from
-    outside the pod as a healthy server answering a hard question: `chemclaw_mcp_tool_calls_total`
-    booked `outcome="ok"`, and the `refused`/`failed` split that exists for exactly this showed
-    nothing. A consensus over zero models is not a weak answer, it is the absence of one.
-
-    Written once for both tools because the loop was already identical in both, and a rule about
-    when this server refuses that held in one of them would be the more dangerous half of a bug.
+    One predictor failing must not cost the ensemble; every predictor failing must not return an
+    empty consensus that looks like a healthy answer. Shared by both ensemble tools.
 
     Raises:
-        ValueError: every queried predictor failed. Worded for the model — `connector_app` passes a
-            `ValueError` through verbatim — which is also why it names each fault by its exception
-            *type* and never its message: a predictor's own text is where a checkpoint path, a DSN
-            or a token would be. The full `repr` goes to the log beside it, under the same
-            predictor name, so the two are one fault an operator can join.
+        ValueError: Every queried predictor failed. Passed to the model verbatim, so it names each
+        fault by exception *type* only (a message could carry a path or credential); the full `repr`
+        is logged under the same predictor name.
     """
     per_model: dict[str, list[_Prediction]] = {}
     failures: list[str] = []
     for predictor, result in zip(predictors, results, strict=True):
         name = predictor.name  # type: ignore[attr-defined]
         if isinstance(result, BaseException):
-            # **Counted as well as logged, and this is the half the refusal below cannot cover.**
-            # The refusal fires only when *every* predictor failed; four of five failing is still
-            # an answer, still `outcome="ok"` on `chemclaw_mcp_tool_calls_total`, and was until now
-            # visible nowhere but a log line. The label is the predictor's registry name, which is
-            # a constant in this package — `/metrics` is unauthenticated, so nothing a caller sends
-            # may become a label.
+            # Counted, since a partial failure is still `outcome="ok"`. The label is the registry
+            # name, a source constant: `/metrics` is unauthenticated, so nothing a caller sends may
+            # become a label.
             degradation.record(server=SERVER, component=name, cause=degradation.classify(result))
             logger.warning("%s predictor %s failed: %r", kind, name, result)
             failures.append(f"{name} ({type(result).__name__})")
@@ -330,8 +269,7 @@ def _survivors(
 def _no_predictors(kind: str) -> ValueError:
     """The error an agent should see when this build has nothing to answer with.
 
-    Deliberately names what *is* installed, so the next step is obvious: either call
-    `list_available_models` to see why a predictor did not load, or stop asking this server.
+    Names what is installed and points at `list_available_models`.
     """
     return ValueError(
         f"no {kind} predictors are available in this deployment "
