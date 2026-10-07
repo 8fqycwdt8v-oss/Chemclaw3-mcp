@@ -57,7 +57,7 @@ class MapResult:
     Attributes:
         mapped: The atom-mapped reaction, or `None` where there is none.
         failure: `None` when nothing went wrong, otherwise the `mcp_server_kit.degradation` cause; a
-        cause means the answer is degraded, not merely mapless.
+            cause means the answer is degraded, not merely mapless.
     """
 
     mapped: str | None = None
@@ -93,7 +93,7 @@ def map_reaction(reaction_smiles: str) -> MapResult:
 
     Returns:
         A `MapResult` whose `failure` is `None` when there is no mapper or nothing to say, and a
-        degradation cause when the mapper raised.
+            degradation cause when the mapper raised.
     """
     mapper = _mapper()
     if mapper is None:

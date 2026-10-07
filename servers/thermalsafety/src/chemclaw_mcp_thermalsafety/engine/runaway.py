@@ -72,17 +72,18 @@ def adiabatic_temperature_rise(
 
     Args:
         heat_of_reaction_kj_per_mol: Reaction enthalpy, kJ/mol of the limiting reagent, from
-        reaction calorimetry (not a computed gas-phase enthalpy). moles: Moles of the limiting
-        reagent in the batch, mol. mass_kg: Total reaction mass, kg, solvent included.
+            reaction calorimetry (not a computed gas-phase enthalpy).
+        moles: Moles of the limiting reagent in the batch, mol.
+        mass_kg: Total reaction mass, kg, solvent included.
         specific_heat_kj_per_kg_k: Specific heat capacity of the reaction mass, kJ/(kg·K) (about
-        1.8-2.1 for organic solvents, 4.18 for water).
+            1.8-2.1 for organic solvents, 4.18 for water).
 
     Returns:
         The adiabatic temperature rise in kelvin (a difference, so identical in °C).
 
     Raises:
         ThermalInputError: A mass or a heat capacity at or below zero, a negative mole count, or any
-        input that is not finite.
+            input that is not finite.
     """
     _positive(mass_kg, name="mass_kg", unit="kg")
     _positive(specific_heat_kj_per_kg_k, name="specific_heat_kj_per_kg_k", unit="kJ/(kg·K)")
@@ -109,7 +110,7 @@ def mtsr(
         process_temperature_c: The intended process temperature, °C.
         adiabatic_temperature_rise_k: ΔT_ad for the synthesis reaction, K.
         accumulation_fraction: Unreacted fraction of the limiting reagent at the worst case, 0-1,
-        from the calorimetric conversion curve.
+            from the calorimetric conversion curve.
 
     Returns:
         MTSR in °C.
@@ -147,9 +148,9 @@ def time_to_maximum_rate_hours(
     Args:
         temperature_c: The temperature the system is held at, °C.
         heat_release_rate_w_per_kg: Specific heat release rate q at that temperature, W/kg, read
-        from an ARC or DSC trace. activation_energy_kj_per_mol: Apparent activation energy of the
-        decomposition, kJ/mol. specific_heat_kj_per_kg_k: Specific heat capacity of the reaction
-        mass, kJ/(kg·K).
+            from an ARC or DSC trace.
+        activation_energy_kj_per_mol: Apparent activation energy of the decomposition, kJ/mol.
+        specific_heat_kj_per_kg_k: Specific heat capacity of the reaction mass, kJ/(kg·K).
 
     Returns:
         Time to maximum rate, in hours.
@@ -287,8 +288,8 @@ def stoessel_class(
         process_temperature_c: Intended process temperature, °C.
         mtsr_c: Maximum temperature of the synthesis reaction, °C — from `mtsr`.
         max_technical_temperature_c: MTT, °C: the boiling point at operating pressure (open system)
-        or the relief set point (closed). decomposition_t_d24_c: T_D24, °C — the temperature at
-        which TMR_ad is 24 h.
+            or the relief set point (closed).
+        decomposition_t_d24_c: T_D24, °C — the temperature at which TMR_ad is 24 h.
 
     Returns:
         The class, the ordering behind it, and what it means.

@@ -1,13 +1,8 @@
 """The tool surface: what it returns beside the number, and what it refuses.
 
-The engine tests hold the arithmetic. What this file holds is the *contract the model reads* —
-every answer carrying a `basis` that names its model and its assumption, the boundaries against
-`thermalsafety` and against a wash calculation being stated in the surface rather than only in a
-README, and the domain refusals arriving as `ValueError` so `connector_app` passes them through to
-the chemist verbatim instead of replacing them with an error id.
-
-Asserted **over the set** rather than one tool at a time, so a tool added next year without a
-`basis` fails here rather than shipping quietly.
+Holds the contract the model reads: every answer's `basis` naming its model and assumption, the
+boundaries against `thermalsafety` and wash calculations stated in the surface, and domain
+refusals arriving as `ValueError`. Asserted over the set, so a new tool without a `basis` fails.
 """
 
 from __future__ import annotations
@@ -18,10 +13,8 @@ import pytest
 from chemclaw_mcp_unitops import tools
 from chemclaw_mcp_unitops.engine.validation import UnitOpsInputError
 
-#: One well-formed call for every served tool, so the assertions below can be written over the set
-#: instead of once per tool. The values are ordinary process numbers: a 1 L flask scaling to a
-#: 250 L vessel, a 250 L jacketed reactor at -10 °C, a 95/5 split at alpha = 2.5, a cooling
-#: crystallisation in 10 kg of solvent, a 30-inch Nutsche, and a filter-dryer charge.
+#: One well-formed call per served tool, with ordinary process numbers, so assertions below run
+#: over the set.
 CALLS = {
     "agitation_scale_up": {
         "small_impeller_diameter_m": 0.05,
@@ -86,11 +79,9 @@ CALLS = {
 
 
 def test_every_served_tool_has_a_worked_call_here() -> None:
-    """The set this file asserts over must be the set the server serves, or the rest proves less.
+    """Every served tool has a worked call here, read off the server.
 
-    Read off the server rather than transcribed, for the reason the fleet's own ceiling and
-    manifest checks read a running surface: a list written here would agree with itself while a
-    tool added next year went unasserted.
+    A transcribed list would agree with itself while a new tool went unasserted.
     """
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
     assert set(CALLS) == served
@@ -98,11 +89,10 @@ def test_every_served_tool_has_a_worked_call_here() -> None:
 
 @pytest.mark.parametrize("name", sorted(CALLS))
 def test_every_tool_returns_a_basis_that_names_its_model_and_its_assumption(name: str) -> None:
-    """A number with no method beside it is not something a chemist can put in a report.
+    """Every tool returns a `basis` that names its model and its assumption.
 
-    Two halves, because either alone passes something useless: the `basis` has to be long enough to
-    be a sentence rather than a label, and it has to name at least one *assumption* — the thing
-    that decides whether the number applies here.
+    Long enough to be a sentence, and naming at least one assumption, the thing that decides
+    whether the number applies.
     """
     answer = getattr(tools, name)(**CALLS[name])
     basis = answer.basis
@@ -183,12 +173,10 @@ def test_the_scale_up_answer_carries_both_criteria_and_their_disagreement() -> N
 
 
 def test_no_tool_exports_a_thermal_safety_answer() -> None:
-    """The boundary against `servers/thermalsafety`, asserted as an *absence* over the module.
+    """No tool exports a thermal-safety answer, asserted as an absence over the module.
 
-    This server computes a jacket's capacity and a batch's time constant. A TMR, an MTSR, a T_D24
-    or a criticality class is that server's answer from calorimetry, and a name here containing one
-    would be the second definition `CLAUDE.md` forbids — reachable by a model that reads tool names
-    rather than READMEs.
+    TMR, MTSR, T_D24 and criticality class belong to `servers/thermalsafety`; a tool name here
+    containing one would be a second definition a model could reach.
     """
     forbidden = ("tmr", "mtsr", "criticality", "adiabatic", "runaway", "sadt")
     offenders = [
@@ -200,11 +188,10 @@ def test_no_tool_exports_a_thermal_safety_answer() -> None:
 
 
 def test_no_tool_offers_a_wash_or_a_solubility_prediction() -> None:
-    """The two numbers this server is most likely to be asked to invent, asserted absent.
+    """No tool offers a wash volume or a solubility prediction.
 
-    A wash volume needs a displacement efficiency nobody here has, and a solubility needs a curve
-    that exists nowhere in this family. Both are refusals stated in prose elsewhere; this is the
-    half a test can hold.
+    Neither has the data it would need (a displacement efficiency, a solubility curve) anywhere in
+    this family.
     """
     forbidden = ("wash", "displacement", "predict_solubility", "solubility_curve", "metastable")
     offenders = [
@@ -229,11 +216,10 @@ def test_no_tool_offers_a_wash_or_a_solubility_prediction() -> None:
 def test_a_refusal_reaches_the_model_as_a_value_error_naming_the_problem(
     name: str, changed: dict[str, float], message: str
 ) -> None:
-    """`connector_app` decides by exception *type*, and the decision is invisible from a call.
+    """A refusal reaches the model as a `ValueError` naming the problem.
 
-    `UnitOpsInputError` is a `ValueError`, which the sanitiser passes through verbatim. Sorted into
-    its other branch, every one of these sentences would reach a chemist as an opaque error id
-    instead of as the sentence naming which number is wrong.
+    `connector_app` passes `ValueError` through verbatim and replaces anything else with an opaque
+    error id.
     """
     with pytest.raises(UnitOpsInputError, match=message) as raised:
         getattr(tools, name)(**{**CALLS[name], **changed})

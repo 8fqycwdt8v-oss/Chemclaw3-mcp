@@ -270,7 +270,6 @@ def gfn2_energy(
     charge: int = 0,
     solvent: str | None = None,
 ) -> float:
-    """Return the GFN2-xTB total energy (Hartree) for a closed-shell system; positions in Angstrom.
-    """
+    """GFN2-xTB total energy (Hartree) of a closed-shell system; positions in Angstrom."""
     result = run_singlepoint(method, numbers, positions, charge=charge, solvent=solvent)
     return float(result["energy"])

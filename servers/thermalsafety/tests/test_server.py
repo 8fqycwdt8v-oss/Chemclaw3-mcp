@@ -1,13 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will.
+Runs uvicorn on loopback and talks to it the way the agent will, so a session manager nobody
+ran, an unchecked bearer credential, or a manifest that disagrees with the served surface fails
+here.
 """
 
 from __future__ import annotations
@@ -42,9 +37,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because the server start is the expensive part. The bearer token is set in the
+    environment as a deployment sets it, so the auth path under test is the deployed one.
     """
     import os
 
@@ -94,22 +88,11 @@ def test_healthz_names_the_constants_this_pod_verified(running_server: str) -> N
 
 
 def test_the_readiness_probe_refuses_when_the_atomic_weight_table_is_wrong() -> None:
-    """Break a dependency and read the status — the proof D-2026-09-12 asks a new probe to give.
+    """Break a dependency and read the status: a wrong atomic weight makes the probe unready.
 
-    This server's first version passed no `readiness=` callable at all, on the argument that there
-    is nothing here to load. `tests/test_fleet_*.py` refused that, and the refusal was right on the
-    facts as well as the policy: `ATOMIC_WEIGHTS` and the screening bands *are* a vendored corpus,
-    living in Python source rather than in a CSV, and a transposed digit in one is the exact failure
-    a corpus checksum exists to catch.
-
-    So the probe is held to the standard that record sets. A check which merely constructed
-    something, or derived a version string, would pass a table with a wrong weight in it — the shape
-    the record names as the defect. Here carbon is moved by 1 g/mol, which is less than a typo
-    usually is, and the probe must refuse: it recomputes TNT and nitroglycerine against values
-    published independently of this code.
-
-    Driven against the *engine* rather than over the wire because it mutates a module-level table;
-    `/healthz`'s consumption of the result is asserted by the test above.
+    `ATOMIC_WEIGHTS` and the screening bands are a corpus living in source. Carbon is moved by
+    1 g/mol and the probe, which recomputes TNT and nitroglycerine against published values, must
+    refuse. Driven against the engine because it mutates a module-level table.
     """
     from chemclaw_mcp_thermalsafety.engine import oxygen_balance
 
@@ -127,14 +110,10 @@ def test_the_readiness_probe_refuses_when_the_atomic_weight_table_is_wrong() -> 
 
 
 def test_a_failing_probe_is_a_permanent_cause_and_therefore_answers_503() -> None:
-    """The other half of the rule: only a permanent cause may take a pod out of its Service.
+    """Only a permanent cause may take a pod out of its Service.
 
-    `D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` makes that
-    `connector_app`'s decision rather than each callable's, and a transient resource exhaustion must
-    answer 200 with `degraded`. A wrong constants table is permanent — it does not get better under
-    less load — so `SelfTestFailed` has to classify into `PERMANENT_CAUSES` for the 503 to happen at
-    all. Asserted against the kit's own classifier rather than restated, so a change there is what
-    fails here.
+    A wrong constants table does not improve under less load, so `SelfTestFailed` must classify into
+    `PERMANENT_CAUSES` for `connector_app` to answer 503; asserted against the kit's classifier.
     """
     from mcp_server_kit.degradation import PERMANENT_CAUSES, classify
 
@@ -144,9 +123,8 @@ def test_a_failing_probe_is_a_permanent_cause_and_therefore_answers_503() -> Non
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    What an unauthenticated endpoint must never publish is a caller, a session, a correlation id or
-    a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    The no-caller/session/argument rule is asserted over the live exposition for every server in
+    `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -164,13 +142,10 @@ def test_livez_answers_without_consulting_anything(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """The refusal Chemclaw3's connector fleet did not have until an unauthenticated handshake
-    completed against it — and the further arms that one 401 never covered.
+    """The bearer credential is enforced on the mounted MCP surface, driven against the running server.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. `mcp_server_kit.testing.assert_bearer_is_enforced` holds every arm, and
-    holds them once so the servers cannot drift into different proofs.
+    A mount bypasses the enclosing app's dependencies, so this cannot be read off the source.
+    `assert_bearer_is_enforced` drives every arm once for the whole fleet.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -188,12 +163,10 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
 
 
 async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) -> None:
-    """The handshake plus a tool call — the shape of every turn Chemclaw3 will run through here.
+    """The handshake plus a tool call, and the manifest checked against the running surface.
 
-    The value asserted is the hand-computed one from `test_runaway.py`, carried all the way through
-    pydantic validation and JSON serialisation: 150 kJ/mol over 10 mol into 50 kg at 1.9 kJ/(kg·K)
-    is 15.789 K. A unit error introduced by the *surface* rather than by the engine would show up
-    here and nowhere else.
+    The value is the hand-computed 15.789 K from `test_runaway.py`, carried through pydantic and
+    JSON, so a unit error introduced by the surface shows here.
     """
     async with _session(running_server) as session:
         listed = await session.list_tools()
@@ -224,10 +197,8 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """A deliberately worded domain error passes through; an internal one would not.
 
-    Both families are exercised over the wire because `connector_app` decides by exception *type*,
-    and the decision is invisible from a direct call: `ThermalInputError` and `FormulaError` are
-    separate classes, and either one sorted into the sanitiser's other branch would reach a chemist
-    as an opaque `error_id` instead of as the sentence that says which number is wrong.
+    `connector_app` decides by exception type, invisible from a direct call; a misclassified
+    `ThermalInputError` or `FormulaError` would reach a chemist as an opaque `error_id`.
     """
     async with _session(running_server) as session:
         refused = await session.call_tool(
@@ -251,11 +222,9 @@ async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server:
 async def test_the_semenov_answer_carries_its_not_an_sadt_disclaimer_over_the_wire(
     running_server: str,
 ) -> None:
-    """The disclaimer has to survive serialisation, because that is where the model reads it.
+    """The Semenov "not an SADT" disclaimer survives serialisation, where the model reads it.
 
-    A `basis` that exists on the dataclass and is dropped by the response model would leave the
-    number travelling alone — which is the exact failure the field exists to prevent, and it is
-    invisible to every test that calls the function directly.
+    A `basis` dropped by the response model is invisible to direct-call tests.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(

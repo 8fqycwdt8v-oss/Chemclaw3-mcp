@@ -58,21 +58,23 @@ def time_constant(
     Args:
         batch_mass_kg: Mass of the batch contents, kg.
         heat_capacity_j_per_kg_k: Specific heat capacity of the contents, J/(kg·K) (water 4180; most
-        organic solvents 1600-2200). overall_heat_transfer_coefficient_w_per_m2_k: `U`, W/(m²·K), a
-        measured vessel characterisation. No default. heat_transfer_area_m2: The **wetted** jacket
-        area at this fill, m². initial_temperature_c: The batch temperature at the start, °C.
+            organic solvents 1600-2200).
+        overall_heat_transfer_coefficient_w_per_m2_k: `U`, W/(m²·K), a measured vessel
+            characterisation. No default.
+        heat_transfer_area_m2: The **wetted** jacket area at this fill, m².
+        initial_temperature_c: The batch temperature at the start, °C.
         jacket_temperature_c: The jacket service temperature, °C, held constant.
         target_temperature_c: Optionally a temperature to reach, °C, strictly between the start and
-        the jacket (the jacket itself takes infinite time). time_seconds: Optionally, a time to
-        evaluate the temperature at, in seconds.
+            the jacket (the jacket itself takes infinite time).
+        time_seconds: Optionally, a time to evaluate the temperature at, in seconds.
 
     Returns:
         The time constant, the duty at the initial gap, and whichever inversion was asked for.
 
     Raises:
         UnitOpsInputError: A mass, capacity, coefficient or area is not positive, a temperature is
-        below absolute zero, the batch already sits at the jacket temperature, or a target lies
-        outside the gap.
+            below absolute zero, the batch already sits at the jacket temperature, or a target lies
+            outside the gap.
     """
     positive(batch_mass_kg, "the batch mass")
     positive(heat_capacity_j_per_kg_k, "the heat capacity")

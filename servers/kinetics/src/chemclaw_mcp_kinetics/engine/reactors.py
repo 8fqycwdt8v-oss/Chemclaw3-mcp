@@ -155,8 +155,9 @@ def batch_conversion(
 
     Args:
         rate_constant: `k`, in the unit its order implies; not converted.
-        initial_concentration: `C₀`, in the caller's own unit; matters for every order but the
-        first. time_seconds: How long the reaction runs. order: The order in the limiting reagent.
+        initial_concentration: `C₀`, in the caller's own unit.
+        time_seconds: How long the reaction runs.
+        order: The order in the limiting reagent.
 
     Returns:
         Fractional conversion, between 0 and 1.

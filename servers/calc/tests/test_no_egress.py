@@ -1,9 +1,6 @@
-"""This server's own code holds no way to call out. Three lines, and every server ships them.
+"""This server's own code holds no way to call out.
 
-The scan covers the whole package — engine, tools and transport — because the rule is about the
-server, not about one layer of it. `app.py` names loopback in its docstring, which the scanner
-exempts on purpose: showing somebody how to reach the server they are running is documentation,
-while naming somebody else's host is the thing being forbidden.
+The scan covers the whole package. Loopback named in `app.py`'s docstring is exempt by design.
 """
 
 from __future__ import annotations
@@ -19,29 +16,18 @@ PACKAGE = Path(chemclaw_mcp_calc.__file__).parent
 def test_no_module_can_reach_the_network() -> None:
     """No HTTP client imported, no remote host named — checked by AST, not by grep.
 
-    Worth one note for this server specifically: `engine/xtb_cli.py` imports `subprocess`, which the
-    scanner permits and should. A subprocess is not egress — the binary it launches is on the
-    image's own filesystem, runs in a fresh temporary directory with a four-variable environment
-    allowlist, and the NetworkPolicy beside this package denies it a socket regardless of what it
-    tries.
+    `engine/xtb_cli.py` imports `subprocess`, which is permitted: the binary is on the image, runs
+    in a temp directory with an allow-listed environment, and the NetworkPolicy denies it a socket.
     """
     assert_no_egress_sources(PACKAGE)
 
 
 def test_every_answer_is_computed_in_process_with_the_guard_armed() -> None:
-    """The positive half, and the one this server has to earn differently from the other three.
+    """Every answer is computed in process with the guard armed.
 
-    `props`, `chem` and `safety` prove sufficiency by pointing at a vendored, checksummed corpus.
-    This server ships **no dataset at all**: every number is computed from tblite's compiled GFN
-    parameters, RDKit's Crippen/QED tables and closed-form arithmetic, all of which arrive inside
-    their own wheels. So the property to demonstrate is that the computation itself needs nothing
-    from outside the process — and the whole suite runs with the egress guard armed (root
-    `conftest.py`), which makes running one of each kind of calculation the proof.
-
-    The failure this rules out is the quiet one a numerical library can produce: a package fetching
-    parameters, model weights or a licence check on first use. The guard raises `EgressForbidden`
-    rather than letting it succeed, so any such call fails this test instead of silently making the
-    image depend on a network at runtime.
+    This server ships no dataset; numbers come from tblite's compiled parameters, RDKit's tables and
+    arithmetic inside their wheels. Running one of each kind of calculation under the armed guard
+    proves none fetches parameters, weights or a licence check at runtime.
     """
     from chemclaw_mcp_calc.engine.descriptors import DescriptorInput, compute_descriptor_profile
     from chemclaw_mcp_calc.engine.pka import PkaInput, predict_pka

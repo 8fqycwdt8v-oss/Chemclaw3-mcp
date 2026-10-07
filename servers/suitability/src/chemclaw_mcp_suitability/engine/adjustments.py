@@ -56,9 +56,10 @@ class Allowance:
         relative_percent: The permitted change as a percentage of the original value, or `None`.
         absolute: The permitted change in the parameter's own unit, or `None`.
         absolute_is_a_cap: True when the absolute bound caps the relative one; False when it is the
-        only limit. direction: "either", "decrease" (only a reduction permitted) or "none" (no
-        adjustment). unit: The parameter's unit, for the message; empty where dimensionless. note:
-        What a chemist needs to know that the numbers do not say.
+            only limit.
+        direction: "either", "decrease" (only a reduction permitted) or "none" (no adjustment).
+        unit: The parameter's unit, for the message; empty where dimensionless.
+        note: What a chemist needs to know that the numbers do not say.
     """
 
     relative_percent: float | None
@@ -216,7 +217,7 @@ def check_adjustment(
 
     Raises:
         AdjustmentError: The separation is a gradient, a value is negative, or the original is zero
-        for a relative allowance.
+            for a relative allowance.
     """
     if is_gradient:
         raise AdjustmentError(

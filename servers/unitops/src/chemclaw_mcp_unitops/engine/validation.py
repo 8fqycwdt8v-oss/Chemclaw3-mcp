@@ -48,21 +48,11 @@ def finite(value: float, what: str) -> float:
 
 
 def finite_result(compute: Callable[[], float], what: str) -> float:
-    """Run one power-law correlation, refusing a result too large for a float to hold.
+    """Run one power-law correlation, refusing a result a float cannot hold.
 
-    Finite inputs can still overflow (`D**5` raises `OverflowError`, a product becomes `inf`) or
-    underflow to `0.0` and then divide by zero; each is refused naming the quantity rather than
-    reaching the model as an error id or a null.
-
-    Args:
-        compute: The expression, deferred so its `OverflowError` is caught here.
-        what: The quantity it computes, for the message.
-
-    Returns:
-        The value, finite.
-
-    Raises:
-        UnitOpsInputError: The value overflows, divides by an underflowed zero, or is not finite.
+    Finite inputs can still overflow (`OverflowError`, `inf`) or underflow to `0.0` and then divide
+    by zero; each is refused as a `UnitOpsInputError` naming `what`. `compute` is deferred so its
+    `OverflowError` is caught here.
     """
     try:
         value = compute()
@@ -83,18 +73,7 @@ def finite_result(compute: Callable[[], float], what: str) -> float:
 
 
 def positive(value: float, what: str) -> float:
-    """A dimension, a mass, a rate or a coefficient that must be above zero to mean anything.
-
-    Args:
-        value: The number supplied.
-        what: The argument's name as the caller wrote it, for the message.
-
-    Returns:
-        The value unchanged.
-
-    Raises:
-        UnitOpsInputError: If the value is zero, negative or not finite.
-    """
+    """Return `value` if finite and above zero, else refuse naming `what`."""
     finite(value, what)
     if value <= 0.0:
         raise UnitOpsInputError(f"{what} must be greater than zero; got {value}.")
@@ -102,18 +81,7 @@ def positive(value: float, what: str) -> float:
 
 
 def non_negative(value: float, what: str) -> float:
-    """A quantity that may legitimately be zero — an evaporated mass, a medium resistance.
-
-    Args:
-        value: The number supplied.
-        what: The argument's name as the caller wrote it, for the message.
-
-    Returns:
-        The value unchanged.
-
-    Raises:
-        UnitOpsInputError: If the value is negative or not finite.
-    """
+    """Return `value` if finite and not negative (an evaporated mass, a medium resistance)."""
     finite(value, what)
     if value < 0.0:
         raise UnitOpsInputError(f"{what} must not be negative; got {value}.")
@@ -121,18 +89,9 @@ def non_negative(value: float, what: str) -> float:
 
 
 def fraction(value: float, what: str) -> float:
-    """A mole or mass fraction, which is between zero and one and is not a percentage.
+    """Return a mole or mass fraction strictly inside `(0, 1)`, else refuse naming `what`.
 
-    Args:
-        value: The number supplied.
-        what: The argument's name as the caller wrote it, for the message.
-
-    Returns:
-        The value unchanged.
-
-    Raises:
-        UnitOpsInputError: The value is outside `(0, 1)`; the message says what 95% is, since a
-        percentage entered here gives a plausible wrong answer.
+    The message says what 95% is, since a percentage entered here gives a plausible wrong answer.
     """
     finite(value, what)
     if not 0.0 < value < 1.0:
@@ -143,18 +102,7 @@ def fraction(value: float, what: str) -> float:
 
 
 def kelvin(celsius: float, what: str) -> float:
-    """°C to K, refusing anything below absolute zero.
-
-    Args:
-        celsius: The temperature supplied, in °C.
-        what: The argument's name as the caller wrote it, for the message.
-
-    Returns:
-        The temperature in kelvin.
-
-    Raises:
-        UnitOpsInputError: The temperature is below absolute zero (usually a kelvin figure entered
-        as °C) or not finite.
+    """Convert °C to K, refusing NaN or anything below absolute zero (usually a kelvin figure as °C).
     """
     finite(celsius, what)
     value = celsius - ABSOLUTE_ZERO_C

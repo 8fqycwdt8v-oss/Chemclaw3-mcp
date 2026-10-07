@@ -29,7 +29,7 @@ def verified_corpora() -> tuple[Dataset, ...]:
 
     Raises:
         SafetyRulesError: A table is missing, unapproved, invalid, or holds an uncompilable pattern;
-        `connector_app` answers 503 with the reason.
+            `connector_app` answers 503 with the reason.
     """
     screen_structure(_PROBE)
     screen_genotoxic_alerts([_PROBE])

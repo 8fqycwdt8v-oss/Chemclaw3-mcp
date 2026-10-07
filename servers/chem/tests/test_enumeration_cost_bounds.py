@@ -1,14 +1,9 @@
 """The cost bounds on the species enumerations, driven on the molecules that found them.
 
-Before these bounds, polyglycine at 1,985 heavy atoms — inside `MAX_MOLECULE_ATOMS` — cost 11.6 s in
-`enumerate_tautomer_set`, the same again inside `describe_molecule`, and 22.5 s in
-`enumerate_degradant_candidates`, each holding a worker thread well into the 30 s request budget
-and burning on after the caller had gone. The output caps (`MAX_TAUTOMERS`, `MAX_DEGRADANTS`) were
-consulted only after all of that work, so they bounded the answer and not the cost.
-
-`enumerate_stereoisomer_set` had the same shape one step removed: `maxIsomers` stopped it building
-more than 65 isomers, but each is canonicalised over the whole graph, so a 1,991-atom polyol built
-its 65 and was refused after 10.2 s. `MAX_STEREO_ISOMER_ATOM_PRODUCT` prices `isomers x atoms`.
+Large legal molecules (polyglycine, polyols) would hold a worker for seconds in the tautomer,
+degradant and stereoisomer enumerations, and output caps applied after the work bound only the
+answer. The bounds here refuse before the work; `MAX_STEREO_ISOMER_ATOM_PRODUCT` prices
+`isomers x atoms`, since each isomer is canonicalised over the whole graph.
 """
 
 from __future__ import annotations

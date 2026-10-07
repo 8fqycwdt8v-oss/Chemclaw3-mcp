@@ -68,13 +68,15 @@ def mark_unavailable(
 
     Args:
         name: The predictor's registry name; always a source constant, so the metric label is
-        bounded. kind: `forward` or `conditions`. reason: The sentence a person reads, naming the
-        extra to install. exc: What went wrong, classified rather than guessed from `reason`.
-        Omitted only when there is no exception (an `ENABLED_*_MODELS` exclusion, recorded as
-        `not_installed`). optional: The top-level modules the guard imports (the extra itself), so a
-        missing dependency *of* an installed extra classifies as broken. `tests/test_readiness.py`
-        holds each guard's list equal to its imports. `None` takes a `ModuleNotFoundError` at its
-        word.
+            bounded.
+        kind: `forward` or `conditions`.
+        reason: The sentence a person reads, naming the extra to install.
+        exc: What went wrong, classified rather than guessed from `reason`. Omitted only when there
+            is no exception (an `ENABLED_*_MODELS` exclusion, recorded as `not_installed`).
+        optional: The top-level modules the guard imports (the extra itself), so a missing
+            dependency *of* an installed extra classifies as broken. `tests/test_readiness.py` holds
+            each guard's list equal to its imports. `None` takes a `ModuleNotFoundError` at its
+            word.
     """
     cause = (
         degradation.classify(exc, optional=optional)

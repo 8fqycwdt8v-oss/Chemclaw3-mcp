@@ -63,8 +63,9 @@ def verify_labeller() -> tuple[Dataset, ...]:
 
     Raises:
         RuntimeError: An installed component could not be constructed, or raised on the fixture for
-        a permanent cause. Exception: Whatever the labelling path raised, re-raised unchanged so
-        `connector_app` alone decides between a 503 and a 200 carrying `degraded`.
+            a permanent cause.
+        Exception: Whatever the labelling path raised, re-raised unchanged so `connector_app` alone
+            decides between a 503 and a 200 carrying `degraded`.
     """
     global _VERDICT
     with _LOCK:

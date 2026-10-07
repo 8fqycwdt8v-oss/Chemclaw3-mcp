@@ -1,12 +1,7 @@
 """The oxygen-balance screen, checked against published values nobody in this repository computed.
 
-Every case here is a compound whose OB% is in the literature to one decimal, so agreement is
-evidence about the formula rather than about the test. That is the same argument
-`servers/props/tests/test_dataset.py` makes for a vendored corpus — an independently written number
-that must agree — applied to a formula instead of a table.
-
-The molar masses are the second independent check: they come out of the same parse, so a subscript
-read wrongly moves both numbers and is caught twice.
+Each compound's OB% is in the literature to one decimal, so agreement is evidence about the
+formula. Molar masses come from the same parse, so a misread subscript is caught twice.
 """
 
 from __future__ import annotations
@@ -44,12 +39,11 @@ PUBLISHED = (
 def test_published_compounds_come_back_at_their_published_values(
     formula: str, expected_ob: float, expected_mass: float
 ) -> None:
-    """The whole formula, checked against numbers written independently of it.
+    """Published compounds come back at their published OB% and molar mass.
 
-    The tolerance is 0.15 percentage points, which is the width the published values' own rounding
-    and the choice of atomic-weight table between them account for — tight enough that a wrong
-    coefficient on hydrogen or sulfur fails, loose enough that IUPAC 2021 against an older table
-    does not.
+    The 0.15-point tolerance spans published rounding and atomic-weight table choice: tight enough
+    to fail a wrong hydrogen or sulfur coefficient, loose enough for IUPAC 2021 against older
+    tables.
     """
     result = oxygen_balance(formula)
     assert result.oxygen_balance_percent == pytest.approx(expected_ob, abs=0.15)
@@ -57,12 +51,10 @@ def test_published_compounds_come_back_at_their_published_values(
 
 
 def test_glucose_and_tnt_land_in_different_bands_and_neither_reading_is_a_verdict() -> None:
-    """The one interpretive property worth asserting: the bands separate, and the text refuses.
+    """Glucose and TNT land in different bands, and no interpretation calls anything safe.
 
-    Glucose at -107% and TNT at -74% are the pair the docstring uses to say the screen is not a
-    hazard classification, so the bands must actually distinguish them — and every interpretation
-    must stop short of calling something safe, which is checked as an absence because the failure
-    would be a future edit softening one of these strings into a clearance.
+    The safe-language check is an absence, guarding against a future edit softening a band's text
+    into a clearance.
     """
     tnt = oxygen_balance("C7H5N3O6")
     glucose = oxygen_balance("C6H12O6")
@@ -77,12 +69,10 @@ def test_glucose_and_tnt_land_in_different_bands_and_neither_reading_is_a_verdic
 
 
 def test_a_halogen_ties_up_a_hydrogen_before_that_hydrogen_demands_oxygen() -> None:
-    """The correction that distinguishes this from the naive formula, checked by construction.
+    """A halogen ties up a hydrogen as HX before that hydrogen demands oxygen.
 
-    Chloroform (CHCl3) has one hydrogen and three chlorines: the hydrogen leaves as HCl, so nothing
-    is left of it to burn. Without the correction it would contribute half an oxygen equivalent.
-    Asserted against the same formula with the halogens removed, so the test measures the
-    *difference the correction makes* rather than restating the expression.
+    Asserted against the same formula with the halogens removed, so the test measures the difference
+    the correction makes rather than restating the expression.
     """
     with_halogen = oxygen_balance("CHCl3").oxygen_balance_percent
     # The same carbon and hydrogen, no halogen to consume it: the hydrogen now demands oxygen, so
@@ -96,12 +86,10 @@ def test_a_halogen_ties_up_a_hydrogen_before_that_hydrogen_demands_oxygen() -> N
 
 
 def test_a_notation_this_parser_would_get_silently_wrong_is_refused_by_name() -> None:
-    """Parentheses, hydrate dots and charges — each refused, each told what to write instead.
+    """Parentheses, hydrate dots and charges are each refused, naming what to write instead.
 
-    This is the highest-value refusal here. `Ca(NO3)2` read token-wise is one calcium, one nitrogen
-    and three oxygens: wrong by a factor of two on the element that decides the whole number, with
-    a plausible-looking answer. A parser that guesses at notation it does not implement is worse
-    than one that has none.
+    `Ca(NO3)2` read token-wise is wrong by a factor of two on oxygen with a plausible answer;
+    guessing at unimplemented notation is worse than refusing.
     """
     for bad, expected in (
         ("Ca(NO3)2", "parentheses"),
@@ -117,18 +105,10 @@ def test_a_notation_this_parser_would_get_silently_wrong_is_refused_by_name() ->
 
 
 def test_every_grouping_bracket_is_refused_and_not_just_the_two_somebody_listed() -> None:
-    """A brace group was expanded by the library while its two siblings were refused by name.
+    """Every grouping bracket pair is refused, not just two of them.
 
-    Measured at `6c6a0eb`: `parse_formula("{H2O}2")` returned `{'H': 4.0, 'O': 2.0}` — the correct
-    expansion, produced by `molmass` rather than by anything reviewed here — while `(H2O)2` and
-    `[H2O]2` were refused. The pre-`molmass` parser refused all three because its regex admitted
-    nothing but element symbols and digits; the blocklist that replaced it enumerated two pairs of
-    three (`D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set`).
-
-    Driven over the three pairs as *characters* rather than over three example strings, because the
-    defect was a missing row in a table and an example-by-example test is the same table written a
-    second time. Each is confirmed to be something the library would otherwise answer, so the
-    refusal is guarding a real delegation rather than a case molmass refuses anyway.
+    Driven over the bracket characters rather than example strings, and each is confirmed to be
+    something `molmass` would otherwise expand, so the refusal guards a real delegation.
     """
     for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
         grouped = f"{opening}H2O{closing}2"
@@ -140,22 +120,12 @@ def test_every_grouping_bracket_is_refused_and_not_just_the_two_somebody_listed(
 
 
 def test_the_published_constants_version_and_digest_both_see_the_adopted_table() -> None:
-    """A version that cannot see its own table is not a version, and neither is a digest.
+    """The published constants version and digest both see the adopted weight table.
 
-    `CONSTANTS_VERSION` is hand-bumped and `_constants_digest()` hashes `oxygen_balance.py`. Since
-    the weights moved to `molmass`, neither covers a weight: the module holds a comprehension, and
-    `uv.lock` resolves **two** molmass releases on purpose (2026.1.8 below Python 3.12, 2026.8.15
-    at or above it), so two pods can legitimately serve different tables
-    (`D-2026-09-16-a-version-that-cannot-see-its-own-table-is-not-a-version`).
-
-    Asserted in both directions, because the version half alone would pass on a digest that still
-    ignored the numbers:
-
-    - the published version names the installed molmass distribution;
-    - the digest **moves** when a weight moves, which is what a checksum is for. Driven by
-      substituting one weight rather than by comparing two literals — a pinned digest would have to
-      be re-transcribed on every unrelated edit to that module, and would then be pinning the file
-      rather than the table.
+    Weights come from `molmass`, and `uv.lock` resolves different molmass releases per Python, so
+    two pods may serve different tables. Asserted both ways: the version names the installed molmass
+    distribution, and the digest moves when a weight is substituted (not compared to a pinned
+    literal, which would pin the file rather than the table).
     """
     from importlib.metadata import version as _distribution_version
 
@@ -180,17 +150,11 @@ def test_the_published_constants_version_and_digest_both_see_the_adopted_table()
 
 
 def test_the_two_widenings_molmass_brought_are_the_ones_that_were_argued() -> None:
-    """Adopting a library moves a boundary, and a boundary that moved silently is the finding.
+    """The two boundary changes `molmass` brought are the argued ones.
 
-    Both of these are changes from the hand-written parser and both are recorded in
-    `parse_formula`'s docstring rather than left to be rediscovered:
-
-    - **whitespace inside a formula now parses**, because molmass ignores it. Kept: the answer is
-      the one the chemist meant, and a copy-pasted `C6 H5 NO2` is not a notation this screen would
-      get wrong.
-    - **an explicit zero count is now refused**, where the old parser returned a zero. Kept for the
-      opposite reason: it is the stricter direction, and an element written with a count of nothing
-      is a typo rather than a composition.
+    Whitespace inside a formula parses (a copy-pasted `C6 H5 NO2` means what it says); an explicit
+    zero count is refused (a typo, and the stricter direction). Both are documented in
+    `parse_formula`.
     """
     assert parse_formula("C6 H5 NO2") == parse_formula("C6H5NO2")
     assert parse_formula("  C7H5N3O6  ") == {"C": 7.0, "H": 5.0, "N": 3.0, "O": 6.0}
@@ -200,11 +164,10 @@ def test_the_two_widenings_molmass_brought_are_the_ones_that_were_argued() -> No
 
 
 def test_an_element_outside_the_table_is_named_rather_than_approximated() -> None:
-    """The fleet's "refuse rather than approximate" rule applied to an atomic-weight table.
+    """An element outside the table is named rather than approximated.
 
-    A silently ignored element would return a molar mass that is too low and an OB% that is
-    therefore too *favourable* — an error in the unsafe direction, which is the reason this refuses
-    rather than dropping what it does not know.
+    Ignoring it would understate the molar mass and make OB% too favourable: an error in the unsafe
+    direction.
     """
     with pytest.raises(FormulaError, match="Pb"):
         oxygen_balance("Pb3O4")
@@ -215,11 +178,10 @@ def test_an_element_outside_the_table_is_named_rather_than_approximated() -> Non
 
 
 def test_the_parse_and_the_molar_mass_agree_with_each_other() -> None:
-    """The cheapest typo catch there is, and the reason both come back with the answer.
+    """The parse and the molar mass agree with each other.
 
-    A chemist who knows nitroglycerine is 227 g/mol can see in one glance whether their formula was
-    read the way they wrote it — so the two numbers must genuinely come from the same parse rather
-    than from two code paths that could disagree.
+    A chemist checks the molar mass at a glance to see the formula was read as written, so both
+    numbers must come from the same parse.
     """
     composition = parse_formula("C3H5N3O9")
     assert composition == {"C": 3.0, "H": 5.0, "N": 3.0, "O": 9.0}
@@ -228,11 +190,10 @@ def test_the_parse_and_the_molar_mass_agree_with_each_other() -> None:
 
 
 def test_a_two_letter_element_is_not_read_as_two_one_letter_ones() -> None:
-    """`Cl` must not parse as carbon and a stray `l`, and `Na` must not become nitrogen.
+    """`Cl` does not parse as carbon plus `l`, and `Na` does not become nitrogen.
 
-    The classic formula-parser defect. It is caught here rather than left to the published cases,
-    because those happen to use only single-letter symbols — so without this the two-letter path
-    would be entirely unexercised while every headline assertion passed.
+    The published cases use only single-letter symbols, so without this the two-letter path would
+    be unexercised.
     """
     assert parse_formula("NaCl") == {"Na": 1.0, "Cl": 1.0}
     assert parse_formula("NCl3") == {"N": 1.0, "Cl": 3.0}
@@ -240,26 +201,12 @@ def test_a_two_letter_element_is_not_read_as_two_one_letter_ones() -> None:
 
 
 def test_every_weight_in_the_table_is_a_plausible_atomic_mass() -> None:
-    """A wrong weight is a wrong answer in every formula that names the element.
+    """Every weight in the table is a plausible atomic mass.
 
-    The table is no longer transcribed — `ATOMIC_WEIGHTS` is read from `molmass` over
-    `ALLOWED_ELEMENTS` — so this check changed subject rather than losing its point. It is now an
-    *independent* statement of the six weights that dominate organic chemistry, written here from
-    the IUPAC 2021 conventional table, against a library's own table: two sources that were
-    compiled separately and must agree.
-
-    **The tolerance is 0.005 g/mol and it is a measurement, not a round number.** Measured against
-    molmass 2026.1.8, four of the six agree to better than 5e-4 and two do not: sulfur is 32.0648
-    where IUPAC 2021 gives the conventional 32.06, and chlorine is 35.4529 against 35.45. Those are
-    the older standard atomic weights rather than the conventional values IUPAC publishes for
-    elements with a natural-abundance interval — a real difference between two defensible tables,
-    not an error in either, and one worth knowing about rather than hiding behind a loose bound.
-    0.005 covers it with nothing to spare, and is still an order of magnitude below what any
-    realistic corruption moves a weight by: carbon transposed to 12.101 is 0.09 out.
-
-    What that difference costs the answers is bounded a second time by
-    `test_published_compounds_come_back_at_their_published_values`, whose 0.15-point tolerance is
-    forty times the largest OB% change the whole table swap produced.
+    `ATOMIC_WEIGHTS` is read from `molmass`; this checks six dominant weights against an independent
+    statement from the IUPAC 2021 conventional table. The 0.005 g/mol tolerance covers molmass's
+    older standard values for S and Cl, a real difference between defensible tables, while staying
+    far below a realistic corruption.
     """
     for symbol, weight in ATOMIC_WEIGHTS.items():
         assert 1.0 <= weight < 200.0, f"{symbol} at {weight} g/mol is not an atomic mass"
@@ -275,12 +222,10 @@ def test_every_weight_in_the_table_is_a_plausible_atomic_mass() -> None:
 
 
 def test_the_table_holds_exactly_the_elements_this_screen_is_reviewed_for() -> None:
-    """The allowlist is the policy; the library is only where the numbers come from.
+    """The table holds exactly the elements this screen is reviewed for.
 
-    `molmass` knows all 109 elements, so nothing about importing it narrows what could be parsed —
-    the narrowing is `ALLOWED_ELEMENTS` and this is the assertion that it still does the work. A
-    future edit that derived the table from the library's own symbol list instead would widen the
-    screen's reviewed domain to the whole periodic table without a line saying so.
+    `molmass` knows every element; `ALLOWED_ELEMENTS` is the narrowing, and deriving the table from
+    the library's symbol list would silently widen the reviewed domain.
     """
     assert set(ATOMIC_WEIGHTS) == set(ALLOWED_ELEMENTS)
     assert len(ALLOWED_ELEMENTS) == 17
@@ -288,17 +233,11 @@ def test_the_table_holds_exactly_the_elements_this_screen_is_reviewed_for() -> N
 
 
 def test_a_notation_molmass_would_answer_is_still_refused_here() -> None:
-    """The refusals run in front of the library, which is the only reason they still exist.
+    """Notations `molmass` would answer are still refused here.
 
-    Each of these is a string `molmass.Formula` parses without complaint — measured against molmass
-    2026.1.8, `Ca(NO3)2` gives 164.09 g/mol, `CuSO4.5H2O` gives 249.68, and `2H2O` gives **deuterium
-    oxide** rather than two waters. Delegating the grammar would therefore have turned three
-    deliberate refusals into three confident wrong answers, and the last one silently: a chemist
-    who writes a stoichiometric coefficient does not mean a mass number.
-
-    Driven through the library here as well as through `parse_formula`, so that the day molmass
-    stops parsing one of them this test says the premise changed rather than passing for a new
-    reason.
+    The library parses `Ca(NO3)2`, hydrate dots, and reads `2H2O` as deuterium oxide, so delegating
+    the grammar would turn refusals into confident wrong answers. The premise is driven through the
+    library too, so if it stops parsing one the test reports that the premise changed.
     """
     for notation in ("Ca(NO3)2", "CuSO4.5H2O", "2H2O"):
         assert Formula(notation).mass > 0, (
@@ -326,12 +265,10 @@ def test_an_isotope_symbol_is_named_rather_than_silently_weighed() -> None:
 def test_a_name_or_abbreviation_typed_for_a_formula_is_refused_not_expanded(
     typed: str, named: str
 ) -> None:
-    """`molmass` expands acronyms and residue codes; this screen refuses them by name.
+    """A name or abbreviation typed for a formula is refused, not expanded.
 
-    Measured before the fix: `PETN` parsed as C18H29N5O9 at -144.5% (real PETN is about -10%) and
-    `TNT` as C12H22N4O7 at -134% against the real -74% — confident, wrong, and in the reassuring
-    direction. The premise is driven through the library too, so the day `molmass` stops expanding
-    these the test says the argument changed rather than passing for a new reason.
+    `molmass` expands acronyms and residue codes, which turned `PETN` and `TNT` into unrelated
+    compositions with reassuring OB%. The premise is driven through the library too.
     """
     assert Formula(typed).mass > 0
     with pytest.raises(FormulaError, match=named):
@@ -350,12 +287,10 @@ def test_a_name_or_abbreviation_typed_for_a_formula_is_refused_not_expanded(
 def test_an_acronym_spelled_from_real_element_symbols_is_refused_by_name(
     typed: str, stands_for: str
 ) -> None:
-    """The symbol check above cannot see these: every letter in them is an element.
+    """An acronym spelled from real element symbols is refused by name.
 
-    Measured before the fix: `BPO` parsed as {B, P, O}, `CHP` as {C, H, P}, `NC` as {C, N} and
-    `NaN` as {N, Na}, each answered with an OB% for an unrelated composition. The premise is
-    driven through this parser's own symbol check, so the test says when the list stops being the
-    only thing refusing them.
+    `BPO`, `CHP`, `NC`, `NaN` pass the symbol check and would yield an OB% for an unrelated
+    composition. The premise is driven through this parser's own symbol check.
     """
     assert all(symbol in ALLOWED_ELEMENTS for symbol in re.findall(r"[A-Z][a-z]?", typed)), (
         "the premise is that every symbol is an element; the symbol check would refuse this anyway"
@@ -377,13 +312,9 @@ def test_the_formula_those_names_stand_for_still_answers() -> None:
 
 #: `(formula, the token an interpretation string quotes, the band that string belongs to)`.
 #:
-#: **Every percentage a band's interpretation quotes is a claim about this module's own
-#: arithmetic**, and one of them was wrong in both halves at once: the `oxygen-deficient` band read
-#: "toluene is
-#: -302%" where the code computes -312.57%, and at -312.57% toluene is in the band *below* the one
-#: citing it. So this table holds the two directions that defect needed: the token must still be a
-#: substring of that band's text, and recomputing the formula must land inside the band and round to
-#: the token.
+#: Every percentage a band's interpretation quotes is a claim about this module's arithmetic: the
+#: token must appear in that band's text, and recomputing the formula must land in the band and
+#: round to the token.
 QUOTED_IN_INTERPRETATIONS = (
     ("KClO4", "+40%", "oxygen-rich"),
     ("H2O2", "+47%", "oxygen-rich"),
@@ -401,12 +332,10 @@ QUOTED_IN_INTERPRETATIONS = (
 def test_a_compound_an_interpretation_quotes_lands_in_the_band_that_quotes_it(
     formula: str, token: str, band: str
 ) -> None:
-    """A number in a returned string is arithmetic, not prose, so it is recomputed here.
+    """A compound an interpretation quotes lands in the band that quotes it, at the quoted value.
 
-    The tolerance is half the last quoted digit, derived from the token rather than chosen: "-107%"
-    has to hold to ±0.5 and "+3.5%" to ±0.05. That is what makes this catch a drift of a few points
-    as well as the ten-point one that was there, and it is why the token is stored as written rather
-    than as a float — the substring check is the half that fails when the *string* moves instead.
+    The tolerance is half the token's last digit, derived rather than chosen, and the token is kept
+    as a string so the substring check fails when the text moves.
     """
     quoted = float(token.rstrip("%"))
     places = len(token.rstrip("%").split(".")[1]) if "." in token else 0
@@ -429,16 +358,11 @@ def test_a_compound_an_interpretation_quotes_lands_in_the_band_that_quotes_it(
 
 
 def test_every_band_is_bounded_above_and_an_oxidiser_is_not_called_near_balanced() -> None:
-    """The +40 boundary the module's own comment declared and the band table did not implement.
+    """Every band is bounded above, so a strong oxidiser is not called near-balanced.
 
-    `_BAND_FLOORS` held three floors, so the top band had no upper bound: measured, `KClO4`
-    (+40.42%), `H2O2` (+47.04%) and `O2` (+100.00%) all came back as *near-balanced* under an
-    interpretation reading "this is the range nitroglycerine (+3.5%) and ammonium nitrate (+20%) sit
-    in". Nitroglycerine and an oxygen cylinder are not one screening answer.
-
-    Asserted as the structural property rather than as three spot values, because a fifth band would
-    otherwise re-open the same hole at its own top: every band must be bounded above by the floor of
-    the band above it, and every interpretation must name at least one compound.
+    Asserted structurally (each band's ceiling is the next band's floor, every interpretation names
+    a compound) rather than with spot values, so an added band cannot reopen the hole at its own
+    top.
     """
     floors = [floor for floor, _, _ in oxygen_balance_module._BAND_FLOORS]
     assert floors == sorted(floors, reverse=True), (

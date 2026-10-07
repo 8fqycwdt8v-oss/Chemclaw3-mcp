@@ -1,10 +1,7 @@
-"""The deployment says what the code says. Asserted, because a chart nobody verifies drifts.
+"""The deployment says what the code says, asserted because a chart nobody verifies drifts.
 
-The runtime guard and the AST scan both live inside the process, and both would be worth little if
-the pod could still open a socket. This is the check on the layer that actually enforces it — and it
-is written in *both* directions, the way Chemclaw3's `test_deploy_chart.py` pins its chart, because
-the realistic regression is not someone adding an egress rule on purpose. It is someone dropping
-`Egress` from `policyTypes` while debugging and leaving the file looking unchanged.
+The NetworkPolicy is the layer that actually stops a socket, so it is pinned in both directions:
+the realistic regression is `Egress` dropped from `policyTypes` with the file looking unchanged.
 """
 
 from __future__ import annotations
@@ -63,19 +60,11 @@ def test_the_container_declares_the_port_the_manifest_dials() -> None:
 
 
 def test_the_scrape_is_wired_end_to_end() -> None:
-    """`/metrics` is only observability if something is told to collect it, and nothing was.
+    """`/metrics` is scraped: Service, ServiceMonitor and their shared port name agree.
 
-    Every NetworkPolicy in this fleet admits the monitoring namespace on the server's port — the
-    hole has been open since the first server shipped — and `deploy/` held exactly one file, that
-    policy. No Service, no ServiceMonitor, no PodMonitor: Prometheus had no way to discover a
-    single pod here, so every counter this repository emits would have gone nowhere.
-
-    The chain this asserts is four links, and the weakest is the last. A ServiceMonitor's
-    `endpoints[].port` is a **port name**, resolved through the Service, and a name that matches
-    nothing produces no targets and **no error** — the failure a scrape configuration has when
-    nobody checks it is silence, which is indistinguishable from a healthy server nobody is
-    calling. So the number is held against the Containerfile and the manifest by the test above,
-    and the *name* is held between these two files here.
+    A ServiceMonitor's `endpoints[].port` is a port *name* resolved through the Service, and a name
+    that matches nothing yields no targets and no error. The port number is held against the
+    Containerfile and manifest above; the name is held between these two files here.
     """
     deploy = POLICY.parent
     service = yaml.safe_load((deploy / "service.yaml").read_text(encoding="utf-8"))
@@ -135,10 +124,8 @@ def test_the_pod_is_hardened() -> None:
     assert resources["requests"]["cpu"] and resources["requests"]["memory"]
     assert resources["limits"]["cpu"] and resources["limits"]["memory"]
 
-    # **Two routes, and asserted as a pair rather than as one loop.** A liveness failure kills the
-    # container and a readiness failure only sheds traffic, so pointing both at `/healthz` made
-    # every dependency that route consults a restart trigger. `tests/test_deploy_shape.py` holds
-    # this for the whole fleet; here it is held against this server's own file.
+    # Liveness and readiness use different routes: a liveness failure kills the container, so a
+    # dependency `/healthz` consults must not become a restart trigger.
     assert container["readinessProbe"]["httpGet"]["path"] == "/healthz"
     assert container["livenessProbe"]["httpGet"]["path"] == "/livez"
     for probe in ("readinessProbe", "livenessProbe"):

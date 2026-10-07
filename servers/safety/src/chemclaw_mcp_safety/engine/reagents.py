@@ -65,11 +65,11 @@ def _index() -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
 
     Returns:
         The spelling -> (canonical SMILES, display name) table, and the canonical SMILES -> display
-        name map.
+            name map.
 
     Raises:
         ValueError: A row's SMILES does not parse, two rows claim one spelling, or two rows
-        canonicalise to one structure.
+            canonicalise to one structure.
     """
     table: dict[str, tuple[str, str]] = {}
     by_structure: dict[str, str] = {}

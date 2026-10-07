@@ -156,8 +156,8 @@ def parse_formula(formula: str) -> dict[str, float]:
 
     Raises:
         FormulaError: The string is empty, is not a run of element symbols and counts, names a
-        symbol outside `ALLOWED_ELEMENTS`, is a listed all-element acronym, carries a zero count, or
-        uses a refused notation.
+            symbol outside `ALLOWED_ELEMENTS`, is a listed all-element acronym, carries a zero
+            count, or uses a refused notation.
     """
     text = formula.strip()
     if not text:

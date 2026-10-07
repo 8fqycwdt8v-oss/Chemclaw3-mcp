@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 #: key naming a program that never ran is never minted.
 ABSENT = "absent"
 
-#: The substring a `calc_version` carries when the binary was selected and is missing; one definition
-#: shared with the check in `engine/identity.py`.
+#: The substring a `calc_version` carries when the binary was selected and is missing; one
+#: definition shared with the check in `engine/identity.py`.
 ABSENT_XTB_VERSION = f"xtb-{ABSENT}"
 
 __all__ = [

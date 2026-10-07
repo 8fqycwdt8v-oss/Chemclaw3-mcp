@@ -1,22 +1,9 @@
 """How geomeTRIC is driven, held as properties rather than as a paragraph.
 
-`engine/xtb_opt.py` uses `geometric.optimize.Optimize` and **not**
-`geometric.optimize.run_optimizer`. That is not a style preference and it is not obvious from the
-library's documentation, which presents the driver as the entry point. Measured on a trivial engine
-at the commit that made this change, one `run_optimizer` call:
-
-- writes `<prefix>.log`, `<prefix>.tmp/` and `<prefix>_optim.xyz` into the process's **working
-  directory**, and
-- replaces the **root logger's** handlers with geomeTRIC's own stream handler *and* a file handler,
-  permanently, from inside what is otherwise an ordinary function call.
-
-Both are disqualifying here. `connector_app` owns this process's log configuration — it is why
-`CLAUDE.md` says not to call `basicConfig` in a server — and a tool that writes unbounded files into
-its pod's working directory on every call is not the stateless thing this fleet promises.
-
-The two tests that matter are therefore about *this* module rather than about geomeTRIC: a
-relaxation must leave the working directory and the root logger alone. They are driven, because the
-whole point is that the difference is invisible in the source.
+`engine/xtb_opt.py` uses `geometric.optimize.Optimize`, not `run_optimizer`: the latter writes
+files into the working directory and replaces the root logger's handlers. `connector_app` owns
+the log configuration and the server must stay stateless. So a relaxation must leave the working
+directory and the root logger alone, and that is driven.
 """
 
 from __future__ import annotations
@@ -45,10 +32,8 @@ STRAINED = Structure(
 def test_the_driver_that_writes_files_and_seizes_the_root_logger_is_not_the_one_used() -> None:
     """`run_optimizer` must not appear in this module, and the optimizer under it must.
 
-    A source assertion, deliberately, and it is the one case where that is the right instrument: the
-    two entry points differ in their *side effects*, so a test that only drove the module would pass
-    just as happily on the day somebody swapped one for the other and the pod started writing log
-    files — until the disk filled.
+    A source assertion is right here: the entry points differ only in side effects, which a driven
+    test would not notice until the disk filled.
     """
     source = Path(xtb_opt.__file__).read_text(encoding="utf-8")
     assert "run_optimizer" not in source.replace("`run_optimizer`", ""), (
@@ -77,12 +62,10 @@ def test_a_relaxation_writes_nothing_into_the_working_directory(tmp_path: Path) 
 
 
 def test_geometric_logging_does_not_reach_the_root_logger() -> None:
-    """The other half: the process's log configuration is `connector_app`'s, not geomeTRIC's.
+    """The process's log configuration is `connector_app`'s, not geomeTRIC's.
 
-    Two properties, and the second is the one that was measured rather than assumed. geomeTRIC logs
-    one line per optimizer cycle at INFO on `geometric.optimize`; those records are stopped at the
-    `geometric` logger rather than reformatted at the root. And the root logger's **handler list**
-    must be the same object after a relaxation as before — which is what `run_optimizer` changes.
+    geomeTRIC's per-cycle records stop at the `geometric` logger, and the root's handler list is the
+    same object after a relaxation as before.
     """
     root = logging.getLogger()
     before = list(root.handlers)
@@ -113,14 +96,8 @@ def test_geometric_logging_does_not_reach_the_root_logger() -> None:
 def test_a_relaxation_evaluates_no_geometry_twice(monkeypatch: pytest.MonkeyPatch) -> None:
     """The input and the final frame are each one SCF, not two.
 
-    Measured before the fix on ethanol: 22 single points for 19 steps, because geomeTRIC's first
-    request re-evaluated the input the caller had just evaluated (identical to 3e-17 Angstrom) and
-    the convergence re-check re-evaluated geomeTRIC's last request (1.1e-9 Angstrom apart, its
-    Bohr round trip). The second of those ran outside every `Deadline.check`, so the overrun past
-    the budget could be two uninterruptible single points against a margin sized for one.
-
-    Held as "no two consecutive evaluations are the same point", which is the property, rather than
-    as a count, which would move with every geomeTRIC release.
+    A repeated evaluation also runs outside the `Deadline.check`, so it could overrun a margin sized
+    for one single point. Held as "no two consecutive evaluations are the same point", not a count.
     """
     seen: list[np.ndarray] = []
     real = evaluate_point

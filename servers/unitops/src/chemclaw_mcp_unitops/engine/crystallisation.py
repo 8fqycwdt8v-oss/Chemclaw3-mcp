@@ -49,10 +49,13 @@ def crystallisation_yield(
 
     Args:
         solute_charged_kg: Product dissolved at the hot temperature, kg (the solute, not the crude
-        charge). solvent_charged_kg: Solvent at the hot temperature, kg. **Mass, not volume** (5 L
-        of isopropanol is 3.93 kg). solubility_hot_kg_per_kg_solvent: Measured solubility at the
-        starting temperature, kg solute per kg solvent. solubility_cold_kg_per_kg_solvent:
-        Solubility at the final temperature, same units; the yield is almost entirely this number.
+            charge).
+        solvent_charged_kg: Solvent at the hot temperature, kg. **Mass, not volume** (5 L of
+            isopropanol is 3.93 kg).
+        solubility_hot_kg_per_kg_solvent: Measured solubility at the starting temperature, kg solute
+            per kg solvent.
+        solubility_cold_kg_per_kg_solvent: Solubility at the final temperature, same units; the
+            yield is almost entirely this number.
         solvent_evaporated_kg: Solvent removed during the operation, kg; zero for straight cooling.
 
     Returns:
@@ -60,8 +63,8 @@ def crystallisation_yield(
 
     Raises:
         UnitOpsInputError: A mass or solubility is not positive, evaporation removes all the
-        solvent, the cold solubility is not below the hot one (no driving force), or the charge
-        exceeds what the hot solvent dissolves.
+            solvent, the cold solubility is not below the hot one (no driving force), or the charge
+            exceeds what the hot solvent dissolves.
     """
     positive(solute_charged_kg, "the solute charged")
     positive(solvent_charged_kg, "the solvent charged")

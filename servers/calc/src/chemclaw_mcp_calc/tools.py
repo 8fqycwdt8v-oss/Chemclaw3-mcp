@@ -118,8 +118,7 @@ def _admitted(
 
 
 def _admitted_crest(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
-    """`_admitted` for the two tools that spawn a sampler wider than one core (see `_crest_slots`).
-    """
+    """`_admitted` for the two tools whose sampler is wider than one core (see `_crest_slots`)."""
     return _admitted(work, cost=_crest_slots)
 
 

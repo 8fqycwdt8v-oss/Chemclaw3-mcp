@@ -64,7 +64,7 @@ def heat_generation_w(
 
     Raises:
         ThermalInputError: A non-positive mass, rate or activation energy, or a temperature at or
-        below absolute zero.
+            below absolute zero.
     """
     temperature_k = _kelvin(temperature_c, name="temperature")
     reference_k = _kelvin(reference_temperature_c, name="reference_temperature")
@@ -100,8 +100,8 @@ def semenov_criticality(
 
     Raises:
         ThermalInputError: A non-positive quantity, a temperature at or below absolute zero, or a
-        tangency outside the search bracket (stable everywhere relevant, or already past crossover
-        at -40 °C).
+            tangency outside the search bracket (stable everywhere relevant, or already past
+            crossover at -40 °C).
     """
     conductance = _positive(
         heat_transfer_coefficient_w_per_m2_k,

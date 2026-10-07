@@ -63,7 +63,7 @@ def injections_required_for(limit_percent: float) -> int:
 
     Raises:
         PrecisionError: The limit is not positive (most likely a fraction entered where percent was
-        meant).
+            meant).
     """
     if limit_percent <= 0.0:
         raise PrecisionError(
@@ -81,13 +81,14 @@ def relative_standard_deviation(
 
     Args:
         values: The measured responses (peak areas or retention times), one per injection, all of
-        the same thing. Unit-free, since an RSD is a ratio. limit_percent: The acceptance limit in
-        percent, if any. Given, the answer says whether the series meets it and whether USP <621>
-        accepts this many injections; omitted, the RSD comes alone.
+            the same thing. Unit-free, since an RSD is a ratio.
+        limit_percent: The acceptance limit in percent, if any. Given, the answer says whether the
+            series meets it and whether USP <621> accepts this many injections; omitted, the RSD
+            comes alone.
 
     Returns:
         The RSD, the mean, the sample standard deviation, and the two verdicts when a limit was
-        declared.
+            declared.
 
     Raises:
         PrecisionError: Fewer than two values, a non-finite value, or a zero mean (RSD undefined).

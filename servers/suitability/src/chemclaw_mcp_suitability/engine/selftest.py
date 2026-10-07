@@ -149,11 +149,11 @@ def verify() -> list[Dataset]:
 
     Returns:
         One `Dataset` describing the constants and the <621> allowances, with a digest over the
-        table's values.
+            table's values.
 
     Raises:
         SelfTestFailed: A check no longer reproduces; `connector_app` answers unready with the
-        reason.
+            reason.
     """
     _check_plate_constants()
     _check_resolution_constants()

@@ -54,12 +54,12 @@ def load_vendored_priors(directory: Path) -> dict[str, dict[str, float]]:
 
     Returns:
         `{reaction_class: {model_name: weight}}`. Empty when no calibration has been run (the
-        shipped state); the aggregator then uses the global priors.
+            shipped state); the aggregator then uses the global priors.
 
     Raises:
         DatasetError: The file is missing, unlisted, or not the approved one. Fatal on purpose,
-        since a silently defaulted weight changes every answer; raised here rather than at import so
-        `/healthz` answers 503.
+            since a silently defaulted weight changes every answer; raised here rather than at
+            import so `/healthz` answers 503.
     """
     dataset = priors_dataset(directory)
     priors = _coerce(json.loads(dataset.records_path.read_text(encoding="utf-8")), str(directory))

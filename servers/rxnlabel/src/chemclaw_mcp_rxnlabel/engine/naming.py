@@ -93,7 +93,7 @@ def name(reaction_smiles: str) -> Naming:
 
     Returns:
         A `Naming`. `failure` is `None` when no namer is installed or nothing matched, and a
-        degradation cause when it raised.
+            degradation cause when it raised.
     """
     namer = _namer()
     if namer is None:

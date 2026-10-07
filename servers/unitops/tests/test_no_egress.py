@@ -1,9 +1,7 @@
-"""This server's own code holds no way to call out. Three lines, and every server ships them.
+"""This server's own code holds no way to call out.
 
-The scan covers the whole package — engine, tools and transport — because the rule is about the
-server, not about one layer of it. `app.py` names loopback in its docstring, which the scanner
-exempts on purpose: showing somebody how to reach the server they are running is documentation,
-while naming somebody else's host is the thing being forbidden.
+The scan covers the whole package. A loopback address in `app.py`'s docstring is exempt by
+design: naming the server you run is documentation, naming somebody else's host is forbidden.
 """
 
 from __future__ import annotations
@@ -22,15 +20,11 @@ def test_no_module_can_reach_the_network() -> None:
 
 
 def test_every_answer_is_computed_in_process_with_the_guard_armed() -> None:
-    """The positive half, and this server earns it as cheaply as `kinetics` does.
+    """Every answer is computed in process, with the guard armed.
 
-    `props`, `chem` and `safety` prove sufficiency by pointing at a vendored, checksummed corpus,
-    and `calc` by running each kind of calculation against compiled parameter data inside a wheel.
-    This server has neither: every number is closed-form arithmetic over `math`, and the only table
-    in it is five published exponents written in this package's own source, so there is nothing
-    that *could* be fetched lazily. Running one of each kind of correlation with the guard armed
-    (root `conftest.py`) is what turns that from an argument into a check — and it is the check
-    that would catch a future dependency added here which fetches anything on first use.
+    Every number is closed-form arithmetic plus five published exponents in this package's source,
+    so nothing could be fetched lazily; running one of each correlation under the armed guard checks
+    that, and would catch a future dependency that fetches on first use.
     """
     from chemclaw_mcp_unitops.engine.crystallisation import crystallisation_yield
     from chemclaw_mcp_unitops.engine.distillation import shortcut_column

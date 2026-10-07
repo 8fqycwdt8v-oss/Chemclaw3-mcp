@@ -1,14 +1,8 @@
 """The ALPB solvent table is re-derived against the installed tblite, not trusted.
 
-`engine/solvents.py` is a hand-written constant describing somebody else's compiled data — every
-name `Calculator.add("alpb-solvation", ...)` accepts. A constant like that is exactly the thing that
-rots: a tblite upgrade adds or drops a solvent, the table does not move, and the consequence is a
-*wrong refusal* — a chemist told GFN2-xTB has no parameters for a solvent it now supports, or an
-accepted name that fails minutes later inside the SCF.
-
-So the set is probed against a live `Calculator` here rather than reviewed. This is the one test in
-this server that exists to fail on a dependency bump, and failing is the correct behaviour: the fix
-is to update the constant to whatever the new build actually accepts.
+`engine/solvents.py` describes compiled data in another library, so a tblite upgrade could make
+it refuse a supported solvent or accept one that fails inside the SCF. It is probed against a
+live `Calculator`; failing on a dependency bump is correct, and the fix is to update the constant.
 """
 
 from __future__ import annotations
@@ -35,10 +29,8 @@ _POSITIONS = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]]) *
 def _accepts(name: str) -> bool:
     """Whether the installed tblite really has ALPB parameters for `name`, for this method.
 
-    tblite has *two* tables and rejects a name from each differently: absent from the dielectric
-    database gives "String value for epsilon was not found", present there but lacking Born
-    parameters gives "No ALPB/GBSA parameters found for the method/solvent". Only the intersection
-    works, which is why this probes rather than reading either list.
+    tblite has a dielectric table and a Born-parameter table; only the intersection works, so this
+    probes rather than reading either.
     """
     calc = Calculator(settings.xtb_method, _NUMBERS, _POSITIONS)
     calc.set("verbosity", 0)
@@ -71,12 +63,9 @@ def test_every_declared_solvent_is_one_tblite_actually_accepts(name: str) -> Non
 
 
 def test_the_shortlist_a_refusal_quotes_is_a_subset_of_what_works() -> None:
-    """The message must never advertise a name the method rejects.
+    """The shortlist a refusal quotes is a subset of what works.
 
-    A shortlist that is a subset of a probed set cannot drift that way. The reverse drift — omitting
-    supported solvents — is what happened to the curated tuple this replaced: it left out `dmf`,
-    `dioxane`, `benzene` and `nitromethane`, all valid and all ordinary process solvents, while its
-    comment claimed to name "the solvents process chemistry actually asks about".
+    So the message never advertises a name the method rejects.
     """
     assert set(SUGGESTED_SOLVENTS) <= ALPB_SOLVENTS
     assert len(set(SUGGESTED_SOLVENTS)) == len(SUGGESTED_SOLVENTS)
@@ -111,16 +100,11 @@ def test_gas_phase_passes_untouched() -> None:
 
 
 def test_canonicalising_a_name_does_not_change_the_calculation() -> None:
-    """The alias map is a *measurement*, re-derived here rather than believed.
+    """The alias map is re-derived: aliases must compute exactly the same thing.
 
-    Merging two spellings into one cache row is only safe if tblite computes the same thing for
-    both, so every group is checked the way the table above is: against a live `Calculator`, on the
-    same probe molecule, asserting **exact** float equality rather than closeness. That is what
-    distinguishes an alias from a similar solvent — `octanol` and `woctanol` differ in the seventh
-    decimal here and are deliberately two entries.
-
-    This is the test that fails if a tblite upgrade ever gives two of these names different
-    parameters, which would turn a saved cache row into a wrong answer rather than a wasted one.
+    Merging spellings into one cache row is safe only if tblite's results are float-identical on the
+    same probe molecule. Similar solvents (`octanol`, `woctanol`) stay separate. A tblite upgrade
+    that diverged two aliases would make a cached row a wrong answer.
     """
     for name in sorted(ALPB_SOLVENTS):
         canonical = canonical_solvent(name)

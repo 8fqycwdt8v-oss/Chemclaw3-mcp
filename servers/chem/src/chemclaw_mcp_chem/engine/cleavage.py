@@ -153,8 +153,7 @@ def _apply_mode(assignment: list[tuple[str, Chem.Mol]], mode: CleavageMode) -> l
 
 
 def _breakable(bond: Chem.Bond) -> bool:
-    """Whether this bond is one a dissociation survey can express: single, acyclic, between real atoms.
-    """
+    """Whether a dissociation survey can express this bond: single, acyclic, between real atoms."""
     return bond.GetBondType() == Chem.BondType.SINGLE and not bond.IsInRing()
 
 

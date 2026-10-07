@@ -1,21 +1,14 @@
-"""Fenske, Underwood and Gilliland against numbers written down before this code was.
+"""Fenske, Underwood and Gilliland against values computed by hand from the published forms.
 
-**Every expected value in this file was computed by hand from the published form**, on a benzene-
-toluene-style binary at alpha = 2.5 with a 95/5 split from an equimolar saturated-liquid
-feed, and then compared with what the module returns. That direction matters: a fixture
-recorded from a run of the code under test asserts that the code has not changed, which
-is a different and much weaker claim.
+Case: alpha = 2.5, 95/5 split, equimolar saturated-liquid feed. A fixture recorded from the code
+would only assert the code has not changed. The hand arithmetic:
 
-The hand arithmetic, for a reader checking it:
-
-- Fenske: `ln[(0.95/0.05)·(0.95/0.05)] / ln 2.5 = ln 361 / 0.91629 = 5.8889/0.91629 = 6.4269`.
-- Underwood, q = 1: the θ-equation is `1.25/(2.5-θ) + 0.5/(1-θ) = 0`, so `1.25(1-θ) +
-  0.5(2.5-θ) = 0`, `2.5 = 1.75θ`, `θ = 1.42857`. Then `R_min + 1 = 2.5·0.95/(2.5-1.42857) +
-  0.05/(1-1.42857) = 2.21667 - 0.11667 = 2.1`, so `R_min = 1.100` — which is also what the
-  textbook binary shortcut `R_min = [x_D/z - alpha(1-x_D)/(1-z)]/(alpha-1)`, which is
-  `(1.9 - 0.25)/1.5`, gives.
+- Fenske: `ln[(0.95/0.05)·(0.95/0.05)] / ln 2.5 = ln 361 / 0.91629 = 6.4269`.
+- Underwood, q = 1: `1.25/(2.5-θ) + 0.5/(1-θ) = 0` gives `θ = 1.42857`; then
+  `R_min + 1 = 2.5·0.95/(2.5-1.42857) + 0.05/(1-1.42857) = 2.1`, so `R_min = 1.100`, matching
+  the binary shortcut `[x_D/z - alpha(1-x_D)/(1-z)]/(alpha-1) = (1.9 - 0.25)/1.5`.
 - Gilliland at `R = 1.3·R_min = 1.43`: `X = 0.33/2.43 = 0.135802`,
-  `Y = 1 - exp[(8.3876/26.9161)·(-0.86420/0.368513)] = 1 - exp(-0.730837) = 0.518458`, and
+  `Y = 1 - exp[(8.3876/26.9161)·(-0.86420/0.368513)] = 0.518458`, and
   `N = (0.518458 + 6.4269)/0.481542 = 14.42`.
 """
 
@@ -45,12 +38,10 @@ def test_fenske_reproduces_the_hand_computed_minimum_stages() -> None:
 
 
 def test_fenske_is_symmetric_in_the_two_end_specifications() -> None:
-    """A relation the closed form does not state: swapping the two purities cannot change N_min.
+    """Swapping the two end purities cannot change N_min.
 
-    `(x_D/(1-x_D))·((1-x_B)/x_B)` is what it is; sending 0.99 overhead with 0.30 in the bottoms
-    needs exactly as many total-reflux stages as sending 0.70 overhead with 0.01 in the bottoms.
-    That is a property of the group rather than of either number, so it catches an argument
-    swapped at the call site.
+    A property of the Fenske group rather than of either number, so it catches an argument swapped
+    at the call site.
     """
     one = distillation.fenske_minimum_stages(
         relative_volatility=2.5, light_key_in_distillate=0.99, light_key_in_bottoms=0.30
@@ -71,11 +62,9 @@ def test_underwood_reproduces_the_hand_computed_root_and_minimum_reflux() -> Non
 
 
 def test_the_root_satisfies_the_equation_it_was_found_from() -> None:
-    """The residual at θ must be zero, which is a different claim from the root being right.
+    """The residual at θ is zero: θ *is* a root of Underwood's first equation.
 
-    Comparing θ to a number says the answer matches; putting θ back into Underwood's first
-    equation says it *is* a root. A bisection that stopped on the wrong side of a pole would pass
-    the first and fail this.
+    Comparing θ to a number would pass a bisection that stopped on the wrong side of a pole.
     """
     alpha, feed = 2.5, 0.5
     _, theta = distillation.underwood_minimum_reflux(
@@ -108,14 +97,12 @@ def test_the_bisected_minimum_reflux_matches_the_closed_form_binary_shortcut(
 def test_a_root_driven_towards_a_pole_answers_rather_than_dividing_by_zero(
     alpha: float, feed: float
 ) -> None:
-    """The bracket's two endpoints are poles, and the loop has to stop before it evaluates one.
+    """A root driven towards a pole answers rather than dividing by zero.
 
-    A feed almost free of the light key drives the root towards `alpha`; a volatility almost
-    exactly 1 squeezes the whole interval onto 1. Measured over these four, the root stays strictly
-    inside `(1, alpha)` and the minimum reflux comes back as a very large finite number — 6.3e+08
-    at a feed of 1e-09, 1.8e+12 at a volatility of 1+1e-12 — which is the right answer, since the
-    column being described is one nobody would build. A `ZeroDivisionError` here would reach the
-    model as an opaque error id instead.
+    A feed almost free of light key pushes θ towards `alpha`; a volatility near 1 squeezes the
+    interval onto 1. The root stays strictly inside `(1, alpha)` and R_min is a very large finite
+    number, the right answer for an unbuildable column; a `ZeroDivisionError` would reach the model
+    as an opaque error id.
     """
     minimum_reflux, theta = distillation.underwood_minimum_reflux(
         relative_volatility=alpha, light_key_in_feed=feed, light_key_in_distillate=0.95
@@ -126,11 +113,10 @@ def test_a_root_driven_towards_a_pole_answers_rather_than_dividing_by_zero(
 
 
 def test_a_vapour_feed_needs_more_reflux_than_a_liquid_one() -> None:
-    """`q` reaches the answer, and in the direction the physics requires.
+    """A vapour feed needs more reflux than a liquid one.
 
-    A saturated-vapour feed arrives above the feed stage already vaporised, so the rectifying
-    section has more to do and the minimum reflux rises. A `q` that was accepted and ignored would
-    give two identical numbers here — which is the failure mode a defaulted argument has.
+    This proves `q` reaches the answer in the physical direction; an accepted-but-ignored `q` would
+    give identical numbers.
     """
     liquid, _ = distillation.underwood_minimum_reflux(
         relative_volatility=2.5,
@@ -234,14 +220,11 @@ def test_a_percentage_entered_as_a_fraction_is_refused_with_the_fix_in_the_messa
 
 
 def test_a_split_whose_overall_mass_balance_cannot_close_is_refused() -> None:
-    """The check neither Fenske nor Underwood can make, because each sees only two of the three.
+    """A split whose overall mass balance cannot close is refused.
 
-    Fenske compares the distillate with the bottoms; Underwood compares the distillate with the
-    feed. Between them nothing compared the *bottoms* with the feed, and `F·z = D·x_D + B·x_B` has
-    no solution in positive `D` and `B` when both products are richer in the light key than the
-    feed. Measured before the guard: alpha 2.5 with `z` 0.30, `x_D` 0.95 and `x_B` 0.50 returned
-    7.26 theoretical stages — an ordinary-looking design for a column nobody can build, which is the
-    failure `CLAUDE.md`'s "refuse rather than approximate" rule is about.
+    Fenske sees distillate against bottoms and Underwood distillate against feed; neither compares
+    bottoms with feed, and `F·z = D·x_D + B·x_B` has no positive solution when both products are
+    richer than the feed. Without this an unbuildable column gets an ordinary-looking stage count.
     """
     with pytest.raises(UnitOpsInputError, match=re.escape("F·z = D·x_D + B·x_B")):
         distillation.shortcut_column(
@@ -268,11 +251,9 @@ def test_bottoms_exactly_at_the_feed_composition_are_refused_too() -> None:
 
 
 def test_an_ordinary_split_is_untouched_by_the_balance_guard() -> None:
-    """The complement: the guard must reject an impossible split, not a difficult one.
+    """The balance guard leaves an ordinary demanding split untouched.
 
-    A 1% light key in the bottoms against a 40% feed is a demanding column and a perfectly
-    ordinary one — asserted beside the two above so that "refuses everything" cannot pass as
-    "has a guard".
+    Asserted beside the refusals so "refuses everything" cannot pass as "has a guard".
     """
     column = distillation.shortcut_column(
         relative_volatility=2.5,
@@ -287,11 +268,10 @@ def test_an_ordinary_split_is_untouched_by_the_balance_guard() -> None:
 def test_a_reflux_a_hair_above_the_minimum_is_refused_rather_than_divided_by_zero(
     multiple: float,
 ) -> None:
-    """Just above `R_min` the Gilliland exponent underflows, `Y` is exactly 1 and `1 - Y` is zero.
+    """A reflux a hair above the minimum is refused rather than divided by zero.
 
-    Measured before the guard: `shortcut_distillation` at `reflux_over_minimum=1.00001` answered
-    `float division by zero` — an opaque error id, not a refusal the caller can act on. It is
-    covered through both paths, the convention and an explicit ratio.
+    Just above `R_min` the Gilliland exponent underflows, `Y` is 1 and `1 - Y` is zero. Covered via
+    both the default convention and an explicit ratio.
     """
     with pytest.raises(UnitOpsInputError, match=re.escape("1.05 to 1.5")):
         distillation.shortcut_column(**COLUMN, reflux_over_minimum=multiple)

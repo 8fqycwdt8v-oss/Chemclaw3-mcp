@@ -57,19 +57,21 @@ def drying_time(
     Args:
         dry_solid_mass_kg: Mass of **bone-dry** solid, kg (a 100 kg cake at X = 0.25 holds 80 kg).
         drying_area_m2: Area available for evaporation, m²: the exposed surface, not the
-        heat-transfer area. constant_rate_kg_per_m2_s: `N_c`, kg moisture per m² per second,
-        measured from a drying curve on this material in this dryer. No default.
+            heat-transfer area.
+        constant_rate_kg_per_m2_s: `N_c`, kg moisture per m² per second, measured from a drying
+            curve on this material in this dryer. No default.
         initial_moisture_dry_basis: `X₁`, kg moisture per kg dry solid at the start. **Dry basis.**
         critical_moisture_dry_basis: `X_c`, where the rate starts to fall, kg per kg dry solid, from
-        the same curve. final_moisture_dry_basis: `X₂`, the target, kg per kg dry solid; above zero,
-        since zero takes infinite time in this model.
+            the same curve.
+        final_moisture_dry_basis: `X₂`, the target, kg per kg dry solid; above zero, since zero
+            takes infinite time in this model.
 
     Returns:
         The two periods, the total, and the moisture removed.
 
     Raises:
         UnitOpsInputError: A mass, area or rate is not positive, the final moisture is at or below
-        zero, or the target is not below the start.
+            zero, or the target is not below the start.
     """
     positive(dry_solid_mass_kg, "the dry solid mass")
     positive(drying_area_m2, "the drying area")

@@ -95,8 +95,8 @@ MAX_TAUTOMER_HEAVY_ATOMS = env_bound(
 
 #: The most `transform matches x heavy atoms` one degradant enumeration may spend.
 #:
-#: Each match is a product canonicalised over the whole graph, and `MAX_DEGRADANTS` is consulted only
-#: after all of it. Matches are counted by substructure search before any product is built.
+#: Each match is a product canonicalised over the whole graph, and `MAX_DEGRADANTS` is consulted
+#: only after all of it. Matches are counted by substructure search before any product is built.
 MAX_DEGRADANT_MATCH_ATOM_PRODUCT = env_bound(
     "CHEMCLAW_CHEM_MAX_DEGRADANT_MATCH_ATOM_PRODUCT",
     default=100_000,
@@ -116,10 +116,10 @@ MAX_DEGRADANT_MATCH_ATOM_PRODUCT = env_bound(
 #: `maxIsomers` bounds how many isomers are built, not their cost: each is canonicalised over the
 #: whole graph. The count is `min(2^n, MAX_STEREOISOMERS + 1)` for `n` open stereo elements, read by
 #: the same `FindPotentialStereo` the enumerator uses, before any isomer is built. Priced on that
-#: product rather than atoms alone, since a large molecule with no open centre is cheap. The product
-#: under-prices long unbranched chains (their canonical ranking is super-linear), accepted so
-#: drug-size molecules are not refused by cost. Mostly this makes a certain refusal cheap rather than
-#: changing which molecules are answered.
+#: product rather than atoms alone, since a large molecule with no open centre is cheap. The
+#: product under-prices long unbranched chains (their canonical ranking is super-linear), accepted
+#: so drug-size molecules are not refused by cost. Mostly this makes a certain refusal cheap rather
+#: than changing which molecules are answered.
 MAX_STEREO_ISOMER_ATOM_PRODUCT = env_bound(
     "CHEMCLAW_CHEM_MAX_STEREO_ISOMER_ATOM_PRODUCT",
     default=6_000,

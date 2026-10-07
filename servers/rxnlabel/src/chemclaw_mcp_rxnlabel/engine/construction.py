@@ -25,8 +25,8 @@ def retry_due(*, failure: str | None, attempted_at: float | None, window_seconds
 
     Args:
         failure: The cause the last attempt failed with, as `degradation.classify` named it, or
-        `None` when nothing failed (including the extra not being installed, which is never
-        retried).
+            `None` when nothing failed (including the extra not being installed, which is never
+            retried).
         attempted_at: `time.monotonic()` at the last attempt, or `None` if none has run.
         window_seconds: The caller's own retry window.
 

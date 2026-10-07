@@ -63,20 +63,24 @@ def filtration_time(
     Args:
         filtrate_volume_m3: Filtrate to be collected, m³ (100 L = 0.1 m³).
         filter_area_m2: Filtration area, m² (a 30-inch Nutsche is about 0.46 m²); time goes as its
-        square. pressure_drop_pa: Pressure difference across cake and medium, Pa (1 bar = 1.0e5 Pa;
-        vacuum gives at most about that). filtrate_viscosity_pa_s: Viscosity of the **filtrate**,
-        Pa·s (1 cP = 0.001 Pa·s), not the slurry. specific_cake_resistance_m_per_kg: `alpha`, m/kg,
-        from a test on this slurry at this pressure; organic cakes span about 1e9 to 1e13+. No
-        default. dry_cake_per_filtrate_kg_per_m3: `c`, kg dry cake per m³ filtrate; near the feed
-        solids concentration for a dilute slurry. medium_resistance_per_m: `R_m`, the cloth's
-        resistance, 1/m. Defaults to 0, a cake-only lower bound.
+            square.
+        pressure_drop_pa: Pressure difference across cake and medium, Pa (1 bar = 1.0e5 Pa; vacuum
+            gives at most about that).
+        filtrate_viscosity_pa_s: Viscosity of the **filtrate**, Pa·s (1 cP = 0.001 Pa·s), not the
+            slurry.
+        specific_cake_resistance_m_per_kg: `alpha`, m/kg, from a test on this slurry at this
+            pressure; organic cakes span about 1e9 to 1e13+. No default.
+        dry_cake_per_filtrate_kg_per_m3: `c`, kg dry cake per m³ filtrate; near the feed solids
+            concentration for a dilute slurry.
+        medium_resistance_per_m: `R_m`, the cloth's resistance, 1/m. Defaults to 0, a cake-only
+            lower bound.
 
     Returns:
         The time, its two contributions, the mean flux and the rate at the end.
 
     Raises:
         UnitOpsInputError: A volume, area, pressure, viscosity, resistance or loading is not
-        positive, the medium resistance is negative, or a result overflows or underflows.
+            positive, the medium resistance is negative, or a result overflows or underflows.
     """
     positive(filtrate_volume_m3, "the filtrate volume")
     positive(filter_area_m2, "the filter area")

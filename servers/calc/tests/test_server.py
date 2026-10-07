@@ -1,19 +1,10 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-Two things here are specific to `calc`. First, **`calc_version` and `calc_key` have to survive the
-wire**: they are ordinary pydantic fields rather than computed ones, but the tools return them
-through `model_copy(update=...)` projections, and a field dropped there would pass every unit test
-and arrive absent at the only consumer that matters. Second, **a domain refusal has to arrive as a
-readable message**: `CalculationDomainError` is a `ValueError` precisely so `connector_app` passes
-it through, and the aliphatic-amine explanation is the capability — a chemist told "internal error"
-would try the next substrate instead of measuring it.
+This tests the deployment surface: the session manager runs, the bearer credential is checked,
+and the manifest matches the served tools. Specific to `calc`: `calc_version` and `calc_key` must
+survive the wire (a projection could drop them unnoticed by unit tests), and a domain refusal must
+arrive as a readable message, since `CalculationDomainError` is a `ValueError` precisely so the
+sanitiser passes it through.
 """
 
 from __future__ import annotations
@@ -50,9 +41,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file. The bearer token is set
-    in the environment the same way a deployment sets it, so the auth path under test is the
-    deployed one rather than a stub.
+    Module-scoped because a server start is expensive. The bearer token is set in the environment as
+    a deployment sets it.
     """
     import os
 
@@ -87,29 +77,22 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    # `revision` is part of the probe payload since the handshake started carrying the
-    # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
-    # for a test process, which is not built from a Containerfile — that the *image*
-    # supplies a real one is asserted in `tests/test_fleet_*.py`, because a value nothing
-    # fills is a provenance record that quietly says nothing.
+    # `revision` is "unknown" in a test process, which is not built from a Containerfile; the fleet
+    # tests assert the image supplies a real one.
     body = response.json()
     assert body["status"] == "ok"
     assert body["server"] == "calc"
     assert body["revision"] == "unknown"
-    # An empty list, and the field is present rather than omitted: this server vendors no corpus.
-    # What the probe proves here is the other half of readiness — `app._readiness` derives a
-    # `calc_version`, so a pod that could not resolve its backend answers 503 and is not sent a
-    # calculation it would fail. `/healthz` was a constant 200 before that.
+    # Present and empty: this server vendors no corpus. Its readiness derives a `calc_version`, so a
+    # pod that cannot resolve its backend answers 503.
     assert body["datasets"] == []
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    Not "counts only": the default registry publishes `python_info` and the `process_*`
-    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
-    correlation id or a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    What it must never publish (caller, session, correlation id, tool argument) is asserted over the
+    live exposition in `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -118,14 +101,10 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """Chemclaw3's own `calc` bundle declares `auth: {mode: none}`; across a network it cannot.
+    """The bearer credential is enforced on the mounted `/mcp` surface.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
-    the wrong scheme, the declared credential actually serving, and the declared variable unset —
-    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
-    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    Driven against the running server, because a mount bypasses the enclosing app's dependencies.
+    `mcp_server_kit.testing.assert_bearer_is_enforced` holds every arm once for all servers.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -134,17 +113,9 @@ async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
 async def _session(base: str) -> AsyncIterator[ClientSession]:
     """An initialised MCP session against the running server, carrying the bearer token.
 
-    The token rides on a caller-supplied httpx client because that is how this version of the MCP
-    client takes headers — which also means the credential is exercised on the real path rather than
-    injected past it.
-
-    **The read timeout is stated rather than defaulted, and finding out why cost an afternoon.**
-    httpx defaults to 5 s. A tool call that outlives it does not fail: the streamable-HTTP client
-    treats the dropped stream as a disconnect and reconnects ("GET stream disconnected, reconnecting
-    in 1000ms"), so the caller waits forever for a response that was already computed. Every tool
-    here answered in milliseconds while `crest` shipped in no image, so the default was never
-    reached; the first real CREST search over this wire hung the suite instead of failing it.
-    Chemclaw3 sets the same bound deliberately on its side (`calc_sampling_timeout_seconds`).
+    The token rides on a caller-supplied httpx client, so the credential is exercised on the real
+    path. The read timeout is set explicitly: past httpx's 5 s default the client treats the stream
+    as dropped and reconnects, so a long CREST search would hang rather than fail.
     """
     async with (
         httpx.AsyncClient(
@@ -169,23 +140,16 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
         assert result.structuredContent is not None
         assert result.structuredContent["total_energy_hartree"] < 0
 
-        # The manifest is a claim about this surface; here is where the claim is checked against the
-        # server that is actually running. The `Tool` objects go in rather than the names, because
-        # the manifest declares *which* tools exist and says nothing about their arguments — so a
-        # renamed or retyped argument is exactly the change that passes a name check and breaks
-        # Chemclaw3 at call time. `tool-surface.json` beside the manifest is what records them.
+        # Checked against the running server, with `Tool` objects rather than names, so a renamed or
+        # retyped argument fails against `tool-surface.json`.
         assert_manifest_matches(MANIFEST, listed.tools)
 
 
 async def test_the_version_and_the_key_survive_the_wire(running_server: str) -> None:
-    """The one field this whole port exists to deliver, asserted on the payload rather than in code.
+    """`calc_version` and `calc_key` survive the wire.
 
-    A `model_copy(update=...)` that dropped it, or a response model that stopped inheriting `Keyed`,
-    would be green in every unit test and absent exactly here — at the consumer. And the consumer
-    cannot rebuild it: `calc_version` is assembled from the tblite/RDKit builds and any `xtb` binary
-    installed *in this image*, and `xtb_cli.binary_version()` answers `"absent"` rather than
-    raising, so a client-side reconstruction is well-formed, matches zero calibration-ledger rows,
-    and reads as `UNCALIBRATED` instead of as an error.
+    A dropped field would pass every unit test and be missing at the consumer, which cannot rebuild
+    it: the version depends on what is installed in this image.
     """
     async with _session(running_server) as session:
         for tool, arguments in (
@@ -210,13 +174,10 @@ async def test_the_version_and_the_key_survive_the_wire(running_server: str) -> 
 async def test_the_cache_probe_round_trips_and_matches_the_compute_it_precedes(
     running_server: str,
 ) -> None:
-    """The integration this server exists for, exercised over the wire it will actually run on.
+    """The cache probe round-trips and matches the compute it precedes, over the wire.
 
-    Chemclaw3 calls `calculation_key`, looks the four fields up in its own store, and only reaches a
-    compute tool on a miss. Both halves have to survive MCP serialization for that to work: `key` is
-    a *nested model*, so it arrives as an object rather than a string, and it has to reconstruct the
-    same flat identity the compute tool then stamps on its result. A unit test would not see a
-    nesting the transport flattened or dropped.
+    `key` is a nested model and must arrive as an object reconstructing the same flat identity the
+    compute tool stamps.
     """
     async with _session(running_server) as session:
         probe = await session.call_tool(
@@ -238,11 +199,10 @@ async def test_the_cache_probe_round_trips_and_matches_the_compute_it_precedes(
 async def test_the_probe_refuses_a_mistyped_argument_rather_than_keying_something_else(
     running_server: str,
 ) -> None:
-    """The refusal that keeps a cache honest, checked where a caller will meet it.
+    """The probe refuses a mistyped argument rather than keying something else.
 
-    A silently ignored `solvant` would return the *gas-phase* key, the caller's lookup would hit a
-    real row, and a solvated question would be answered by an unsolvated calculation with nothing
-    anywhere saying so. `ValueError` is what makes the message reach the caller verbatim.
+    An ignored `solvant` would return the gas-phase key and answer a solvated question with an
+    unsolvated row. `ValueError`, so the message reaches the caller.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(
@@ -254,13 +214,10 @@ async def test_the_probe_refuses_a_mistyped_argument_rather_than_keying_somethin
 
 
 async def test_the_primitive_chain_composes_over_the_wire(running_server: str) -> None:
-    """The integration the durable jobs will actually run: embed, relax, differentiate.
+    """The primitive chain composes over the wire: embed, relax, differentiate.
 
-    Every step of it crosses MCP as JSON, and two things about that only fail here. A `Structure`
-    round-trips as a nested object and has to survive being sent *back in* as an argument — a
-    coordinate lost to float formatting would change its `structure_id` and silently key a different
-    geometry. And the Hessian is base64 `.npy`, megabytes of it at drug scale, so this is where the
-    payload is proven to arrive intact rather than truncated.
+    A `Structure` must survive being sent back in as an argument without changing its
+    `structure_id`, and the base64 `.npy` Hessian must arrive intact.
     """
     import base64
     import io
@@ -296,17 +253,11 @@ async def test_the_primitive_chain_composes_over_the_wire(running_server: str) -
 async def test_a_crest_primitive_answers_or_refuses_by_name_across_the_wire(
     running_server: str,
 ) -> None:
-    """Whichever of the two states this deployment is in, the caller can act on what comes back.
+    """A CREST primitive answers or refuses by name across the wire, whichever this deployment is.
 
-    Written when no image shipped `crest`, and it asserted the refusal — which is now the *other*
-    branch, since `D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual` puts the binary
-    in the image. Both halves matter and neither may be assumed: with a binary the search has to
-    come back as an ensemble across the wire (the shape a composite consumes), and without one the
-    refusal has to be a **sentence**, because `connector_app` replaces every non-`ValueError` with a
-    generic notice and the fix is an operator action the message must name.
-
-    Branching on `is_available()` rather than skipping: a skip here would stop noticing the day a
-    deployment trims the binary back out.
+    With a binary the ensemble must come back in the shape a composite consumes; without one the
+    refusal must be a sentence naming the operator action. Branches on `is_available()` rather than
+    skipping.
     """
     async with _session(running_server) as session:
         # Water, for the reason `test_calc_version.py` gives: one conformer and seconds of
@@ -326,13 +277,10 @@ async def test_a_crest_primitive_answers_or_refuses_by_name_across_the_wire(
 
 
 async def test_a_domain_refusal_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
-    """The measured failure this contract exists for, checked end to end.
+    """A domain refusal reaches the agent as a usable message.
 
-    `predict_pka`'s aliphatic-amine explanation names the Spearman -0.17 correlation and tells the
-    chemist to measure the value instead. In a live Chemclaw3 run it reached the model as an opaque
-    "Error: Function failed"; the answer then guessed the reason and presented the guess as a fact
-    about system behaviour. `CalculationDomainError` subclasses `ValueError` for exactly this, and
-    `connector_app` replaces every *other* exception with a generic notice.
+    `predict_pka`'s aliphatic-amine explanation tells the chemist to measure instead; as an opaque
+    error the model would guess a reason.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("predict_pka", {"smiles": "C1CCNCC1"})
@@ -341,12 +289,9 @@ async def test_a_domain_refusal_reaches_the_agent_as_a_usable_message(running_se
 
 
 async def test_an_unparameterised_solvent_is_refused_by_name(running_server: str) -> None:
-    """The measured case is 2-MeTHF, and the refusal has to carry the alternative.
+    """An unparameterised solvent (2-MeTHF) is refused by name, carrying the alternative.
 
-    Chemclaw3 caught this in a durable job's *precondition*, before a workflow started. There are no
-    durable jobs here, so the check moved into `XtbSpec`'s validator — and this is where that move
-    is verified to still produce a message the model can act on rather than tblite's "String value
-    for epsilon was not found among database of solvents".
+    The check lives in `XtbSpec`'s validator; this verifies the message survives the transport.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(
@@ -360,20 +305,11 @@ async def test_an_unparameterised_solvent_is_refused_by_name(running_server: str
 async def test_a_full_pod_refuses_with_a_marker_the_caller_can_classify(
     running_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A saturation refusal must be distinguishable from a domain refusal *on the wire*.
+    """A saturation refusal is distinguishable from a domain refusal on the wire.
 
-    The two tests above prove a domain refusal arrives readable. This proves the third state exists
-    at all: Chemclaw3 read every `isError=True` from this server as bad data and marked the durable
-    job non-retryable on its first attempt, so under load — where "full" is the normal state — every
-    cache miss failed permanently while carrying this server's own advice to retry.
-
-    Driven over the real transport rather than against `Admission` directly, because everything that
-    could erase the marker is in the transport: FastMCP folds the exception into a `ToolError` and
-    prefixes it, `mcp_server_kit` re-wraps it if redaction changes anything, and
-    `mcp.server.lowlevel` flattens the result to one text block with no code and no structured
-    content. The assertion is the literal string, not the constant, for the same reason
-    `Chemclaw3-mcp`'s `tests/test_identity_contract.py` transcribes header spellings: a test that
-    imports the constant agrees with itself and says nothing about what crossed the wire.
+    Chemclaw3 must retry "full" and not retry bad input. Driven over the real transport, which
+    prefixes, re-wraps and flattens the message to one text block. Asserted on the literal rather
+    than the constant, so it tests what crossed the wire.
     """
     monkeypatch.setattr(tools, "_admission", Admission(1))
     tools._admission.acquire("a calculation the test is pretending to run")
@@ -388,11 +324,9 @@ async def test_a_full_pod_refuses_with_a_marker_the_caller_can_classify(
 
 
 async def test_a_domain_refusal_does_not_carry_the_capacity_marker(running_server: str) -> None:
-    """The other direction, which is what makes the assertion above mean anything.
+    """A domain refusal does not carry the capacity marker.
 
-    A marker that appeared on every refusal would classify an unparameterised solvent as
-    backpressure and retry it five times — the mirror image of the defect, and the more expensive
-    one, since a bad molecule is bad on every attempt.
+    Otherwise a bad molecule would be retried as backpressure.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("predict_pka", {"smiles": "C1CCNCC1"})
@@ -403,14 +337,11 @@ async def test_a_domain_refusal_does_not_carry_the_capacity_marker(running_serve
 async def test_a_time_budget_stop_carries_a_marker_the_caller_can_classify(
     running_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stop by this pod's clock must be distinguishable from a refusal of the input *on the wire*.
+    """A time-budget stop carries its own marker on the wire.
 
-    The inline budget depends on what else the pod is running, so the same relaxation can finish
-    idle and be stopped busy. Without a marker Chemclaw3 read it as an ordinary refusal: a screen
-    listed the item beside a structure that would not embed, and a ranking could not say whether a
-    form needed correcting or more time. Driven over the real transport, and asserted on the
-    literal rather than the constant, for the reason the capacity test gives — and at the *head*
-    behind the transport's own prefix, because the head is the only position Chemclaw3 matches.
+    The same relaxation can finish idle and be stopped busy, so the caller must tell "needs more
+    time" from "bad input". Asserted on the literal, at the head behind the transport's prefix,
+    which is where Chemclaw3 matches.
     """
     from chemclaw_mcp_calc.engine.config import settings
 

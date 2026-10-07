@@ -142,15 +142,15 @@ def agitation_scale_up(
         power_number: The impeller's turbulent power number `N_p`, from its own data. No default.
         liquid_density_kg_per_m3: Liquid density, kg/m³.
         liquid_viscosity_pa_s: Liquid dynamic viscosity, Pa·s (1 cP = 0.001 Pa·s), for the Reynolds
-        number.
+            number.
 
     Returns:
         The small vessel's duty and the large vessel's under each criterion, with the ratio between
-        the two large-scale speeds.
+            the two large-scale speeds.
 
     Raises:
         UnitOpsInputError: Any dimension, speed, volume, density, viscosity or power number is not
-        positive.
+            positive.
     """
     for value, name in (
         (small_impeller_diameter_m, "the small-scale impeller diameter"),
@@ -235,7 +235,7 @@ def _outside_the_fitted_bands(
 
     Returns:
         One sentence per out-of-band input, in `ZWIETERING_FITTED_RANGES` order; empty when all are
-        inside.
+            inside.
     """
     values = {
         "solids_loading_percent": (
@@ -287,21 +287,24 @@ def just_suspended_speed(
     Args:
         impeller_diameter_m: Impeller diameter `D`, in metres.
         particle_diameter_m: Particle diameter `d_p`, m (200 µm is 2.0e-4); for a distribution,
-        usually the mass-median. particle_density_kg_per_m3: The *crystal* density, kg/m³, not bulk
-        or tapped. liquid_density_kg_per_m3: Liquid density, kg/m³. liquid_viscosity_pa_s: Liquid
-        dynamic viscosity, Pa·s (1 cP = 0.001 Pa·s), converted to kinematic. solids_loading_percent:
-        `X`, 100 x (mass solids / mass liquid). **A percentage, on a liquid basis**: 10 kg in 100 kg
-        solvent is 10. zwietering_constant: `S` for this impeller type, `T/D` and clearance, from
-        Zwietering's or the vendor's table (roughly 2-15). No default. power_number: The impeller's
-        turbulent power number, for the power at `N_js`. liquid_volume_m3: Liquid volume, in m³, for
-        the P/V at `N_js`.
+            usually the mass-median.
+        particle_density_kg_per_m3: The *crystal* density, kg/m³, not bulk or tapped.
+        liquid_density_kg_per_m3: Liquid density, kg/m³.
+        liquid_viscosity_pa_s: Liquid dynamic viscosity, Pa·s (1 cP = 0.001 Pa·s), converted to
+            kinematic.
+        solids_loading_percent: `X`, 100 x (mass solids / mass liquid). **A percentage, on a liquid
+            basis**: 10 kg in 100 kg solvent is 10.
+        zwietering_constant: `S` for this impeller type, `T/D` and clearance, from Zwietering's or
+            the vendor's table (roughly 2-15). No default.
+        power_number: The impeller's turbulent power number, for the power at `N_js`.
+        liquid_volume_m3: Liquid volume, in m³, for the P/V at `N_js`.
 
     Returns:
         The just-suspended speed and what running there costs in power and tip speed.
 
     Raises:
         UnitOpsInputError: Any input is not positive, including a zero density difference (a
-        neutrally buoyant solid does not settle, and zero would read as "no agitation needed").
+            neutrally buoyant solid does not settle, and zero would read as "no agitation needed").
     """
     for value, name in (
         (impeller_diameter_m, "the impeller diameter"),

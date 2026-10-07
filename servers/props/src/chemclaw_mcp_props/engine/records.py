@@ -108,8 +108,7 @@ def _row_to_solvent(row: dict[str, str], provenance: str) -> Solvent:
 
 
 def _key(name: str) -> str:
-    """Normalise a name for lookup by dropping everything that is not a letter or a digit, lowercased.
-    """
+    """Normalise a name for lookup: lowercase, keeping only letters and digits."""
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 

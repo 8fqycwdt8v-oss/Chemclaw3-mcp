@@ -180,7 +180,7 @@ def read_table(directory: Path, records_file: str, model: type[_Table]) -> _Tabl
 
     Raises:
         SafetyRulesError: The corpus is missing, unapproved, not a mapping, or does not validate
-        into `model`.
+            into `model`.
     """
     path = directory / records_file
     try:
@@ -323,7 +323,7 @@ def screen_reaction(component_smiles: list[str]) -> ScreenResult:
 
     Raises:
         SafetyRulesError: A component does not parse in full (named by position), the rule table is
-        missing/malformed, or the list is empty or longer than `MAX_COMPONENTS`.
+            missing/malformed, or the list is empty or longer than `MAX_COMPONENTS`.
     """
     require_screenable_size(component_smiles, what="a hazard screen")
     table, patterns = _load_rules(RULES_DIR)

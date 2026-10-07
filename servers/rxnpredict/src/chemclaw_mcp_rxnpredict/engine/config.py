@@ -186,7 +186,7 @@ class Settings(BaseSettings):
 
         Returns:
             `{reaction_class: {model_name: weight}}`; empty when no calibration and no override
-            exist, in which case the aggregator uses the global priors.
+                exist, in which case the aggregator uses the global priors.
         """
         from chemclaw_mcp_rxnpredict.engine.meta.trust_priors import load_vendored_priors
 

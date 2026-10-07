@@ -43,12 +43,13 @@ def assign(reaction_smiles: str, species: list[str], mapped: str | None) -> list
     Args:
         reaction_smiles: The record form, `reactants>agents>products`, with the agents kept.
         species: The structures to classify, in the caller's own order (which differs from the
-        reaction string's, so it is sent explicitly). mapped: The atom-mapped form from
-        `mapping.map_reaction`, or `None` where there is no mapper.
+            reaction string's, so it is sent explicitly).
+        mapped: The atom-mapped form from `mapping.map_reaction`, or `None` where there is no
+            mapper.
 
     Returns:
         One role per input species. A species in no slot is `unknown`: the record and the reaction
-        string disagree, and inventing a role would hide that.
+            string disagree, and inventing a role would hide that.
     """
     slots = _slots(reaction_smiles)
     if slots is None:

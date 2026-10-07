@@ -34,7 +34,7 @@ def verify_predictors() -> None:
 
     Raises:
         RuntimeError: No predictor of a kind is registered and a permanent cause took the last one,
-        or an allow-list names an unregistered predictor; `connector_app` answers 503 with it.
+            or an allow-list names an unregistered predictor; `connector_app` answers 503 with it.
     """
     for kind, registered in (("forward", list_forward()), ("conditions", list_conditions())):
         if registered:

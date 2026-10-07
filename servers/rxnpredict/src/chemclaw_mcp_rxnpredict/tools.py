@@ -239,8 +239,8 @@ def _survivors(
 
     Raises:
         ValueError: Every queried predictor failed. Passed to the model verbatim, so it names each
-        fault by exception *type* only (a message could carry a path or credential); the full `repr`
-        is logged under the same predictor name.
+            fault by exception *type* only (a message could carry a path or credential); the full
+            `repr` is logged under the same predictor name.
     """
     per_model: dict[str, list[_Prediction]] = {}
     failures: list[str] = []

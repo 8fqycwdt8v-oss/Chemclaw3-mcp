@@ -146,11 +146,11 @@ def screen_genotoxic_alerts(component_smiles: list[str]) -> AlertResult:
 
     Args:
         component_smiles: One SMILES per species — the molecule alone, or every reactant, reagent,
-        solvent and product whose meeting is being assessed.
+            solvent and product whose meeting is being assessed.
 
     Raises:
         SafetyRulesError: A component does not parse in full (named by its position), the alert
-        table is malformed, or the list is empty or longer than `MAX_COMPONENTS`.
+            table is malformed, or the list is empty or longer than `MAX_COMPONENTS`.
     """
     require_screenable_size(component_smiles, what="a genotoxicity screen")
     table, patterns = _load_alerts()

@@ -55,7 +55,8 @@ def fenske_minimum_stages(
 
     Args:
         relative_volatility: `alpha` of the light key over the heavy key, constant over the column;
-        above 1. light_key_in_distillate: Mole fraction of the light key in the distillate, 0 to 1.
+            above 1.
+        light_key_in_distillate: Mole fraction of the light key in the distillate, 0 to 1.
         light_key_in_bottoms: Mole fraction of the light key in the bottoms, 0 to 1.
 
     Returns:
@@ -63,7 +64,7 @@ def fenske_minimum_stages(
 
     Raises:
         UnitOpsInputError: `alpha` at or below 1, a fraction outside `(0, 1)`, or bottoms not leaner
-        in the light key than the distillate.
+            in the light key than the distillate.
     """
     alpha = _volatility(relative_volatility)
     top = fraction(light_key_in_distillate, "the light key in the distillate")
@@ -102,14 +103,14 @@ def underwood_minimum_reflux(
         light_key_in_feed: Mole fraction of the light key in the feed, 0 to 1.
         light_key_in_distillate: Mole fraction of the light key in the distillate, 0 to 1.
         feed_quality: `q`: 1 saturated liquid (default, the usual tank-fed case), 0 saturated
-        vapour, >1 subcooled liquid, <0 superheated vapour.
+            vapour, >1 subcooled liquid, <0 superheated vapour.
 
     Returns:
         `(R_min, θ)`; `θ` shows the root lies in `(1, alpha)`.
 
     Raises:
         UnitOpsInputError: `alpha` at or below 1, a composition outside `(0, 1)`, a non-finite `q`,
-        or a distillate not richer in the light key than the feed.
+            or a distillate not richer in the light key than the feed.
     """
     alpha = _volatility(relative_volatility)
     feed = fraction(light_key_in_feed, "the light key in the feed")
@@ -161,14 +162,14 @@ def gilliland_stages(*, minimum_stages: float, minimum_reflux: float, reflux_rat
         minimum_stages: `N_min` from Fenske.
         minimum_reflux: `R_min` from Underwood.
         reflux_ratio: The `R = L/D` the column will run at; must exceed `R_min` (designs sit at
-        1.05-1.5 times it).
+            1.05-1.5 times it).
 
     Returns:
         The theoretical stages at that reflux, including the reboiler.
 
     Raises:
         UnitOpsInputError: The reflux ratio is not finite, is at or below the minimum (infinite or
-        unreachable stage count), or is so close above it that the stage count overflows.
+            unreachable stage count), or is so close above it that the stage count overflows.
     """
     positive(minimum_stages, "the minimum stage count")
     positive(minimum_reflux, "the minimum reflux ratio")
@@ -227,16 +228,17 @@ def shortcut_column(
         light_key_in_distillate: Mole fraction of the light key in the distillate.
         light_key_in_bottoms: Mole fraction of the light key in the bottoms.
         reflux_ratio: The `R = L/D` to evaluate at; when omitted, `reflux_over_minimum` times
-        `R_min`. reflux_over_minimum: The multiple of `R_min` used when no reflux is given; 1.3 is a
-        convention, and the returned `reflux_ratio` says what was used. feed_quality: `q`; 1 for a
-        saturated liquid.
+            `R_min`.
+        reflux_over_minimum: The multiple of `R_min` used when no reflux is given; 1.3 is a
+            convention, and the returned `reflux_ratio` says what was used.
+        feed_quality: `q`; 1 for a saturated liquid.
 
     Returns:
         The minimum stages, the minimum reflux, the reflux actually used and the stages it needs.
 
     Raises:
         UnitOpsInputError: As the three functions above, or compositions not ordered `x_B < z <
-        x_D`.
+            x_D`.
     """
     # The overall balance `F·z = D·x_D + B·x_B` needs `x_B < z < x_D`; Fenske and Underwood each
     # check only part of that, so check it before either runs.

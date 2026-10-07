@@ -36,7 +36,7 @@ def labeller_version(failed: Collection[str] = ()) -> str:
 
     Args:
         failed: Component keys (`atom_mapper`, `reaction_namer`) that raised while producing this
-        label. Empty for the deployment's own version.
+            label. Empty for the deployment's own version.
     """
     return ":".join(
         (
