@@ -1,26 +1,9 @@
 """The key contract with Chemclaw3, written as literal strings on both sides.
 
-`engine/ids.py` and `engine/key.py` are **copies** of definitions Chemclaw3 owns
-(`chemclaw/core/ids.py`, `chemclaw/science/calc/store.py`). Copying is normally how two answers to
-one question appear; here it is unavoidable, because neither repository may import the other and the
-key can only be derived where `tblite`, `rdkit` and any `xtb` binary are installed.
-
-The copy is not free, and the cost is specific. If either drifts:
-
-- an `input_hash` addresses a `calculation_results` row that does not exist, so every result is a
-  cache miss forever — expensive, and *visible*;
-- a `calc_version` addresses a `predictions` row that does not exist, so every recorded residual
-  becomes unreachable and `calculator_trust` reports `UNCALIBRATED` with n=0 — cheap, and
-  **silent**.
-
-So the contract is written as **data**: an input and the exact string it must produce, taken by
-running Chemclaw3's own code rather than by reading this repository's copy and agreeing with it.
-
-**The reproduction command has to name modules Chemclaw3 still has, and for a while it did not.**
-It imported `chemclaw.science.calc.xtb` and `chemclaw.science.calc.xtb_spec`, both of which left
-with the physics — so the one instruction telling a future session how to re-derive these values
-raised `ModuleNotFoundError` on its last two lines. What Chemclaw3 can still be asked, and what
-every pinned digest below comes from:
+`engine/ids.py` and `engine/key.py` copy definitions Chemclaw3 owns (`chemclaw/core/ids.py`,
+`chemclaw/science/calc/store.py`); neither repository may import the other. If they drift, an
+`input_hash` misses every cache row (visible) or a `calc_version` misses every calibration row
+(silent). So the contract is data, taken from Chemclaw3's own output:
 
     cd /path/to/Chemclaw3 && uv run python -c "
     from chemclaw.core.ids import stable_hash
@@ -32,36 +15,14 @@ every pinned digest below comes from:
         inputs={'smiles': 'CCO'}).as_str())
     print(list(CalculationKey.model_fields))"
 
-## The epochs compose; they are not compared
+**The epochs compose; they are not compared.** Chemclaw3's `remote_key` folds its epoch over this
+server's `params_hash`, so a bump on either side alone misses every stored row. Moving them
+together is convention. Enforced here: the pure `stable_hash`, the `{"epoch", "params"}` envelope,
+the flat string format, and the four field names `remote_key` reads.
 
-`CALCULATION_EPOCH` exists on both sides and this file used to assert the two were **equal**,
-against a hand-copied literal, with a comment saying a unilateral bump here was "the failure this
-line exists to catch". Neither half held up:
-
-- A literal copied from the other repository and never re-read agrees only with whoever last
-  edited it. Measured: setting `CALCULATION_EPOCH` **and** the copy to `"9"` left that assertion
-  green while Chemclaw3 said `"2"`. The guard that actually bites is the pinned digest in
-  `test_build_folds_the_epoch_into_params_and_nothing_else`, because that number came from
-  Chemclaw3 — the same `"9"` turns it red.
-- A unilateral bump here is not a failure at all. `CalculationKey.build` has **no caller left** in
-  Chemclaw3's `src/`; every `calc` key comes back from this server as four fields and is rebuilt by
-  `connectors/calc/remote.py::remote_key`, which folds *its* epoch over **this server's**
-  `params_hash`: `stable_hash({"epoch": <theirs>, "remote_params": <ours>})`. The two therefore
-  **compose**. A bump on either side changes the composed digest and misses every stored row, which
-  is exactly what an epoch is for. Moving them together stays the convention — it keeps the two
-  epoch logs describing the same events — but it is a convention, not a correctness invariant, and
-  it is not something a literal in this file can enforce.
-
-What this file does enforce is what a divergence would actually break: the pure `stable_hash`, the
-`{"epoch": ..., "params": ...}` envelope this server's epoch rides in, the flat string format, and
-the four field *names* `remote_key` reads by name.
-
-**Two of these rows depend on the installed tblite and RDKit versions and two do not**, and that
-split is deliberate. `stable_hash`, the envelope and the flat-string format are pure — they must
-never move. `structure_id` moves with RDKit (a new ETKDG embedding is a new geometry) and the whole
-key moves with either distribution, so those are asserted *structurally* plus pinned against the
-versions this test observes, rather than frozen against a string that a legitimate upgrade would
-break.
+`stable_hash`, the envelope and the format are pure and never move. `structure_id` and the full
+key move with RDKit and tblite, so they are asserted structurally and pinned only against the
+versions this test observes.
 """
 
 from __future__ import annotations
@@ -97,19 +58,11 @@ def test_the_hash_matches_chemclaw3(payload: object, digest: str) -> None:
 def test_the_epoch_is_what_rides_in_params_and_nothing_else_moves_with_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bump here must change `params_hash` — and must change nothing else about the key.
+    """A bump of the epoch must change `params_hash` and nothing else about the key.
 
-    This is what the deleted `CALCULATION_EPOCH == CHEMCLAW3_EPOCH` assertion was reaching for and
-    could not check. The epoch's whole job is to invalidate stored rows from *our* side, and it can
-    only do that through `params_hash`: `calc_type`, `calc_version` and `input_hash` are facts about
-    the calculation and the programs that ran it, and folding the epoch into any of them would make
-    a ChemClaw-side fix look like a different calculation.
-
-    It rides in `params_hash` rather than in `calc_version` for a reason worth restating, because it
-    is what makes a wrong value hard to notice: the version string is also the calibration ledger's
-    key, and a measured residual stays valid across a ChemClaw-side fix that a *cached prediction*
-    does not. So a bump invalidates the cache and leaves the ledger intact — which is correct, and
-    which also means a spurious bump costs CPU rather than raising.
+    `calc_type`, `calc_version` and `input_hash` describe the calculation. The epoch stays out of
+    `calc_version` because that is also the ledger's key: a bump invalidates the cache and leaves
+    measured residuals intact.
     """
     built = partial(
         CalculationKey.build,
@@ -134,16 +87,9 @@ def test_the_epoch_is_what_rides_in_params_and_nothing_else_moves_with_it(
 def test_the_key_crosses_the_wire_as_the_four_fields_remote_key_reads_by_name() -> None:
     """Chemclaw3 rebuilds a key field by field, so the *names* are the contract, not the string.
 
-    `connectors/calc/remote.py::remote_key` reads `key["calc_type"]`, `key["calc_version"]`,
-    `key["input_hash"]` and `key["params_hash"]` out of this server's `calculation_key` answer, and
-    raises `CalcToolError("calculation_key returned an unusable key")` on a `KeyError`. It reads
-    them by name deliberately: a real `calc_version` contains both flat-form delimiters —
-    `esol-delaney@2004` carries the `@`, `cal-0.28733:-29.3116` carries the `:` — so a client
-    splitting `as_str()` would build a key that misses forever.
-
-    Nothing pinned those four names, and renaming one here is a rename with no local consequence:
-    this server would keep serving, and every calculation on the Chemclaw3 side would fail at the
-    key round trip. Taken from Chemclaw3's own `list(CalculationKey.model_fields)`.
+    `remote_key` reads the four fields by name, because a real `calc_version` contains both `@` and
+    `:`. Renaming one here would break every calculation on the Chemclaw3 side with no local
+    symptom. Names taken from Chemclaw3's `list(CalculationKey.model_fields)`.
     """
     assert list(CalculationKey.model_fields) == [
         "calc_type",
@@ -191,9 +137,8 @@ def test_the_flat_key_format_is_the_one_chemclaw3_parses() -> None:
 def test_build_folds_the_epoch_into_params_and_nothing_else() -> None:
     """The two `stable_hash` calls `build` makes, pinned against Chemclaw3's own output.
 
-    `inputs` is hashed bare; `params` is hashed inside an `{"epoch": ..., "params": ...}` envelope.
-    Getting the envelope wrong — hashing `params` bare, or naming the keys differently — produces a
-    perfectly valid key that addresses nothing, which is the whole class of defect this file covers.
+    `inputs` is hashed bare and `params` inside an `{"epoch", "params"}` envelope; getting the
+    envelope wrong gives a valid key that addresses nothing.
     """
     key = CalculationKey.build(
         calc_type="solubility",
@@ -208,15 +153,11 @@ def test_build_folds_the_epoch_into_params_and_nothing_else() -> None:
 
 
 def test_the_structure_id_is_serialized_and_ignored_on_the_way_back_in() -> None:
-    """It has to *be on the payload*, and it has to be recomputed rather than trusted.
+    """`structure_id` is serialized on the way out and recomputed, not trusted, on the way in.
 
-    Both halves matter and they pull in opposite directions. A plain property would not serialize at
-    all, so a caller receiving a geometry would have to re-derive its content address — the silent
-    divergence this seam exists to remove, since the derivation depends on the installed RDKit and
-    on `xtb_geometry_decimals`. But a field a caller could *set* would be worse: an edited payload
-    would then key as whatever it claimed rather than as what it is.
-
-    `computed_field` is exactly that pair — written on the way out, ignored on the way in.
+    Callers need it on the payload rather than re-deriving it (which depends on RDKit and
+    `xtb_geometry_decimals`), but a settable field would let an edited payload key as whatever it
+    claimed. `computed_field` gives exactly that pair.
     """
     structure = Structure(elements=[8, 1], positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.96]], charge=-1)
     payload = structure.model_dump()
@@ -229,10 +170,8 @@ def test_the_structure_id_is_serialized_and_ignored_on_the_way_back_in() -> None
 def test_structure_id_is_derived_from_the_rounded_geometry_and_nothing_else() -> None:
     """The four fields that make a structure id, and the two that deliberately do not.
 
-    `smiles` and `origin` are excluded so that two identical geometries are one structure whether
-    one was embedded and the other optimized — which is what lets a downstream calculation address
-    the same entry regardless of route. Asserted directly, because a well-meaning "include the
-    SMILES, it is free" would fork every key in the system without failing anything else.
+    `smiles` and `origin` are excluded so identical geometries are one structure whatever the route.
+    Including them would fork every key without failing anything else.
     """
     positions = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.96]]
     base = Structure(elements=[8, 1], positions=positions, charge=-1)
@@ -260,33 +199,13 @@ def test_structure_id_is_derived_from_the_rounded_geometry_and_nothing_else() ->
 
 
 def test_the_whole_key_is_stable_on_the_versions_this_test_observes() -> None:
-    """End to end: ethanol's single-point key, byte for byte.
+    """End to end: ethanol's single-point and optimization keys, byte for byte.
 
-    **These two strings are this repository's, and saying otherwise was the point to correct.**
-    This test used to claim they came from "running Chemclaw3's own code"; Chemclaw3 has neither
-    `_sp_structure` nor `XtbSpec` — both left with the physics — so it cannot produce either one,
-    and no cross-repo agreement is being asserted here. Nor should one be: `remote_key` refuses to
-    re-derive a `structure_id` or a `calc_version` on that side precisely because a locally built
-    value would be well-formed and would match nothing.
-
-    So what this pins is *this* server's derivation against the distributions it was measured on,
-    which is the thing that can silently move a key while every unit test passes. Skipped on any
-    other set, because a version bump *should* change this string and a test that failed on the
-    upgrade would be asserting the wrong thing.
-
-    **scipy is in the pinned set, and it did not used to be.** It joined `engine_version()` when
-    `xtb_engine`'s four unit conversions stopped being transcribed literals and became derivations
-    from `scipy.constants` — which ships whatever CODATA edition that release was built against, so
-    a scipy bump moves every geometry in its far decimals. Pinning it here is the same statement as
-    pinning the other two: this key belongs to a stack, and the stack is named in it.
-
-    **geomeTRIC is the fourth, and it is pinned on the *optimization* key rather than on the single
-    point.** Two keys are asserted for that reason and not for coverage: the `sp` string is what
-    proves the optimizer stays *out* of the engine's shared version, and the `opt` string is what
-    proves it is in the one calculation it decides. At `6c6a0eb` neither was true — the distribution
-    appeared in no key this server emits, while `servers/calc/pyproject.toml` said it appeared in
-    `engine_version()`
-    (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
+    These strings are this repository's own derivation (Chemclaw3 cannot produce them and
+    deliberately re-derives nothing). They pin it against the distributions it was measured on —
+    tblite, RDKit, scipy (whose CODATA constants feed the unit conversions) and geomeTRIC — and skip
+    on any other set, since an upgrade should change them. The `sp` key proves geomeTRIC stays out
+    of the shared engine version; the `opt` key proves it is in the one calculation it decides.
     """
     observed = (version("tblite"), version("rdkit"), version("scipy"), version("geometric"))
     if observed != ("0.7.0", "2026.3.5", "1.17.1", "1.1.1"):

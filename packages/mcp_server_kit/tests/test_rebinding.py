@@ -1,11 +1,8 @@
 """The DNS-rebinding guard on `/mcp`, against a real socket: on, and told the Service name.
 
-The defect this file exists for was invisible to every test the fleet had: all of them dial
-`http://127.0.0.1:<port>`, which sends a loopback `Host` and is exactly what upstream's default
-admits. A caller in a cluster dials a Service name, and was answered 421 on every `/mcp` request.
-So each test here sets the `Host` header a cluster caller sends, over a real uvicorn listener —
-the guard runs inside the mounted MCP app, where an in-process call to a single function would not
-reach it.
+Dialling `127.0.0.1` sends a loopback `Host`, which upstream's default admits; a cluster caller
+sends a Service name and would get 421. So each test sets that `Host` over a real uvicorn
+listener, since the guard runs inside the mounted MCP app.
 """
 
 from __future__ import annotations

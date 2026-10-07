@@ -44,18 +44,10 @@ class Admission(KitAdmission):
     server = "calc"
 
     def acquire(self, what: str, cost: int = 1) -> int:
-        """Take `cost` slots, or refuse in terms the caller can act on.
+        """Take `cost` slots for the calculation `what`, or refuse in terms the caller can act on.
 
-        Args:
-            what: The calculation being asked for, named in the refusal.
-            cost: Slots this calculation occupies, clamped into `1..limit` by the base class.
-
-        Returns:
-            The slots actually taken, to be given back to `release`.
-
-        Raises:
-            AtCapacityError: the budget has no room; a caller-safe `ValueError` led by
-                `AT_CAPACITY_MARKER`.
+        Returns the slots actually taken (`cost` clamped into `1..limit`), which `release` must be
+        given. Raises `AtCapacityError`, led by `AT_CAPACITY_MARKER`, when there is no room.
         """
         taken = self.take(cost)
         if taken.charged is None:

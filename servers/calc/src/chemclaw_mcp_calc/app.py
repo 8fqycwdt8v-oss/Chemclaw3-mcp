@@ -24,8 +24,7 @@ def _readiness() -> list[Dataset]:
     No corpus, so the list is empty. Stricter than `on_start`: a pod that cannot name its calculator
     must not take traffic. It also refuses `CHEMCLAW_XTB_ENGINE=xtb` without the binary, because the
     version string would still derive (as `xtb-absent`) and key every cached and calibrated result
-    to
-    a program the image lacks.
+    to a program the image lacks.
     """
     calc_version()
     backend = resolve_backend()

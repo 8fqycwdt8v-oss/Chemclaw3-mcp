@@ -47,16 +47,14 @@ class Deadline:
     def check(self, what: str, progress: Callable[[], str] | None = None) -> None:
         """Raise if the budget is spent, naming the calculation, both numbers and how far it got.
 
-        Logged at WARNING and counted before raising, because an undersized budget is a deployment
+        Logged at WARNING and counted before raising: an undersized budget is a deployment
         problem an operator must see, not only the model.
 
         Args:
-            what: The calculation in progress, completing "a <what> exceeded …". Also a metric
-            label, so
-                it must be a literal at the call site, never caller-derived.
-            progress: How far the loop got, completing "stopped after"; called only once the budget
-            is
-                spent, so a caller can tell nearly-converged from hopeless.
+            what: The calculation in progress, completing "a <what> exceeded …". Also a
+                metric label, so it must be a literal at the call site, never caller-derived.
+            progress: How far the loop got, completing "stopped after"; called only once the
+                budget is spent, so a caller can tell nearly-converged from hopeless.
 
         Raises:
             TimeBudgetError: the budget is spent; led by `TIME_BUDGET_MARKER`.

@@ -1,39 +1,15 @@
 """The `unitops` MCP tool surface: the sizing arithmetic between a route on paper and a plant batch.
 
-**These docstrings are the prompt**, and what they have to get across here is narrower than the
-server's name suggests. Every tool takes **equipment and material data the chemist already has** —
-an impeller diameter, a measured heat-transfer coefficient, a relative volatility, two points on a
-solubility curve, a specific cake resistance, a drying rate — and returns what a standard
-correlation makes of them.
+The tool docstrings are the prompt. Every tool takes equipment and material data the chemist already
+has and returns what a standard correlation makes of it. The server holds no data — no vessel
+register, VLE, solubility, cake resistance, drying curve or impeller catalogue — and refuses to
+default the number an answer is made of, so the honest response names the missing measurement.
+Nothing is a simulation, and every answer carries `basis`: its equation and assumption.
 
-**This server holds no data at all.** No vessel register, no VLE table, no solubility curve, no
-cake resistance, no drying curve, no impeller catalogue. That is the whole of what separates a
-useful answer here from a fabricated one: every tool refuses to default the number its answer is
-made of, and several of them will not run without it. A question of the form "how long will the
-filtration take on the 30-inch Nutsche" cannot be answered from the vessel alone — it needs a
-filtration test on *this* slurry — and the honest response is to say which measurement is missing.
+`heat_transfer_time_constant` returns a capacity, not a heat load; thermal-safety questions belong
+to `servers/thermalsafety`. `crystallisation_yield` takes solubilities as inputs and predicts none.
 
-**Nothing here is a simulation.** A shortcut column is not a stage-by-stage calculation; a
-Zwietering `N_js` is a correlation with a fitted geometry constant, quoted at roughly ±10% on its
-own data; a crystallisation yield is an equilibrium mass balance and a real batch filters out of a
-supersaturated liquor; a cake filtration assumes an incompressible cake, which fine organic solids
-routinely are not. Every answer carries `basis`: the equation it came out of and the assumption
-that equation makes.
-
-**Two boundaries worth stating because the tools sit next to them.**
-
-`heat_transfer_time_constant` returns a *capacity* — how fast this jacket can move heat at a stated
-driving force. It is not a heat **load**, which comes from calorimetry, and putting the two together
-is a thermal-safety question that belongs to `servers/thermalsafety`. Nothing here returns a TMR, an
-MTSR or a criticality class.
-
-`crystallisation_yield` takes solubilities as inputs and predicts none. Chemclaw3's own solubility
-predictor is aqueous, neutral-species and temperature-free, so it does not answer "how soluble is
-this in isopropanol at 5 °C" and a number borrowed from it would be the near-miss rather than the
-answer.
-
-The tools are synchronous and closed-form. The widest is a 200-step bisection for Underwood's root,
-which is a bound on the cost rather than an adaptive controller.
+The tools are synchronous and closed-form; the widest is a bounded bisection for Underwood's root.
 """
 
 from __future__ import annotations

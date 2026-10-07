@@ -45,8 +45,7 @@ class CalcSettings(BaseSettings):
     # Threads for the binary; 0 keeps xtb's default (the whole machine).
     xtb_cli_threads: int = 0
     # The GFN parametrization and the embedding seed; both are in the key (via `calc_version` and
-    # the
-    # coordinates they produce).
+    # the coordinates they produce).
     xtb_method: str = "GFN2-xTB"
     xtb_embed_seed: int = 42
     # Decimals coordinates are rounded to before hashing (0.1 pm), so float noise cannot fork a
@@ -65,32 +64,27 @@ class CalcSettings(BaseSettings):
     # Central-difference Hessian step, in Angstrom: harmonic yet above SCF noise.
     xtb_hessian_displacement: float = 0.005
     # Atom ceiling for a Hessian (6N gradients). Chemclaw3 refuses first at the same count; this is
-    # the
-    # backstop for other callers.
+    # the backstop for other callers.
     xtb_hessian_max_atoms: int = 150
     # Atom ceiling for any structure, enforced by `Structure`. It bounds memory, not time:
     # geomeTRIC's coordinate system is quadratic in atoms, and `calc_max_concurrent_requests`
-    # relaxations
-    # at the ceiling must fit the Deployment's memory limit. Derived by `tests/test_cost_bounds.py`,
-    # and set a margin below the derived bound.
+    # relaxations at the ceiling must fit the Deployment's memory limit. Derived by
+    # `tests/test_cost_bounds.py`, and set a margin below the derived bound.
     xtb_max_atoms: int = 450
     # Wall clock (seconds) on one in-process calculation — the optimiser and finite-difference
-    # Hessian
-    # the shipped tblite image runs — so an abandoned call stops burning CPU. `connector.yaml`'s
-    # `request_timeout` less `_CALLER_MARGIN_SECONDS`; raise both together.
+    # Hessian the shipped tblite image runs — so an abandoned call stops burning CPU.
+    # `connector.yaml`'s `request_timeout` less `_CALLER_MARGIN_SECONDS`; raise both together.
     xtb_inline_timeout_seconds: float = 900.0 - _CALLER_MARGIN_SECONDS
     # How much runs at once, in slots of one core, refused past it. Not keyed. 4 is the pod's core
     # count: an in-process calculation costs one slot (`OMP_NUM_THREADS=1`), a CREST search
     # `crest_threads`. Chemclaw3's `calc_backend_max_concurrent_requests` counts requests, so this
-    # is the
-    # backstop. See `engine/admission.py`.
+    # is the backstop. See `engine/admission.py`.
     calc_max_concurrent_requests: int = Field(default=4, ge=1)
     # CREST sampling temperature, passed to `crest --temp` and therefore keyed. The rest of the
     # thermochemistry settings live with the RRHO arithmetic in Chemclaw3.
     xtb_thermo_temperature_k: float = 298.15
     # CREST sampling: GPL-3.0 and optional — absent, the ensemble primitives refuse and everything
-    # else
-    # works. (The scan point limit lives in Chemclaw3's `ScanSpec`, which owns the sweep.)
+    # else works. (The scan point limit lives in Chemclaw3's `ScanSpec`, which owns the sweep.)
     crest_binary: str = "crest"
     crest_effort: Literal["quick", "normal", "extensive"] = "quick"
     crest_threads: int = 0

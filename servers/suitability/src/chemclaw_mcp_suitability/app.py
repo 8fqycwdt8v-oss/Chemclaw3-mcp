@@ -2,20 +2,10 @@
 
     uvicorn chemclaw_mcp_suitability.app:app --host 127.0.0.1 --port 8892
 
-Three lines of composition, because `mcp_server_kit.connector_app` owns the shape: the MCP session
-manager's lifespan, the bearer check on `/mcp`, the caller logging, the body cap, the session
-ceiling, `/healthz`, `/livez` and `/metrics`.
-
-`CHEMCLAW_SUITABILITY_TOKEN` is the environment variable this server's `connector.yaml` declares,
-and it is enforced even on the loopback dev URL — the manifest says bearer, so the server is
-bearer, and an unset variable fails closed with 401 rather than serving the surface anonymously.
-
-**The readiness check runs the arithmetic rather than loading anything.** This server has no
-corpus, and `D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify` already
-settled that this does not excuse a probe. What it verifies is unusually strong here: USP's own
-constants over-determine each other, so the two plate-count forms and the two resolution forms must
-agree on a Gaussian peak, and a transposed digit in 5.54 or 1.18 breaks that agreement immediately.
-See `engine/selftest.py`.
+`mcp_server_kit.connector_app` owns the shape. Bearer auth on `CHEMCLAW_SUITABILITY_TOKEN`, as
+`connector.yaml` declares, enforced even on loopback; an unset token fails closed with 401. With no
+corpus, readiness runs the arithmetic: USP's constants over-determine each other, so a transposed
+digit breaks their agreement (`engine/selftest.py`).
 """
 
 from fastapi import FastAPI

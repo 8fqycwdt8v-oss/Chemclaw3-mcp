@@ -1,22 +1,13 @@
-"""What comes back from a CREST search — the half no test could see while the binary was absent.
+"""What comes back from a CREST search, parsed from real CREST output.
 
-Three of the four searches were broken, and every unit test passed: `search_ensemble` was only ever
-exercised against a machine with no `crest` on it, where the refusal is the whole behaviour. Driven
-against crest 3.0.2 the first time, on phenol:
+The properties held:
 
-- `deprotomers` raised `12 positions for 13 elements` — the parser reused the *template's* element
-  list, and a deprotonation returns one atom fewer. It had never once returned an ensemble.
-- `protomers` raised "wrote no ensemble file": CREST writes `protonated.xyz`, and the table named
-  `protomers.xyz`, which no version of CREST writes.
-- both would have carried the input's **neutral** charge onto a charged species, so the caller's
-  next `relax_structure` would have converged an anion at charge 0.
-- `tautomers` worked and labelled all four members with the input's SMILES, so a keto tautomer came
-  back claiming to be phenol.
+- a deprotomer ensemble has one atom fewer than the template and charge -1;
+- a protomer ensemble is read from the file CREST actually writes and carries charge +1;
+- each member is labelled with its own perceived SMILES, not the input's.
 
-The fixtures below are literal excerpts of that run's output files, which is what makes these tests
-evidence rather than a restatement of the parser. The `crest`-gated test at the end is the one that
-would catch CREST itself changing a filename; it skips where the binary is absent, exactly as the
-rest of the suite does.
+The fixtures are literal excerpts of crest 3.0.2 output on phenol. The `crest`-gated tests at the
+end catch CREST itself changing a filename and skip where the binary is absent.
 """
 
 from __future__ import annotations
@@ -99,9 +90,8 @@ def phenol_fixture() -> Structure:
 def fake_crest(directory: Path, writes: dict[str, str]) -> str:
     """A stand-in `crest` that writes `writes` into its working directory and exits 0.
 
-    A fake binary rather than a patched parser, so the test covers what a caller actually reaches:
-    argv construction, the working directory, which output file is opened, and the parse. The one
-    thing it cannot check is CREST's own choice of filename — that is the gated test below.
+    A fake binary rather than a patched parser, so argv, working directory, file choice and parse
+    are all covered; CREST's own filenames are the gated test's job.
     """
     script = directory / "crest"
     body = ["#!/bin/sh"]
@@ -136,9 +126,8 @@ def test_a_deprotomer_ensemble_comes_back_as_the_anion(
 ) -> None:
     """One atom fewer, charge -1, and a SMILES naming the site that came off.
 
-    The charge is the part that is not cosmetic: these members feed `relax_structure` and
-    `compute_hessian` on the caller's side, and phenolate relaxed at charge 0 is a converged energy
-    for a species that does not exist.
+    The members feed `relax_structure` on the caller's side, and an anion relaxed at charge 0 is an
+    energy for a species that does not exist.
     """
     with_fake_crest(tmp_path, {"deprotonated.xyz": DEPROTONATED})
     members = crest_cli.run(phenol, search="deprotomers", method="GFN2-xTB", solvent="water")
@@ -158,9 +147,8 @@ def test_a_protomer_ensemble_comes_back_as_the_cation(
 ) -> None:
     """One atom more, charge +1, and the *perceived* protonation site rather than the input's name.
 
-    Phenol's lowest protomer is the ring-protonated arenium ion, not the O-protonated form. That is
-    a real result and the reason perception is worth its milliseconds: the ensemble is otherwise a
-    list of anonymous geometries, and "which site protonates?" is the question that was asked.
+    Phenol's lowest protomer is the ring-protonated arenium ion; which site protonates is the
+    question asked.
     """
     with_fake_crest(tmp_path, {"protonated.xyz": PROTONATED})
     members = crest_cli.run(phenol, search="protomers", method="GFN2-xTB", solvent="water")
@@ -190,12 +178,10 @@ def test_a_conformer_search_keeps_the_molecule_it_was_given(
 def test_a_missing_ensemble_file_is_an_error_not_the_neutral_molecule(
     phenol: Structure, with_fake_crest: InstallCrest, tmp_path: Path, search: CrestSearch
 ) -> None:
-    """The removed fallback, asserted so nobody restores it as a kindness.
+    """A missing ensemble file is an error, never a fallback to the neutral molecule.
 
-    `crest_conformers.xyz` used to stand behind all three of these. It holds the *input* molecule's
-    conformers, so a protonation run that wrote no ensemble would have returned the neutral species
-    relabelled with a shifted charge: a converged energy for a molecule nobody asked about, with no
-    error anywhere. Missing output is a failure.
+    `crest_conformers.xyz` holds the input's conformers, so falling back would return the neutral
+    species relabelled with a shifted charge.
     """
     with_fake_crest(tmp_path, {"crest_conformers.xyz": DEPROTONATED})
     with pytest.raises(CliError, match="wrote no"):
@@ -206,10 +192,8 @@ def test_a_missing_ensemble_file_is_an_error_not_the_neutral_molecule(
 def test_crest_still_writes_the_files_this_module_names(phenol: Structure) -> None:
     """The one test a fake binary cannot stand in for: CREST's own output filenames.
 
-    Every other test here would keep passing if CREST renamed `deprotonated.xyz` tomorrow — which is
-    the failure that shipped, one release behind a table that named `protomers.xyz`. This drives the
-    real binary and asserts the charge arithmetic against real output, so a rename is red rather
-    than silent.
+    Drives the real binary and checks the charge arithmetic against real output, so a renamed file
+    is red.
     """
     members = crest_cli.run(phenol, search="deprotomers", method="GFN2-xTB", solvent="water")
 
@@ -222,9 +206,8 @@ def test_crest_still_writes_the_files_this_module_names(phenol: Structure) -> No
 def test_the_shipped_image_can_run_a_search_at_all() -> None:
     """Whether this deployment actually has the capability its manifest advertises.
 
-    `is_available()` is a `which`; this is the binary running. They came apart once already, on the
-    `xtb` side: `binary_version()` answers `"absent"` rather than raising, so a half-installed
-    toolchain reports a well-formed version naming a program that cannot compute.
+    `is_available()` is a `which`; this runs the binary, since a half-installed toolchain can look
+    present.
     """
     assert crest_cli.binary_version() not in ("absent", "unknown")
     members = crest_cli.run(

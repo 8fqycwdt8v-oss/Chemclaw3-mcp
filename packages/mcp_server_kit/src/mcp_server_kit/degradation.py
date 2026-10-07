@@ -91,11 +91,9 @@ def classify(exc: BaseException, *, optional: Collection[str] | None = None) -> 
     """Which `CAUSES` member `exc` is, checked most specific first.
 
     `EgressForbidden` is tested first because it is an `OSError` and the errno branch would
-    otherwise
-    see it. `not_installed` is a `ModuleNotFoundError` only (see `is_not_installed`); a plain
-    `ImportError` is a broken image. A bare `TimeoutError`, a cancellation and a CUDA OOM reported
-    only
-    by message stay `failed` — messages are never matched.
+    otherwise see it. `not_installed` is a `ModuleNotFoundError` only (see `is_not_installed`); a
+    plain `ImportError` is a broken image. A bare `TimeoutError`, a cancellation and a CUDA OOM
+    reported only by message stay `failed` — messages are never matched.
 
     Args:
         exc: The exception a component raised.
@@ -124,13 +122,6 @@ def is_not_installed(exc: BaseException, optional: Collection[str]) -> bool:
     Only a `ModuleNotFoundError` whose `name` is exactly one of `optional` qualifies. A plain
     `ImportError` (found but would not load), a missing dependency of an installed extra, a missing
     submodule (`name="a.b"`), or an error without `name` all mean a broken image.
-
-    Args:
-        exc: What the guarded import raised.
-        optional: The top-level module names whose absence is a deployment's decision.
-
-    Returns:
-        `True` only for a `ModuleNotFoundError` naming one of `optional` itself.
     """
     if not isinstance(exc, ModuleNotFoundError) or not exc.name:
         return False

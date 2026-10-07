@@ -1,10 +1,7 @@
 """The offload pool is sized from the cgroup, and a tool body actually lands in it.
 
-Two halves, and the second is the one that would have caught the defect. Sizing arithmetic is easy
-to unit-test and easy to leave disconnected — nothing in this fleet asserted where a tool body's
-thread came from, which is why `min(32, os.cpu_count() + 4)` governed every server for as long as
-it did. So the last test here drives a real tool call over a real socket and asks the tool which
-thread it ran on.
+Sizing arithmetic is easy to test and leave disconnected, so the last test drives a real tool
+call over a real socket and asks the tool which thread it ran on.
 """
 
 from __future__ import annotations
@@ -180,13 +177,10 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
 async def test_a_served_tool_body_offloads_into_the_sized_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The end-to-end half, and the one nothing in this fleet asserted before.
+    """A tool body that offloads with `asyncio.to_thread` runs in the sized, named pool.
 
-    A tool that offloads with `asyncio.to_thread` — which is every heavy tool here — reports the
-    thread it ran on. Without `install_default_executor` that thread is named `asyncio_N` and comes
-    from a pool CPython sized from the *node*; with it, the name says which server owns the pool
-    and the width is the one this pod's cgroup justifies. The size is pinned through the env knob
-    so the assertion is about plumbing rather than about this box's core count.
+    Without `install_default_executor` the thread is CPython's `asyncio_N`, sized from the node. The
+    size is pinned via the env knob so the assertion is about plumbing, not this box's cores.
     """
     monkeypatch.setenv(TOKEN_ENV, TOKEN)
     monkeypatch.setenv("MCP_THREAD_POOL_SIZE", "3")

@@ -1,27 +1,15 @@
 """A concrete 3D structure — the value every xTB task consumes, and the `input_hash` of its key.
 
-`Structure` makes the geometry an explicit, **content-addressed** value: `structure_id` is a stable
-hash of the chemical content, so equal geometries collapse to one identity no matter how they were
-produced, and `origin` records which calculation produced one (lineage).
+`structure_id` is a stable hash of the chemical content, so equal geometries share one identity
+however produced (`origin` records lineage). The key therefore names the geometry, not the recipe,
+and `multiplicity` is a declared, validated electron count.
 
-Two consequences:
+`structure_id` is a wire contract with Chemclaw3's cache and must not change: round positions to
+`settings.xtb_geometry_decimals`, then `stable_hash` over `{elements, positions, charge,
+multiplicity}`, excluding `smiles` and `origin`. Changing the rounding, field set or key order
+re-addresses every structure.
 
-- the calculation key names the *geometry*, not the recipe that made it, so the embedding seed no
-  longer has to appear in the key — its effect is already inside the coordinates;
-- `multiplicity` generalizes a hard closed-shell rejection into a declared-and-validated electron
-  count, which is what makes the Fukui ions (`xtb_props`) a legitimate open-shell calculation rather
-  than a silent one.
-
-**`structure_id` is ported unchanged and must stay that way.** It is the `input_hash` of every
-`xtb.*` `CalculationKey` this server emits, and those keys address rows in Chemclaw3's cache. The
-derivation is: round the positions to `settings.xtb_geometry_decimals` first, then `stable_hash`
-over `{elements, positions, charge, multiplicity}` — deliberately *excluding* `smiles` and `origin`,
-because two identical geometries are the same structure whether one was embedded from a SMILES and
-the other optimized. Changing the rounding, the field set, or the key order re-addresses every
-structure.
-
-Coordinates are in **Angstrom** — the interchange unit of RDKit, XYZ files, and this whole layer;
-`xtb_engine` is the single boundary that converts to atomic units.
+Coordinates are in **Angstrom**; `xtb_engine` is the single boundary that converts to atomic units.
 """
 
 from __future__ import annotations
@@ -70,50 +58,14 @@ class Structure(BaseModel):
     def _normalize_and_validate(self) -> Structure:
         """Round coordinates, then reject a structure that is not physically consistent.
 
-        Three ways a structure can be wrong are caught here rather than by tblite converging
-        something meaningless: mismatched array lengths, a coordinate row that is not 3D, and an
-        electron count that cannot produce the declared multiplicity.
+        Catches mismatched array lengths, non-3D rows, and an electron count that cannot produce the
+        declared multiplicity, rather than letting tblite converge something meaningless.
 
-        **And one way it can be right and still unaffordable.** The atom ceiling lives here rather
-        than on each tool for the same reason the electron-count check does: four primitives take a
-        structure and the next one will, so a per-tool check is one somebody forgets — and only
-        `compute_hessian` had one. A structure under the 1 MB body cap can carry **tens of
-        thousands of atoms** — at which the optimizer's coordinate system asks for terabytes and
-        takes the whole process with it, every other connected turn included. The refusal names
-        both numbers because the caller's only options are a smaller system or a deployment
-        configured for a larger one.
-
-        **A single figure stood here and it was not one number**
-        (`D-2026-09-19-an-atom-count-under-a-byte-cap-is-a-range-not-a-figure`). It read "37,983
-        atoms ... at 26.3 bytes an atom", which does not reconcile with its own coefficient
-        (1,000,000 / 26.3 is 38,023) and is not what a payload measures: driven against
-        `DEFAULT_MAX_REQUEST_BYTES`, the same structure is **19.3 bytes an atom at one decimal and
-        30.4 at six**, so the cap carries 51,807 atoms or 32,876 — a 1.6x spread set by nothing but
-        the caller's formatting. The conclusion is unaffected in the only way that matters: every
-        point in that range is ~70x `xtb_max_atoms`, which is why the ceiling is here at all.
-
-        **Both halves of the sentence before that were retired under it, and this is the fourth
-        document to be corrected.** It said ~42,000 atoms, which was never measured, and named the
-        *dense model
-        Hessian* of the ANC preconditioner
-        `D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not` deleted — so the
-        module that **enforces** the bound documented a mechanism that no longer runs.
-        `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` re-measured against geomeTRIC
-        and corrected three of the four places the old figure appeared; this was the one it missed,
-        and it is the first place a reader chasing the refusal message lands.
-
-        **One ceiling for every path, derived from the most expensive of them.** `xtb_max_atoms`
-        gates eight tools and its derivation
-        (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`) is geomeTRIC's coordinate
-        build, which only `relax_structure` and `scan_point` run: a GFN2 single point at 509 atoms
-        peaks at 312 MiB against the 978.9 MiB a whole relaxation peaks at there
-        (`tests/test_cost_bounds.py`'s table, `PEAK_MIB_PER_ATOM_SQUARED`), so the property,
-        Fukui, `combine_structures` and CREST paths are capped on a basis 3.1x above what they
-        cost. That is deliberate and it is the safe direction — the alternative is a second
-        per-tool ceiling for a band D-100 puts outside this server's workload anyway (200-800 Da is
-        ~120 atoms, and the ceiling is 450).
-        `xtb_hessian_max_atoms` exists because a Hessian is *tighter* than the global bound, which
-        is the direction a per-tool ceiling is worth writing in.
+        Also enforces the atom ceiling here, once for every tool: a structure under the request body
+        cap can carry tens of thousands of atoms, enough for the optimizer to exhaust the process.
+        One ceiling (`xtb_max_atoms`) is derived from the most expensive path (geomeTRIC's
+        coordinate build), which is conservative for the others; `xtb_hessian_max_atoms` is tighter.
+        The refusal names both numbers.
         """
         if len(self.positions) != len(self.elements):
             raise ValueError(f"{len(self.positions)} positions for {len(self.elements)} elements")
@@ -128,9 +80,8 @@ class Structure(BaseModel):
         unpaired = self.multiplicity - 1
         electrons = sum(self.elements) - self.charge
         if electrons < unpaired or (electrons - unpaired) % 2:
-            # The default (closed-shell) case gets the specific message, because it is the one a
-            # caller hits by accident — from a radical SMILES or a wrong charge — and the fix is to
-            # declare the multiplicity, not to fix the atoms.
+            # The accidental case (a radical SMILES or wrong charge) gets the specific message:
+            # declare the multiplicity.
             if self.multiplicity == 1:
                 raise ValueError(
                     f"open-shell species ({electrons} electrons at charge {self.charge}) "
@@ -147,26 +98,11 @@ class Structure(BaseModel):
     def structure_id(self) -> str:
         """Content address: `st_` + a stable hash of the chemistry, not the provenance.
 
-        **A `computed_field` rather than a plain property, and that is load-bearing rather than
-        stylistic.** A plain property is not serialized, so a `Structure` crossing the wire would
-        arrive without its content address — and a caller would then have to re-derive it, which is
-        the one thing this whole seam exists to prevent: the derivation depends on the installed
-        RDKit's embedding and on `xtb_geometry_decimals`, so a client-side rebuild is the silent
-        divergence again. `tests/test_server.py` caught exactly this by asserting it on the payload
-        rather than on the object.
-
-        Output-only, so a caller may send the field back unchanged and it is ignored on the way in:
-        the id is always recomputed from the coordinates that actually arrived, and a payload edited
-        in transit therefore keys as what it *is* rather than as what it claims.
-
-        Deliberately excludes `smiles` and `origin`: two identical geometries are the same structure
-        whether one was embedded from a SMILES and the other optimized, and that is exactly the
-        identity that lets a downstream task address the same entry regardless of which route
-        produced its input.
-
-        **The payload dict below is a wire contract with Chemclaw3**, not an implementation detail:
-        it is what `stable_hash` sees, and therefore what every `xtb.*` `input_hash` is derived
-        from. `tests/test_key_contract.py` pins the result.
+        A `computed_field` so the id is serialized and a caller never re-derives it. Output-only:
+        the id is always recomputed from the coordinates that arrived, so an edited payload keys as
+        what it is. Excludes `smiles` and `origin`. The payload dict is a wire contract with
+        Chemclaw3 — every `xtb.*` `input_hash` derives from it — and `tests/test_key_contract.py`
+        pins the result.
         """
         payload = {
             "elements": self.elements,
@@ -202,9 +138,8 @@ def structure_from_mol(
 ) -> Structure:
     """Embed a deterministic geometry for `mol` and wrap it as a `Structure`.
 
-    Expects explicit hydrogens (`xtb_engine.parse_molecule` output) so the electron count validated
-    by `Structure` is complete. The embedding seed comes from config, so the geometry — and
-    therefore the structure id — is reproducible.
+    Expects explicit hydrogens so the electron count is complete; the seed comes from config so the
+    structure id is reproducible.
     """
     numbers, positions = geometry(mol, settings.xtb_embed_seed, optimize=optimize)
     return Structure(
@@ -217,13 +152,9 @@ def structure_from_mol(
 
 
 def radical_multiplicity(mol: Chem.Mol) -> int:
-    """The spin multiplicity a SMILES' explicit radical electrons imply.
+    """The spin multiplicity a SMILES' explicit radical electrons imply (2S+1, all unpaired).
 
-    A SMILES *can* state its open shell: `[CH3]` carries one radical electron, `[O][O]` two. Where
-    it does, the ground-state multiplicity follows (2S+1 with every radical electron unpaired), and
-    there is nothing to guess. Silent on the cases a SMILES genuinely does not encode: a
-    closed-shell formula whose ground state is a triplet still needs `multiplicity` stated
-    explicitly.
+    A closed-shell formula whose ground state is a triplet still needs `multiplicity` stated.
     """
     return 1 + sum(int(atom.GetNumRadicalElectrons()) for atom in mol.GetAtoms())
 
@@ -237,17 +168,14 @@ def structure_from_smiles(
 ) -> Structure:
     """Build a `Structure` from a SMILES, canonicalizing first.
 
-    Atom order steers the seeded embedding, so canonicalizing *before* embedding is what makes two
-    spellings of one molecule produce the same geometry — and thus the same structure id and the
-    same key.
+    Atom order steers the seeded embedding, so canonicalizing first gives two spellings one geometry
+    and one key.
 
     Args:
         smiles: The molecule as a SMILES string.
-        charge: Net charge. `None` takes the SMILES' own formal charge; an explicit value that
-            contradicts it is rejected rather than computed at the wrong electron count.
-        multiplicity: Spin multiplicity 2S+1; validated against the electron count. `None` derives
-            it from the SMILES' explicit radical electrons; the default of 1 keeps every caller
-            closed-shell-or-error.
+        charge: Net charge. `None` takes the SMILES' formal charge; a contradicting value is
+        rejected. multiplicity: Spin multiplicity 2S+1, validated against the electron count. `None`
+        derives it from explicit radical electrons; the default 1 means closed-shell-or-error.
         optimize: Pre-optimize with MMFF where the force field has parameters.
 
     Returns:
@@ -255,15 +183,9 @@ def structure_from_smiles(
     """
     canonical = require_canonical_smiles(smiles)
     mol = parse_molecule(canonical)
-    # **Refused before the embedding, because `Structure`'s own ceiling is checked after it.** The
-    # validator runs on the finished `Structure` — after ETKDG and MMFF have done the work — and
-    # `chem.require_molecule` bounds only the *crash* (the kit's `MAX_MOLECULE_ATOMS`), not the
-    # cost. So every molecule between the two ceilings was embedded in full and then refused.
-    # Measured in the Linux gate image at the default ceiling of 450, "C"*150 (452 atoms, H
-    # included) cost **31.4 s of CPU** before the refusal and costs 0.01 s now; #47 measured the
-    # curve above it — 66.7 s at 602 atoms, 206 s at 902, roughly n^2.8. `embed_structure` and
-    # `calculation_key` hold no `_admitted` slot, so a few such calls own a pod. Counting the
-    # `AddHs` molecule makes this the same number the validator would have counted.
+    # Refused before embedding: `Structure`'s own ceiling runs only after ETKDG and MMFF have done
+    # super-linear work, and these paths hold no admission slot. Counts the `AddHs` molecule, the
+    # same number the validator counts.
     if reason := atom_ceiling_error(mol.GetNumAtoms(), subject=f"the molecule {echo(smiles)!r}"):
         raise ValueError(reason)
     formal_charge = Chem.GetFormalCharge(mol)

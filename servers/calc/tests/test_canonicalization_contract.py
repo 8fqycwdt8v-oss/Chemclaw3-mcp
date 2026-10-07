@@ -1,26 +1,14 @@
 """The canonicalization contract with Chemclaw3, written as literal strings on both sides.
 
-`engine/chem.py` is a **copy** of a definition Chemclaw3 owns, and it is the third copy in this
-repository — `servers/chem/` and `servers/safety/` carry the first two. Copying a definition is
-normally how two answers to one question appear, and neither repository may import the other, so the
-contract is written as **data**: an input and the exact string it must canonicalize to. Every
-expected value below was produced by running Chemclaw3's own function, not by reading the code and
-reasoning about it:
+`engine/chem.py` copies a definition Chemclaw3 owns (as `servers/chem/` and `servers/safety/`
+do). Neither repository imports the other, so the contract is data: inputs and the exact strings
+Chemclaw3's own `chemclaw.core.chem.require_canonical_smiles` produced when run.
 
-    PYTHONPATH=/path/to/Chemclaw3/src /path/to/Chemclaw3/.venv/bin/python -c \\
-        "from chemclaw.core.chem import require_canonical_smiles as f; print(f('CC(O)=CC(C)=O'))"
+The table is the same in all three servers, so whichever copy moves first goes red.
 
-The table is deliberately the *same table* the other two servers carry, so whichever copy moves
-first turns a test red instead of quietly answering differently.
-
-**Why the stakes are higher on this server than on either of the others.** Both of their contract
-files say "nothing here derives a cache key". This one does. `structure_from_smiles` canonicalizes
-*before* embedding — atom order steers the seeded ETKDG geometry — and that geometry's hash is the
-`input_hash` of every `xtb.*` key this server emits; `pka`, `solubility` and `descriptors` hash the
-canonical string directly. A divergence here would not merely make two systems echo two spellings of
-one molecule: it would produce a `CalculationKey` addressing a row that does not exist, and a
-prediction Chemclaw3's calibration ledger never reconciles — which reports as `UNCALIBRATED` rather
-than as an error. See `tests/test_key_contract.py` for the other half of that contract.
+Here it also derives cache keys: canonicalization precedes embedding, whose geometry hash is the
+`input_hash` of every `xtb.*` key, so a divergence would address rows that do not exist. See
+`tests/test_key_contract.py`.
 """
 
 from __future__ import annotations
@@ -35,10 +23,8 @@ CONTRACT: list[tuple[str, str]] = [
     ("CC(O)=CC(C)=O", "CC(=O)C=C(C)O"),
     ("Oc1ccncc1", "Oc1ccncc1"),
     ("O=c1cc[nH]cc1", "O=c1cc[nH]cc1"),
-    # Charged species: the anion and its conjugate acid are different molecules — and on this
-    # server, two different calculations at two different electron counts. `Structure` validates a
-    # declared charge against the SMILES for exactly this reason, so collapsing them here would make
-    # a submitted acetate silently compute acetic acid.
+    # Charged species: the anion and its conjugate acid are different molecules and different
+    # calculations, so collapsing them would make a submitted acetate silently compute acetic acid.
     ("CC(=O)[O-]", "CC(=O)[O-]"),
     ("CC(O)=O", "CC(=O)O"),
     ("C[N+](C)(C)C", "C[N+](C)(C)C"),
@@ -49,10 +35,8 @@ CONTRACT: list[tuple[str, str]] = [
     ("N[C@@H](C)C(O)=O", "C[C@H](N)C(=O)O"),
     ("C/C=C/C", "C/C=C/C"),
     ("C/C=C\\C", "C/C=C\\C"),
-    # Salts: every fragment kept, in one fixed order whichever way the input was written. Order
-    # independence is what this server needs from the row — a salt written two ways must reach one
-    # key — and keeping the counter-ion is what `solubility`'s applicability-domain check then reads
-    # to refuse it, rather than silently predicting the free base.
+    # Salts: every fragment kept, in a fixed order, so two spellings reach one key and
+    # `solubility`'s applicability check can see the counter-ion and refuse.
     ("CC(=O)[O-].[Na+]", "CC(=O)[O-].[Na+]"),
     ("[Na+].CC(=O)[O-]", "CC(=O)[O-].[Na+]"),
     ("CCN.Cl", "CCN.Cl"),
@@ -69,11 +53,8 @@ CONTRACT: list[tuple[str, str]] = [
     ("OC(=O)c1ccccc1", "O=C(O)c1ccccc1"),
 ]
 
-# Strings RDKit accepts and this definition refuses. The strictness is half the contract: RDKit
-# reads up to the first whitespace and calls "CCO junk" ethanol, so a lenient parse does not fail,
-# it narrows to a *different, smaller* molecule than the caller submitted — which on a calculator is
-# a real, converged energy for a molecule nobody asked about, stored under a key naming the one they
-# did.
+# Strings RDKit accepts and this definition refuses. RDKit reads up to the first whitespace, so
+# "CCO junk" would silently become ethanol and be computed under the caller's key.
 REFUSED: list[str] = [
     "CCO junk",
     "CCO\t1",

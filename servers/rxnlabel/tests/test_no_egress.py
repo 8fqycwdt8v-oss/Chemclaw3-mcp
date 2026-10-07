@@ -1,9 +1,7 @@
-"""This server's own code holds no way to call out. Three lines, and every server ships them.
+"""This server's own code holds no way to call out.
 
-The scan covers the whole package — engine, tools and transport — because the rule is about the
-server, not about one layer of it. `app.py` names loopback in its docstring, which the scanner
-exempts on purpose: showing somebody how to reach the server they are running is documentation,
-while naming somebody else's host is the thing being forbidden.
+The scan covers the whole package. A loopback address in `app.py`'s docstring is exempt by
+design: naming the server you run is documentation, naming somebody else's host is forbidden.
 """
 
 from __future__ import annotations
@@ -22,19 +20,11 @@ def test_no_module_can_reach_the_network() -> None:
 
 
 def test_the_models_are_loaded_from_the_image_and_never_fetched() -> None:
-    """The positive half, and here it is about *when* rather than about *where*.
+    """Model weights are loaded from the image and never fetched by this package's code.
 
-    This server has no vendored corpus — its data is a SMARTS list in `species.py` and a solvent
-    list in `agents.py`, both source. What it does have is model weights: RXNMapper 0.4.3 ships its
-    checkpoint inside its wheel and loads it from the package path, and the `Containerfile` checks
-    that at build time with the hub switched off. The NetworkPolicy denies egress so a later
-    release that reached for a hub still could not.
-
-    What is asserted here is the code-level half of that: nothing in this package asks for a model
-    by URL or triggers a download path of its own. The build-time load check is asserted by
-    `tests/test_fleet_*.py` reading the `Containerfile`, and the runtime denial by
-    `tests/test_deploy.py` reading the NetworkPolicy — three layers, checked in three places,
-    because "no outbound call at request time" is this fleet's one unconditional rule.
+    RXNMapper ships its checkpoint in its wheel. This asserts the code-level half: nothing here asks
+    for a model by URL or triggers a download. The build-time load check (Containerfile) and runtime
+    denial (NetworkPolicy) are asserted elsewhere.
     """
     from chemclaw_mcp_rxnlabel.engine import mapping, naming, version
 

@@ -39,7 +39,7 @@ from typing import Any
 ANALYSIS_FILENAME = "<analysis>"
 
 #: Root module names an analysis may import. Everything else is refused by name; an allowlist
-#: : because a name missing from it fails closed.
+#: because a name missing from it fails closed.
 ALLOWED_IMPORTS: frozenset[str] = frozenset(
     {
         # The reason this server exists.
@@ -93,8 +93,8 @@ ALLOWED_IMPORTS: frozenset[str] = frozenset(
 )
 
 #: Builtins removed from the namespace a program runs in: interactive ones, ones fatal to the
-#: : runner, and `eval`/`exec`/`compile`, which would skip the guarded `__import__`. `__import__` and
-#: : `open` are replaced rather than withheld; `__build_class__` stays so `class` works.
+#: runner, and `eval`/`exec`/`compile`, which would skip the guarded `__import__`. `__import__` and
+#: `open` are replaced rather than withheld; `__build_class__` stays so `class` works.
 WITHHELD_BUILTINS: frozenset[str] = frozenset(
     {"input", "help", "breakpoint", "exit", "quit", "eval", "exec", "compile"}
 )
@@ -125,7 +125,7 @@ def _make_guarded_open(jail: Path, opened: list[Any]) -> Callable[..., Any]:
         errors: str | None = None,
         newline: str | None = None,
     ) -> Any:
-        """`open()` for the analysis namespace: resolve against the pinned jail, then the real `open`.
+        """`open()` for the analysis namespace: resolve against the pinned jail, then call `open`.
 
         There is deliberately no `**kwargs`: forwarding `opener=` would let a program return a
         descriptor for any path while the checked name stays in the jail; `closefd` is dropped
@@ -261,7 +261,7 @@ def _neutralise_network() -> None:
 
 
 def _restricted_builtins(jail: Path, opened: list[Any]) -> dict[str, Any]:
-    """The builtins a program sees: all but `WITHHELD_BUILTINS`, plus guarded `__import__` and `open`.
+    """The builtins a program sees: all but `WITHHELD_BUILTINS`, plus guarded import and open.
 
     `jail` and `opened` are passed in so the jail is fixed before `exec()` runs.
     """
@@ -277,7 +277,7 @@ def _restricted_builtins(jail: Path, opened: list[Any]) -> dict[str, Any]:
 
 
 #: The envelope a raw `bytes`/`bytearray` value is wrapped in to cross the JSON boundary; the
-#: : caller decodes it with `base64.b64decode(value["__b64__"])`, as `tools.py` documents.
+#: caller decodes it with `base64.b64decode(value["__b64__"])`, as `tools.py` documents.
 BYTES_ENVELOPE_KEY = "__b64__"
 
 

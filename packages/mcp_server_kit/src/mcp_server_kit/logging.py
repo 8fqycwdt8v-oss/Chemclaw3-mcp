@@ -131,8 +131,7 @@ _STRUCTURAL_SECRETS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     # A credential in a query string, header or dict, anchored on the key name and the value's shape
-    # so
-    # prose and source lines do not fire.
+    # so prose and source lines do not fire.
     re.compile(
         r"(?P<keep>\b\w*?(?:access_token|refresh_token|api[_-]?key|client_secret|token|secret"
         r"|private_key|passwd|pwd)"
@@ -406,9 +405,8 @@ def configure_logging(*, force: bool = True) -> None:
     """Configure the root logger from the environment, and put the filters on every handler.
 
     `force=True` overrides the `basicConfig` upstream already ran, and makes repeat calls
-    idempotent.
-    Filters go on handlers, not loggers, because logger filters skip propagated records; every
-    handler also gets a redacting `handleError`.
+    idempotent. Filters go on handlers, not loggers, because logger filters skip propagated records;
+    every handler also gets a redacting `handleError`.
 
     Args:
         force: Replace any handlers the root already has. Pass `False` only to layer this on top of

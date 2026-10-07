@@ -99,20 +99,12 @@ def atomic_numbers(symbols: Sequence[str]) -> list[int]:
 def perceive_smiles(
     elements: Sequence[int], positions: Sequence[Sequence[float]], charge: int
 ) -> str | None:
-    """Best-effort SMILES for a bare geometry: *which* molecule is this one?
+    """Best-effort canonical SMILES for a bare geometry (`elements`, `positions` in Angstrom).
 
     A protonation, deprotonation or tautomer search changes constitution, so ensemble members need
-    their own label. Bond orders are inferred from distances and the *known* charge; on any failure
+    their own label. Bond orders are inferred from distances and the known `charge`; on any failure
     (or above the atom ceiling, since assignment is combinatorial) this returns `None` rather than a
     possibly wrong constitution.
-
-    Args:
-        elements: Atomic numbers, parallel to `positions`.
-        positions: Cartesian coordinates in Angstrom.
-        charge: The species' net charge — an input, not something perception may decide.
-
-    Returns:
-        The canonical SMILES, or `None` when the geometry cannot be read as one molecule.
     """
     if len(elements) > settings.crest_perceive_max_atoms:
         return None

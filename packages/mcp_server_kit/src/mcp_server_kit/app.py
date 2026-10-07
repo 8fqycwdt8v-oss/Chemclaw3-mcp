@@ -109,9 +109,8 @@ def _is_caller_safe(exc: ToolError) -> bool:
     """Whether this `ToolError` is a refusal the model may read, rather than a fault to hide.
 
     The one discriminator for both the sanitiser and the `refused`/`failed` metric split.
-    Caller-safe:
-    a chained `ValueError` (including pydantic's `ValidationError`), or upstream's unchained
-    `Unknown tool` error; a failing tool body otherwise arrives chained to its real cause.
+    Caller-safe: a chained `ValueError` (including pydantic's `ValidationError`), or upstream's
+    unchained `Unknown tool` error; a failing tool body otherwise arrives chained to its real cause.
     """
     return exc.__cause__ is None or isinstance(exc.__cause__, ValueError)
 
@@ -120,10 +119,9 @@ def _bind_caller_per_tool_call(server: FastMCP) -> None:
     """Re-bind the caller from the request each tool call is serving.
 
     `request_ctx` carries the serving request into the tool body's task; with none (a direct call in
-    a
-    test) the middleware's binding stands. Tools only: resource and prompt handlers are captured
-    before
-    this runs, so no server may register either (`test_no_server_registers_a_resource_or_a_prompt`).
+    a test) the middleware's binding stands. Tools only: resource and prompt handlers are captured
+    before this runs, so no server may register either
+    (`test_no_server_registers_a_resource_or_a_prompt`).
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - a future mcp release with a real middleware hook
@@ -161,8 +159,7 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
     wrapped = manager.call_tool
 
     def is_refusal(exc: BaseException) -> bool:
-        """The counter's `refused`/`failed` split, as a span sees it; a non-`ToolError` is a fault.
-        """
+        """The counter's `refused`/`failed` split, as a span sees it."""
         return isinstance(exc, ToolError) and _is_caller_safe(exc)
 
     async def call_tool(*args: Any, **kwargs: Any) -> Any:
@@ -194,16 +191,14 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
         except ToolError as exc:
             if _is_caller_safe(exc):
                 # Even a caller-safe message is redacted: a validation error quotes its input, which
-                # is where a
-                # secret would land. Re-raised unchanged when redaction is a no-op, keeping the
-                # traceback.
+                # is where a secret would land. Re-raised unchanged when redaction is a no-op,
+                # keeping the traceback.
                 redacted = redact_secrets(str(exc))
                 if redacted == str(exc):
                     raise
                 raise ToolError(redacted) from exc.__cause__
             # One random token in both the operator's traceback and the model's notice, so the two
-            # can be
-            # joined. It identifies nothing about the caller.
+            # can be joined. It identifies nothing about the caller.
             error_id = secrets.token_hex(4)
             tool = _served_tool_name(manager, _requested_tool(args, kwargs))
             logger.exception(
@@ -223,8 +218,7 @@ def _instrument_tool_calls(server: FastMCP, *, name: str) -> None:
 
     `outcome` splits on `_is_caller_safe`: rising `refused` is a model/catalogue problem, rising
     `failed` a broken server. Applied outside the sanitiser so it books what the caller was told,
-    and
-    it never reads who is asking.
+    and it never reads who is asking.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `_bind_caller_per_tool_call`
@@ -283,8 +277,7 @@ def _stamp_revision(server: FastMCP) -> None:
     """Put this build's revision in the MCP handshake's `serverInfo.version`.
 
     Otherwise it reports the SDK's release. `FastMCP` takes no `version`, so this assigns through
-    the
-    private `_mcp_server`; `tests/test_fleet.py` pins that coupling.
+    the private `_mcp_server`; `tests/test_fleet.py` pins that coupling.
     """
     server._mcp_server.version = server_revision()
 
@@ -345,8 +338,7 @@ def connector_app(
     # Installed last so the ceiling is outermost and a refused handshake never reaches the sweep.
     apply_session_ceiling(server, name=name)
     # A one-thread pool of its own: a blocking readiness check must not compete with tool calls in
-    # the
-    # default executor. Threads are created lazily.
+    # the default executor. Threads are created lazily.
     readiness_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"{name}-readiness")
     readiness_lock = asyncio.Lock()
     # (expiry, redacted reason, cause). Transient verdicts are memoised too; the cause picks the
@@ -358,11 +350,9 @@ def connector_app(
         """Configure the process, then run the MCP session manager — the mount does not run it.
 
         Logging, the validator cache and the default executor are set up here, not in
-        `connector_app`,
-        so importing a server's `app` module has no process-wide side effects. `configure_logging()`
-        here
-        still runs after upstream's `basicConfig` and uvicorn's `dictConfig`; the executor needs a
-        running loop.
+        `connector_app`, so importing a server's `app` module has no process-wide side effects.
+        `configure_logging()` here still runs after upstream's `basicConfig` and uvicorn's
+        `dictConfig`; the executor needs a running loop.
         """
         configure_logging()
         install_validator_cache()
@@ -378,8 +368,7 @@ def connector_app(
         finally:
             readiness_pool.shutdown(wait=False, cancel_futures=True)
             # After the session manager stopped. `wait=False` lets running calls finish without
-            # blocking
-            # shutdown; `cancel_futures` would drop queued work silently.
+            # blocking shutdown; `cancel_futures` would drop queued work silently.
             tool_pool.shutdown(wait=False)
 
     app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
@@ -400,18 +389,15 @@ def connector_app(
     async def healthz() -> Response:
         """Readiness: can this pod answer tool calls.
 
-        Runs the server's `readiness` callable: 503 with the reason on failure, else the corpora it
-        verified. Datasets load lazily, so this route — not the import — is where a bad corpus
-        shows.
+        Runs the server's `readiness` callable: 503 with the reason on failure, else the corpora
+        it verified. Datasets load lazily, so this route — not the import — is where a bad
+        corpus shows.
 
         - The check runs off the event loop on its own one-thread pool, single-flighted, and a
-          failure is
-          memoised for `READINESS_FAILURE_TTL_SECONDS` so probes against a failing pod do not re-run
-          it.
+          failure is memoised for `READINESS_FAILURE_TTL_SECONDS`.
         - The reason is redacted once, before it is memoised: this route is unauthenticated.
         - Only a cause in `degradation.PERMANENT_CAUSES` yields 503; a transient one answers 200
-          with
-          `degraded` and is counted (see `verdict`).
+          with `degraded` and is counted (see `verdict`).
         """
         nonlocal readiness_failure
         payload: dict[str, object] = {
@@ -419,8 +405,8 @@ def connector_app(
             "server": name,
             "revision": server_revision(),
             # Every resource bound this process resolved, at its running value, so an override the
-            # shipped
-            # files cannot see is visible. Numbers and variable names only; `/healthz` is open.
+            # shipped files cannot see is visible. Numbers and variable names only; `/healthz` is
+            # open.
             "bounds": effective_bounds(),
         }
         if readiness is None:
@@ -441,8 +427,7 @@ def connector_app(
             """Which of the two a cause earns: 503 for a permanent cause, 200 `degraded` otherwise.
 
             Decided here rather than per callable so every server inherits the rule and none can
-            unready a
-            pod on a transient cause.
+            unready a pod on a transient cause.
             """
             return unready(reason) if cause in PERMANENT_CAUSES else degraded(reason, cause)
 
@@ -457,8 +442,7 @@ def connector_app(
                 )
             except Exception as exc:
                 # `/healthz` is unauthenticated, so the reason is scrubbed here, once, and the memo
-                # holds the
-                # redacted string — a cached 503 must not leak what a fresh one would not.
+                # holds the redacted string — a cached 503 must not leak what a fresh one would not.
                 reason = redact_secrets(str(exc))
                 cause = classify(exc)
                 readiness_failure = (
@@ -481,11 +465,9 @@ def connector_app(
         """Liveness only: is this process still serving HTTP.
 
         Separate from `/healthz` because a liveness failure kills the container, and a restart
-        cannot fix
-        a missing corpus or model. Answering proves the lifespan completed and the loop is not
-        wedged; it
-        deliberately consults nothing else. `tests/test_deploy_shape.py` holds probes to the two
-        routes.
+        cannot fix a missing corpus or model. Answering proves the lifespan completed and the loop
+        is not wedged; it deliberately consults nothing else. `tests/test_deploy_shape.py` holds
+        probes to the two routes.
         """
         return JSONResponse({"status": "alive", "server": name, "revision": server_revision()})
 
@@ -495,10 +477,8 @@ def connector_app(
 
         Default process/python collectors plus the fleet's per-tool metrics. It must **never** carry
         anything about a caller — actor, session, correlation id or tool argument. A tool name is
-        allowed
-        only clamped to the served surface (`_served_tool_name`); a destination host is never a
-        label.
-        `tests/test_connector_app.py` asserts both directions.
+        allowed only clamped to the served surface (`_served_tool_name`); a destination host is
+        never a label. `tests/test_connector_app.py` asserts both directions.
         """
         return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 

@@ -1,26 +1,15 @@
 """One request model for every xTB task, and the one `calc_version` / `CalculationKey` derivation.
 
-Why one model. Each xTB task (single point, electronic properties, Fukui indices, optimization,
-Hessian) needs the same question answered: *what identifies this calculation?* Answering it per task
-is how a cache goes wrong — someone adds a knob and forgets to key on it, and the next run silently
-serves a result computed under the old setting. `XtbSpec` holds every field that can move a number,
-and `cache_key` is written once over `model_dump()`, so a new field is keyed by construction rather
-than by review.
+Per-task identity is how a cache goes wrong: someone adds a knob and forgets to key on it, and the
+next run silently serves a result computed under the old setting. `XtbSpec` holds every field that
+can move a number and `cache_key` is derived from `model_dump()`, so a new field is keyed by
+construction. The structure is passed separately — it is the subject, not a setting — and keyed by
+`structure_id`, so identical geometries share an entry.
 
-The structure is *not* part of the spec: it is passed to `cache_key` separately because it is the
-calculation's subject, not its settings — and because keying on `Structure.structure_id` rather than
-on "this SMILES with that embedding seed" is what lets an identical geometry from any source share
-an entry.
-
-**This module is the reason the port happened.** `calc_version()` reads the tblite, RDKit and scipy
-distribution versions, a Hamiltonian-revision constant, and — when the backend resolves to the
-binary — `xtb --version`; `OptSpec` adds the geomeTRIC distribution where the in-process optimizer
-is what runs, and `CrestSpec` adds `crest --version`. None of those exist on a Chemclaw3 pod after
-the split. Every tool here
-therefore returns the string rather than leaving it to be re-derived.
-
-**`CrestSpec` is here because crest now runs here.** Its whole content is "key on crest's build
-instead of the engine's", which is the same rule stated for a different program: name what ran.
+`calc_version()` reads the installed tblite, RDKit and scipy versions, a Hamiltonian revision,
+and `xtb --version` when the binary runs; `OptSpec` adds geomeTRIC and `CrestSpec` crest. None of
+these exist on a Chemclaw3 pod, so every tool returns the string rather than leaving it to be
+re-derived.
 """
 
 from __future__ import annotations
@@ -46,9 +35,7 @@ Backend = Literal["tblite", "xtb"]
 def resolve_backend(preferred: str | None = None) -> Backend:
     """Pick a concrete backend now, so `auto` never reaches a `calc_version`.
 
-    A version containing "auto" would mean different things on two deployments, and they would
-    silently share cache entries and ledger rows computed by different programs. Resolving at spec
-    construction keeps the string honest about what actually ran.
+    "auto" would let two deployments share cache rows computed by different programs.
     """
     choice = preferred or settings.xtb_engine
     if choice in ("xtb", "tblite"):
@@ -63,43 +50,19 @@ def backend_version(backend: Backend) -> str:
     return engine_version()
 
 
-# The xTB tasks this server can run. `sp` is a plain single point; `properties` reads the same SCF's
-# charges, bond orders, dipole and orbitals; `fukui` runs three single points (N, N-1, N+1
-# electrons) for the condensed Fukui indices; `opt` relaxes to a minimum; `hess` is the Hessian and
-# the thermochemistry over it.
-#
-# `atomic` is the binary-only per-atom panel: polarisabilities, dispersion coefficients and atomic
-# multipoles; `surface` is the electrostatic potential on a molecular surface, a *second* xtb run
-# and so a second task rather than an argument to the first — which is a distinct calculation type
-# rather than more of `properties` because it can
-# only be produced by one backend and must key on that backend's build.
-#
-# `conformers` and `complex` are crest's (`CrestSpec` below); the rest are xTB's.
-#
-# Chemclaw3's own literal additionally carries `scan`, and that one is deliberately absent: a scan
-# is a *sweep*, and this server exposes only its point — which is an ordinary constrained `opt` and
-# keys as one, so a scan point computed here and a hand-written constrained relaxation of the same
-# geometry share a cache row rather than sitting in two. A `xtb.scan@...` key would name a
-# calculation this server never runs.
+# The xTB tasks this server can run: `sp` single point; `properties` the same SCF's charges, bond
+# orders, dipole and orbitals; `fukui` three single points; `opt` relaxation; `hess` the Hessian.
+# `atomic` (binary-only per-atom panel) and `surface` (a second xtb run) key on the binary's build.
+# `conformers` and `complex` are crest's (`CrestSpec`). There is no `scan`: a scan point is an
+# ordinary constrained `opt` and keys as one.
 XtbTask = Literal[
     "sp", "properties", "fukui", "atomic", "surface", "opt", "hess", "conformers", "complex"
 ]
 
 
-# **Which backend a task is allowed to name.** A task either has a binary code path or it does not,
-# and that is a property of the task rather than of whoever built the spec — so it is decided here
-# once instead of at every construction site.
-#
-# The defect this removes was live and invisible. `xtb_engine` defaults to `"auto"`, so
-# `resolve_backend()` answers `"xtb"` wherever the binary is installed; `sp`, `properties` and
-# `fukui` have **no** binary code path (they call `run_singlepoint`/`gfn2_energy` unconditionally),
-# so on such a deployment their `calc_version` named a program that had not run — measured against
-# xtb 6.6.1, and forbidden in as many words by `calc_version`'s own rule below. It was unobservable
-# while the shipped image pinned `CHEMCLAW_XTB_ENGINE=tblite`, and it would have partitioned the
-# Chemclaw3 cache the first time a deployment switched the engine on.
-#
-# `opt` and `hess` are absent because they genuinely dispatch (`xtb_opt`, `xtb_hessian` branch on
-# `engine`), and so are crest's two, which key on crest's build instead.
+# Which backend a task is allowed to name, decided once per task. `sp`, `properties` and `fukui`
+# have no binary code path, so their `calc_version` must name tblite even where `auto` would pick
+# the binary. `opt` and `hess` really dispatch on `engine`, and crest's tasks key on crest.
 _FIXED_BACKEND: dict[str, Backend] = {
     "sp": "tblite",
     "properties": "tblite",
@@ -128,18 +91,13 @@ class XtbSpec(BaseModel):
     # GFN parametrization, e.g. "GFN2-xTB". Part of `calc_version`, not `params`: it identifies the
     # method, which is what a calculator version means.
     method: str = Field(default_factory=lambda: settings.xtb_method)
-    # Which implementation runs it. Also part of `calc_version` and for the same reason: two
-    # backends produce different numbers for the same request, so they are different calculator
-    # versions, not different parameters of one.
+    # Which implementation runs it; in `calc_version`, since backends give different numbers.
     engine: Backend = Field(default_factory=resolve_backend)
     # ALPB implicit solvent name, or None for gas phase. Stored canonicalised, because it is hashed
     # into `params_hash`: see the validator below.
     solvent: str | None = None
-    # xtb's `--acc` numerical accuracy — the SCF and integral thresholds that produce the numbers a
-    # binary run returns. A spec field rather than a `settings` read inside `xtb_cli.run`, for
-    # `trust_radius`'s reason: it moves the answer, and a setting that moves the answer belongs in
-    # the key. Keyed only where the binary is what runs (`unkeyed_fields`), because tblite has no
-    # equivalent knob and crest is handed none.
+    # xtb's `--acc` numerical accuracy. A spec field because it moves the answer; keyed only where
+    # the binary runs (`unkeyed_fields`), since tblite has no equivalent and crest gets none.
     accuracy: float = Field(default_factory=lambda: settings.xtb_cli_accuracy, gt=0)
 
     @field_validator("solvent")
@@ -148,46 +106,21 @@ class XtbSpec(BaseModel):
         """Refuse a solvent ALPB has no parameters for, here rather than inside the SCF, and
         canonicalise the spelling that survives.
 
-        **Not in Chemclaw3's copy of this model**, and added deliberately rather than by accident of
-        porting. Over there the check is a durable-job *precondition*, evaluated in the chat service
-        before a workflow starts; there are no durable jobs here, so without this the refusal would
-        happen either as tblite's "String value for epsilon was not found among database of
-        solvents" (an implementation detail, not a mistake a chemist can act on) or, on the binary
-        backend, minutes later inside a subprocess. The measured case is "2-MeTHF", among the most
-        common process solvents there is and not one GFN2-xTB has parameters for.
-
-        **Returning the canonical name is the second half, and it is a cache defect rather than a
-        cosmetic one.** Matching is case- and whitespace-insensitive "because tblite is", but the
-        value kept here is hashed into `params_hash` and sent to `--alpb` — so `"water"`, `"Water"`,
-        `" water"` and `"h2o"` were four cache rows for one calculation, and on this server a repeat
-        is minutes to hours. `canonical_solvent` refuses exactly what `require_supported_solvent`
-        refuses, and the alias groups it merges are measured against tblite rather than assumed
-        (`tests/test_solvents.py`).
+        Refusing at construction gives a chemist-readable error before any work (e.g. "2-MeTHF" has
+        no GFN2 parameters). The canonical name is kept because the value is hashed into
+        `params_hash`: spelling variants of one solvent must be one cache row. Alias groups are
+        checked against tblite in `tests/test_solvents.py`.
         """
         return None if value is None else canonical_solvent(value)
 
     def for_structure(self, structure: Structure) -> Self:
         """The spec that will actually run for `structure`, backend included.
 
-        **Open-shell systems fall back to the in-process backend**, whatever was configured, and the
-        reason is measured. GFN2 without a spin-polarization term does not stabilize an open shell
-        at all — it put triplet O2 *above* singlet — so `xtb_engine` enables that contribution
-        whenever there are unpaired electrons. The `xtb` 6.6.1 binary cannot: its `--spinpol` is
-        killed by the OOM killer in that build. Running a radical through it would silently
-        reintroduce exactly the physics error that fix removed.
-
-        Resolving here rather than at the call site is what keeps `calc_version` honest: it is
-        derived from the *returned* spec, so a calculation computed by tblite is recorded as
-        tblite's even when the deployment prefers the binary. Idempotent, so callers may apply it
-        more than once.
-
-        **A task with only one implementation gets that one**, from `_FIXED_BACKEND` above and
-        before anything else, because a preference cannot select a code path that does not exist.
-        The open-shell rule then applies on top, `atomic` included: an open-shell `atomic` spec
-        therefore resolves to a backend that cannot serve it, which
-        `xtb_atomic.compute_atomic_descriptors` refuses in words. That is deliberate — exempting
-        `atomic` here would have sent a radical to the binary whose `--spinpol` this build cannot
-        run, which is the physics error the fallback exists to prevent.
+        A task with one implementation gets it (`_FIXED_BACKEND`). Open-shell systems then fall back
+        to the in-process backend, which applies spin polarization; the binary's `--spinpol` is
+        unusable in the pinned build. An open-shell `atomic` spec therefore resolves to a backend
+        that cannot serve it, and `xtb_atomic` refuses it in words. Resolving here keeps
+        `calc_version` naming what ran. Idempotent.
         """
         fixed = _FIXED_BACKEND.get(self.task)
         spec = (
@@ -200,50 +133,22 @@ class XtbSpec(BaseModel):
         return spec
 
     def calc_version(self) -> str:
-        """What actually computes this spec, versioned — half the staleness guard, and the half
-        only this process can see.
+        """What actually computes this spec, versioned — half the staleness guard.
 
-        **The rule, which every override obeys: name every program whose output survives into the
-        stored payload, and no program that does not run.** A version that named the wrong program
-        is one that survives an upgrade to the right one, and one that omitted the right program
-        serves one program's number as another's — the same defect from either side.
-
-        **Only half**, because every name in this string belongs to somebody else's program. Nothing
-        here moves when *our* code changes — which is how a fix to the linear-rotor term in
-        `xtb_thermo` left every `xtb.hess` row on disk serving the entropy and free energy it
-        computed wrongly. `key.CALCULATION_EPOCH` is the other half and covers exactly that; it is
-        folded into the key by `CalculationKey.build`, so it is not something a spec has to remember
-        to name.
+        Every override obeys one rule: name every program whose output survives into the stored
+        payload, and no program that does not run. The other half is `key.CALCULATION_EPOCH`, folded
+        in by `CalculationKey.build`, which moves when *our* code changes.
         """
         return f"{self.method}+{self.engine}+{backend_version(self.engine)}"
 
     def unkeyed_fields(self) -> set[str]:
         """Fields that must *not* enter `params` — because they are keyed elsewhere, or inert here.
 
-        `task` names the calculation type, and `method`/`engine` are already in `calc_version`, so
-        all three would be recorded twice.
-
-        `accuracy` is the second kind: it is `xtb --acc`, and a task the binary does not run cannot
-        be moved by it. `sp`, `properties` and `fukui` are pinned to tblite by `_FIXED_BACKEND`, so
-        for them it is inert in every configuration, and over-keying them would recompute for a flag
-        that could not have touched them. **An instance method rather than a classmethod for exactly
-        this**: which fields are inert depends on the resolved backend, and `cache_key` resolves
-        before it asks.
-
-        The reason given here used to be that `xtb.sp`'s key is "pinned byte-for-byte against
-        Chemclaw3's own derivation" in `tests/test_key_contract.py`. That test now says the opposite
-        in as many words — the pinned strings are *this* repository's, measured against its own
-        installed tblite and RDKit, and no cross-repo agreement is asserted anywhere, because
-        `remote_key` deliberately re-derives nothing on that side.
-
-        The asymmetry between the two kinds is deliberate and is the rule the whole file states:
-        a false *hit* serves one configuration's number as another's, a false *miss* costs CPU. So a
-        field is excluded only where it provably cannot reach the calculation, never merely because
-        it usually does not.
-
-        Overriding this rather than overriding `cache_key` is deliberate: the key derivation stays
-        in one place, so a new field is still keyed by construction and *excluding* one is the
-        visible, deliberate act rather than the silent default.
+        `task`, `method` and `engine` are already in the key name or `calc_version`. `accuracy` is
+        inert for tasks the binary does not run, which depends on the resolved backend (hence an
+        instance method). A field is excluded only where it provably cannot reach the calculation: a
+        false hit serves a wrong number, a false miss only costs CPU. Overriding this rather than
+        `cache_key` keeps keying by construction the default.
         """
         unkeyed = {"task", "method", "engine"}
         if self.engine != "xtb":
@@ -253,10 +158,8 @@ class XtbSpec(BaseModel):
     def cache_key(self, structure: Structure) -> CalculationKey:
         """The versioned identity of running this spec on `structure`.
 
-        `calc_version` carries the method *and* the build of whatever runs it, so a tblite, xtb or
-        RDKit upgrade recomputes on the Chemclaw3 side rather than serving a value the new stack
-        would not reproduce. Everything else in the spec lands in `params` automatically — that is
-        the whole point of deriving the key from `model_dump()`.
+        `calc_version` carries the method and the build that runs it; every other field lands in
+        `params` via `model_dump()`.
         """
         resolved = self.for_structure(structure)
         if resolved is not self:
@@ -276,46 +179,14 @@ class XtbSpec(BaseModel):
 class CrestSpec(XtbSpec):
     """Base of the specs whose work is done by `crest`, not by `engine`.
 
-    Two things are wrong for a CREST search if it inherits `XtbSpec` unchanged, and both are key
-    defects rather than cosmetic ones.
+    Keys on crest's build (the program that produced the ensemble), drops `engine` from the key, and
+    makes `for_structure` a no-op, since crest runs whatever `engine` says. So an open-shell CREST
+    search has no spin-polarization fallback. A subclass that does run `engine` puts it back
+    (`ComplexSpec` in `crest_search`).
 
-    **CREST's own build would be in no key.** `calc_version` names the tblite/xtb build, so
-    upgrading crest — the program that actually produced the ensemble — would serve every stored
-    ensemble unchanged.
-
-    **`engine` would be inherited but never honoured.** A search calls `crest_cli.run` whatever it
-    says, so a spec could be keyed as `tblite` while crest did the work — which `for_structure`
-    made routine rather than hypothetical, because it rewrites `engine` to `tblite` for any
-    open-shell input.
-
-    So `engine` is dropped from this key and `for_structure` is a no-op. Note what the second one
-    means and does not mean: an open-shell CREST search is **not** protected by the
-    spin-polarization fallback, because there is nowhere to fall back to — crest has no in-process
-    equivalent. That is a real limitation of radical conformer searches, and it is stated instead of
-    hidden behind a key that claimed tblite had run.
-
-    **What the drop is not: a claim that backends do not belong in keys.** It is the same rule
-    `XtbSpec.calc_version` states, applied to a spec whose numbers all come from crest — name what
-    ran. A subclass that *does* run `engine` therefore has to put it back, and `ComplexSpec` in
-    `crest_search` is one.
-
-    ## A key here is a promise about the settings, not about the ensemble
-
-    Every other spec on this server keys a deterministic calculation: `CalculationKey` says two
-    calculations share a key iff they are the same calculator version on the same input with the
-    same parameters, and a reader takes the converse for granted — same key, same answer. **The
-    converse is false for a CREST search, and this is the only place on this server where it is.**
-    Metadynamics is a stochastic search; `crest_cli.run` sets no seed, and nothing else in this
-    package sets one either, so two runs of one identical spec are not guaranteed to return the
-    same ensemble — the same members, the same populations, or the same lowest conformer.
-
-    What makes `search_conformer_ensemble` reproducible is therefore the **caller's cache** rather
-    than the calculation: first writer wins, and every later request for that key is served the
-    first search's answer. That is a reasonable trade rather than a defect to fix — the alternative
-    is running a many-hour metadynamics again for a result no truer than the one already on disk —
-    and it is stated here rather than only lived with, because a reader who assumes determinism will
-    over-read a small energy difference between two deployments as a physical one. Nothing in this
-    class changes it.
+    A CREST key promises the settings, not the ensemble: metadynamics is stochastic and no seed is
+    set, so two runs of one spec may differ. Reproducibility comes from the caller's cache (first
+    writer wins); do not read a small energy difference between deployments as physical.
     """
 
     def for_structure(self, structure: Structure) -> Self:
@@ -323,20 +194,13 @@ class CrestSpec(XtbSpec):
         return self
 
     def unkeyed_fields(self) -> set[str]:
-        """`accuracy` goes too: `crest_cli` hands the search no `--acc`, whatever `engine` says.
-
-        `engine` here is inherited and, for a plain ensemble search, not even honoured — so keying
-        on a flag crest never receives would name a knob that cannot move the result, in the one
-        place a repeat costs hours.
-        """
+        """`accuracy` goes too: `crest_cli` hands the search no `--acc`, whatever `engine` says."""
         return {*super().unkeyed_fields(), "accuracy"}
 
     def calc_version(self) -> str:
         """Keyed on crest's build, because crest is what runs.
 
-        Answers `"absent"` where the binary is missing — which is this image today and Chemclaw3's
-        too. That string never reaches a stored row, because every caller refuses before computing
-        (`crest_search.require_crest`); it is visible only if someone asks for the *identity* of a
-        search that cannot run, and `calculation_key` refuses that for the same reason.
+        Answers `"absent"` where the binary is missing; that never reaches a stored row because
+        every caller, and `calculation_key`, refuses first (`crest_search.require_crest`).
         """
         return f"{self.method}+crest-{crest_cli.binary_version()}"

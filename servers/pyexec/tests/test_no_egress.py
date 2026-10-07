@@ -1,8 +1,7 @@
 """This server's own code holds no way to call out, and the sandbox it runs holds none either.
 
-The AST scan every server ships is the first half. The second half is specific to this one: the
-child process is where a caller's program runs, so "no egress" has to be a property of *that*
-process and not only of the parent that launched it.
+Beyond the AST scan every server ships, "no egress" must hold for the child process where a
+caller's program runs, not only for the parent.
 """
 
 from __future__ import annotations
@@ -23,25 +22,20 @@ RUNNER = PACKAGE / "engine" / "runner.py"
 
 
 def test_no_module_can_reach_the_network() -> None:
-    """No HTTP client imported, no remote host named — checked by AST, not by grep.
+    """No HTTP client imported, no remote host named, checked by AST.
 
-    `runner.py` is exempt, and the test below is the price of that exemption: it is the one file in
-    this fleet that imports `socket`, it does so in a child process to *disable* the module, and the
-    next test proves that is all it does with it.
+    `runner.py` is exempt because it imports `socket` in the child to disable it; the next test
+    proves that is all it does.
     """
     assert_no_egress_sources(PACKAGE, exempt=[RUNNER])
 
 
 def test_the_exempt_file_only_uses_socket_to_disable_it() -> None:
-    """The exemption is a claim about `runner.py`; this is the claim being checked.
+    """`runner.py` only uses `socket` to replace its outbound calls.
 
-    Read as a tree rather than as text, and asserted positively: every attribute of the `socket`
-    module that `runner.py` touches must be an assignment target, and the eight of them must be
-    the outbound calls — `connect`/`connect_ex`/`create_connection` (TCP), `sendto`/`sendmsg`
-    (UDP, which never calls `connect` at all) and `getaddrinfo`/`gethostbyname`/`gethostbyname_ex`
-    (DNS, reachable with no socket object at all). A future edit that *reads* something off the
-    module, or replaces one fewer, is an exemption that has stopped being true — and it fails here
-    rather than in a deployment.
+    Every `socket` attribute it touches must be an assignment target, and the set must be the
+    outbound calls: TCP connect, UDP send (which never calls `connect`) and DNS lookup (needing no
+    socket object). An edit that reads from the module or replaces fewer names fails here.
     """
     tree = ast.parse(RUNNER.read_text(encoding="utf-8"), filename=str(RUNNER))
     # Only the outermost attribute of a chain is the access: in `socket.socket.connect = ...` the
@@ -82,12 +76,10 @@ def test_the_sandbox_refuses_to_import_a_network_module() -> None:
 
 
 def test_a_held_socket_reference_cannot_connect_either() -> None:
-    """The second door, and the one an import guard alone would leave open.
+    """A socket reference a library already holds cannot connect either.
 
-    Refusing `import socket` does nothing about the reference a library already holds, so the
-    outbound calls are replaced on the module object itself. This reaches one the same way a
-    library's internals would — through a module that is allowed — and proves the replacement, not
-    the refusal.
+    Refusing `import socket` does nothing about held references, so the outbound calls are replaced
+    on the module object; this reaches it through an allowed module and proves the replacement.
     """
     outcome = run(
         "import json\n"
@@ -123,13 +115,11 @@ def test_an_outbound_connection_from_inside_the_sandbox_fails() -> None:
 
 
 def test_a_udp_datagram_from_inside_the_sandbox_is_refused() -> None:
-    """`connect`-only neutralisation never touches a datagram socket, which never calls `connect`.
+    """A UDP datagram from inside the sandbox is refused.
 
-    Reached the same way `mcp_server_kit.egress`'s own regression is: not via `import socket`
-    (refused at the door, and refused for the wrong reason if the test only checked that), but via
-    the `sys` reference an *allowed* stdlib module already holds, which is enough to walk back to
-    `sys.modules['socket']` — the module `_neutralise_network` has already neutered, if it neutered
-    the right names. Before `sendto` was patched, this sent a real datagram with no exception.
+    A datagram never calls `connect`, so `sendto` must be replaced too. Reached via the `sys`
+    reference an allowed stdlib module holds, walking to `sys.modules['socket']`, rather than via
+    `import socket`, which would be refused for the wrong reason.
     """
     outcome = run(
         "import warnings\n"

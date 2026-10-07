@@ -59,10 +59,8 @@ def reimported(module: ModuleType) -> ModuleType:
     For asserting that an environment variable read at import is what built a bound: rebuild with a
     different value and read the module's own result, rather than re-typing the expression in the
     test. Not `importlib.reload`, which rebinds `sys.modules` under existing importers. The
-    throwaway
-    name is registered in `sys.modules` only during execution (dataclasses resolve string
-    annotations
-    through it) and removed in a `finally`.
+    throwaway name is registered in `sys.modules` only during execution (dataclasses resolve string
+    annotations through it) and removed in a `finally`.
     """
     if module.__spec__ is None or module.__spec__.origin is None:  # pragma: no cover - not a file
         raise ValueError(f"{module.__name__} has no source file to re-execute")
@@ -167,11 +165,11 @@ class HttpEndpoint(BaseModel):
         return self
 
 
-# : Chemclaw3's cap on every manifest text field (`core.manifest_io.MAX_MANIFEST_TEXT_CHARS`),
-# : checked against it by `tests/test_consumer_agreement.py` when a checkout is available.
+#: Chemclaw3's cap on every manifest text field (`core.manifest_io.MAX_MANIFEST_TEXT_CHARS`),
+#: checked against it by `tests/test_consumer_agreement.py` when a checkout is available.
 MAX_MANIFEST_TEXT_CHARS = 4_000
 
-# : The shape Chemclaw3's `ConnectorManifest.name` requires.
+#: The shape Chemclaw3's `ConnectorManifest.name` requires.
 CONNECTOR_NAME_PATTERN = r"^[a-z][a-z0-9-]*$"
 
 
@@ -227,9 +225,8 @@ class ConnectorManifest(BaseModel):
     profiles: list[str] = Field(default_factory=list)
     note_types: list[str] = Field(default_factory=list)
     relations: list[str] = Field(default_factory=list)
-    # : The consumer's declared-but-not-bound switch; a fleet manifest shadowing a consumer copy
-    # must be
-    # : able to say `false` too, or it binds every tool schema on every model call.
+    #: The consumer's declared-but-not-bound switch; a fleet manifest shadowing a consumer copy
+    #: must be able to say `false` too, or it binds every tool schema on every model call.
     default_enabled: bool = True
 
 
@@ -434,8 +431,8 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
     assert served, f"{mcp_url} served no tools to the declared credential"
 
     # Whitespace both ways round; the padded secret is the operational case (an `echo`-written
-    # Secret).
-    # The header is padded inside (`Bearer  <tok>`) because h11 refuses trailing whitespace.
+    # Secret). The header is padded inside (`Bearer  <tok>`) because h11 refuses trailing
+    # whitespace.
     for description, provisioned, offered in (
         ("a padded header against the provisioned secret", token, f" {token}"),
         ("an unpadded header against a newline-provisioned secret", f"{token}\n", token),

@@ -1,35 +1,17 @@
 """The `safety` MCP tool surface: three cited tables, three questions, three tools.
 
-The capabilities themselves stay in `engine/`; this module is only what the agent sees, and it is
-where each tool's *description* lives, because the description is the safety-critical part. It is
-the sentence that decides whether the model treats an empty result as "no rule matched" or as
-"safe".
+The tool docstrings are the prompt, carried over from Chemclaw3's `safety` connector; each states
+what its answer is *not* evidence of, and must not be shortened. Three tools because the questions
+differ and must not be reported as one another:
 
-**These docstrings are the prompt, and they are carried over from Chemclaw3's own `safety` connector
-word for word.** Every one of them says what its answer is *not* evidence of, and each of those
-sentences exists because a live run got something wrong in a way that was measured — an invented ICH
-M7 class, an invented purge factor, a recalled palladium PDE, "no hazards detected" said six times
-to a chemist about to sign a risk assessment. Shortening one deletes the measurement.
+- `screen_hazards` (`engine/screen.py`) — "is this safe to run today".
+- `screen_genotoxic_alerts` (`engine/genotox.py`) — "will this need a control strategy"; not an ICH
+  M7 classification.
+- `ich_impurity_limit` (`engine/ich.py`) — "what is the number", with a citation or an honest miss.
 
-**Three tools rather than one, and the split is the point.** They answer three questions a chemist
-asks separately, and the previous single answer was what let one get reported as another:
-
-- `screen_hazards` (`engine/screen.py`) — "is this safe to run today": energetic and reactive
-  motifs, and dangerous combinations between a reaction's components.
-- `screen_genotoxic_alerts` (`engine/genotox.py`) — "will this need a control strategy":
-  DNA-reactive structural alerts, which are *not* an ICH M7 classification.
-- `ich_impurity_limit` (`engine/ich.py`) — "what is the number": the transcribed ICH Q3C and Q3D
-  limits, with a citation, and an honest miss when the tables do not carry the substance.
-
-**The screens run in a worker thread, and their input is bounded.** SMARTS matching is CPU-bound C++
-that holds the GIL, and this server answers every connected chat turn on one event loop — the same
-reasoning `servers/chem/src/chemclaw_mcp_chem/tools.py` records. It matters more here than there:
-both screens check their pair rules as a cross-product, so results grow with the *square* of a
-caller-supplied list while the request stays tiny (13 KiB of SMILES measured at 251,000 flags and
-2.48 s of blocked loop). `MAX_COMPONENTS` bounds the input; `asyncio.to_thread` keeps even a bounded
-screen off the loop that serves everyone else. `ich_impurity_limit` is a dictionary lookup over two
-small tables and needs neither — and it is the one tool here whose synchrony is a measured decision
-rather than a house style.
+The screens are CPU-bound and grow with the square of their input, so they run in a worker thread
+with input bounded by `MAX_COMPONENTS`. `ich_impurity_limit` is a small dictionary lookup and runs
+synchronously.
 """
 
 from __future__ import annotations

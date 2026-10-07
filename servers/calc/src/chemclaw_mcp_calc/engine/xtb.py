@@ -1,15 +1,8 @@
-"""GFN2-xTB semiempirical single-point energies.
+"""GFN2-xTB semiempirical single-point energies via `tblite` on an RDKit-embedded geometry.
 
-Fast, local, deterministic single-point energies via `tblite` (GFN2-xTB) on an RDKit-embedded 3D
-geometry. Sub-second on ordinary molecules.
-
-Thin by design: `structure` owns the geometry and its validation, `xtb_spec` owns the version and
-the key, and `xtb_engine` owns the SCF. What is left here is the one thing specific to a single
-point — its input and result shape.
-
-**Ported without `run_cached_xtb`.** Chemclaw3's entry point looked the answer up in the calculation
-store first; this server computes on request and returns, and the key it *would* have been stored
-under travels back in `calc_key` so the caller can do the storing.
+`structure` owns the geometry, `xtb_spec` the version and key, `xtb_engine` the SCF; this module
+owns only the single point's input and result shape. Nothing is cached here: the key travels back
+in `calc_key` and the caller stores the result.
 """
 
 from __future__ import annotations
@@ -49,8 +42,8 @@ class XtbResult(Keyed):
 def _energy(spec: XtbSpec, structure: Structure) -> XtbResult:
     """Compute one single-point energy for an already-validated structure.
 
-    The version and the key come from the *resolved* spec, so an open-shell input that
-    `for_structure` sent in-process is recorded as tblite's rather than as the configured backend's.
+    Version and key come from the *resolved* spec, so an input routed in-process is recorded as
+    tblite's.
     """
     resolved = spec.for_structure(structure)
     numbers, positions = structure.arrays()
@@ -73,13 +66,8 @@ def _energy(spec: XtbSpec, structure: Structure) -> XtbResult:
 def _sp_structure(smiles: str, charge: int) -> Structure:
     """Embed the geometry a single point runs on: MMFF-relaxed where parametrized.
 
-    Relaxation is **required for the energy to mean anything comparative**, and the margin is not
-    subtle. Measured over five textbook isomer pairs, a raw ETKDG embedding gets the sign of the
-    relative energy *wrong* in two of them — isobutane vs. n-butane and ethanol vs. dimethyl ether —
-    because the residual strain in an unrelaxed geometry is larger than the energy difference being
-    asked about. The same geometries relaxed with MMFF get all five orderings right. Since a
-    single-point energy is only ever useful relatively, an unrelaxed geometry answers the question
-    wrongly rather than approximately.
+    Required: an unrelaxed ETKDG geometry's residual strain can exceed the energy difference being
+    compared and flip the sign of a relative energy.
     """
     return structure_from_smiles(smiles, charge=charge, optimize=True)
 
@@ -87,10 +75,8 @@ def _sp_structure(smiles: str, charge: int) -> Structure:
 def sp_inputs(job: XtbInput) -> tuple[XtbSpec, Structure]:
     """The settings and the geometry one single point runs on — the pair its *identity* is made of.
 
-    Extracted so `run_xtb` and `identity.calculation_identity` read the same definition rather than
-    two agreeing copies. The key is derived from exactly this pair, so a change to either — the
-    task, the solvent, the embedding policy — moves the key for both paths at once, and
-    `tests/test_calculation_key.py` proves they still agree.
+    Shared by `run_xtb` and `identity.calculation_identity` so the key cannot drift between them
+    (`tests/test_calculation_key.py`).
     """
     return XtbSpec(task="sp"), _sp_structure(job.smiles, job.charge)
 
@@ -98,10 +84,8 @@ def sp_inputs(job: XtbInput) -> tuple[XtbSpec, Structure]:
 def run_xtb(job: XtbInput) -> XtbResult:
     """Compute a GFN2-xTB single-point energy for one molecule.
 
-    Raises `ValueError` on an unparseable SMILES, a declared charge that contradicts the SMILES
-    formal charge, an open-shell electron count, or a geometry that fails to embed, rather than
-    returning a meaningless energy: tblite silently converges a wrong-charge or odd-electron system
-    to an energy that can be hundreds of kcal/mol off. Those checks live in `structure.Structure`,
-    so every xTB task inherits them identically.
+    Raises `ValueError` on an unparseable SMILES, a contradicting charge, an inconsistent electron
+    count, or a failed embedding (checked in `structure.Structure`), since tblite would otherwise
+    converge a wrong system to a badly wrong energy.
     """
     return _energy(*sp_inputs(job))

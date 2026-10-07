@@ -1,17 +1,9 @@
-"""A broken component must be tellable from an absent one — in the answer, and from a scrape.
+"""A broken component must be tellable from an absent one, in the answer and from a scrape.
 
-Three `except Exception` blocks in this server turned a fault into a plausible answer. The namer's
-was the worst of them: `Naming()` is byte-identical to the commonest *correct* answer this server
-gives ("most of a patent corpus has no name"), so a pod whose rule table had gone reported nothing
-matched for a whole corpus, under a `labeller_version` carrying the namer's own version number —
-which means no drain would ever re-derive those rows, because their stored stamp already equalled a
-healthy pod's. Measured before this file existed: `/healthz` **200**, the answer
-`{"named_reaction": null, ..., "version": "...:namer@0.1.3"}`, and **no** `chemclaw_mcp_degraded_*`
-series on `/metrics` at all.
-
-Every test here installs a component that *constructs* and then raises, which is the shape of a
-corrupt checkpoint and of a loader the egress guard refuses. The module's own cache slots are filled
-rather than `map_reaction`/`name` being replaced, so the code under test is the code that runs.
+An empty `Naming()` is also the commonest correct answer, so a namer swallowed by `except`
+would report "nothing matched" under a healthy version stamp that no drain re-derives. Each test
+installs a component that constructs and then raises (a corrupt checkpoint, a guard-refused
+loader) by filling the module's own cache slots, so the code under test is the code that runs.
 """
 
 from __future__ import annotations
@@ -85,10 +77,9 @@ def broken_namer() -> Iterator[None]:
 async def _healthz() -> httpx.Response:
     """GET `/healthz` on the real app over ASGI, without running its lifespan.
 
-    These tests called `readiness.verify_labeller()` directly, which is not what a kubelet
-    calls: it misses the status code, the redaction, the memo and the single-flight lock that
-    `connector_app` wraps the probe in. The readiness memo's TTL is zeroed by the fixture below, for
-    the reason `test_readiness.py` gives.
+    This is what a kubelet calls: status code, redaction, memo and single-flight lock included,
+    which calling `readiness.verify_labeller()` directly would miss. The memo TTL is zeroed by the
+    fixture below.
     """
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app_module.app), base_url="http://rxnlabel.test"
@@ -149,11 +140,10 @@ def test_a_refusal_by_the_egress_guard_is_counted_as_one(broken_namer: None) -> 
 async def test_a_component_that_raises_on_the_probe_takes_the_pod_out_of_rotation(
     broken_namer: None,
 ) -> None:
-    """Construction was the only thing checked, and it is the smaller half.
+    """A component that imports but raises on inference takes the pod out of rotation.
 
-    A namer that imports and raises is a broken image; before this the probe passed it, because
-    `naming.available()` answers the import rather than the inference. Driven through the served
-    route, so the 503 and its redacted body are what is asserted rather than the raise.
+    `naming.available()` answers the import, not the inference. Driven through the served route, so
+    the 503 and its redacted body are what is asserted.
     """
     assert naming.available(), "the premise: a broken namer still reports as present"
     response = await _healthz()
@@ -163,16 +153,11 @@ async def test_a_component_that_raises_on_the_probe_takes_the_pod_out_of_rotatio
 
 @pytest.mark.parametrize("broken_mapper", [MemoryError("CUDA out of memory")], indirect=True)
 async def test_a_pod_that_ran_out_of_memory_is_counted_and_left_alone(broken_mapper: None) -> None:
-    """A memory spike is a property of the moment: counted, reported, and no traffic shed.
+    """A memory spike is transient: counted, reported, and no traffic shed.
 
-    The reason used to be that readiness and liveness shared `/healthz`, so shedding traffic
-    meant a restart back into the same pressure. They no longer do
-    (`D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe`), and the rule survives
-    on the narrower argument: this probe runs a transformer forward pass, heavier than most of the
-    traffic it gates, so a failure here is evidence about the probe rather than about the calls.
-
-    Driven through `/healthz` rather than through the probe function, which is what makes the 200 an
-    assertion about what a kubelet is told.
+    The probe runs a forward pass heavier than most traffic it gates, so a failure there is evidence
+    about the probe rather than the calls. Driven through `/healthz`, so the 200 is what a kubelet
+    is told.
     """
     before = _count(mapping.COMPONENT, degradation.CAUSE_RESOURCE_EXHAUSTED)
 

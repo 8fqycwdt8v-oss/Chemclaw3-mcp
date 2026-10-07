@@ -28,8 +28,7 @@ __all__ = [
 # test which tools are gated — a name rather than a hand-kept list, as in `servers/chem`.
 ADMISSION_MARKER = "__admission_gated__"
 
-#: The worst legal integration, in seconds of CPU: the top of the range measured in the module
-#: docstring, rounded to the measurement's precision rather than to its best run.
+#: The worst legal RK4 integration, in seconds of CPU, taken from the top of its measured range.
 WORST_INTEGRATION_SECONDS = 2.0
 
 #: How many integrations may be in flight:

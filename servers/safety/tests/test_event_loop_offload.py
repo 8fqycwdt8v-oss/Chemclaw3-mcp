@@ -1,20 +1,10 @@
 """SMARTS matching must not run on the event loop that serves every other request.
 
-**This guard came with the capability, and it matters more here than on `chem`.** Both screens check
-their pair rules as a *cross-product*, so the work grows with the square of a caller-supplied list
-while the request itself stays tiny: Chemclaw3 measured 13 KiB of SMILES producing 251,000 hazard
-flags and blocking the serving connector's event loop for 2.48 s, and the genotoxicity screen at the
-same shape (640 components, 102,400 alerts, 933 ms). `MAX_COMPONENTS` caps the work; this is the
-other half, and the two are not interchangeable — a *bounded* screen still stops every other request
-on the process while it runs, because RDKit substructure matching is synchronous C++.
-
-The assertion is the property directly — the blocking call happens on a **different thread** than
-the coroutine that awaited it — rather than a wall-clock measurement, which would be flaky and would
-not distinguish "fast" from "off the loop". Each test fails if its hop is removed.
-
-`ich_impurity_limit` has no test here on purpose: it is a dictionary lookup over an index built once
-per process, it takes no `asyncio.to_thread` hop, and a test asserting it ran *on* the loop would
-pin an implementation detail rather than a property worth keeping.
+Pair rules are a cross-product, so work grows with the square of a small request, and RDKit
+matching is synchronous C++: even a bounded screen (`MAX_COMPONENTS`) would stall every other
+request. Asserted directly, by the blocking call running on a different thread than the awaiting
+coroutine, not by timing. `ich_impurity_limit` is a dictionary lookup with no hop and is not
+tested here.
 """
 
 from __future__ import annotations

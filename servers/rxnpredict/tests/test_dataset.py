@@ -1,9 +1,7 @@
-"""The vendored trust priors validate against their own manifest, and against the models they name.
+"""The vendored trust priors validate against their manifest and against the models they name.
 
-The priors are the numbers that decide every ranking this server produces. Two failure modes are
-worth a test each: the file not being the one that was reviewed (the checksum), and the file naming
-a predictor that does not exist — a typo in a model name would silently give that class no
-weighting at all rather than erroring.
+The priors decide every ranking. Tested: the checksum (the file is the reviewed one), and every
+named predictor exists, since a typo would silently give a class no weighting.
 """
 
 from __future__ import annotations

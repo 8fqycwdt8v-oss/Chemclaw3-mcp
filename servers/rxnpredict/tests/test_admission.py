@@ -1,26 +1,10 @@
-"""How much this pod will predict at once, and what it does with the call that arrives when full.
+"""How much this pod predicts at once, and what it does with a call that arrives when full.
 
-Until this gate, nothing counted how much inference was in flight on the fleet's heaviest server.
-The finding that decides the shape of the bound is that **one tool call is not one thread**: the two
-consensus tools `asyncio.gather` over every enabled predictor, each of which offloads its own
-forward pass, so a ceiling that counted calls would under-count by the deployment's enabled-model
-list — a number the ceiling never sees.
-
-Four properties, each with its own failure:
-
-- **A call costs its fan-out.** Measured here rather than argued: one ensemble call over six
-  doubles puts six worker threads in flight at once, and finishes in a fraction of what serial
-  would take.
-- **The refusal is prompt.** A full pod turns a prediction away before any work starts, rather than
-  queueing it behind forward passes and answering after `request_timeout` has expired.
-- **The slot outlives a caller that gave up.** Cancelling the awaiting coroutine does not stop the
-  worker threads, so releasing on cancellation would hand slots to a retry while the originals ran.
-- **The two tools that offload nothing stay answerable.** `list_available_models` is how a caller
-  finds out what this build has — including why it was refused — and `classify_reaction` is a
-  SMARTS match on the event loop.
-
-The gated set is checked against the *served* surface rather than a list kept here: the thing that
-must not be forgotten is exactly the thing a forgetful change adds.
+One tool call is not one thread: the consensus tools fan out over every enabled predictor, so a
+ceiling counting calls would under-count by the enabled-model list. Properties pinned: a call is
+charged its fan-out; a full pod refuses promptly instead of queueing past `request_timeout`; a
+slot outlives a caller that gave up; `list_available_models` and `classify_reaction` (which
+offload nothing) stay answerable. The gated set is derived from the served surface.
 """
 
 from __future__ import annotations
@@ -168,14 +152,10 @@ def test_the_gate_refuses_once_the_ceiling_is_reached_and_reopens_when_one_finis
 async def test_one_ensemble_call_is_one_worker_thread_per_enabled_predictor(
     registry_of: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The measurement the whole cost model rests on, driven through the real tool.
+    """One ensemble call puts one worker thread per enabled predictor in flight at once.
 
-    Six doubles that each hold a worker thread for `BLOCK_SECONDS`: if the ensemble were serial the
-    call would take six times that, and if it were one thread the peak would be one. Measured when
-    written against six sleeping doubles: **0.468 s against a serial 2.4 s, peak six threads**.
-
-    So a call-counting ceiling of two on this pod admits twelve forward passes, and the multiplier
-    is the deployment's own enabled-model list — a number the ceiling would never see.
+    Six doubles each hold a thread for `BLOCK_SECONDS`: serial would take six times that, and one
+    thread would peak at one. This is the measurement the cost model rests on.
     """
     registry_of(*(_SlowPredictor(f"slow_{index}") for index in range(FAN_OUT)))
     monkeypatch.setattr(tools, "_admission", Admission(FAN_OUT * 4))
@@ -198,11 +178,10 @@ async def test_one_ensemble_call_is_one_worker_thread_per_enabled_predictor(
 async def test_a_full_pod_refuses_the_next_prediction_before_starting_it(
     registry_of: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The driven saturation probe: an ensemble holds the pod, the next call is refused promptly.
+    """An ensemble holds the pod, and the next call is refused promptly.
 
-    "Promptly" is measured against the work it would have queued behind rather than against a bare
-    clock — the forward pass in flight is held open until this test releases it, so a gate that
-    queued could not answer at all.
+    The in-flight forward pass is held open until the test releases it, so a gate that queued could
+    not answer at all.
     """
     blocking = _BlockingPredictor("blocking")
     registry_of(blocking)
@@ -280,11 +259,9 @@ async def test_the_tools_that_offload_nothing_stay_answerable_while_the_pod_is_f
 
 
 def test_an_ensemble_wider_than_the_pod_takes_it_exclusively_rather_than_forever_refused() -> None:
-    """The clamp: a cost above the ceiling runs alone, it is never made unadmittable.
+    """A cost above the ceiling runs alone; it is never made unadmittable.
 
-    At the shipped ceiling of two, an ensemble over five predictors is exactly this case — which is
-    the intended answer rather than a side effect. Two ensembles over five models is ten forward
-    passes on two cores, every one slower than it would have been alone.
+    At the shipped ceiling an ensemble over five predictors is exactly this case, by intent.
     """
     gate = Admission(2)
     assert gate.acquire("a predict_forward_reaction", 30) == 2
@@ -297,16 +274,11 @@ def test_an_ensemble_wider_than_the_pod_takes_it_exclusively_rather_than_forever
 def test_a_prediction_is_charged_the_models_threads_rather_than_one_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A slot is a core, and torch's intra-op width is the second multiplier a call count misses.
+    """A prediction is charged the model's torch threads rather than one call.
 
-    `torch.get_num_threads()` is sized from the machine's physical cores rather than from the
-    container's cgroup, so unpinned a forward pass in a two-core pod on a large node is a thread
-    count nobody chose. The image pins `OMP_NUM_THREADS=1` (held by `tests/test_fleet_images.py::
-    test_every_torch_image_pins_its_inference_thread_width`); a deployment may raise it, and the
-    charge must follow whatever torch reports. Driven with a stub `torch`
-    rather than the real extra, which no test environment here carries: what is under test is the
-    number `inference_threads()` *reads*, and reading a real torch would assert this runner's core
-    count instead.
+    Torch's intra-op width comes from `OMP_NUM_THREADS` or the node's cores, not the cgroup; the
+    image pins it to 1, a deployment may raise it, and the charge follows what torch reports. A stub
+    `torch` is used, so the test reads what `inference_threads()` reads, not this runner's cores.
     """
     assert config.inference_threads() == 1, "torch is absent here, so one core is the honest cost"
 
@@ -325,11 +297,10 @@ UNGATED = {"list_available_models", "classify_reaction"}
 
 
 def test_every_predicting_tool_is_gated_and_only_the_two_that_offload_nothing_are_not() -> None:
-    """Derived from the served surface, so a predictor tool added next year is gated or this fails.
+    """Every predicting tool is gated except the two that offload nothing, derived from the surface.
 
-    A hand-kept list of gated names here would be the second declaration this repository refuses
-    everywhere else: it would agree with itself while a new tool shipped as the one uncounted way
-    to load this pod.
+    A hand-kept list would agree with itself while a new tool shipped as an uncounted way to load
+    the pod.
     """
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
@@ -347,12 +318,9 @@ def test_every_predicting_tool_is_gated_and_only_the_two_that_offload_nothing_ar
 def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """This pod's ceiling is settable from outside the image, and the gate is what was built.
+    """The ceiling is settable from the environment, read off the module under two environments.
 
-    Read off the module under two environments rather than re-typed into this file. The version
-    this replaces compared `int(os.environ.get(...))` to itself and asserted that `os.environ.get`
-    works: hardcoding `tools._admission = Admission(64)` — 32x the pod's cores, the variable
-    ignored — left it and 202 other tests green.
+    Re-typing the expression here would only prove `os.environ.get` works.
     """
     monkeypatch.delenv("CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS", raising=False)
     assert reimported(tools)._admission.limit == DEFAULT_MAX_CONCURRENT_PREDICTIONS
@@ -363,10 +331,8 @@ def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
 def test_the_shipped_gate_enforces_the_shipped_default() -> None:
     """The module-level gate is the one the server serves behind, at the default ceiling.
 
-    Cheap and easy to leave out, and it is what makes every `monkeypatch`ed ceiling in this file
-    evidence about the real gate rather than about an `Admission` the tests built for themselves.
-    `servers/chem` has had it since its gate was written; this server copied the gate and not the
-    test, so until now nothing here read `tools._admission` at all.
+    This makes every monkeypatched ceiling in this file evidence about the real gate rather than
+    about an `Admission` the tests built for themselves.
     """
     assert isinstance(tools._admission, Admission)
     assert tools._admission.limit == DEFAULT_MAX_CONCURRENT_PREDICTIONS
@@ -375,10 +341,7 @@ def test_the_shipped_gate_enforces_the_shipped_default() -> None:
 def test_a_gated_tool_still_advertises_its_real_signature() -> None:
     """`functools.wraps` is load-bearing: without it the tool's schema is `(*args, **kwargs)`.
 
-    FastMCP builds each tool's input schema from `inspect.signature`, which follows `__wrapped__`.
-    A gate that quietly replaced every argument name with `kwargs` would be invisible in this
-    server's own tests and fatal to the agent reading the schema — and the gate's own docstring is
-    the only thing that said so in this server until now.
+    FastMCP builds the input schema from `inspect.signature`, which follows `__wrapped__`.
     """
     schema = asyncio.run(tools.server.list_tools())
     predicted = next(tool for tool in schema if tool.name == "predict_forward_reaction")
@@ -402,17 +365,11 @@ class _RecordingAdmission(Admission):
 async def test_the_charge_does_not_follow_the_callers_models_argument(
     registry_of: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The most-argued property of this gate, and nothing in this file asserted it.
+    """The charge does not follow the caller's `models` argument.
 
-    `_forward_ensemble_slots` reads `_forward_predictors(None)` — the *deployment's* enabled list —
-    rather than the caller's `models`, because a charge a caller can lower by naming one model is a
-    ceiling a caller can walk past. The execution path narrows on `models` and the charge does not,
-    which is the asymmetry that makes the walk-past possible and the reason both halves are
-    asserted here: a version that narrowed neither would pass an assertion about the charge alone
-    while having nothing left to protect.
-
-    Mutating `_admitted` to take its cost from `kwargs.get("models")` left all 11 tests in this
-    file and all 112 in this server green.
+    The charge reads the deployment's enabled list, because a cost a caller could lower by naming
+    one model is a ceiling it could walk past. Execution narrows on `models` and the charge does
+    not; both halves are asserted, since a version narrowing neither would pass on the charge alone.
     """
     registry_of(*(_SlowPredictor(f"slow_{index}") for index in range(FAN_OUT)))
     one = ["slow_0"]
@@ -426,10 +383,8 @@ async def test_the_charge_does_not_follow_the_callers_models_argument(
     gate = _RecordingAdmission(ensemble * 4)
     monkeypatch.setattr(tools, "_admission", gate)
 
-    # By keyword first, because that is how the tool is invoked in service — FastMCP unpacks the
-    # validated arguments as `**kwargs` — and positionally second, so a charge that read the
-    # narrowing off either calling convention is caught. The first of those two is the arm that
-    # matters: a mutation taking the cost from `kwargs.get("models")` is invisible to the other.
+    # By keyword first (how FastMCP invokes the tool in service) and positionally second, so a
+    # charge reading the narrowing off either calling convention is caught.
     await tools.predict_forward_reaction(reactants=REACTANTS, top_k=1, models=one)
     await tools.predict_forward_reaction(REACTANTS, 1, one)
     await tools.predict_forward_reaction(REACTANTS, 1)
@@ -460,13 +415,10 @@ def test_the_ceiling_is_the_pods_own_core_count() -> None:
 def test_the_ceiling_set_to_nothing_refuses_at_import_and_names_the_variable(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """This server's ceiling has no "off", and it now says so instead of implying it.
+    """The ceiling has no "off": `0` or a negative refuses at import, naming the variable.
 
-    `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, so `0` is the value an operator is most
-    likely to try here — and it means the opposite. `Admission` refuses it, but its message names
-    the ceiling rather than the variable that set it, which leaves a CrashLoopBackOff and a number
-    whose source has to be guessed. The assertion is on the variable's own name, because that is
-    the one thing an operator reading a crash loop can act on.
+    `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, so `0` is what an operator tries here.
+    The variable's name in the message is what an operator reading a crash loop can act on.
     """
     monkeypatch.setenv("CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS", value)
     with pytest.raises(ValueError, match="CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS"):

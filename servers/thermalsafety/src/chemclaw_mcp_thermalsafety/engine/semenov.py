@@ -1,25 +1,14 @@
 """The Semenov heat balance: the temperature at which cooling stops winning.
 
-`runaway.py` answers "what happens with **no** cooling at all" — an adiabatic rise, a TMR_ad, a
-criticality class. This module answers the other half: a vessel or a package that *does* lose heat
-to its surroundings is stable until the exponential growth of the decomposition rate outruns the
-linear growth of the heat loss, and the ambient temperature where that crossover happens is the one
-a storage or transport decision turns on.
+`runaway.py` covers no cooling at all; this covers a vessel or package that loses heat and is stable
+until the exponential decomposition rate outruns linear heat loss. The ambient where that happens
+drives storage and transport decisions.
 
-**What the Semenov model assumes, stated because every one of them is a way to get the wrong
-answer.** The contents are at a uniform temperature (well-stirred liquid, or a solid small enough
-that internal conduction is not the limit); the heat loss is Newtonian, `U·A·(T - T_ambient)`; the
-kinetics are a single zero-order Arrhenius step over the region of interest; and no reactant is
-consumed. Each is conservative in some regimes and optimistic in others — a large solid package is
-conduction-limited and needs Frank-Kamenetskii instead, and a real decomposition that autocatalyses
-runs away below what this returns.
-
-**So `sadt_semenov` is not an SADT.** A Self-Accelerating Decomposition Temperature is *defined* by
-UN Test Series H — H.1 (the United States SADT test), H.2, H.3 or H.4 — on a **specific package** in
-a specific size, and a number computed from a heat balance is an estimate for planning which test to
-book and at what temperature to start. The function is named for the model rather than for the
-regulation on purpose, and the tool that wraps it says the same thing to the model in its first
-line. Shipping this as `sadt` would be shipping a regulatory determination as arithmetic.
+Assumptions: uniform contents temperature, Newtonian loss `U·A·(T - T_ambient)`, single zero-order
+Arrhenius kinetics, no reactant consumption. A large solid package needs Frank-Kamenetskii instead,
+and an autocatalytic decomposition runs away below this answer. `sadt_semenov` is therefore not an
+SADT, which is defined by UN Test Series H on a specific package; it is a planning estimate for
+which test to book.
 """
 
 from __future__ import annotations
@@ -35,16 +24,12 @@ from chemclaw_mcp_thermalsafety.engine.runaway import (
     _positive,
 )
 
-#: The bracket the crossover is searched in, in kelvin. The lower bound is below any storage
-#: ambient anybody transports at; the upper is above the temperature at which "stable" has stopped
-#: being the question. A crossover outside it is *reported* rather than clamped — a clamped root
-#: would be returned as a number and read as one.
+#: The search bracket in kelvin. A crossover outside it is reported, never clamped into a number.
 _SEARCH_LOW_K = 233.15  # -40 °C
 _SEARCH_HIGH_K = 673.15  # 400 °C
 
-#: The bisection's stopping width, in kelvin. Far finer than the model's own accuracy, so that the
-#: reported value is limited by the physics rather than by the search — and the UN convention of
-#: rounding an SADT *up* to the next 5 °C is applied by the caller, not hidden in here.
+#: Bisection stopping width, K: far finer than the model's accuracy. Rounding an SADT up to 5 °C is
+#: the caller's job.
 _TOLERANCE_K = 1e-4
 
 
@@ -52,19 +37,14 @@ _TOLERANCE_K = 1e-4
 class SemenovBalance:
     """Where heat generation overtakes heat loss, and the ambient that puts it there."""
 
-    #: The ambient temperature, °C, at which the balance is exactly tangential — above this the
-    #: package self-heats without bound under this model.
+    #: The ambient, °C, at which the balance is exactly tangential; above it the package self-heats
+    #: without bound under this model.
     critical_ambient_c: float
-    #: The contents' temperature, °C, at that tangency. Always above `critical_ambient_c`; the gap
-    #: is `R·T²/Ea` and is the model's whole content in one number.
+    #: The contents' temperature, °C, at that tangency; above `critical_ambient_c` by `R·T²/Ea`.
     critical_contents_c: float
-    #: The self-heat at tangency, K — the steady-state excess the contents run at just before the
-    #: balance is lost. Returned because a gap of a few kelvin and a gap of forty are very different
-    #: situations that the critical ambient alone does not distinguish.
+    #: The self-heat at tangency, K; distinguishes a few kelvin of margin from forty.
     self_heating_at_criticality_k: float
-    #: The heat the decomposition releases at tangency, W. Returned for the same reason the balance
-    #: is: it is what the loss term has to match, and a chemist can sanity-check it against the
-    #: calorimetry the inputs came from.
+    #: The decomposition's heat output at tangency, W, for a sanity check against the calorimetry.
     heat_generation_at_criticality_w: float
 
 
@@ -78,19 +58,13 @@ def heat_generation_w(
 ) -> float:
     """The decomposition's heat output at a temperature, W, from one measured rate.
 
-    Zero-order Arrhenius extrapolation of a single measured point:
-    `Q(T) = m · q_ref · exp(-Ea/R · (1/T - 1/T_ref))`. One measured rate plus an activation energy
-    is what a DSC or ARC report actually gives, which is why the signature takes that pair rather
-    than a pre-exponential factor nobody has to hand.
-
-    **Extrapolating far below the measured point is where this is wrong**, and it is wrong in the
-    unsafe direction for an autocatalytic decomposition: the measured rate at 200 °C says nothing
-    about an induction period at 40 °C. The caller states the reference; this function will not
-    guess one.
+    `Q(T) = m · q_ref · exp(-Ea/R · (1/T - 1/T_ref))`: one measured rate plus Ea, which is what a
+    DSC or ARC report gives. Extrapolating far below the reference is unsafe for an autocatalytic
+    decomposition (an induction period is invisible).
 
     Raises:
-        ThermalInputError: a non-positive mass, rate or activation energy, or a temperature at or
-            below absolute zero.
+        ThermalInputError: A non-positive mass, rate or activation energy, or a temperature at or
+        below absolute zero.
     """
     temperature_k = _kelvin(temperature_c, name="temperature")
     reference_k = _kelvin(reference_temperature_c, name="reference_temperature")
@@ -116,26 +90,18 @@ def semenov_criticality(
 ) -> SemenovBalance:
     """The tangency of the Semenov balance, and the ambient temperature that produces it.
 
-    At the critical condition the generation and loss curves touch, so their values **and** their
-    slopes are equal:
+    At the critical condition the generation and loss curves touch, so values and slopes are equal:
 
         Q(T_c) = U·A·(T_c - T_a)          and          dQ/dT|_{T_c} = U·A
 
-    The second equation has one unknown, `T_c`, because `dQ/dT = Q·Ea/(R·T²)` — it is solved by
-    bisection over `_SEARCH_LOW_K`..`_SEARCH_HIGH_K`, where the function is monotone because `Q`
-    grows faster than `T²`. Substituting back into the first gives the whole model in one line:
-
-        T_a = T_c - R·T_c²/Ea
-
-    so the critical *self-heating* is `R·T_c²/Ea` and nothing else. That is why a high activation
-    energy is dangerous here rather than reassuring: it makes the tolerable self-heat smaller, so a
-    package sits closer to its own crossover than the same heat release at a lower Ea would.
+    Since `dQ/dT = Q·Ea/(R·T²)`, the second has one unknown and is solved by bisection (monotone in
+    the bracket). Then `T_a = T_c - R·T_c²/Ea`: the critical self-heat is `R·T_c²/Ea`, so a high
+    activation energy narrows the margin rather than reassuring.
 
     Raises:
-        ThermalInputError: any non-positive quantity, a temperature at or below absolute zero, or a
-            tangency outside the search bracket — which means the package is either stable at every
-            temperature this model is worth running at, or already past crossover at -40 °C. Both
-            are reported rather than returned as a clamped number.
+        ThermalInputError: A non-positive quantity, a temperature at or below absolute zero, or a
+        tangency outside the search bracket (stable everywhere relevant, or already past crossover
+        at -40 °C).
     """
     conductance = _positive(
         heat_transfer_coefficient_w_per_m2_k,
@@ -206,9 +172,7 @@ def semenov_criticality(
 def round_up_to_nearest_five(celsius: float) -> int:
     """The UN convention for reporting an SADT: round **up** to the next whole 5 °C.
 
-    Separate from `semenov_criticality` on purpose. The model produces a continuous number; this is
-    a reporting rule from the *Manual of Tests and Criteria* (§28.1.4.2), and folding it into the
-    physics would make it impossible for a caller to see the unrounded value — which is the one that
-    says how much margin there is.
+    A reporting rule (*Manual of Tests and Criteria* §28.1.4.2), kept separate so the unrounded
+    value — the real margin — stays visible.
     """
     return int(math.ceil(celsius / 5.0) * 5)

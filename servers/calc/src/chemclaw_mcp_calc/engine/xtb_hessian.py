@@ -1,29 +1,12 @@
 """The Hessian: the expensive half of every vibrational question, kept as its own spec.
 
-A Hessian depends on exactly two things: the geometry, and the method that produced the second
-derivatives. It does **not** depend on the temperature, the pressure, the rotational symmetry number
-or the quasi-RRHO cutoff — those are arithmetic applied afterwards. `HessianSpec` is therefore
-deliberately narrower than `ThermoSpec`, and that narrowness is the whole point: two thermochemistry
-requests differing only in temperature project onto the *same* `HessianSpec`, so on the Chemclaw3
-side the cheap answer misses and the expensive one hits.
+A Hessian depends only on the geometry and the method, not on temperature, pressure, symmetry
+number or quasi-RRHO cutoff, so `HessianSpec` is narrower than `ThermoSpec` and thermochemistry
+requests differing only in temperature share one cached Hessian on the Chemclaw3 side.
 
-**Ported without the artifact store, and with a wire format instead.** In Chemclaw3 the 3N by 3N
-matrix is too large for a JSONB result row, so it lives in a content-addressed blob store and the
-row holds the addresses. None of that machinery is here — no store, no eviction, no
-row-whose-blob-is-gone — but the matrix still has to reach the caller, so `packed()` serializes it
-the same way Chemclaw3's store already holds it: **`.npy` bytes, base64 for JSON transport**.
-
-That choice is not arbitrary. `.npy` round-trips float64 exactly (a JSON array of decimal literals
-does not, and is nearly twice the size), it is self-describing about shape and dtype, and it is
-byte-for-byte what Chemclaw3's `calculation_artifacts` table stores — so a caller can put the bytes
-straight into its artifact store without re-serializing anything.
-
-**The size ceiling is `xtb_hessian_max_atoms`, and it is worth doing the arithmetic once.** At the
-default 150 atoms the matrix is 450x450 float64 = 1.62 MB raw, ~2.16 MB base64; the dipole
-derivatives are 450x3 = 10.8 kB. So a response tops out near 2.2 MB. That is above
-`mcp_server_kit.DEFAULT_MAX_REQUEST_BYTES` (1 MB) — which caps *requests* and not responses, so it
-does not apply here, but a deployment putting a proxy in front of this server should know the
-number. Lowering `CHEMCLAW_XTB_HESSIAN_MAX_ATOMS` lowers the ceiling quadratically.
+The matrix crosses the wire as base64 `.npy` (`pack_array`), the format Chemclaw3's
+`calculation_artifacts` stores. At the default `xtb_hessian_max_atoms` a response is about
+2.2 MB — above the request cap, which does not apply to responses, but worth knowing for a proxy.
 """
 
 from __future__ import annotations
@@ -49,10 +32,8 @@ __all__ = ["Hessian", "HessianSpec", "compute_hessian", "pack_array", "unpack_ar
 class HessianSpec(XtbSpec):
     """Settings of one second-derivative calculation — everything that moves the matrix.
 
-    Deliberately narrower than `ThermoSpec`: `temperature_k`, `pressure_pa`, `symmetry_number` and
-    `rrho_cutoff_cm` are absent because a Hessian does not depend on them. That absence *is* the
-    fix — `XtbSpec.cache_key` keys on `model_dump()`, so a field that is not here cannot force a
-    recomputation.
+    Temperature, pressure, symmetry number and RRHO cutoff are absent on purpose: `cache_key` keys
+    on `model_dump()`, so a field not here cannot force a recomputation.
     """
 
     task: Literal["hess"] = "hess"
@@ -65,38 +46,22 @@ class HessianSpec(XtbSpec):
 class Hessian:
     """The second derivatives of one geometry, plus what the run collected alongside them.
 
-    Not a pydantic model: it holds numpy arrays and never crosses the wire — `ThermochemistryResult`
-    is what a caller receives.
-
-    Exactly one of `ir_intensities` and `dipole_derivatives` is populated, and which one says which
-    backend ran. The `xtb` binary computes intensities itself and reports one per Cartesian mode
-    (translations and rotations included, which the caller reconciles); the in-process path returns
-    the dipole derivatives it collected while displacing, from which intensities are derived once
-    the normal modes are known.
-
-    `ir_wavenumbers_cm` accompanies `ir_intensities` and only it: it is the binary's own wavenumber
-    for each of those entries, so a caller can match a band to its intensity instead of counting how
-    many external modes it believes xtb projected out. The in-process path has no wavenumbers to
-    report — it hands over dipole derivatives, and the caller diagonalizes.
+    Not a pydantic model: it holds numpy arrays and never crosses the wire. Exactly one of
+    `ir_intensities` (binary backend, one per Cartesian mode, with `ir_wavenumbers_cm` to match
+    bands) and `dipole_derivatives` (in-process; intensities are derived once modes are known) is
+    populated, and which one says which backend ran.
     """
 
     matrix: np.ndarray
     electronic_energy_hartree: float
-    # Largest absolute gradient component at the undisplaced geometry, in Hartree/Angstrom — the
-    # evidence that this geometry is (or is not) a stationary point. `None` on the binary backend,
-    # which reports no gradient beside its Hessian and would need a second run to produce one.
-    #
-    # It is evidence rather than a gate on purpose: a Hessian at a transition state or a scan point
-    # is a legitimate request, so this module differentiates what it is given and says what it was.
-    # The caller is what cannot tell today: Chemclaw3's `thermo._vibrational` drops every mode with
-    # `wavenumber <= 0`, so an unrelaxed geometry yields a ZPE, a thermal correction and an entropy
-    # that all look entirely ordinary — and a geometry displaced along a soft, positively curved
-    # direction shows no imaginary mode at all, so `is_minimum` cannot see it either.
+    # Largest absolute gradient component at the undisplaced geometry, in Hartree/Angstrom: evidence
+    # of whether this is a stationary point. `None` on the binary backend. Evidence, not a gate,
+    # since a Hessian at a transition state or scan point is legitimate; downstream thermochemistry
+    # drops non-positive modes and cannot tell otherwise.
     max_gradient: float | None = None
     ir_intensities: np.ndarray | None = None
-    # The wavenumber (cm^-1) of each entry of `ir_intensities`, in the same order — negative for an
-    # imaginary mode, zero for a projected-out translation or rotation. `None` whenever
-    # `ir_intensities` is, because the pair is one datum.
+    # Wavenumber (cm^-1) of each `ir_intensities` entry, same order — negative for imaginary, zero
+    # for a projected-out mode. `None` whenever `ir_intensities` is.
     ir_wavenumbers_cm: np.ndarray | None = None
     dipole_derivatives: np.ndarray | None = None
 
@@ -106,21 +71,13 @@ def _finite_difference(
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Central-difference Hessian and dipole derivatives at `structure`'s geometry.
 
-    Returns `(hessian, dipole_derivatives, energy, max_gradient)` — the Hessian in
-    Hartree/Angstrom^2, shape (3N, 3N), the dipole derivatives in Debye/Angstrom, shape (3N, 3), the
-    electronic energy at the undisplaced geometry, and the largest absolute component of the
-    analytic gradient there.
+    Returns `(hessian, dipole_derivatives, energy, max_gradient)`: the Hessian in
+    Hartree/Angstrom^2, shape (3N, 3N); dipole derivatives in Debye/Angstrom, shape (3N, 3); the
+    energy at the undisplaced geometry; and the largest analytic gradient component there (already
+    computed, so free).
 
-    **The energy comes back from here because this function already holds the calculator.** The
-    caller used to build a *second* calculator over the same system to get it — a second Hamiltonian
-    assembly, measured at 2 per Hessian against 1 now. **The gradient comes back for the opposite
-    reason**: it was already computed by the undisplaced `evaluate_point` below and thrown away, and
-    it is the exact quantity that separates "this is a minimum" from "this is a force-field guess".
-
-    Cost is 6N + 1 single points: the gradient is analytic, so only *first* derivatives need
-    differencing. The Hessian is symmetrized afterwards — central differences of an exact gradient
-    give a nearly symmetric matrix, and forcing the symmetry removes the small asymmetry that would
-    otherwise put a spurious imaginary component into the eigenvalues.
+    6N + 1 single points, since the gradient is analytic. The Hessian is symmetrized afterwards to
+    remove the small asymmetry that would put spurious imaginary components into the eigenvalues.
     """
     numbers, positions = structure.arrays()
     calc = make_calculator(
@@ -138,9 +95,8 @@ def _finite_difference(
     deadline = Deadline(settings.xtb_inline_timeout_seconds)
     energy, gradient, _ = evaluate_point(calc, positions)
     for index in range(size):
-        # Between displacements, which is the finest granularity there is: a single point is not
-        # interruptible, and 6N + 1 of them at the 150-atom cap is ~25 minutes against a caller that
-        # gives up at 900 s and a worker thread that does not stop when it does.
+        # Checked between displacements, the finest granularity: a single point is not interruptible
+        # and the worker thread does not stop when the caller gives up.
         deadline.check("Hessian")
         shifted = positions.copy().ravel()
         shifted[index] += step
@@ -156,29 +112,13 @@ def _finite_difference(
 def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
     """The second derivatives at `structure`.
 
-    The `xtb` binary computes both the Hessian and the IR intensities itself and is far faster at it
-    — measured, a 76-atom Hessian in 26 s against 218 s of finite differences. What it does *not*
-    get to supply is the thermochemistry over them: that stays in `xtb_thermo`, so the symmetry
-    number remains an explicit input and the quasi-RRHO treatment is identical whichever backend
-    ran, which is what keeps free energies from the two comparable.
+    The `xtb` binary computes the Hessian and IR intensities itself, much faster than finite
+    differences; thermochemistry stays in `xtb_thermo` so both backends get identical treatment.
+    Returns the gradient at the undisplaced geometry, since non-stationary geometries are accepted.
 
-    **Returns the gradient at the undisplaced geometry beside the matrix**, because this function
-    accepts a non-stationary geometry deliberately — a transition state and a scan point are both
-    legitimate subjects — and the caller otherwise has no way to tell one from an unrelaxed
-    embedding. It costs nothing: the number is already computed.
-
-    Raises `ValueError` above `settings.xtb_hessian_max_atoms`, and again if the in-process run
-    exceeds `settings.xtb_inline_timeout_seconds`: the cost is 6N single points, and blocking an
-    agent turn for minutes is a worse failure than refusing.
-
-    **The refusal states this server's limit and names no alternative**, and the second half is the
-    part that took a correction: it used to end "Submit it through Chemclaw3's durable QM job path
-    instead" while this very paragraph claimed it did not, and that route had been deleted outright
-    (`D-2026-08-26-semiempirical-is-the-whole-tier`). A tool error is prompt, so a refusal naming a
-    route nobody can take sends the model — and then a chemist — looking for it. Where to go next
-    is orchestration knowledge this server does not have; Chemclaw3 owns it and refuses first, in
-    `science/calc/budget.py::require_hessian_affordable`, so this bound is the backstop for a caller
-    that is not Chemclaw3.
+    Raises `ValueError` above `settings.xtb_hessian_max_atoms`, or if the in-process run exceeds
+    `settings.xtb_inline_timeout_seconds`. The refusal states this server's limit and names no
+    alternative route: Chemclaw3 owns that knowledge and refuses first; this is the backstop.
     """
     if len(structure.elements) > settings.xtb_hessian_max_atoms:
         raise ValueError(
@@ -214,11 +154,8 @@ def compute_hessian(spec: HessianSpec, structure: Structure) -> Hessian:
 def pack_array(array: np.ndarray) -> str:
     """Serialize a float array as base64-encoded `.npy` — how a Hessian crosses the wire.
 
-    `.npy` rather than a JSON array of numbers for three reasons, in order of importance: it
-    round-trips float64 **exactly** where decimal literals do not, it carries its own shape and
-    dtype so a truncated payload fails to load instead of reshaping into something plausible, and it
-    is the format Chemclaw3's artifact store already holds these in — so the bytes a caller receives
-    are the bytes it can store, with no second serialization to disagree about.
+    `.npy` round-trips float64 exactly, carries shape and dtype (a truncated payload fails to load),
+    and is what Chemclaw3's artifact store holds, so the bytes can be stored as received.
     """
     buffer = io.BytesIO()
     np.save(buffer, array, allow_pickle=False)
@@ -226,10 +163,8 @@ def pack_array(array: np.ndarray) -> str:
 
 
 def unpack_array(encoded: str) -> np.ndarray:
-    """Read a `pack_array` payload back into an array — the inverse, and the round-trip test's other
-    half.
+    """Read a `pack_array` payload back into an array.
 
-    `allow_pickle=False` because these bytes come off a wire: pickle deserialization is arbitrary
-    code execution, and nothing this module produces needs it.
+    `allow_pickle=False`: these bytes come off a wire, and unpickling is arbitrary code execution.
     """
     return np.asarray(np.load(io.BytesIO(base64.b64decode(encoded)), allow_pickle=False))

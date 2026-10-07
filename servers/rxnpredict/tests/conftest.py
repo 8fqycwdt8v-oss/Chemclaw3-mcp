@@ -1,14 +1,8 @@
 """Deterministic stand-in predictors, so the ensemble path is tested without a GPU or a checkpoint.
 
-The predictors this server ships are large: `reaction_t5_v2` is a T5 checkpoint and `rxn_insight`
-pulls a transformer of its own. A test suite that needed them would run nowhere and would be
-skipped everywhere, which is how the interesting half of a server ends up untested — upstream's own
-smoke test settles for asserting the endpoint returns "200 or 503".
-
-So the *aggregation* is tested against fakes that return fixed, known predictions. That is the part
-this fork can break: the models are third-party and their weights are frozen, while the voting,
-the class gating, the selection rules and the tool surface are ours. A fake predictor is the right
-double here precisely because a real one adds no information about any of them.
+The real predictors are large third-party models with frozen weights; what this fork can break
+is the voting, class gating, selection rules and tool surface. Fakes with fixed, known
+predictions test exactly that, and a real model would add no information about any of it.
 """
 
 from __future__ import annotations
@@ -29,9 +23,8 @@ from chemclaw_mcp_rxnpredict.engine.config import reset_settings_for_tests
 def fake_predictors() -> Iterator[None]:
     """Register two forward and two condition doubles, and restore the registry afterwards.
 
-    The two forward doubles agree on one product and disagree on the rest, which is the case the
-    consensus exists to resolve — a test where every model returns the same thing would pass under
-    an aggregator that ignored its inputs entirely.
+    The forward doubles agree on one product and disagree on the rest, so an aggregator that ignored
+    its inputs would fail.
     """
     saved_forward = dict(registry._FORWARD)
     saved_conditions = dict(registry._CONDITIONS)

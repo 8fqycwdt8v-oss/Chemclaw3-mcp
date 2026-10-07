@@ -1,8 +1,7 @@
 """What the tools answer, and what they refuse to answer.
 
-The aggregation is what this fork can break — the model weights are third-party and frozen, while
-the voting, the class gating, the predictor selection and the tool surface are ours. So these tests
-drive the full ensemble path through the MCP tool functions with deterministic doubles.
+The voting, class gating, predictor selection and tool surface are what this fork can break, so
+these drive the full ensemble path through the tool functions with deterministic doubles.
 """
 
 from __future__ import annotations
@@ -147,13 +146,11 @@ async def test_a_repeated_call_is_served_from_the_cache(fake_predictors: None) -
 async def test_the_top_consensus_score_measures_agreement_rather_than_being_one_by_definition(
     fake_predictors: None,
 ) -> None:
-    """A confidence that is always maximal measures nothing, and this one always was.
+    """The top consensus score measures agreement rather than being 1.0 by definition.
 
-    The score was `weight / max_weight` over the sorted candidates, so rank 1's weight *was*
-    `max_weight` and rank 1 scored exactly 1.0 — for a five-model unanimous vote and for one model
-    that guessed a product at a per-token probability of 1e-4 alike. The denominator has to be the
-    weight a candidate *could* have had (every voting model ranking it first at full confidence),
-    not the weight the winner happened to get.
+    The denominator is the weight a candidate could have had (every voting model ranking it first at
+    full confidence), not the winner's weight, so one low-confidence guess no longer scores like a
+    unanimous vote.
     """
     from chemclaw_mcp_rxnpredict.engine.config import Settings
     from chemclaw_mcp_rxnpredict.engine.meta.aggregator import aggregate_forward
@@ -185,12 +182,10 @@ async def test_the_top_consensus_score_measures_agreement_rather_than_being_one_
 async def test_a_disabled_predictor_is_unreachable_through_the_single_model_tool(
     fake_predictors: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One function must decide what this deployment serves, or the control is not a control.
+    """A disabled predictor is unreachable through the single-model tool.
 
-    The ensemble tools narrowed the registry through `_select`; the single-model tools looked the
-    predictor up in the raw registry and called it. So a predictor an operator switched off after a
-    bad checkpoint bake stayed fully callable through a declared, advertised `read_only` tool — and
-    `list_available_models`, the one tool a caller would check, reported it `available: true`.
+    One function decides what the deployment serves, for ensemble and single-model tools alike, so a
+    predictor switched off after a bad checkpoint cannot stay callable or listed as available.
     """
     monkeypatch.setenv("CHEMCLAW_RXNPREDICT_DISABLED_MODELS", "fake_b,fake_d")
     from chemclaw_mcp_rxnpredict.engine.config import reset_settings_for_tests
@@ -213,12 +208,10 @@ async def test_a_disabled_predictor_is_unreachable_through_the_single_model_tool
 
 
 async def test_top_k_is_bounded_on_the_tools_that_are_actually_served() -> None:
-    """The bound lived in request envelopes nothing imports; the served schema had none.
+    """`top_k` is bounded on the served tool schemas.
 
-    `reaction_t5` passes `top_k` straight into `num_beams` and `num_return_sequences`, so an
-    unbounded integer is an unbounded allocation inside a worker thread that a client timeout does
-    not stop. `top_k=-1` was accepted too, and `sorted_candidates[:-1]` then dropped the only
-    prediction, so `per_model` and `consensus` contradicted each other.
+    It feeds beam search directly, so an unbounded value is an unbounded allocation a client timeout
+    cannot stop, and a negative one would slice away the only prediction.
     """
     schemas = {tool.name: tool.inputSchema for tool in await tools.server.list_tools()}
     for name in (
@@ -236,12 +229,10 @@ async def test_top_k_is_bounded_on_the_tools_that_are_actually_served() -> None:
 async def test_a_concurrent_first_request_loads_the_checkpoint_once(
     fake_predictors: None,
 ) -> None:
-    """Three requests arriving before the first load finishes must not be three checkpoints.
+    """Concurrent first requests load the checkpoint once.
 
-    `if not self._loaded: await ...; self._loaded = True` straddles an await with no lock, so every
-    coroutine that arrived first saw `False`. For `reaction_t5_v2` each load is a full T5
-    checkpoint into a fresh allocation, in a pod sized for one — three at once is an OOMKill and a
-    restart back into the same window.
+    The lazy load straddles an await, so without a lock every early coroutine loads its own full
+    checkpoint into a pod sized for one, which OOMKills it.
     """
     import asyncio
 
@@ -274,14 +265,9 @@ async def test_a_concurrent_first_request_loads_the_checkpoint_once(
 
 # --- A zero-success ensemble ------------------------------------------------------------------
 #
-# `gather(..., return_exceptions=True)` and `continue` degrade an ensemble one predictor at a time,
-# which is right — and it kept degrading all the way to nothing. With every installed predictor
-# raising `OSError("egress refused")` — exactly the shape of `EgressForbidden`, which subclasses
-# `OSError` — both ensemble tools returned `consensus: []`, `per_model: {}`, `n_models_succeeded: 0`
-# and `isError: false`. A vanished checkpoint mount and an egress guard refusing every weight fetch
-# both read, from outside the pod, as a healthy server answering a hard question: the tool-call
-# counter booked `outcome="ok"`, and the `refused`/`failed` split that exists for precisely this
-# showed nothing. A consensus over nothing is not an answer, so it is a refusal.
+# The ensemble degrades one predictor at a time, which is right, but with every predictor raising
+# (e.g. `EgressForbidden`, an `OSError`) it must refuse rather than return an empty consensus that
+# reads as a healthy answer and books `outcome="ok"`.
 
 
 async def _explode(*_args: object, **_kwargs: object) -> list[object]:
@@ -326,12 +312,10 @@ async def test_a_narrowed_ensemble_whose_only_predictor_fails_refuses(
 async def test_the_refusal_quotes_the_exception_type_and_not_its_message(
     fake_predictors: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A refusal reaches the model verbatim, so it carries the fault's *type*, never its text.
+    """A refusal reaches the model verbatim, so it carries the fault's type, never its text.
 
-    `connector_app` passes a `ValueError` through unchanged and replaces every other exception, so
-    anything folded into this message is published to the caller. A predictor's own exception text
-    is where a checkpoint path, a DSN or a token would be; the log line beside it carries the full
-    `repr` for an operator, keyed by the same predictor name.
+    `connector_app` passes a `ValueError` through unchanged, and a predictor's own exception text is
+    where a checkpoint path, DSN or token would be; the log line carries the full `repr`.
     """
 
     async def leak(*_args: object, **_kwargs: object) -> list[object]:
@@ -360,11 +344,10 @@ async def test_a_partial_success_still_answers_and_still_carries_the_spread(
 async def test_a_single_model_tool_lets_its_predictor_s_failure_through(
     fake_predictors: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The single-model tools never had the swallow, and this is what keeps it that way.
+    """A single-model tool lets its predictor's failure propagate.
 
-    They query one predictor and await it directly, so a fault propagates and `connector_app`
-    books `outcome="failed"` and replaces the text. Asserting the absence is what makes the
-    ensemble fix above a *narrowing* rather than a claim about the whole server.
+    `connector_app` then books `outcome="failed"` and replaces the text; this keeps the ensemble's
+    refusal a narrow rule rather than a whole-server claim.
     """
     monkeypatch.setattr(registry.get_forward("fake_a"), "predict", _explode)
     with pytest.raises(OSError, match="egress refused"):

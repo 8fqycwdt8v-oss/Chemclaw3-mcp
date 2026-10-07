@@ -1,21 +1,9 @@
 """Which bonds of a molecule can be rotated, and how a chemist names one.
 
-**The problem this exists to remove.** Chemclaw3's `scan_coordinate` names an internal coordinate by
-atom index, and its scan composer checks only that the indices are in range — a bounds check, not an
-identity check. Measured on RDKit: `(4, 5)` is the amide C-N of `c1ccc(NC(C)=O)cc1` and an *aromatic
-ring bond* of `CC(=O)Nc1ccccc1`, the same compound rewritten, really bonded, no error anywhere. A
-mis-indexed torsion therefore returns a well-formed profile and a plausible barrier for a question
-nobody asked. No chemist has those indices, which in practice means the model supplies them.
-
-So a torsion needs a name that survives being written down: a **handle** derived from the molecule
-rather than from the order its atoms happen to appear in.
-
-**Why this is not a wrapper over the rotatable-bond count.** `CalcNumRotatableBonds` is a
-druglikeness descriptor, and measured against RDKit it reports **0** for toluene, p-xylene and
-tert-butylbenzene and **1** for acetanilide — the one it excludes there being the amide C-N, which
-is the bond an anilide barrier question is about. It omits terminal tops (`!D1`) and amides by
-definition, which is to say both classes of bond people ask barriers about. This module defines its
-own candidate set instead.
+An atom-index pair names a different bond once the SMILES is rewritten, with no error anywhere, so
+a torsion gets a **handle** derived from the molecule rather than atom order. The candidate set is
+defined here, not by `CalcNumRotatableBonds`, which excludes terminal tops and amides — the bonds
+barrier questions are usually about.
 """
 
 from __future__ import annotations
@@ -32,25 +20,20 @@ from chemclaw_mcp_chem.engine.chem import require_molecule
 
 __all__ = ["Torsion", "TorsionKind", "enumerate_torsion_candidates", "torsion_handle"]
 
-# What sort of bond this is, in the words a chemist uses for it. The classification decides nothing
-# — it is what a request in words ("the amide bond", "the biaryl axis") is matched against, and what
-# a reader checks the choice by.
+# What sort of bond this is, in a chemist's words: what a request in words is matched against.
 TorsionKind = Literal[
     "amide", "ester", "biaryl", "conjugated", "benzylic", "ether", "amine", "alkyl", "top", "xh"
 ]
 
-# The environment each kind is recognised by, in order: the first pattern whose two matched atoms
-# are this bond's two atoms wins. `top` and `xh` are not here — both are decided by the bond's own
-# topology (one side carries no heavy neighbour), not by a substructure.
+# Each kind's environment, in order: the first pattern whose two matched atoms are this bond's
+# wins. `top` and `xh` are decided by topology, not a pattern.
 _KINDS: tuple[tuple[TorsionKind, str], ...] = (
     ("amide", "[CX3](=[OX1])[NX3]"),
     ("ester", "[CX3](=[OX1])[OX2H0]"),
     ("biaryl", "[a]-[a]"),
     ("benzylic", "[a]-[CX4,NX3,OX2]"),
-    # Two atoms, not three. `[CX4][OX2][CX4]` matched the two *carbons* — `_matched_pairs` reads
-    # the first and last matched atom, and those are not bonded to each other — so this kind could
-    # never be assigned and every ether bond came back `alkyl`. The guard keeps an ester's
-    # alkyl-oxygen bond out, since that is an ester rather than an ether.
+    # Two atoms, since `_matched_pairs` reads the first and last matched atom as the bond. The guard
+    # keeps an ester's alkyl-oxygen bond out.
     ("ether", "[OX2;!$(O[CX3]=[OX1])][CX4]"),
     ("amine", "[CX4][NX3;!$(N[CX3]=[OX1])]"),
 )
@@ -102,29 +85,16 @@ def torsion_handle(
 ) -> str:
     """A content-addressed name for one rotatable bond of `mol`.
 
-    Three properties, and each is a defect it prevents:
-
-    - **It does not change when the SMILES is rewritten.** The two atoms are named by their
-      canonical symmetry class rather than by their index, so `CC(=O)Nc1ccccc1`,
-      `O=C(C)Nc1ccccc1` and `c1ccc(NC(C)=O)cc1` all give the amide C-N one handle while the indices
-      differ. That is the whole point: an index carried from one turn to the next silently becomes
-      a different bond.
-    - **Symmetry-equivalent bonds share it.** p-xylene's two methyls are one torsion, asked once.
-      The class pair is RDKit's own symmetry classes (`breakTies=False`), which is a cheaper
-      equivalence than enumerating the automorphism group; `tests/test_torsions.py` checks the two
-      agree rather than assuming it, over a molecule set chosen to include the fused, symmetric and
-      polysubstituted cases where they might not.
-    - **It fails loudly after a toolchain bump.** The RDKit version is in the payload, because the
-      canonical ranking is a function of that build. A handle minted under one build must *not*
-      resolve under another — resolving to a different bond is the silent failure this whole module
-      exists to remove, and that is `D-2026-08-16`'s `calc_version` lesson one level down.
+    Stable under SMILES rewriting (atoms named by canonical symmetry class, `breakTies=False`),
+    shared by symmetry-equivalent bonds (`tests/test_torsions.py` checks this against the
+    automorphism group), and carrying the RDKit version so a handle fails loudly under a different
+    build rather than resolving to a different bond.
 
     Args:
         mol: The molecule the bond belongs to.
         bond: The two atom indices of the bond, in either order.
-        classes: The molecule's canonical symmetry classes, if the caller already has them.
-            Omitted, they are computed here — and computing them once per *bond* is what made a
-            600-atom molecule 18 s of CPU in a worker thread nothing can cancel.
+        classes: The molecule's canonical symmetry classes, if already computed. Pass them when
+            naming many bonds: the whole-molecule passes are the entire cost.
         written: The molecule's canonical SMILES, on the same terms.
 
     Returns:
@@ -142,23 +112,10 @@ def torsion_handle(
 def enumerate_torsion_candidates(smiles: str) -> list[Torsion]:
     """Every rotatable bond of `smiles`, one entry per symmetry-distinct torsion.
 
-    **A candidate is an acyclic single bond between two heavy atoms**, and nothing else — no
-    druglikeness filter, no amide exclusion. A ring bond is not one: driving it is a ring pucker
-    rather than a rotation, and it is left out for the same reason `enumerate_bond_cleavages` skips
-    ring bonds. A triple bond and its neighbours are not one either: rotation about a linear axis
-    has no dihedral.
-
-    A bond whose one side carries only hydrogens is reported with **no** dihedral atoms, because a
-    dihedral through it needs a hydrogen index and one of those means something only inside one
-    explicit-H numbering. It is still a real rotation with a real barrier, and reporting it is the
-    point: the descriptor everyone reaches for says toluene has zero rotatable bonds.
-
-    **Two different things live in that bucket and they are not reported as one.** A rotating end
-    carrying three hydrogens is a symmetric `top` — a methyl — whose energetic effect really is
-    carried by the quasi-RRHO free-rotor treatment of the low modes. A rotating end carrying one or
-    two is an `xh` rotor: an O-H, S-H or N-H. Acetamide's amide N-H (16-18 kcal/mol) and acetic
-    acid's syn/anti O-H (5-6 kcal/mol, two genuinely distinct rotamers) are not in the low modes,
-    and reporting them as tops told the model their barriers were already accounted for.
+    A candidate is an acyclic single bond between two heavy atoms, not to an sp atom. A bond whose
+    one side carries only hydrogens has no dihedral atoms (a hydrogen index means nothing outside
+    one numbering) but is still reported: a `top` (methyl, whose effect is in the quasi-RRHO low
+    modes) or an `xh` rotor (O-H, S-H, N-H, whose barrier is not).
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
@@ -191,28 +148,22 @@ def enumerate_torsion_candidates(smiles: str) -> list[Torsion]:
                 bond=list(bond),
                 label=_label(mol, bond, kind),
                 kind=kind,
-                # Empty when no pattern matched. It used to report `[*]-[*]`, which matches
-                # everything and so is not the environment this bond was recognised by — a
-                # checkable claim replaced by an unfalsifiable one.
+                # Empty when no pattern matched, rather than a match-everything pattern.
                 smarts=dict(_KINDS).get(kind, ""),
                 symmetry_order=(order := _symmetry_order(mol, bond, classes)),
                 period_degrees=360.0 / order,
                 equivalent_bonds=[list(pair) for pair in sorted(bonds)],
             )
         )
-    # Sorted so two runs, and two writings, list the same torsions in the same order, with the
-    # rotors that carry no dihedral last — `top` and `xh` alike, which is what the sort said back
-    # when those were one kind.
+    # Deterministic order across runs and spellings; rotors with no dihedral last.
     return sorted(torsions, key=lambda torsion: (not torsion.atoms, torsion.bond))
 
 
 def _is_candidate(mol: Chem.Mol, bond: Chem.Bond) -> bool:
     """Is this an acyclic single bond between two heavy atoms with something to rotate?
 
-    The two exclusions are geometric rather than stylistic. A bond in a ring cannot be driven
-    without deforming the ring, and a bond to an sp-hybridised atom has no dihedral to drive — the
-    three atoms are collinear, and RDKit's own rotatable-bond pattern excludes it for the same
-    reason.
+    A ring bond cannot be driven without deforming the ring, and a bond to an sp atom has no
+    dihedral.
     """
     if bond.IsInRing() or bond.GetBondType() != Chem.BondType.SINGLE:
         return False
@@ -221,11 +172,8 @@ def _is_candidate(mol: Chem.Mol, bond: Chem.Bond) -> bool:
         return False
     if any(_is_linear(atom) for atom in (begin, end)):
         return False
-    # **A monovalent end has nothing to rotate.** A chlorine is one atom on the axis, so turning
-    # about C-Cl moves nothing and there is no torsion — but the bond is acyclic, single and
-    # between two heavy atoms, so every other rule here accepts it and `CCCl` listed "the Cl top
-    # on C1". A hydroxyl is the opposite case and must stay: its hydrogen is off-axis, so O-H is a
-    # real rotation, which is why the test is "any substituent at all" rather than "a heavy one".
+    # A monovalent end (C-Cl) has nothing off-axis to rotate. A hydroxyl does (its hydrogen), so the
+    # test is any substituent, not a heavy one.
     return all(_has_a_substituent(atom, other) for atom, other in ((begin, end), (end, begin)))
 
 
@@ -253,9 +201,8 @@ def _heavy_neighbours(atom: Chem.Atom, exclude: int) -> list[Chem.Atom]:
 def _dihedral(mol: Chem.Mol, bond: tuple[int, int], ranks: list[int]) -> tuple[int, ...]:
     """The four atoms defining this bond's dihedral, or `()` for a top.
 
-    The outer two are each the *highest-canonically-ranked* heavy neighbour of their end. Ranked
-    rather than lowest-index, because an index depends on how the molecule was written and the
-    whole point of this module is a choice that does not.
+    The outer two are each end's highest-canonically-ranked heavy neighbour, independent of
+    spelling.
     """
     begin, end = mol.GetAtomWithIdx(bond[0]), mol.GetAtomWithIdx(bond[1])
     first = _heavy_neighbours(begin, end.GetIdx())
@@ -273,15 +220,8 @@ def _dihedral(mol: Chem.Mol, bond: tuple[int, int], ranks: list[int]) -> tuple[i
 def _symmetry_order(mol: Chem.Mol, bond: tuple[int, int], classes: list[int]) -> int:
     """How many times the torsion profile repeats in a full turn.
 
-    Each end contributes the order of the axis it has about this bond — a methyl is 3-fold, a
-    phenyl 2-fold, a pyramidal tertiary amine 1-fold whatever its substituents are (see
-    `_end_order`). The profile's period is set by both ends together, so the orders combine as a
-    least common multiple — toluene's methyl against the ring's two equivalent ortho carbons gives
-    6, and a 60 degree scan covers it.
-
-    Worth the arithmetic rather than always scanning 360 degrees: for a symmetric top or a
-    biaryl this is the difference between twelve constrained optimizations and two, and every one
-    of them is a real calculation.
+    The least common multiple of each end's axis order (`_end_order`): toluene's methyl against the
+    ring gives 6, so a 60 degree scan covers it — far fewer constrained optimizations than 360.
     """
     return math.lcm(*(_end_order(mol, bond[side], bond[1 - side], classes) for side in (0, 1)))
 
@@ -289,20 +229,10 @@ def _symmetry_order(mol: Chem.Mol, bond: tuple[int, int], classes: list[int]) ->
 def _end_order(mol: Chem.Mol, atom_index: int, other: int, classes: list[int]) -> int:
     """The order of the rotational axis one end of the bond has *about that bond*.
 
-    Two conditions, and the second is the one that is easy to miss. The substituents must be
-    equivalent — hydrogens counted through `GetTotalNumHs` rather than as neighbours, because they
-    are implicit here and they are the whole of a methyl's 3-fold symmetry — **and** they must
-    exhaust the positions around the axis, which is what `_fills_the_azimuth` decides.
-
-    **Equivalent is not the same as symmetric, and treating it as such was a wrong period rather
-    than an untidy one.** RDKit's canonical symmetry classes are a *graph* equivalence. On a
-    pyramidal three-coordinate centre — an aliphatic tertiary amine, a phosphine — the lone pair
-    occupies the third azimuthal slot, so two constitutionally identical substituents sit near 120
-    and 240 degrees apart and there is no C2 axis to rotate about. Measured on an MMFF-optimised
-    dimethylethylamine, the two N-methyls sit 238 degrees apart, and a relaxed scan of the C-N bond
-    puts V(phi) and V(phi+180) 5.8 kcal/mol apart on a 5.9 kcal/mol barrier. Chemclaw3 scans exactly
-    `[0, period)` and weights the rotamer populations by `symmetry_order`, so crediting that axis
-    left half the profile uncomputed and averaged over the half that was.
+    The substituents must be equivalent (hydrogens counted via `GetTotalNumHs`) **and** fill every
+    azimuthal position (`_fills_the_azimuth`). Graph equivalence alone is not symmetry: a pyramidal
+    amine's lone pair takes the third slot, so it has no C2 axis, and Chemclaw3 scans only
+    `[0, period)`, so overcounting would leave part of the profile uncomputed.
     """
     atom = mol.GetAtomWithIdx(atom_index)
     heavy = _heavy_neighbours(atom, other)
@@ -318,17 +248,10 @@ def _end_order(mol: Chem.Mol, atom_index: int, other: int, classes: list[int]) -
 def _fills_the_azimuth(atom: Chem.Atom, count: int) -> bool:
     """Do `count` equivalent substituents leave no other azimuthal position occupied?
 
-    An axis exists only where the equivalent substituents are *all* there is to place around the
-    bond. Two geometries qualify and nothing else does:
-
-    - a tetrahedral centre carrying three of them, the fourth position being the bond itself
-      (methyl, CF3, tert-butyl, trimethylsilyl, a quaternary ammonium's three N-methyls);
-    - a trigonal-planar centre carrying two, the third position being the bond (an aromatic ring's
-      two ortho carbons, a planar amide's two N-methyls, a nitro group's two oxygens).
-
-    A three-connection SP3 centre fails both, and that is the whole correction: its lone pair is in
-    the position the symmetry would have to use. So is anything RDKit could not hybridise, which
-    over-scans rather than under-scans — the direction that costs calculations instead of answers.
+    Only two geometries qualify: a tetrahedral centre with three (methyl, CF3, tert-butyl) and a
+    trigonal-planar centre with two (aryl ortho carbons, nitro oxygens). A three-connection SP3
+    centre fails (its lone pair), as does anything RDKit could not hybridise — over-scanning, the
+    safe direction.
     """
     connections = atom.GetDegree() + atom.GetTotalNumHs()
     hybridisation = atom.GetHybridization()
@@ -342,11 +265,8 @@ def _fills_the_azimuth(atom: Chem.Atom, count: int) -> bool:
 def _matched_pairs(mol: Chem.Mol, pattern: str) -> set[tuple[int, int]]:
     """The bonds this SMARTS matches, as sorted index pairs of its first and last matched atoms.
 
-    **Compiled per call on purpose, after measuring it.** The six `_KINDS` patterns cost 0.16-0.37
-    ms to parse against a whole `enumerate_torsion_candidates` of 2.2-5.7 ms on tyrosine and
-    3.5-10 ms on imatinib (`cc3-gate`, RDKit 2026.03.5): **4-8%**, and two of the six are recursive
-    SMARTS a shared cache would put under `RDK_BUILD_THREADSAFE_SSS`. See
-    `D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter`.
+    Compiled per call: parsing is a small share of the call, and a shared cache would put the
+    recursive patterns under `RDK_BUILD_THREADSAFE_SSS`.
     """
     # First and last matched atom, because that is where every pattern here puts the bond that
     # rotates: `[CX3](=[OX1])[NX3]` matches (C, O, N) and the amide bond is C-N, not C=O.
@@ -372,10 +292,7 @@ def _classify(
 def _is_symmetric_top(mol: Chem.Mol, bond: tuple[int, int]) -> bool:
     """Is the hydrogen-only end of this bond a *symmetric* top — three hydrogens, so a methyl?
 
-    The distinction this makes is the one thing said about a dihedral-less rotor that a caller acts
-    on: a methyl's barrier is already in the quasi-RRHO free-rotor treatment of the low modes, and
-    an O-H's, S-H's or N-H's is not. Grouping them cost the amide-rotation question, which is the
-    most-asked rotational barrier there is.
+    A methyl's barrier is already in the quasi-RRHO low modes; an O-H's, S-H's or N-H's is not.
     """
     rotating, _ = _rotating_end(mol, bond)
     return rotating.GetTotalNumHs() >= 3

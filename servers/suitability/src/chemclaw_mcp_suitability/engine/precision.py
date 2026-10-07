@@ -1,29 +1,11 @@
 """Replicate-injection precision, and the USP <621> rule for how many injections that needs.
 
-The arithmetic is one line — RSD = 100 s / mean, with `s` the **sample** standard deviation over
-n-1 degrees of freedom, which is what every chromatography data system reports and what the
-acceptance criterion is written against. Using the population form over n would understate the RSD
-by 8.7% at n = 6, which is the difference between passing and failing a 2.0% limit at a true 2.1%.
+RSD = 100 s / mean, with `s` the sample standard deviation over n-1, as data systems report and
+acceptance criteria assume (the population form understates it by 8.7% at n = 6). USP <621> requires
+five replicate injections for a limit of 2.0% or less and six above it — a tighter limit takes fewer
+— and data systems do not check it, so this module reports which branch applied beside the RSD.
 
-The part worth a module is the rule attached to it. USP <621> *System Suitability* says, for the
-repeatability of an assay:
-
-    data from **five** replicate injections are used to calculate the relative standard deviation
-    if the requirement is 2.0% or less; data from **six** replicate injections are used if the
-    requirement is more than 2.0%.
-
-That reads backwards to most people the first time — a *tighter* limit needs *fewer* injections —
-and it is not arbitrary: the required count comes from the confidence with which a sample RSD
-bounds the true one, and a looser limit is being asked to catch a larger true variability, which
-takes more degrees of freedom to see. Whatever the reasoning, it is a rule with a number in it,
-the chemist is the one who has to remember which way round it goes, and the data system does not
-check it. So this module answers "is this many injections enough for this limit?" beside the RSD
-itself, and says which branch of the rule applied.
-
-**What this is not**: it is not intermediate precision, not reproducibility, and not a validation
-exercise. Six injections of one solution on one instrument on one day bound the *system's*
-repeatability at the moment of the run, and nothing else. A method's precision is an ICH Q2
-exercise over separate preparations, and it is deliberately not here.
+This is system repeatability for one run only, not intermediate precision or an ICH Q2 validation.
 """
 
 from __future__ import annotations
@@ -39,9 +21,8 @@ __all__ = [
     "relative_standard_deviation",
 ]
 
-#: Below two values there is no sample standard deviation to compute — n-1 is zero, and the
-#: expression is undefined rather than large. USP never asks for fewer than five; this is the
-#: floor at which the arithmetic exists at all, and the rule check is what enforces USP's count.
+#: Below two values the sample standard deviation is undefined; this is the arithmetic floor, while
+#: the rule check enforces USP's count.
 MINIMUM_INJECTIONS = 2
 
 #: The limit, in percent, at or below which USP <621> accepts five injections. Above it, six.
@@ -62,9 +43,8 @@ class ReplicatePrecision:
     #: every data system use.
     standard_deviation: float
     injections: int
-    #: The limit the caller declared, in percent, or `None` if they declared none. When `None`,
-    #: `meets_limit` and `injections_are_sufficient` are `None` too: this module will not invent a
-    #: limit, because 2.0% is an assay's convention and a related-substances method's is not.
+    #: The declared limit in percent, or `None`, in which case both verdicts are `None` too: no
+    #: default is invented, since 2.0% is only an assay convention.
     limit_percent: float | None
     meets_limit: bool | None
     #: How many injections USP <621> requires *for that limit*, or `None` with no limit declared.
@@ -82,9 +62,8 @@ def injections_required_for(limit_percent: float) -> int:
         Five if the limit is 2.0% or less, six if it is more.
 
     Raises:
-        PrecisionError: If the limit is not positive. A limit of zero or below cannot be met by
-            any real series and is far more likely to be a units mistake — 0.02 entered as a
-            fraction where percent was meant — than a deliberate criterion.
+        PrecisionError: The limit is not positive (most likely a fraction entered where percent was
+        meant).
     """
     if limit_percent <= 0.0:
         raise PrecisionError(
@@ -101,22 +80,17 @@ def relative_standard_deviation(
     """RSD over a replicate injection series, and whether the series is big enough for its limit.
 
     Args:
-        values: The measured responses — peak areas, or retention times, one per injection. Their
-            unit does not matter and is not asked for: an RSD is a ratio, so it is the same number
-            whether the areas are counts or mAU*s. They must all be measurements of the same
-            thing, which this cannot check.
-        limit_percent: The acceptance limit in percent, if there is one. Given, the answer says
-            whether the series meets it and whether USP <621> accepts this many injections for a
-            limit of that size. Omitted, the RSD is returned alone with no verdict attached.
+        values: The measured responses (peak areas or retention times), one per injection, all of
+        the same thing. Unit-free, since an RSD is a ratio. limit_percent: The acceptance limit in
+        percent, if any. Given, the answer says whether the series meets it and whether USP <621>
+        accepts this many injections; omitted, the RSD comes alone.
 
     Returns:
-        The RSD, the mean, the sample standard deviation, and — when a limit was declared — the
-        two verdicts.
+        The RSD, the mean, the sample standard deviation, and the two verdicts when a limit was
+        declared.
 
     Raises:
-        PrecisionError: If fewer than two values are given, if any is not finite, or if the mean
-            is zero. A zero mean makes the RSD undefined rather than infinite, and a series
-            averaging zero is a baseline or a sign error rather than a peak.
+        PrecisionError: Fewer than two values, a non-finite value, or a zero mean (RSD undefined).
     """
     if len(values) < MINIMUM_INJECTIONS:
         raise PrecisionError(
@@ -139,9 +113,8 @@ def relative_standard_deviation(
         )
     variance = math.fsum((value - mean) ** 2 for value in values) / (count - 1)
     deviation = math.sqrt(variance)
-    # The RSD is conventionally reported as a positive percentage even where the mean is negative
-    # (a refractive-index or a subtracted-baseline detector can give one), so the magnitude of the
-    # mean is what it is taken over. A negative RSD would be read as an error rather than a spread.
+    # Taken over |mean| so the RSD stays a positive spread even for a detector giving negative
+    # responses.
     rsd = 100.0 * deviation / abs(mean)
 
     meets: bool | None = None

@@ -52,8 +52,8 @@ __all__ = [
 ]
 
 
-# : Every bound this process has resolved, keyed by the environment variable that moves it.
-# : Written by `report_bound`, read by `/healthz`.
+#: Every bound this process has resolved, keyed by the environment variable that moves it.
+#: Written by `report_bound`, read by `/healthz`.
 _EFFECTIVE: dict[str, int | float | None] = {}
 _EFFECTIVE_LOCK = threading.Lock()
 
@@ -77,8 +77,7 @@ def report_settings(settings: Any) -> None:
 
     The name is `env_prefix` plus the upper-cased field name, or a literal `validation_alias`.
     `bool` fields are switches, not bounds, and are skipped. Duck-typed so the kit does not depend
-    on
-    `pydantic_settings`.
+    on `pydantic_settings`.
     """
     prefix = str(settings.model_config.get("env_prefix", ""))
     for field, info in type(settings).model_fields.items():
@@ -94,8 +93,7 @@ def effective_bounds() -> dict[str, int | float | None]:
     """Every bound this process has resolved so far, sorted by name — what `/healthz` reports.
 
     Servers import their tool modules before `connector_app` runs, and the kit records its own
-    bounds
-    before the lifespan completes, so the set is complete by the first probe.
+    bounds before the lifespan completes, so the set is complete by the first probe.
     """
     with _EFFECTIVE_LOCK:
         return dict(sorted(_EFFECTIVE.items()))
@@ -118,26 +116,10 @@ def env_bound(
 ) -> int:
     """One resource bound read from the environment at import, refused here if it cannot work.
 
-    A bound below its floor (e.g. `0`) would start a pod that refuses every request, so it is a
-    startup failure instead. A bound guarding a crash also takes a `maximum`. A non-integer is
-    refused
-    rather than ignored; an empty or whitespace value counts as unset. Raises rather than returning
-    a
-    reason because at import the only reader is an operator reading a container log.
-
-    Args:
-        name: The environment variable, named in every refusal.
-        default: The value when the variable is unset, also named in the refusal.
-        minimum: The smallest value that still lets the server work; declared by the call site.
-        consequence: A clause completing "…: <consequence>." — what the rejected value would do.
-        maximum: The largest value, where exceeding it breaks the server rather than loosening it;
-            `None` for no ceiling.
-
-    Returns:
-        The configured value, within `minimum` and (if given) `maximum`.
-
-    Raises:
-        ValueError: The value is not a whole number, or is outside the bounds.
+    A value below `minimum` (e.g. `0`) or above `maximum` (given only where exceeding it crashes
+    the server), or a non-integer, raises `ValueError` naming the variable, the floor and
+    `consequence` — a startup failure rather than a pod that refuses every request. An empty value
+    counts as unset (`default`).
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -166,20 +148,8 @@ def env_bound(
 def env_ratio(name: str, *, default: float, minimum: float, consequence: str) -> float:
     """One dimensionless ratio read from the environment at import, refused if it cannot work.
 
-    The `env_bound` rules for a float: a floor and no ceiling (raising a sanity ratio only loosens
-    it), and a non-finite or non-numeric value is refused naming the variable.
-
-    Args:
-        name: The environment variable, named in every refusal.
-        default: The ratio when the variable is unset, also named in the refusal.
-        minimum: The smallest ratio that still lets the server work; declared by the call site.
-        consequence: A clause completing "…: <consequence>." — what the rejected value would do.
-
-    Returns:
-        The configured ratio, which is at least `minimum`.
-
-    Raises:
-        ValueError: The value is not a finite number, or is below `minimum`.
+    `env_bound`'s rules for a float: a floor and no ceiling (raising a sanity ratio only loosens
+    it); a non-finite, non-numeric or below-`minimum` value raises `ValueError` naming the variable.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -214,9 +184,9 @@ MAX_SMILES_CHARS = env_bound(
     minimum=1,
     consequence="every structure this fleet is given would be refused before it is parsed",
 )
-# : Atoms of linear chain the canonicaliser survives per KiB of C stack, with a factor-of-two
-# : margin over the measured ~2 atoms/KiB (linear in stack size); branched graphs recurse
-# differently.
+#: Atoms of linear chain the canonicaliser survives per KiB of C stack, with a factor-of-two
+#: margin over the measured ~2 atoms/KiB (linear in stack size); branched graphs recurse
+#: differently.
 ATOMS_PER_KIB_OF_STACK = 1
 
 
@@ -224,8 +194,7 @@ def stack_safe_atom_ceiling(*, floor: int) -> int:
     """The largest `MAX_MOLECULE_ATOMS` this process's own C stack can survive.
 
     Derived from `RLIMIT_STACK`'s soft limit times `ATOMS_PER_KIB_OF_STACK`, since the stack size is
-    a
-    property of the container.
+    a property of the container.
 
     Args:
         floor: The bound's default. The ceiling is never below it, so an unchanged deployment still
@@ -323,13 +292,12 @@ def echo(text: str, *, limit: int | None = None) -> str:
     """Caller-supplied text, bounded for quoting in a refusal: the head, then the full length.
 
     A `ValueError` reaches the model verbatim, so every refusal quoting caller text goes through
-    this
-    (`test_no_refusal_interpolates_caller_text_past_the_echo_bound`).
+    this (`test_no_refusal_interpolates_caller_text_past_the_echo_bound`).
 
     Args:
         text: The caller's string, unstripped.
-        limit: Characters kept before the ellipsis; `None` means `MAX_ECHO_CHARS`, read at call
-        time.
+        limit: Characters kept before the ellipsis; `None` means `MAX_ECHO_CHARS`, read
+            at call time.
 
     Returns:
         `text` if at most `limit` characters, else its head, an ellipsis and `(<length> chars)`.
@@ -385,7 +353,7 @@ class Admission:
                 return taken.charged
     """
 
-    # : The noun this server counts, for the construction refusal; a subclass sets it.
+    #: The noun this server counts, for the construction refusal; a subclass sets it.
     unit = "call"
 
     #: The server this gate belongs to: the `server` label on the admission metrics and the name in
@@ -397,9 +365,8 @@ class Admission:
 
         Args:
             limit: The most slots that may be held at once; at least one.
-            server: Overrides the class's `server`; one must be set, or occupancy is published under
-            an
-                empty label and the refusal marker matches nothing.
+            server: Overrides the class's `server`; one must be set, or occupancy is
+                published under an empty label and the refusal marker matches nothing.
         """
         if limit < 1:
             raise ValueError(f"an admission ceiling of {limit} would refuse every {self.unit}")
@@ -440,13 +407,13 @@ class Admission:
         """Take `cost` slots if the budget has room, without waiting and without raising.
 
         Args:
-            cost: Slots this call occupies, clamped into `1..limit`: zero would go uncounted, and
-            more
-                than the ceiling would never be admitted, so it takes the pod exclusively instead.
+            cost: Slots this call occupies, clamped into `1..limit`: zero would go
+                uncounted, and more than the ceiling would never be admitted, so it takes
+                the pod exclusively instead.
 
         Returns:
-            `Slots`, whose `charged` must be given back to `release`, or is `None` when there was no
-            room.
+            `Slots`, whose `charged` must be given back to `release`, or is `None` when
+            there was no room.
         """
         charge = max(1, min(cost, self._limit))
         with self._lock:
@@ -468,8 +435,7 @@ class Admission:
         """Await admitted work, giving its slots back when the *work* ends, not its awaiter.
 
         - `asyncio.shield`, because cancelling the awaiter does not stop the worker thread;
-          releasing on
-          cancellation would admit a retry beside the still-running original.
+          releasing on cancellation would admit a retry beside the still-running original.
         - Release in a done-callback on the inner task, whether it returned, raised or was
           cancelled.
         - Retrieve the exception, so an abandoned failure does not log "never retrieved".
@@ -494,17 +460,9 @@ class Admission:
     async def admit(self, work: Awaitable[_T], acquire: Callable[[], int]) -> _T:
         """Charge admitted work and `hold` it, with the work built *before* anything is charged.
 
-        Building the coroutine first means a bad call fails before a slot is taken, so no slot can
-        leak
-        between charge and release. On refusal the unscheduled coroutine is closed to avoid a
-        warning.
-
-        Args:
-            work: The admitted computation, built but not yet awaited — see `hold`.
-            acquire: The server's own charge, returning the slots taken or raising its refusal.
-
-        Returns:
-            Whatever the work returns; the refusal or the work's exception, if either raises.
+        `work` is an already-built awaitable, so a bad call fails before a slot is taken and no slot
+        can leak; `acquire` is the server's own charge, which may raise its refusal, after which the
+        unused coroutine is closed.
         """
         try:
             charged = acquire()

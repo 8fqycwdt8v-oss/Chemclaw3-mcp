@@ -59,8 +59,7 @@ def _report_every_skip(terminalreporter: pytest.TerminalReporter) -> None:
     """Name every skip and its reason, so a green line says what it did not look at.
 
     Counts come from this run, grouped by the recorded reason rather than a marker list, so a new
-    skip
-    is reported rather than silently missed.
+    skip is reported rather than silently missed.
     """
     skipped = terminalreporter.stats.get("skipped", [])
     if not skipped:
@@ -84,10 +83,8 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     """Say, at the end of the run, what did not run and why.
 
     `_report_every_skip` names every skip; the banner below adds the remedy ("set CHEMCLAW3_REPO")
-    for
-    the one skip that has one — `tests/test_consumer_agreement.py`, the only check reading the
-    consuming
-    repository.
+    for the one skip that has one — `tests/test_consumer_agreement.py`, the only check reading the
+    consuming repository.
     """
     _report_every_skip(terminalreporter)
     marker = _consumer_skip_marker()

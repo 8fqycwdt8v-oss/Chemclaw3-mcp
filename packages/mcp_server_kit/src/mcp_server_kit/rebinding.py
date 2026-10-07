@@ -20,8 +20,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 ALLOWED_HOSTS_ENV = "MCP_ALLOWED_HOSTS"
 
-# : Upstream's loopback defaults, transcribed so "unset" means exactly that;
-# : `tests/test_rebinding.py` holds them against a fresh `FastMCP`.
+#: Upstream's loopback defaults, transcribed so "unset" means exactly that;
+#: `tests/test_rebinding.py` holds them against a fresh `FastMCP`.
 LOOPBACK_HOSTS: tuple[str, ...] = ("127.0.0.1:*", "localhost:*", "[::1]:*")
 LOOPBACK_ORIGINS: tuple[str, ...] = (
     "http://127.0.0.1:*",
@@ -30,8 +30,7 @@ LOOPBACK_ORIGINS: tuple[str, ...] = (
 )
 
 # A DNS name or dotted IPv4 address, lower case. Upper case is refused, not folded: upstream
-# compares
-# the `Host` header byte for byte.
+# compares the `Host` header byte for byte.
 _HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*")
 
 

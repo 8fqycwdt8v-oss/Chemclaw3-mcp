@@ -1,25 +1,11 @@
 """The `traceparent` Chemclaw3 sends must produce a span here, under the caller's trace.
 
-Chemclaw3 injects W3C trace context on every connector call and its own tracing docstring states the
-consequence in the present tense: "a connector's work appears inside the turn that asked for it".
-For this fleet that was false. The header arrived on every request, `connector_app` read the four
-`X-Chemclaw-*` headers beside it, and the trace context was dropped — no span was created on this
-side at all, so the expensive half of a chemist's question was invisible to whatever the collector
-showed.
+The assertion is the join: incoming ids are literals and the recorded span's `trace_id` and
+`parent.span_id` are compared against them, since a fresh root trace per call would also "create
+a span".
 
-**The assertion is the join, not the call.** A test that only checked "a span exists" would pass
-against an implementation that starts a fresh root trace per call, which is precisely the state this
-fixes: the value is entirely in the *parenting*. So the incoming ids are literals here, and the
-recorded span's `trace_id` and `parent.span_id` are compared against them.
-
-Everything runs against a real socket, a real MCP session and the real `connector_app`, for the
-reason `test_connector_app.py` gives: the behaviour under test lives in the request the *tool call*
-is serving, and an in-process call has no such request.
-
-**The exporter is in memory and there is no other kind here.** The egress guard is armed for this
-run like every other, so an OTLP exporter would raise `EgressForbidden` — the guard working.
-Nothing in this workspace may dial a collector; a deployment that wants one configures the SDK
-itself.
+Runs over a real socket, MCP session and `connector_app`, because the behaviour lives in the
+request a tool call serves. The exporter is in memory; the armed egress guard would refuse OTLP.
 """
 
 from __future__ import annotations
@@ -95,9 +81,7 @@ def _probe_server() -> FastMCP:
 def _span_text(span: object) -> str:
     """Every string a collector would receive for `span`, concatenated.
 
-    Written as one blob deliberately: the assertions below are about a *value* never leaving the
-    process, and naming the attribute it would leave through would have to be updated by whoever
-    added the next attribute — which is the reader the assertion exists to catch.
+    One blob so assertions about a value never leaving cover attributes added later.
     """
     parts = [
         str(getattr(span, "name", "")),
@@ -123,9 +107,8 @@ def _free_port() -> int:
 def recording_provider() -> Iterator[None]:
     """Make the global tracer provider record into memory.
 
-    Global because `tracing.py` asks `opentelemetry.trace` for a tracer, which is what a
-    deployment's own SDK bootstrap configures — passing a provider in would test a seam that does
-    not exist.
+    Global because `tracing.py` asks `opentelemetry.trace` for a tracer, as a deployment's SDK
+    bootstrap configures it.
     """
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(EXPORTER))
@@ -164,10 +147,8 @@ async def _session(
 ) -> AsyncIterator[tuple[ClientSession, httpx.AsyncClient]]:
     """An initialised MCP session carrying the bearer token, and optionally a caller's trace.
 
-    The transport's own client is yielded beside the session because one of the properties under
-    test is *per call* rather than per session: the headers are fixed at construction here, exactly
-    as they are for a real long-lived connection, so a test that wants a second call to carry a
-    second trace has to reach that client and change them between calls.
+    The transport's client is yielded too, so a test can change its fixed headers between calls to
+    send a second trace on the same session.
     """
     headers = {"Authorization": f"Bearer {TOKEN}"}
     if traceparent is not None:
@@ -215,19 +196,11 @@ async def test_a_tool_call_becomes_a_span_under_the_caller_s_trace(
 async def test_each_call_on_one_session_is_parented_on_that_call_s_own_trace(
     running_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The property `_continue_trace_per_tool_call` exists for, and the only test that can see it.
+    """Each call on one session is parented on that call's own trace.
 
-    Every other test here opens a session, sends one call, and closes it — so the handshake's
-    `traceparent` and the call's are the same string, and an implementation that extracted the
-    context once in ASGI middleware (the obvious simplification: it deletes a wrapper and reads the
-    request where it is naturally available) passes all of them. Measured against exactly that
-    implementation: the four tests stayed green and the whole workspace suite stayed green, while
-    every call on a long-lived session was reported inside whichever turn opened the connection.
-
-    One MCP session carries many turns, so this sends two calls down one session with two different
-    traces and asserts each span landed under its own. The direct analogue of
-    `tests/test_identity_contract.py`'s two-callers-one-session test, for the same reason: the
-    client fixes its headers at construction and the thing under test is per-call.
+    One session carries many turns, so extracting the context once at the handshake would put every
+    call under the turn that opened the connection. Two calls with two traces on one session, each
+    asserted under its own.
     """
     monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
     async with _session(running_server, traceparent=TRACEPARENT) as (session, client):
@@ -301,12 +274,8 @@ async def test_an_unknown_tool_name_cannot_mint_a_span_name(
 ) -> None:
     """A span name is an identifier that leaves the pod, so it takes the clamp `/metrics` takes.
 
-    The tool name in a `tools/call` is caller-supplied and reaches `ToolManager.call_tool`
-    unvalidated. `_instrument_tool_calls` folds anything unserved into `UNKNOWN_TOOL` before it
-    becomes a Prometheus label; this asserts the span does the same, which it did not — it took
-    the string verbatim into both the span name and the `mcp.tool` attribute, so a model retrying
-    a stale name minted one operation name per string in whatever collector receives the spans.
-    Nothing accumulates in this process, which is why the two halves of one rule diverged quietly.
+    The tool name is caller-supplied; an unknown one becomes `UNKNOWN_TOOL` in the span name and the
+    `mcp.tool` attribute, as in the metric.
     """
     monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
     hostile = "definitely_not_a_tool_here"
@@ -331,17 +300,11 @@ async def test_an_unknown_tool_name_cannot_mint_a_span_name(
 async def test_a_fault_puts_neither_its_text_nor_its_stack_on_the_span(
     running_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one channel that bypassed both the sanitiser and the log redaction.
+    """A fault puts neither its text nor its stack on the span.
 
-    `start_as_current_span` defaults to `record_exception=True`, and `_sanitize_tool_errors`
-    replaces the *message* while preserving the cause (`raise ToolError(...) from exc.__cause__`)
-    — so `format_exception` walked the whole chain into an `exception.stacktrace` attribute bound
-    for a third-party collector. Measured against this server before the fix: `hunter2` and the
-    bearer token in clear on the span, while the log line for the same fault read `PGPASSWORD=***`.
-
-    Asserted as an absence of the secret *and* of the stack, because a redacted stacktrace would
-    still be a rendered call stack of this process on somebody else's host, and `tracing.py`'s
-    claim is "identifiers only".
+    `record_exception=True` would walk the preserved cause chain into `exception.stacktrace` for a
+    third-party collector. Asserted absent: the secret and the stack, since `tracing.py` promises
+    identifiers only.
     """
     monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
     async with _session(running_server, traceparent=TRACEPARENT) as (session, _client):
@@ -363,10 +326,8 @@ async def test_a_refusal_is_not_an_error_span_and_never_quotes_the_caller(
 ) -> None:
     """The span's outcome is the metric's, and a refusal is a correct answer in both.
 
-    Every `ToolError` that propagates is an exception, so recording "did something raise" made a
-    call `chemclaw_mcp_tool_calls_total` books as `outcome="refused"` into an ERROR span — the
-    dashboard and the trace view disagreeing about the same call. And a refusal's whole content is
-    a domain message, which is where a caller's molecule was landing in `exception.message`.
+    A refusal is not an ERROR span, and its domain message (which may hold a caller's molecule) is
+    not recorded.
     """
     monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
     async with _session(running_server, traceparent=TRACEPARENT) as (session, _client):
@@ -385,12 +346,7 @@ async def test_a_refusal_is_not_an_error_span_and_never_quotes_the_caller(
 async def test_a_hostile_tool_name_cannot_become_a_span_name(
     running_server: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A span name is as caller-supplied as a metric label, and is clamped the same way.
-
-    `_served_tool_name` sat two functions above this wrapper and was used only by the counter, so
-    the exposition folded an unknown name onto `<unknown>` while the span beside it recorded the
-    string verbatim. Measured: `mcp.tool/../../etc/passwd?a=b`, and a 318-character span name.
-    """
+    """A hostile tool name cannot become a span name; it is clamped as the metric label is."""
     monkeypatch.setenv(TRACING_ENABLED_ENV, "1")
     hostile = "../../etc/passwd?a=b"
     async with _session(running_server, traceparent=TRACEPARENT) as (session, _client):

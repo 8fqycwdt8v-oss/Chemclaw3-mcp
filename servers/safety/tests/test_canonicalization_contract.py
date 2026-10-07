@@ -1,30 +1,11 @@
 """The canonicalization contract with Chemclaw3, written as literal strings on both sides.
 
-`engine/chem.py` is a **copy** of a definition Chemclaw3 owns, and it is the second copy in this
-repository — `servers/chem/` carries the first. Copying a definition is normally how two answers to
-one question appear, and the copy is not free: on the Chemclaw3 side `require_canonical_smiles` keys
-the calculation cache, the QM workflow-dedup id and the prediction ledger (D-011, "compute once,
-never twice"), and 26 modules import it. If this copy drifts, a chemist comparing this server's
-`screened` list with a Chemclaw3 note sees two spellings of one molecule and has no way to tell
-which is right.
-
-Neither repository can import the other — that is the point of the split — so the contract is
-written as **data**: an input and the exact string it must canonicalize to. Every expected value
-below was produced by running Chemclaw3's own function, not by reading the code and reasoning about
-it:
-
-    PYTHONPATH=/path/to/Chemclaw3/src /path/to/Chemclaw3/.venv/bin/python -c \\
-        "from chemclaw.core.chem import require_canonical_smiles as f; print(f('CC(O)=CC(C)=O'))"
-
-The table is deliberately the *same table* `servers/chem/tests/test_canonicalization_contract.py`
-carries, and that is the property worth having: three copies of one definition, one table, so
-whichever copy moves first turns a test red instead of quietly answering differently.
-
-**Why this server needs the contract even though it stores nothing.** `screened` is this server's
-whole answer to "which molecules is this result about" — a clean hazard screen is otherwise a
-disclaimer with no subject — and it is the string a caller keys a result on. A divergence would not
-corrupt a cache here; it would make two systems disagree about which molecule was screened, on a
-result whose entire discipline is that it must never be read as being about the wrong one.
+`engine/chem.py` copies a definition Chemclaw3 owns, where it keys the calculation cache and the
+prediction ledger. Neither repository can import the other, so the contract is data: an input
+and the exact string Chemclaw3's own `require_canonical_smiles` produced for it. The table is the
+same one `servers/chem/tests/test_canonicalization_contract.py` carries, so whichever copy moves
+first turns a test red. `screened` is the string a caller keys a hazard result on, so a
+divergence would make two systems disagree about which molecule was screened.
 """
 
 from __future__ import annotations
@@ -52,10 +33,8 @@ CONTRACT: list[tuple[str, str]] = [
     ("N[C@@H](C)C(O)=O", "C[C@H](N)C(=O)O"),
     ("C/C=C/C", "C/C=C/C"),
     ("C/C=C\\C", "C/C=C\\C"),
-    # Salts: every fragment kept, in one fixed order whichever way the input was written. This is
-    # the case this server leans on hardest — sodium azide, sodium peroxide, chloramine-T and the
-    # hydrazinium salts are all multi-fragment, and every one of them is a rule's reference
-    # molecule.
+    # Salts: every fragment kept, in one fixed order however the input was written. Many rule
+    # reference molecules here (sodium azide, peroxide, chloramine-T, hydrazinium salts) are salts.
     ("CC(=O)[O-].[Na+]", "CC(=O)[O-].[Na+]"),
     ("[Na+].CC(=O)[O-]", "CC(=O)[O-].[Na+]"),
     ("CCN.Cl", "CCN.Cl"),
@@ -71,10 +50,8 @@ CONTRACT: list[tuple[str, str]] = [
     ("OC(=O)c1ccccc1", "O=C(O)c1ccccc1"),
 ]
 
-# Strings RDKit accepts and this definition refuses. The strictness is half the contract: RDKit
-# reads up to the first whitespace and calls "CCO junk" ethanol, so a lenient parse does not fail,
-# it narrows to a *different, smaller* molecule than the caller submitted — which on a hazard screen
-# is a clean result about a molecule nobody asked about.
+# Strings RDKit accepts and this definition refuses. RDKit reads up to the first whitespace, so a
+# lenient parse would screen a smaller molecule than the caller submitted and report it clean.
 REFUSED: list[str] = [
     "CCO junk",
     "CCO\t1",
@@ -108,10 +85,9 @@ def test_a_string_rdkit_would_truncate_is_refused(written: str) -> None:
 def test_a_megamolecule_is_refused_not_crashed() -> None:
     """A 20k-atom SMILES is refused before canonicalisation, not a segfault that kills the pod.
 
-    `MolToSmiles` overflows the C stack (uncatchable SIGSEGV) on a large linear molecule, and every
-    screen here canonicalises through `require_molecule` — so the bound there (via
-    `mcp_server_kit.limits`) is what stands between one authenticated call and a hazard screen that
-    stops answering for everyone. This process surviving to assert is the regression proof.
+    Every screen canonicalises through `require_molecule`, whose bound (via `mcp_server_kit.limits`)
+    turns an uncatchable C-stack overflow in `MolToSmiles` into a refusal. This process surviving
+    to assert is the proof.
     """
     with pytest.raises(InvalidSmilesError):
         require_canonical_smiles("C" * 20000)

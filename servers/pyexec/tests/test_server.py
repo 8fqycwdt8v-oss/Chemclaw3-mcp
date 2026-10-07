@@ -1,12 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-The rest of this directory tests functions. This tests the *deployment surface*, and it is the test
-that would catch each of the three defects Chemclaw3 recorded on this exact seam: a mounted MCP app
-whose session manager nobody ran, a bearer credential the serving side never checked, and a manifest
-claiming a tool surface the server did not have.
-
-The bearer check matters more here than anywhere else in this fleet. Every other server refuses an
-anonymous caller to protect a table; this one refuses to protect an interpreter.
+Runs uvicorn on loopback so a session manager nobody ran, an unchecked bearer credential, or a
+manifest that disagrees with the served surface fails here. The bearer check matters most on
+this server: it protects an interpreter.
 """
 
 from __future__ import annotations
@@ -68,10 +64,8 @@ def running_server() -> Iterator[str]:
 def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did.
 
-    `datasets` is present and empty because this server vendors no corpus. Its presence is the
-    assertion: it is what `connector_app` adds only when a `readiness` callable actually ran, and
-    without one this route was a constant 200 that proved nothing about the child process every
-    call here depends on. See `engine/readiness.py`.
+    `datasets` is present and empty (no corpus); its presence shows a `readiness` callable ran,
+    which here proves the child process works. See `engine/readiness.py`.
     """
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
@@ -92,10 +86,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    Not "counts only": the default registry publishes `python_info` and the `process_*`
-    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
-    correlation id or a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    The no-caller/session/argument rule is asserted over the live exposition for every server in
+    `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -106,12 +98,9 @@ async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
 ) -> None:
     """An anonymous caller must not reach an interpreter. The 401 is the whole control.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
-    the wrong scheme, the declared credential actually serving, and the declared variable unset —
-    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
-    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    `/mcp` is mounted, and a mount bypasses the enclosing app's dependencies, so this is driven
+    against the running server. `assert_bearer_is_enforced` covers every arm (anonymous, wrong
+    token, wrong scheme, valid credential, variable unset) once for the whole fleet.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -153,10 +142,8 @@ async def test_a_real_mcp_session_lists_and_runs_an_analysis(running_server: str
 async def test_a_failing_program_returns_a_result_rather_than_an_error(running_server: str) -> None:
     """A caller's bug is a normal answer carrying a traceback, not a tool failure.
 
-    The distinction is what lets the agent read the traceback and fix its program. An `isError`
-    result would reach it as "the tool is broken", which is a different thing to do about it — and
-    it is the shape `D-2026-08-04-a-failure-that-says-nothing-is-read-as-proceed` warns about from
-    the other side.
+    That is what lets the agent read the traceback and fix its program; an `isError` result would
+    read as "the tool is broken".
     """
     async with _session(running_server) as session:
         result = await session.call_tool("run_python", {"code": "result = 1 / 0"})
@@ -176,12 +163,10 @@ async def test_the_sandbox_holds_over_the_wire(running_server: str) -> None:
 
 
 def test_the_one_tool_is_admission_gated() -> None:
-    """The gate has to be *on* the served callable, and a marker is what says so.
+    """The admission gate is on the served callable, as its marker shows.
 
-    Applied under `@server.tool()`, so what FastMCP registered is the guarded function rather than
-    the bare one — a decorator in the other order would leave the tool ungated with nothing to see
-    in review. Checked through the marker rather than by name, so a second tool added later without
-    a gate fails here instead of inheriting the pod's whole capacity.
+    Applied under `@server.tool()` so FastMCP registers the guarded function; checked by marker, not
+    name, so a later tool added without a gate fails here.
     """
     manager = tools.server._tool_manager
     served = manager.list_tools()

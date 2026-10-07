@@ -20,8 +20,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-#: Per-model trust priors, seeded from each predictor's published benchmarks. Read-only, so the table
-#: every `Settings` starts from cannot be edited in place.
+#: Per-model trust priors, seeded from each predictor's published benchmarks. Read-only, so the
+#: table every `Settings` starts from cannot be edited in place.
 DEFAULT_MODEL_TRUST_PRIORS: Mapping[str, float] = MappingProxyType(
     {
         # Forward

@@ -186,10 +186,9 @@ def host_literals(source: Path) -> list[str]:
     """Every non-loopback URL `source` spells out, including the ones inside docstrings.
 
     A hostname in a tool module is either an intended call or documentation that belongs in a
-    README;
-    `dataset.json`'s `retrieved_from` is the sanctioned home for provenance. Comments come from the
-    tokenizer and strings from the AST, folded so split or implicitly concatenated literals are one
-    address. Runtime-assembled hosts are invisible by construction.
+    README; `dataset.json`'s `retrieved_from` is the sanctioned home for provenance. Comments come
+    from the tokenizer and strings from the AST, folded so split or implicitly concatenated literals
+    are one address. Runtime-assembled hosts are invisible by construction.
 
     Returns:
         The matches, deduplicated and sorted.

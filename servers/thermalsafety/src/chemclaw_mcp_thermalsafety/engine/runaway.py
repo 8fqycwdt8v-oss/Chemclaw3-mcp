@@ -1,20 +1,10 @@
 """The runaway-scenario arithmetic: what happens to a batch if the cooling stops.
 
-Every function here is a closed-form expression over numbers a chemist measures — a reaction
-enthalpy from RC1, a decomposition onset and heat release from DSC or ARC, a jacket temperature, a
-heat-transfer coefficient. **Nothing here measures anything, predicts a calorimetry trace, or
-decides whether a process is safe.** It does the arithmetic that sits between a calorimetry report
-and a scale-up decision, which is exactly the arithmetic people do on the back of an envelope and
-get wrong under time pressure.
-
-**Why this is a server and not a skill.** These are deterministic formulas with units, and a model
-doing them in prose has no way to be checked. The formulas are textbook (Stoessel, *Thermal Safety
-of Chemical Processes*, Wiley 2008; Townsend & Tou, *Thermochimica Acta* 37 (1980) 1-30 for
-TMR_ad), which is what makes them safe to ship as code and unsafe to ship as recollection.
-
-**Units are in every name and every docstring**, because that is where this arithmetic goes wrong.
-A specific heat in kJ/(kg·K) against a heat release in W/kg is a factor of a thousand, and the
-answer looks plausible either way.
+Closed-form expressions over numbers a chemist measures (RC1 enthalpy, DSC/ARC onset and heat
+release, jacket temperature, U). Nothing here measures, predicts a calorimetry trace, or decides
+whether a process is safe. Formulas from Stoessel, *Thermal Safety of Chemical Processes* (Wiley
+2008), and Townsend & Tou, *Thermochimica Acta* 37 (1980) 1-30 for TMR_ad. Units are in every name
+and docstring, because a kJ-versus-W slip is a factor of a thousand that still looks plausible.
 """
 
 from __future__ import annotations
@@ -22,33 +12,25 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-#: The gas constant, J/(mol·K). Written here rather than imported from `scipy` so that this server's
-#: dependency closure stays the MCP transport and nothing else — the reason `props` gives for the
-#: same choice.
+#: The gas constant, J/(mol·K); a literal so the dependency closure stays the transport alone.
 GAS_CONSTANT_J_PER_MOL_K = 8.314462618
 
-#: Absolute zero in degrees Celsius. Every public function here takes and returns Celsius, because
-#: that is what a calorimetry report and a chemist both use, and converts internally.
+#: Absolute zero, °C. Public functions take and return Celsius and convert internally.
 ABSOLUTE_ZERO_C = -273.15
 
 
 class ThermalInputError(ValueError):
     """An input that no arithmetic here can be run on.
 
-    A `ValueError`, deliberately: `mcp_server_kit.connector_app` passes that family through to the
-    model verbatim, because these messages are worded for a chemist and say which number is wrong.
-    Anything else is replaced with an `error_id` — right for a genuine bug, wrong for "your
-    accumulation fraction is above 1".
+    A `ValueError` so `connector_app` passes the chemist-facing message to the model verbatim.
     """
 
 
 def _finite(value: float, *, name: str) -> float:
     """Refuse NaN and infinity, which every comparison guard below would otherwise wave through.
 
-    **The MCP JSON parser accepts the literals `NaN` and `Infinity`**, and `value <= 0` is False
-    for both, so `adiabatic_temperature_rise` with `moles=NaN` answered `NaN` — serialised as
-    `null` — and with `moles=Infinity` answered an infinite rise, where a safety number has to be a
-    refusal or a number. Neither is ever a quantity somebody measured.
+    JSON input can carry both, and `value <= 0` is False for each; a safety number must be a number
+    or a refusal.
     """
     if not math.isfinite(value):
         raise ThermalInputError(f"{name} must be a finite number; got {value}")
@@ -58,9 +40,7 @@ def _finite(value: float, *, name: str) -> float:
 def _kelvin(celsius: float, *, name: str) -> float:
     """Celsius to kelvin, refusing a temperature below absolute zero or not finite.
 
-    Not a formality: a transposed sign on a sub-ambient jacket temperature (-20 read as -200) is a
-    typo this catches, and every formula below divides by or squares a temperature in kelvin, where
-    a negative value returns a confidently wrong number instead of failing.
+    Catches a sign or digit typo that would otherwise give a confidently wrong kelvin value.
     """
     if _finite(celsius, name=name) <= ABSOLUTE_ZERO_C:
         raise ThermalInputError(
@@ -87,28 +67,22 @@ def adiabatic_temperature_rise(
 
     ΔT_ad = |ΔH_r| · n / (m · c_p)
 
-    The sign of `heat_of_reaction_kj_per_mol` is taken as given and its magnitude used, so an
-    exothermic enthalpy written the thermodynamic way (negative) and the calorimetric way (positive)
-    both give the same rise. An **endothermic** reaction has no adiabatic rise and this function is
-    not the one to ask about it.
+    The enthalpy's magnitude is used, so either sign convention for an exotherm gives the same rise.
+    Not for endothermic reactions.
 
     Args:
-        heat_of_reaction_kj_per_mol: Reaction enthalpy, kJ/mol of the limiting reagent. From RC1 or
-            a comparable reaction calorimeter — not a computed gas-phase enthalpy, which says
-            nothing about the solvated, mixed system a jacket has to remove heat from.
-        moles: Moles of the limiting reagent in the batch, mol.
-        mass_kg: Total mass of the reaction mass, kg — everything the heat is distributed into,
-            solvent included.
-        specific_heat_kj_per_kg_k: Specific heat capacity of the reaction mass, kJ/(kg·K). Around
-            1.8-2.1 for common organic solvents and 4.18 for water; the mixture's value, not the
-            solute's.
+        heat_of_reaction_kj_per_mol: Reaction enthalpy, kJ/mol of the limiting reagent, from
+        reaction calorimetry (not a computed gas-phase enthalpy). moles: Moles of the limiting
+        reagent in the batch, mol. mass_kg: Total reaction mass, kg, solvent included.
+        specific_heat_kj_per_kg_k: Specific heat capacity of the reaction mass, kJ/(kg·K) (about
+        1.8-2.1 for organic solvents, 4.18 for water).
 
     Returns:
         The adiabatic temperature rise in kelvin (a difference, so identical in °C).
 
     Raises:
-        ThermalInputError: A mass or a heat capacity at or below zero, a negative mole count, or
-            any input that is not finite.
+        ThermalInputError: A mass or a heat capacity at or below zero, a negative mole count, or any
+        input that is not finite.
     """
     _positive(mass_kg, name="mass_kg", unit="kg")
     _positive(specific_heat_kj_per_kg_k, name="specific_heat_kj_per_kg_k", unit="kJ/(kg·K)")
@@ -128,18 +102,14 @@ def mtsr(
 
     MTSR = T_p + X_ac · ΔT_ad
 
-    **The accumulation fraction is the whole safety argument and it is an input, not a default.**
-    It is the fraction of the reagent that is present and unreacted at the worst moment — high for a
-    reagent dosed faster than it is consumed, low for one consumed as it arrives. A process is made
-    safe by *reducing accumulation*, which is why this function will not guess it: assuming 1.0
-    would make every dosed process look critical, and assuming anything lower would invent the
-    argument the chemist is supposed to be making.
+    The accumulation fraction is the safety argument, so it is a required input: assuming 1.0 makes
+    every dosed process look critical, and anything lower invents the chemist's argument.
 
     Args:
         process_temperature_c: The intended process temperature, °C.
         adiabatic_temperature_rise_k: ΔT_ad for the synthesis reaction, K.
-        accumulation_fraction: Unreacted fraction of the limiting reagent at the worst case, 0-1.
-            Measured from the calorimetric conversion curve, not assumed.
+        accumulation_fraction: Unreacted fraction of the limiting reagent at the worst case, 0-1,
+        from the calorimetric conversion curve.
 
     Returns:
         MTSR in °C.
@@ -170,22 +140,16 @@ def time_to_maximum_rate_hours(
 
     TMR_ad = c_p · R · T² / (q(T) · E_a)
 
-    The Townsend-Tou approximation (*Thermochimica Acta* 37 (1980) 1-30): a zero-order decomposition
-    whose rate follows Arrhenius, held adiabatically. It is the number behind T_D24 — the
-    temperature at which TMR_ad is 24 hours — which is the decomposition limit the Stoessel classes
-    compare MTSR against.
-
-    **What it is not.** It assumes zero-order kinetics and a single decomposition, so it is
-    conservative for an autocatalytic decomposition and wrong for one with an induction period.
-    Where a DSC trace shows autocatalysis, this number is optimistic and the isothermal test is the
-    one that answers.
+    The Townsend-Tou approximation for a zero-order Arrhenius decomposition held adiabatically; the
+    basis of T_D24. Optimistic for an autocatalytic decomposition and wrong for one with an
+    induction period; an isothermal test answers those.
 
     Args:
         temperature_c: The temperature the system is held at, °C.
-        heat_release_rate_w_per_kg: Specific heat release rate q at that temperature, W/kg. From an
-            ARC or DSC trace read at this temperature, not extrapolated by this function.
-        activation_energy_kj_per_mol: Apparent activation energy of the decomposition, kJ/mol.
-        specific_heat_kj_per_kg_k: Specific heat capacity of the reaction mass, kJ/(kg·K).
+        heat_release_rate_w_per_kg: Specific heat release rate q at that temperature, W/kg, read
+        from an ARC or DSC trace. activation_energy_kj_per_mol: Apparent activation energy of the
+        decomposition, kJ/mol. specific_heat_kj_per_kg_k: Specific heat capacity of the reaction
+        mass, kJ/(kg·K).
 
     Returns:
         Time to maximum rate, in hours.
@@ -201,9 +165,7 @@ def time_to_maximum_rate_hours(
     heat_capacity = _positive(
         specific_heat_kj_per_kg_k, name="specific_heat_kj_per_kg_k", unit="kJ/(kg·K)"
     )
-    # Every term in SI: c_p J/(kg·K), q W/kg, E_a J/mol. The kJ inputs are what a chemist reads off
-    # a report, and converting here rather than at the call site is what keeps the two from being
-    # mixed — which is the failure this module's docstring names.
+    # All terms in SI (c_p J/(kg·K), q W/kg, E_a J/mol); kJ inputs are converted here, in one place.
     seconds = (
         heat_capacity * 1000.0 * GAS_CONSTANT_J_PER_MOL_K * kelvin**2 / (rate * energy * 1000.0)
     )
@@ -220,18 +182,12 @@ def temperature_for_tmr(
 ) -> float:
     """The temperature at which TMR_ad equals `target_hours` — T_D24 when that is 24, °C.
 
-    Inverts `time_to_maximum_rate_hours` by extrapolating q along Arrhenius from one measured point:
+    Extrapolates q along Arrhenius from one measured point,
 
         q(T) = q(T_ref) · exp( -E_a/R · (1/T - 1/T_ref) )
 
-    then solving TMR_ad(T) = target numerically. There is no closed form (T appears squared and in
-    the exponential), so this is a bisection over a bracket wide enough for anything a reactor sees.
-
-    **This is an extrapolation and its error grows with distance from the reference point.** A q
-    measured at 200 °C extrapolated to 60 °C carries the activation energy's uncertainty through an
-    exponential; a T_D24 derived that way is an estimate, not a measurement, and an isothermal test
-    at the temperature of interest is what settles it. The answer is returned all the same, because
-    the alternative in practice is the same extrapolation done in somebody's head.
+    and solves TMR_ad(T) = target by bisection (no closed form). The error grows with distance from
+    the reference point, so the result is an estimate an isothermal test should confirm.
 
     Args:
         target_hours: The TMR_ad to solve for, hours. 24 gives T_D24.
@@ -244,8 +200,7 @@ def temperature_for_tmr(
         The temperature in °C at which TMR_ad equals `target_hours`.
 
     Raises:
-        ThermalInputError: A non-positive input, or a target no temperature in -100..500 °C reaches
-            — which is itself the answer, and says so.
+        ThermalInputError: A non-positive input, or a target no temperature in -100..500 °C reaches.
     """
     _positive(target_hours, name="target_hours", unit="h")
     reference_kelvin = _kelvin(reference_temperature_c, name="reference_temperature_c")
@@ -296,8 +251,8 @@ class Criticality:
 
     #: 1 to 5. Lower is less critical; see `stoessel_class` for what each means.
     criticality_class: int
-    #: The four temperatures in ascending order, as `("T_p", 20.0)` pairs — the actual evidence for
-    #: the class, so a reader can see *why* rather than take the number on trust.
+    #: The four temperatures in ascending order as `("T_p", 20.0)` pairs: the evidence for the
+    #: class.
     ordering: tuple[tuple[str, float], ...]
     #: What the class means for this process, in the words the classification uses.
     interpretation: str
@@ -312,31 +267,28 @@ def stoessel_class(
 ) -> Criticality:
     """Classify a runaway scenario 1-5 by the order of its four characteristic temperatures.
 
-    Stoessel's criticality classes (*Thermal Safety of Chemical Processes*, Wiley 2008, ch. 3). The
-    class is decided entirely by where MTSR falls relative to the maximum technical temperature
-    (MTT — the boiling point, or the pressure-relief set point for a closed system) and T_D24:
+    Stoessel's criticality classes (*Thermal Safety of Chemical Processes*, Wiley 2008, ch. 3),
+    decided by where MTSR falls relative to MTT (boiling point, or relief set point for a closed
+    system) and T_D24:
 
-    - **1** — `T_p < MTSR < MTT < T_D24`. The runaway reaches neither boiling nor decomposition.
-    - **2** — `T_p < MTSR < T_D24 < MTT`. As 1; the order of the two barriers differs but neither
-      is crossed.
-    - **3** — `T_p < MTT < MTSR < T_D24`. The runaway boils the batch before it decomposes. The
-      solvent is the safety barrier, and it only works if the vapour can be handled.
-    - **4** — `T_p < MTT < T_D24 < MTSR`. Decomposition is reached, with boiling on the way; the
-      evaporative cooling is what stands between the two, and it has to be shown to be enough.
-    - **5** — `T_p < T_D24 < MTT < MTSR`. Decomposition is reached with no barrier before it. The
-      most critical case.
+    - **1** — `T_p < MTSR < MTT < T_D24`. Neither boiling nor decomposition is reached.
+    - **2** — `T_p < MTSR < T_D24 < MTT`. Neither barrier is crossed.
+    - **3** — `T_p < MTT < MTSR < T_D24`. The batch boils before it decomposes; the vapour must be
+      handled.
+    - **4** — `T_p < MTT < T_D24 < MTSR`. Decomposition is reached after boiling; evaporative
+      cooling must be shown sufficient.
+    - **5** — `T_p < T_D24 < MTT < MTSR`. Decomposition with no barrier before it; the most
+      critical.
 
-    **This classifies a scenario; it does not approve or reject a process.** Classes 1 and 2 are not
-    "safe" — they say a cooling failure does not reach decomposition, which is one scenario among
-    the several a hazard study covers, and says nothing about dosing errors, wrong charges, mixing
-    failure or the accumulated reagent's own stability.
+    This classifies one scenario (cooling failure); it does not approve a process, and classes 1 and
+    2 are not "safe".
 
     Args:
         process_temperature_c: Intended process temperature, °C.
         mtsr_c: Maximum temperature of the synthesis reaction, °C — from `mtsr`.
-        max_technical_temperature_c: MTT, °C. The boiling point at the operating pressure for an
-            open system; the relief set point for a closed one.
-        decomposition_t_d24_c: T_D24, °C — the temperature at which TMR_ad is 24 h.
+        max_technical_temperature_c: MTT, °C: the boiling point at operating pressure (open system)
+        or the relief set point (closed). decomposition_t_d24_c: T_D24, °C — the temperature at
+        which TMR_ad is 24 h.
 
     Returns:
         The class, the ordering behind it, and what it means.
@@ -422,17 +374,10 @@ def heat_removal_capacity(
 ) -> tuple[float, float]:
     """What the jacket can take out, as a total and per kilogram of reaction mass.
 
-    q_ex = U · A · (T_r - T_j), and q_ex/m for comparison against a specific heat release rate.
-
-    **The sign is kept.** A jacket warmer than the reactor removes nothing and this returns a
-    negative number rather than an absolute value, because "the cooling is a heat source right now"
-    is a real and reportable state — a batch being warmed to its process temperature is in it.
-
-    **What this is not.** A steady-state capacity at one instant, from a U somebody measured or
-    estimated. It is not a dynamic model: it says nothing about how U falls as a batch thickens,
-    about fouling, about the jacket's own thermal inertia, or about whether the cooling medium can
-    sustain that duty. The classic scale-up failure is in none of those terms — it is that A/V falls
-    as volume rises, so a duty per kilogram that was ample in a 1 L flask is not in a 1 m³ reactor.
+    q_ex = U · A · (T_r - T_j), and q_ex/m for comparison with a specific heat release rate. The
+    sign is kept: a negative value means the jacket is heating the batch. A steady-state capacity at
+    one instant, not a dynamic model (no fouling, viscosity, jacket inertia or utility limits); note
+    that A/V falls with scale.
 
     Args:
         heat_transfer_coefficient_w_per_m2_k: Overall U, W/(m²·K).

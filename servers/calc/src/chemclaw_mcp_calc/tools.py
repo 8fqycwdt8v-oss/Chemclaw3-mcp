@@ -1,70 +1,18 @@
-"""The `calc` MCP tool surface: nine request/response calculators over GFN2-xTB and RDKit.
+"""The `calc` MCP tool surface: request/response calculators over GFN2-xTB and RDKit.
 
-**These docstrings are the prompt.** Argument names, defaults and this prose are what the agent
-reads before deciding whether to call a tool and what to pass it, and they are carried over from
-Chemclaw3's own `calc` connector word for word — several sentences exist because a live run got
-something wrong in a way that was measured, and shortening one would delete the measurement.
+The SMILES-taking tools carry Chemclaw3's model-facing docstrings word for word, minus any claim
+of caching: this server stores nothing. Every result carries `calc_version` and `calc_key` (the
+flat `calc_type@calc_version:input_hash:params_hash` it would be stored under), derived here
+because only this process has the installed programs.
 
-Two edits were made to them and both are the same edit: **every sentence claiming a result is
-cached is gone.** "Cached, so repeats are free" was true of a connector sitting on a Postgres
-calculation store; it is false of this server, which computes on request and stores nothing. Leaving
-it would tell the model a second call is free when it costs another full SCF.
+Below them sit the **primitives**: structure-in, structure-out calculations Chemclaw3's durable
+jobs compose. No model reads this manifest — it never goes on `CHEMCLAW_CONNECTORS_DIR`; Chemclaw3
+calls it from `cached_compute` and Temporal activities. Composites (whose key would name their own
+output) stay in Chemclaw3, so `compute_thermochemistry` is not here.
 
-**What replaces the cache is `calc_version` and `calc_key` on every result.** The store did not move
-here, so the addressing has to travel: `calc_key` is the flat
-`calc_type@calc_version:input_hash:params_hash` string the result *would* be stored under, and
-`calc_version` alone is the primary key of Chemclaw3's calibration ledger. Both are derived in this
-process because nothing else can derive them — the `tblite`/`rdkit` distributions and any `xtb`
-binary live here, and `xtb_cli.binary_version()` answers `"absent"` rather than raising, so a client
-deriving the string locally would produce a well-formed value matching zero ledger rows and read as
-`UNCALIBRATED` rather than as an error.
-
-## Two callers, both of them machines
-
-The eight tools above take a SMILES and answer a chemist's question. Below them sit the
-**primitives**: structure-in, structure-out calculations that Chemclaw3's durable-job activities
-compose into reaction energetics, relaxed scans, conformer ensembles and interaction energies.
-
-**No model reads either group.** Chemclaw3 keeps its own `calc` bundle and its own agent-facing tool
-surface, and reaches this server from inside `science/calc/store.py::cached_compute` and from
-Temporal activities — so this manifest never goes on `CHEMCLAW_CONNECTORS_DIR`, which
-`servers/calc/README.md` and `docs/integration.md` already forbid for a different reason (a partial
-surface would win the `calc` name collision and remove six stateful tools and every durable job from
-the agent). The number of tools declared here is therefore invisible to any prompt, and the
-"orchestrator, not chemist" markers on the primitives name **which caller each is written for**, not
-a choice a model is being asked to make.
-
-That the primitives could only ever reach a model by way of that already-forbidden wiring is one
-more consequence of an existing rule rather than a caveat of its own. (Belt and braces if it ever
-came to it: `endpoint.tools` in a bundle manifest is an allowlist, passed to the client as
-`allowed_tools` by `connectors/registry.py`, so a surface *can* be narrowed per tool. That is not
-what makes the count free here — not being on the agent surface at all is.)
-
-The eight nonetheless carry Chemclaw3's model-facing docstrings word for word, and that is
-deliberate: they mirror the tools over there that a model *does* read, so a divergence in what the
-two claim is visible in a diff rather than only in an answer.
-
-The split between the groups is by *runtime*, not by subject: **Chemclaw3 keeps orchestration and
-the cache; this server holds the physics.** A composite — optimise, take a Hessian, displace along
-the imaginary mode, repeat — is a loop with state whose key names its own output, so it cannot be
-looked up before it runs and does not belong here. Its parts each key cleanly and do.
-
-That is why `compute_thermochemistry` is **not** on this server. See `servers/calc/README.md`.
-
-**Nothing here is cheap by event-loop standards.** A single point is tens to hundreds of
-milliseconds; a Hessian on a drug-sized molecule is minutes. One uvicorn process serves every
-connected turn on one loop, so every tool body runs its work in a worker thread
-(`asyncio.to_thread`) and the coroutine only awaits it. `tests/test_event_loop_offload.py` asserts
-the hop for every one of the nine, because a hop with no test is a property nobody would notice
-losing.
-
-**And how many of those threads may run at once is bounded** — by
-`CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS`, enforced by `_admitted` below over every tool the
-manifest calls `state_changing`. The hop keeps one call off the event loop; it says nothing about
-twenty arriving together. The budget is counted in *slots*, one per core: an in-process calculation
-costs one because the image pins the numerical stack to one thread, and a CREST search costs what
-the sampler is told to use, because that pin is scrubbed out of its environment.
-`engine/admission.py` has the measurement, and the argument for refusing rather than queueing.
+Every tool body runs in `asyncio.to_thread` (`tests/test_event_loop_offload.py`), and the
+`state_changing` tools share an admission ceiling (`_admitted`), counted in one-core slots; a
+CREST search costs what its sampler is told to use. See `engine/admission.py`.
 """
 
 from __future__ import annotations
@@ -124,9 +72,8 @@ server = FastMCP("calc")
 
 logger = logging.getLogger(__name__)
 
-# The pod's ceiling on concurrent calculations. Built at import, like `settings` itself; a test that
-# needs a different ceiling replaces this attribute rather than the setting, because the number a
-# gate enforces and the number it was built from must be the same number.
+# The pod's ceiling on concurrent calculations, built at import; a test replaces this attribute so
+# the enforced number is the one it was built from.
 _admission = Admission(settings.calc_max_concurrent_requests)
 
 _P = ParamSpec("_P")
@@ -141,17 +88,10 @@ def _one_slot() -> int:
 def _crest_slots() -> int:
     """What one CREST search costs, in slots — and it is never one.
 
-    `crest_cli` passes `-T` and sets `OMP_NUM_THREADS` from `CHEMCLAW_CREST_THREADS` (4 in the
-    shipped image) into a *scrubbed* child environment, so the image's `OMP_NUM_THREADS=1` cannot
-    reach it and one search is that many runnable threads. Charging it one slot is what let four
-    searches become sixteen threads on a pod sized for four; `engine/admission.py` has the
-    measurement.
-
-    Unset (`0`) means nothing tells CREST how wide to be, and its own OpenMP then sizes itself from
-    `/proc/cpuinfo` — the *node's* cores, which a container limit does not change. There is no
-    honest number smaller than "all of it" for that case, so such a search is charged the whole
-    budget and runs alone. Read at call time, from the gate that is actually enforcing, so a test
-    or an operator changing either sees the same number in both.
+    `crest_cli` runs it with `CHEMCLAW_CREST_THREADS` threads in a scrubbed environment, so the
+    image's one-thread pin does not apply. Unset (`0`), CREST sizes itself from the node's cores, so
+    the search is charged the whole budget and runs alone. Read at call time from the enforcing
+    gate.
     """
     return settings.crest_threads or _admission.limit
 
@@ -161,22 +101,10 @@ def _admitted(
 ) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how much CPU runs at once, refusing promptly when the pod is full.
 
-    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
-    `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the manifest's
-    `state_changing` list instead of against a second hand-kept list here.
-
-    **The slot is released when the work finishes, not when the caller stops waiting**, and
-    `asyncio.shield` is what buys that. Cancelling the awaiting coroutine does not stop the worker
-    thread underneath it, so releasing on cancellation would hand a slot to a retry while the
-    original burn continued — which is the precise failure this gate is for: a caller times out,
-    retries, and the second calculation lands beside the first on a pod that thinks it has room.
-    Shielded, the inner task outlives its awaiter and gives its slot back when the CPU is actually
-    free again.
-
-    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
-    from `inspect.signature`, which follows `__wrapped__` back to the real signature and resolves
-    its annotations against *that* function's module. Without it every tool here would advertise
-    `(*args, **kwargs)`.
+    Stamped with `ADMISSION_MARKER` so `tests/test_admission.py` checks the gated set against the
+    manifest's `state_changing` list. `asyncio.shield` releases the slot when the work finishes, not
+    when the caller stops waiting, since the worker thread keeps running and a retry would otherwise
+    land beside it. `functools.wraps` lets FastMCP read the real signature for the argument schema.
     """
 
     @functools.wraps(work)
@@ -190,9 +118,7 @@ def _admitted(
 
 
 def _admitted_crest(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
-    """`_admitted` for the two tools that spawn a sampler wider than one core.
-
-    See `_crest_slots` for what such a call is charged and why it is not one.
+    """`_admitted` for the two tools that spawn a sampler wider than one core (see `_crest_slots`).
     """
     return _admitted(work, cost=_crest_slots)
 
@@ -216,21 +142,10 @@ __all__ = [
 async def resolve_calculator_versions() -> None:
     """Resolve the xTB backend once at startup, off the event loop, before a request needs it.
 
-    `pka_calc_version()` names the optimizer that relaxes the base, so it resolves the backend — and
-    wherever that resolves to the `xtb` binary (always under `CHEMCLAW_XTB_ENGINE=xtb`, and under
-    the `auto` default on any image that has the binary), it shells out to `xtb --version` on the
-    first call in a process, `lru_cache`d thereafter. Every tool derives a version string, so *any*
-    first call in a fresh pod could otherwise hold this process's single event loop — every
-    session's stream, not just its own — for up to the 30 s subprocess timeout.
-
-    Guarding each caller would leave the same trap set for the next one, so the resolution is
-    hoisted to the one place a process starts. Honest limit: `on_start` is *started*, not awaited
-    (see `connector_app`), so a request arriving in the first milliseconds can still win the race
-    and pay the resolution once — the window is startup-sized, not per-request.
-
-    Swallows its own failures, as the `on_start` contract requires: a server that refuses to start
-    because it could not ask a binary for its version is strictly worse than one that starts and
-    resolves the version on first use.
+    Resolving can shell out to `xtb --version` (up to the subprocess timeout) on first use, which
+    would otherwise hold the event loop for every session. `on_start` is started, not awaited, so a
+    request in the first milliseconds may still pay it once. Swallows its own failures: starting and
+    resolving later beats refusing to start.
     """
     try:
         version = await asyncio.to_thread(pka_calc_version)
@@ -597,42 +512,18 @@ async def predict_logd(smiles: str, ph: float | None = None) -> LogdResult:
     return await asyncio.to_thread(_predict_logd, LogdInput(smiles=smiles, ph=ph))
 
 
-# ------------------------------------------------------------------------------------------------
-# The primitives.
-#
-# Everything below takes and returns a `Structure` rather than a SMILES, and exists so Chemclaw3's
-# durable-job activities can compose the physics they need while keeping the orchestration — and the
-# cache — on their side. An agent answering a chemist's question wants the eight tools above.
-#
-# Each is separately keyed, which is the property that makes the composition worth doing: Chemclaw3
-# caches one row per *primitive* instead of one per job, so a solvent screen that adds a seventh
-# solvent reuses the other six, and a scan that gains two points reuses the twenty-four it had.
+# The primitives: `Structure` in, `Structure` out, each separately keyed so Chemclaw3 caches one
+# row per primitive and a composite job reuses what it already has.
 
 
 class HessianPayload(Keyed):
     """Second derivatives at one geometry, with the arrays base64-encoded as `.npy`.
 
     `hessian_npy` is (3N, 3N) in Hartree/Angstrom^2. Exactly one of `dipole_derivatives_npy`
-    (3N, 3) in Debye/Angstrom and `ir_intensities` (one per Cartesian mode, km/mol) is populated,
-    and which one says which backend ran: the in-process path collects dipole derivatives while it
-    displaces, the `xtb` binary computes intensities itself.
-
-    **Both are what a caller needs to derive an IR spectrum**, and neither is a spectrum: the
-    normal-mode projection and the RRHO arithmetic over them stayed in Chemclaw3, because they are
-    pure partition functions over what this returns.
-
-    **`ir_wavenumbers_cm` is what makes `ir_intensities` unambiguous, and it is there because the
-    pairing was positional and pinned by nothing.** The binary reports one intensity per *Cartesian*
-    mode, external modes included, so a caller lining them up against its own projected vibrations
-    has to know how many entries to drop — 6 for a bent molecule, 5 for a linear one, and xtb's
-    judgement of which is not the caller's. Getting that wrong shifts every band by one and passes
-    every check a bare list admits, because a right pairing and a shifted one both have 3N entries.
-    With the wavenumbers beside them a caller matches instead of counting. `None` exactly when
-    `ir_intensities` is.
-
-    `max_gradient_hartree_per_angstrom` is the evidence that the geometry was a stationary point —
-    see the field comment. Optional rather than required, so a row written before it existed is
-    still a complete row and `CALCULATION_EPOCH` does not have to move for it.
+    (3N, 3) in Debye/Angstrom (in-process) and `ir_intensities` (one per Cartesian mode, km/mol;
+    binary) is populated. `ir_wavenumbers_cm` lets a caller match intensities to its own modes
+    rather than count external ones. Normal-mode projection and RRHO stay in Chemclaw3. The optional
+    fields keep older rows complete.
     """
 
     structure_id: str
@@ -640,32 +531,23 @@ class HessianPayload(Keyed):
     solvent: str | None
     atom_count: int
     electronic_energy_hartree: float
-    # Largest absolute gradient component at the geometry that was differentiated. A Hessian
-    # describes the surface *around* a point, and only at a stationary point do its eigenvalues mean
-    # frequencies — so this is what lets a caller assert what it has rather than assume it. `None`
-    # from the `xtb` binary, which reports no gradient beside its Hessian.
+    # Largest absolute gradient component at the differentiated geometry: Hessian eigenvalues are
+    # frequencies only at a stationary point. `None` from the `xtb` binary.
     max_gradient_hartree_per_angstrom: float | None = None
     hessian_npy: str
     dipole_derivatives_npy: str | None = None
     ir_intensities: list[float] | None = None
-    # xtb's own wavenumber (cm^-1) for each entry of `ir_intensities`, same order: negative for an
-    # imaginary mode, zero for a projected-out translation or rotation. Optional for the same reason
-    # as the gradient above, and `CALCULATION_EPOCH` does not move for it: a row written before this
-    # field existed carries the same intensities in the same order, and a caller pairs them the way
-    # it always has — this only lets it stop counting external modes to do so.
+    # xtb's wavenumber (cm^-1) for each `ir_intensities` entry, same order: negative for imaginary,
+    # zero for a projected-out mode.
     ir_wavenumbers_cm: list[float] | None = None
 
 
 class EnsemblePayload(Keyed):
     """What one CREST search found, and nothing computed from it.
 
-    `members` is ordered lowest energy first and carries each structure with the **rotamer
-    degeneracy** that collapsed onto it. The degeneracy is not bookkeeping: a Boltzmann population
-    that ignores it is wrong by a lot — measured on n-butane, degeneracy-weighted populations give
-    the anti conformer 59.2% against CREST's own 59.14%, and ignoring degeneracy gives 73%.
-
-    Populations, conformational entropy and the ensemble free-energy correction are arithmetic over
-    exactly these two numbers per member, and they stayed with the durable jobs that report them.
+    `members` is ordered lowest energy first, each with its **rotamer degeneracy** — a Boltzmann
+    population that ignores it is badly wrong. Populations and ensemble free energies are computed
+    by Chemclaw3's durable jobs.
     """
 
     structure_id: str
@@ -1056,11 +938,8 @@ def _ensemble_payload(
     structure: Structure,
     search: str,
 ) -> EnsemblePayload:
-    """Run a CREST search and wrap it with the identity it is addressed by.
-
-    One helper for both search tools because the wrapping is identical and the two differ only in
-    which spec they build — the difference that matters (`ComplexSpec` keys the surrounding
-    optimisations' backend as well) lives in the specs, not here.
+    """Run a CREST search and wrap it with the identity it is addressed by; the specs carry the
+    difference between the two search tools.
     """
     members = crest_search.search_ensemble(spec, structure)
     key = spec.cache_key(structure)

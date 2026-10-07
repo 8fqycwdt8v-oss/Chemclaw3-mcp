@@ -1,9 +1,7 @@
 """The guard is only worth having if it bites, so these tests make it bite.
 
-A guard that is installed but never proven is the same class of artifact as a README asserting a
-deletion that never happened. Each test below is one property the design claims: the default is on,
-loopback still works (or the server could not serve), a real outbound address is refused, the
-allowlist is the only way through, and serving calls are untouched.
+One property per test: on by default, loopback still works, a real outbound address is refused,
+the allowlist is the only way through, and serving calls are untouched.
 """
 
 from __future__ import annotations
@@ -37,9 +35,8 @@ def test_the_default_allowlist_is_empty() -> None:
 def test_a_remote_address_is_refused() -> None:
     """The whole claim, in one assertion: a socket to somewhere else does not open.
 
-    Uses a documentation-range address (TEST-NET-3, RFC 5737) so that the *only* reason this test
-    can pass is the guard: even unguarded, nothing is listening there, and the test would then fail
-    with a timeout rather than an `EgressForbidden`.
+    A TEST-NET-3 address (RFC 5737) has nothing listening, so without the guard this would time out
+    rather than raise `EgressForbidden`.
     """
     with (
         pytest.raises(egress.EgressForbidden, match=r"203\.0\.113\.10"),
@@ -100,10 +97,7 @@ def test_the_allowlist_is_the_only_way_through(monkeypatch: pytest.MonkeyPatch) 
 def test_a_bytes_host_is_refused_like_a_str_one() -> None:
     """`connect((b"1.1.1.1", 80))` is a connection, and CPython accepts it.
 
-    `_host_of` used to return the host only for a `str` first element, and `_check` reads `None`
-    as "a family that cannot leave the host". So a tuple built from an already-encoded buffer was
-    a complete bypass of the guard in pure Python — measured: `sock.connect((b"1.1.1.1", 80))`
-    connected with the guard armed and `allowed_hosts()` empty.
+    A `bytes` host in an inet tuple must be checked like a `str` one, or it bypasses the guard.
     """
     with (
         pytest.raises(egress.EgressForbidden, match=r"203\.0\.113\.10"),
@@ -122,11 +116,9 @@ def test_a_bytearray_host_is_refused_too() -> None:
 
 
 def test_a_unix_socket_path_is_still_not_this_guard_s_business() -> None:
-    """The bytes fix must not start refusing `AF_UNIX`, whose address *is* a path.
+    """An `AF_UNIX` address (bytes or str path, not a tuple) is still not this guard's business.
 
-    The two shapes are distinguishable and always were: a Unix address is the `bytes`/`str`
-    itself, an inet address is a tuple containing one. This pins the distinction, because the
-    obvious way to fix the tuple case is to widen the branch above it.
+    Pins the distinction, since the obvious way to handle the bytes tuple would widen the branch.
     """
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         with pytest.raises(OSError) as raised:
@@ -135,12 +127,10 @@ def test_a_unix_socket_path_is_still_not_this_guard_s_business() -> None:
 
 
 def test_a_dns_lookup_is_refused() -> None:
-    """The guard's own docstring names "a licence check over DNS" as a thing it catches.
+    """A DNS lookup is refused.
 
-    It did not: `getaddrinfo` is a module-level C call, not a `socket.socket` method, so an armed
-    process resolved any name it liked — a full round trip to a resolver, which is both the
-    classic covert channel and the usual shape of a licence check. Measured before the fix:
-    `getaddrinfo("one.one.one.one", 80)` returned a real answer with the guard armed.
+    `getaddrinfo` is a module-level C call, not a socket method, so it must be patched separately; a
+    resolver round trip is a covert channel and the usual shape of a licence check.
     """
     with pytest.raises(egress.EgressForbidden, match=r"example\.invalid"):
         socket.getaddrinfo("example.invalid", 443)
@@ -153,10 +143,8 @@ def test_a_dns_lookup_is_refused() -> None:
 def test_a_localhost_suffix_name_is_refused() -> None:
     """`x.localhost` is not loopback — the OS resolver decides what it points at.
 
-    The guard used to exempt any name ending in `.localhost`, but such a name resolves to whatever
-    the resolver (or `/etc/hosts`) says: measured, `connect(("exfil.localhost", 80))` reached a
-    public address, and `getaddrinfo("<payload>.localhost")` was permitted — DNS exfiltration
-    through a waved-through name. Only the exact string `localhost` and loopback IP literals pass.
+    Only the exact string `localhost` and loopback IP literals pass; a `.localhost` suffix name
+    could resolve anywhere and carry DNS exfiltration.
     """
     with (
         pytest.raises(egress.EgressForbidden, match=r"exfil\.localhost"),
@@ -264,9 +252,7 @@ def test_disarm_restores_every_patched_call() -> None:
 def test_binding_and_resolving_the_unspecified_address_is_not_egress() -> None:
     """`0.0.0.0` and `::` are what a container binds to, not a destination.
 
-    Nothing observed this before the DNS patch, because CPython resolves a numeric bind address
-    without calling `getaddrinfo` — but a guard that could refuse a server's own bind would be an
-    outage wearing a control's clothes.
+    A guard that refused a server's own bind would be an outage.
     """
     assert socket.getaddrinfo("0.0.0.0", 0, socket.AF_INET)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -279,17 +265,9 @@ def test_binding_and_resolving_the_unspecified_address_is_not_egress() -> None:
 def test_recording_a_refusal_cannot_re_enter_the_guard() -> None:
     """The refusal's own log line is egress when a handler writes to the network.
 
-    `_check` logs and counts before it raises, and a `SysLogHandler`, a `SocketHandler` or anything
-    a deployment wires through uvicorn's `--log-config` connects on emit — so the record of a
-    refusal became a refusal, which was recorded, which connected again. Measured before the fix
-    with a `SocketHandler` pointed at an unreachable collector: **one** refused `connect` booked
-    **83** on `chemclaw_mcp_egress_refused_total`, and 82 of the 83 log lines named the *log
-    server* instead of the destination that was actually refused. `rate(...) > 0` is the whole
-    alert this counter exists for, and it was firing at 83 times the real rate on one event, with
-    the one diagnostic line an operator needed buried under its own echoes.
-
-    The inner connection is still refused — only its *record* is suppressed, which is what the
-    surviving line asserts.
+    A network log handler connects on emit, so recording a refusal must not recurse into further
+    refusals and inflate the counter. The inner connection is still refused; only its record is
+    suppressed.
     """
     import logging.handlers
 
@@ -333,16 +311,10 @@ def _sample(name: str) -> float:
 
 
 def test_a_widened_allowlist_is_visible_from_a_scrape(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`chemclaw_mcp_egress_guard_armed` was truthful about *armed* and silent about *widened*.
+    """A widened allowlist is visible from a scrape, as a count.
 
-    Measured on a live `/metrics`: `MCP_EGRESS_GUARD=on` with `MCP_EGRESS_ALLOW=evil.example.com`
-    published `chemclaw_mcp_egress_guard_armed 1.0` and nothing else — while `allowed_hosts()` held
-    the host. So the configuration `CLAUDE.md` calls the more dangerous one, and asserts is "empty
-    in every shipped deployment", was exactly the half a scrape could not check.
-
-    The **count** and never the host: a destination is attacker-influenced and unbounded, which is
-    why `chemclaw_mcp_egress_refused_total` is bare, and it does not become a safe label because
-    an operator put it there on purpose. `> 0` is the whole alert.
+    Without it an armed guard with `MCP_EGRESS_ALLOW` set looks the same as the shipped posture. The
+    count and never the host, since a destination is attacker-influenced; `> 0` is the alert.
     """
     monkeypatch.setenv("MCP_EGRESS_ALLOW", "evil.example.com, cache.example.com")
     egress.disarm()
@@ -362,12 +334,10 @@ def test_a_widened_allowlist_is_visible_from_a_scrape(monkeypatch: pytest.Monkey
 def test_a_disabled_guard_still_publishes_the_widening_it_was_configured_with(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`MCP_EGRESS_GUARD=off` is the same question asked of `arm_from_env`, the other entry point.
+    """With `MCP_EGRESS_GUARD=off`, `arm_from_env` still publishes the configured allowlist.
 
-    A deployment that turns the guard off permits everything, which
-    `chemclaw_mcp_egress_guard_armed 0` already says. The allowlist it *also* carried is still
-    worth publishing: the two together are what an operator reads to know whether this pod's
-    posture is the shipped one.
+    Together with `chemclaw_mcp_egress_guard_armed 0` it tells an operator whether the pod's posture
+    is the shipped one.
     """
     monkeypatch.setenv("MCP_EGRESS_GUARD", "off")
     monkeypatch.setenv("MCP_EGRESS_ALLOW", "weights.example.org")
@@ -383,21 +353,10 @@ def test_every_value_that_disarms_the_guard_is_in_the_set_the_ratchet_reads(
 ) -> None:
     """`GUARD_DISABLED_VALUES` is what `arm_from_env` does, driven rather than transcribed.
 
-    `tests/test_fleet_*.py` refuses a shipped `MCP_EGRESS_GUARD` it cannot prove arms the guard, and
-    it
-    imports this set to decide. That makes the set a contract between a ratchet and a runtime, so it
-    is driven here through the real entry point: every member disarms, and the values a reader is
-    most likely to get wrong arm.
-
-    **The empty string arms**, which is the arm of this table that was reasoned about rather than
-    run: `os.environ.get(_GUARD_ENV, "on")` returns `""` for a bare `ENV MCP_EGRESS_GUARD=`, and
-    `""` is in no disable set, so the guard goes up. A ratchet that flagged it would be refusing a
-    file that ships the posture it is asking for.
-
-    `${GUARD}` arms too, and that is the case the ratchet cannot use: *this* process sees an
-    unexpanded literal, while `docker build` expands it against an `ARG` and the image gets whatever
-    the build was given. So the value arms here and is an offence there — the asymmetry is the
-    point, and `test_the_allowlist_check_bites` holds the other half.
+    The fleet ratchet imports this set to refuse a shipped value that disarms the guard, so it is a
+    contract: every member disarms, and the likely-misread values arm. The empty string arms, since
+    `""` is in no disable set. `${GUARD}` arms here but is an offence to the ratchet, because a
+    build expands it to whatever it was given.
     """
     disabling = ["off", "0", "false", "no", "OFF", " off ", "False"]
     for value in disabling:
@@ -411,10 +370,6 @@ def test_every_value_that_disarms_the_guard_is_in_the_set_the_ratchet_reads(
         egress.arm_from_env()
         assert egress.armed(), f"{value!r} should arm the guard"
 
-    # The table is written out rather than iterated off the constant, and this is why: driving
-    # `sorted(GUARD_DISABLED_VALUES)` was the first version, and dropping `"no"` from the set left
-    # it green — the loop simply stopped testing the value that had left (measured). So the values
-    # are the test's own data, and the constant is compared against them, which fails in *both*
-    # directions: a spelling removed here disarms nothing and is caught above, and one added there
-    # is caught here before it can go undriven.
+    # The table is the test's own data, compared against the constant in both directions; iterating
+    # the constant would silently stop testing a value removed from it.
     assert {value.strip().lower() for value in disabling} == egress.GUARD_DISABLED_VALUES

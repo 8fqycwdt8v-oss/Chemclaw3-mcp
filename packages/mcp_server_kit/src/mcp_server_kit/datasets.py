@@ -33,8 +33,8 @@ class DatasetError(RuntimeError):
 #: name goes stale the day they change jobs, and the corpus goes on looking owned.
 REFRESH_OWNER = re.compile(r"(team|role):[a-z0-9][a-z0-9-]*")
 
-# : A refresh cadence in whole months or years (`P6M`, `P1Y`): this fleet mirrors snapshots, and a
-# : weekly-refreshed corpus would be a feed.
+#: A refresh cadence in whole months or years (`P6M`, `P1Y`): this fleet mirrors snapshots, and a
+#: weekly-refreshed corpus would be a feed.
 REFRESH_CADENCE = re.compile(r"P[1-9][0-9]*[MY]")
 
 
@@ -90,8 +90,7 @@ class DatasetManifest(BaseModel):
         return value
 
 
-# : The provenance fields, derived from the model so a new field is covered by the tests the day it
-# : is added.
+#: The provenance fields, derived from the model so a new field is tested the day it is added.
 _REQUIRED: tuple[str, ...] = tuple(DatasetManifest.model_fields)
 
 
@@ -189,18 +188,10 @@ def _digest(path: Path) -> str:
 
 
 def load_dataset(directory: Path, *, records_file: str = "records.csv") -> Dataset:
-    """Read `directory/dataset.json`, verify the records file against it, and return the manifest.
+    """Read `directory/dataset.json`, verify `records_file` against it, and return the manifest.
 
-    Args:
-        directory: The dataset directory — `dataset.json` plus the records file beside it.
-        records_file: The data file the manifest describes, so a non-CSV corpus can use this too.
-
-    Returns:
-        The verified `Dataset`.
-
-    Raises:
-        DatasetError: A file is missing, the manifest is not a valid object (see `_explain`), or the
-            records file does not match the manifest's `sha256`.
+    Raises `DatasetError` when a file is missing, the manifest is invalid (see `_explain`), or the
+    records file does not match its `sha256`.
     """
     manifest_path = directory / "dataset.json"
     records_path = directory / records_file

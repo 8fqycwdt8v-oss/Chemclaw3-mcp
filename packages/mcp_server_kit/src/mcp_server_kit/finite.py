@@ -101,8 +101,7 @@ def _non_finite_literal(body: bytes) -> tuple[str, object] | None:
     """The first non-finite number `body` spells as a bare JSON literal, and the request's id.
 
     Parsed with `json.loads` as the transport will; `parse_float` sees each literal as written,
-    which
-    catches `1e400`.
+    which catches `1e400`.
 
     Returns:
         `(literal, id)` for a refusal, or `None` for a clean body or one that is not JSON (which the
@@ -133,9 +132,8 @@ class NonFiniteLiteralRefusal:
 
     Pure ASGI, installed inside the size cap and bearer check, so the buffered body is bounded and
     authenticated; a clean body is replayed byte for byte. A request with an id gets 200 with a
-    JSON-RPC
-    error carrying that id — an MCP client tears down the session on a 400 — and one without gets
-    400.
+    JSON-RPC error carrying that id — an MCP client tears down the session on a 400 — and one
+    without gets 400.
     """
 
     def __init__(self, app: ASGIApp) -> None:

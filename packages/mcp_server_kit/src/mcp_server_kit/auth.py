@@ -87,8 +87,7 @@ class BearerAuthMiddleware:
         """Bind the server's name (for the log line) and the env var holding its expected token.
 
         `token_env` is `None` for a loopback-only dev server, and every request passes. The variable
-        is
-        read per request, so a rotated secret is picked up without a restart.
+        is read per request, so a rotated secret is picked up without a restart.
         """
         self._app = app
         self._server = server
@@ -130,14 +129,10 @@ class CallerLogMiddleware:
     """Bind the `X-Chemclaw-*` caller for the request's duration, then log what happened to it.
 
     Binding covers the HTTP path (`app._bind_caller_per_tool_call` covers tool bodies); neither is
-    an
-    access decision. The line is written in a `finally` after the downstream app completes — pure
-    ASGI,
-    so for an SSE tool call it is after the last body byte — and carries status, duration,
-    correlation
-    id and revision. It cannot name the tool (that is `chemclaw_mcp_tool_calls_total`'s job). Probe
-    and
-    scrape requests log at DEBUG.
+    an access decision. The line is written in a `finally` after the downstream app completes — pure
+    ASGI, so for an SSE tool call it is after the last body byte — and carries status, duration,
+    correlation id and revision. It cannot name the tool (that is `chemclaw_mcp_tool_calls_total`'s
+    job). Probe and scrape requests log at DEBUG.
     """
 
     def __init__(self, app: ASGIApp, *, server: str, revision: str) -> None:
@@ -193,10 +188,8 @@ class RequestMetrics:
     """Count every HTTP request this process answers — from outside everything that can refuse one.
 
     Must be the outermost middleware, or the 401s and 413s that auth and the size cap answer
-    directly
-    are never counted. Pure ASGI so it reads the status actually sent. Labels: server, the path
-    folded
-    by `_labelled_path`, and status — never anything about the caller.
+    directly are never counted. Pure ASGI so it reads the status actually sent. Labels: server, the
+    path folded by `_labelled_path`, and status — never anything about the caller.
     """
 
     def __init__(self, app: ASGIApp, *, server: str) -> None:
@@ -229,11 +222,10 @@ class BodySizeLimit:
     """Refuse an oversized request body with 413 before any handler reads it.
 
     Pure ASGI so it can reject while streaming. A declared `content-length` over the cap is refused
-    up
-    front (a route that never reads its body would otherwise be served); the running total guards
-    the
-    chunked case. Going over signals the app with an `http.disconnect`, not an exception, because an
-    exception can be caught into something else on the way; what the app says afterwards is dropped.
+    up front (a route that never reads its body would otherwise be served); the running total guards
+    the chunked case. Going over signals the app with an `http.disconnect`, not an exception,
+    because an exception can be caught into something else on the way; what the app says afterwards
+    is dropped.
     """
 
     def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:

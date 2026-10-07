@@ -57,16 +57,9 @@ def tool_call_span(
 ) -> Iterator[None]:
     """Run one tool call inside a span, parented on the incoming `traceparent` when there is one.
 
-    Args:
-        headers: The serving request's headers; only the propagator reads them.
-        server: The server's manifest name.
-        tool: The tool being called, already clamped to the served surface by the caller.
-        is_refusal: Whether a propagating exception is a caller-facing refusal rather than a fault;
-            nothing about the exception itself reaches the span.
-
-    Yields:
-        Nothing. The block runs inside the span, or unchanged when tracing is off, the API is not
-        installed, or the context could not be extracted.
+    `tool` is already clamped by the caller; `is_refusal` decides whether a propagating exception
+    marks the span an error, and nothing else about the exception reaches it. Runs the block
+    unchanged when tracing is off, the API is absent, or no context could be extracted.
     """
     if not tracing_enabled():
         yield

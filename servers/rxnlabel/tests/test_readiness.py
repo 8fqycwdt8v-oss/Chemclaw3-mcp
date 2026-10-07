@@ -1,25 +1,10 @@
-"""`/healthz` here has to separate "this deployment chose not to install a model" from "it broke".
+"""`/healthz` separates "this deployment chose not to install a model" from "it broke".
 
-`rxnlabel`'s two heavy components are optional *by design*: without them a reaction is labelled
-without an atom map and without a name, `engine/version.py` records that in `labeller_version`, and
-the corpus re-labels itself the day they arrive. That design is what made the readiness gap easy to
-miss — "optional" was read as "nothing to be unready about", so this server passed no `readiness=`
-at all and answered a constant `{"status": "ok"}`. A pod whose `rxnmapper` checkpoint failed to load
-therefore passed its probe, took traffic, and quietly wrote coarse labels under a version string
-that claimed no mapper was ever installed.
-
-The distinction this module has to make is the one `version._installed` already knows how to make:
-a distribution that is *not there* is a deployment's choice, and a distribution that is there and
-will not construct is a broken image.
-
-**Driven through the served route rather than through the probe function**, which is what these
-tests did before and is weaker than it reads: `verify_labeller()` is not what a kubelet calls, and
-calling it directly misses the status code, the five-second memo, the redaction and the
-single-flight
-lock that `connector_app` wraps it in — every one of which has had a defect in it. The app object is
-driven over ASGI without its lifespan, because `/healthz` needs no session manager and
-`StreamableHTTPSessionManager.run()` may be called only once per instance, which `test_server.py`
-spends on its own uvicorn.
+The mapper and namer are optional by design and recorded in `labeller_version`, so a
+distribution that is not there is a choice, while one that is there and will not construct is a
+broken image that must not keep writing coarse labels. Driven through the served route over
+ASGI without the lifespan, so the status code, memo, redaction and single-flight lock that
+`connector_app` adds are all exercised.
 """
 
 from __future__ import annotations
@@ -43,10 +28,8 @@ _DEPLOYMENT_PATH = Path(__file__).resolve().parents[1] / "deploy" / "deployment.
 def fresh_verdict(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Start each test with no cached verdict at either layer, and restore the module's state.
 
-    Two caches sit in front of this probe and both are process-wide: `readiness`'s own verdict and
-    `connector_app`'s memo of a failure. The memo's TTL is zeroed rather than slept through,
-    which is
-    the trick `packages/mcp_server_kit/tests/test_readiness.py` uses for the same reason.
+    Both caches are process-wide: `readiness`'s verdict and `connector_app`'s failure memo, whose
+    TTL is zeroed rather than slept through.
     """
     monkeypatch.setattr("mcp_server_kit.app.READINESS_FAILURE_TTL_SECONDS", 0.0)
     saved = (mapping._MAPPER, mapping._TRIED, mapping._FAILURE, mapping._ATTEMPTED_AT)
@@ -101,18 +84,11 @@ async def test_an_installed_component_that_will_not_construct_is_unready(
 async def test_an_unbuilt_component_is_unready_whatever_the_cause_said(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The 1a correction, and it goes the opposite way from the obvious reading of the rule.
+    """An installed component that failed to construct is unready whatever the cause.
 
-    A mapper that is installed and failed to construct on a `MemoryError` reports a *transient*
-    cause, and `PERMANENT_CAUSES` says a transient cause must not take a pod out of rotation.
-    Applied
-    here that is the worse answer, and measurably so: with the mapper unbuilt, `version._component`
-    reads `available()` False and stamps every row `mapper@absent` — byte-identical to a deployment
-    that never installed one, which is the stamp defect the degradation record exists to end. So
-    this
-    branch refuses whatever the cause, and the cause is used for something else entirely:
-    whether the
-    refusal can be lifted without a restart.
+    A transient cause normally keeps a pod in rotation, but an unbuilt mapper stamps every row
+    `mapper@absent`, identical to a deployment that never installed one. So this branch refuses
+    regardless, and the cause decides only whether the refusal can lift without a restart.
     """
     monkeypatch.setattr(mapping, "available", lambda: False)
     monkeypatch.setattr(mapping, "construction_failure", lambda: "resource_exhausted")
@@ -131,11 +107,9 @@ async def test_an_unbuilt_component_is_unready_whatever_the_cause_said(
 def test_a_transient_construction_failure_is_retried_rather_than_latched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 503 from the branch above has to be liftable, or it is a restart dressed as readiness.
+    """A transient construction failure is retried after its window, not latched for the process life.
 
-    `_TRIED` latched on the first attempt and was never cleared, so a mapper that failed to build on
-    one busy minute was absent for the life of the process: measured, `/healthz` answered 503 for
-    ever and nothing in the process could change its mind.
+    Otherwise the 503 above is a restart dressed as readiness.
     """
     attempts: list[str] = []
 
@@ -178,18 +152,10 @@ def test_a_permanent_construction_failure_is_not_retried(
 
 
 def test_the_namer_retries_a_transient_construction_failure_like_the_mapper_does() -> None:
-    """The half of the claimed symmetry that was not implemented.
+    """The namer retries a transient construction failure the way the mapper does.
 
-    `naming.py`'s own header said the two modules were "symmetric with `mapping` deliberately", and
-    the *classification* was — both call `degradation.classify` and both count. The *recovery* was
-    not: `naming._TRIED` latched unconditionally, with no `_ATTEMPTED_AT` and no retry window, so a
-    `MemoryError` or an `EMFILE` while importing `rxn_insight` — which the shipped image installs —
-    took the namer out for the life of the process. Driven before this: the first `_namer()` call
-    failed transiently and the second made **no second import attempt at all**, `_FAILURE` pinned to
-    `resource_exhausted` and `available()` false with nothing able to change its mind.
-
-    The retry predicate itself is `engine/construction.py`'s, shared with `mapping`, so the symmetry
-    is now structural rather than asserted.
+    A `MemoryError` or `EMFILE` while importing `rxn_insight` must not take the namer out for the
+    life of the process. The retry predicate is `engine/construction.py`'s, shared with `mapping`.
     """
     attempts: list[str] = []
 
@@ -213,12 +179,11 @@ def test_the_namer_retries_a_transient_construction_failure_like_the_mapper_does
 
 
 def test_the_namer_does_not_retry_a_permanent_cause_or_an_absent_extra() -> None:
-    """The two counterfactuals, because a retry that fires on everything is a busy loop.
+    """The namer does not retry a permanent cause or an absent extra.
 
-    A rule table that will not parse reads the same on the tenth attempt as on the first, and an
-    extra that is simply not installed is a deployment's decision rather than a failure — which is
-    why the `ImportError` branch leaves `_FAILURE` at `None` and `construction.retry_due` reads that
-    as nothing to improve.
+    A rule table that will not parse stays broken, and an uninstalled extra is a deployment's
+    choice (`_FAILURE` stays `None`, which `construction.retry_due` reads as nothing to retry); a
+    retry on everything is a busy loop.
     """
     permanent: list[str] = []
 
@@ -249,10 +214,8 @@ def test_the_namer_does_not_retry_a_permanent_cause_or_an_absent_extra() -> None
         assert naming._FAILURE is None, "an extra that is not installed is not a failure"
         assert absent == ["tried"], "an absent extra was re-imported, which learns nothing"
 
-    # And the window is a window. Every other arm here shortens it to zero, so a retry gate that
-    # ignored `window_seconds` entirely would pass all of them — and constructing this component
-    # loads a rule table, so retrying it on the next request rather than in a minute is a CPU loop
-    # rather than a recovery. Mutation 6-M5 of this guard was exactly that.
+    # The window is honoured: the other arms shorten it to zero, so a gate ignoring `window_seconds`
+    # would pass them while re-loading the rule table on every request.
     busy: list[str] = []
 
     def transient() -> object:
@@ -272,13 +235,10 @@ def test_the_namer_does_not_retry_a_permanent_cause_or_an_absent_extra() -> None
 async def test_a_namer_whose_shared_library_will_not_load_is_broken_not_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The row this closes: a missing `.so` read as an extra nobody installed.
+    """An installed namer whose shared library will not load is broken, not absent.
 
-    `naming._namer` caught `ImportError` as "rxn-insight is not installed" and left `_FAILURE` at
-    `None`, so an installed namer whose compiled half would not load was recorded as a deployment's
-    choice — the one verdict that keeps a broken image in service — and `/healthz` could say only
-    "cause not recorded". A plain `ImportError` is the interpreter saying the module was *found*
-    and would not load, so it is `failed`, and the refusal carries the library's own sentence.
+    A plain `ImportError` means the module was found and would not load, so it is `failed` and the
+    refusal carries the library's own message, rather than reading as an uninstalled extra.
     """
 
     def broken() -> object:
@@ -337,9 +297,8 @@ def test_a_mapper_that_is_not_installed_is_still_absent_rather_than_broken(
 def _rxn_insight(reaction_class: Callable[[], object], *, retry_seconds: float) -> Iterator[None]:
     """Stand a fake `rxn_insight.reaction` in front of `naming._namer`, and clear the latch.
 
-    `reaction_class` is called on each *attempt*, which is what lets a test count attempts and make
-    one of them fail: `naming._namer` reaches the name through `from ... import Reaction`, so the
-    attribute lookup on the module is the seam.
+    `reaction_class` is called on each attempt, so a test can count attempts and fail one;
+    `naming._namer` imports `Reaction` by name, so the module attribute is the seam.
     """
 
     def attribute(_self: types.ModuleType, name: str) -> object:
@@ -395,13 +354,10 @@ def _install_rxnmapper(monkeypatch: pytest.MonkeyPatch, build: object) -> None:
 async def test_a_component_that_breaks_after_a_good_probe_stops_reporting_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The verdict expires, because `lru_cache` made the first answer the only answer.
+    """The verdict expires, so a component that breaks after a good probe stops reporting ready.
 
-    `verify_labeller` was `lru_cache(maxsize=1)` and its docstring argued the cache was safe because
-    "`lru_cache` does not cache exceptions, so a broken pod is re-probed and stays 503" — true of a
-    pod broken at startup and false of one that breaks later, which is the realistic shape: a weight
-    file truncated on a mount, a rule table on a remounted share. Driven on the real app: three
-    probes 200, the namer then raising on every reaction, probe four **200**.
+    The realistic failure is later, not at startup: a weight file truncated on a mount, a rule
+    table on a remounted share.
     """
     assert (await _probe()).status_code == 200
     assert (await _probe()).status_code == 200, "the verdict is cached, which is the point of it"
@@ -429,19 +385,11 @@ async def test_a_component_that_breaks_after_a_good_probe_stops_reporting_ready(
 async def test_a_transient_failure_of_the_labelling_path_keeps_the_pod_in_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The funnel, on the half of the probe that is not optional at all.
+    """A transient failure of the always-required labelling path keeps the pod in service.
 
-    `roles.assign`, `species.canonical_smiles` and `species.functional_groups` are the
-    never-optional path, and they allocate: this probe runs a real RXNMapper forward pass plus
-    RDKit canonicalisation on every cold probe, so it is itself a plausible place for an allocation
-    to fail under pressure. Every raise from them went through `connector_app`'s
-    `except Exception` into an unconditional 503 — so the probe's answer to failing on memory was
-    "restart me", which at the time it was.
-
-    The classification is `connector_app`'s and deliberately not this module's, so the component
-    label is `readiness` rather than a name per probe half: what failed is the probe, and which
-    component inside it is in the log beside the counter. `degraded` in the body is the half that
-    proves the funnel ran rather than the exception merely not being raised.
+    `roles.assign` and the species helpers allocate on every cold probe, so a memory failure there
+    is about the probe, not the pod. Classification is `connector_app`'s, so the component label is
+    `readiness`; `degraded` in the body proves the funnel ran.
     """
     labels = {
         "server": "rxnlabel",
@@ -469,10 +417,8 @@ async def test_a_transient_failure_of_the_labelling_path_keeps_the_pod_in_servic
     assert "datasets" not in response.json(), "nothing was verified, so nothing may be claimed"
     assert REGISTRY.get_sample_value("chemclaw_mcp_degraded_total", labels) == before + 1.0
 
-    # And the raise is *cached*, which is the half that bounds the cost rather than the verdict.
-    # `connector_app`'s own memo is zeroed by the fixture above, so if `verify_labeller` let the
-    # exception escape its window the probe would re-run the whole fixture — including an unadmitted
-    # RXNMapper forward pass — on every kubelet probe for as long as the fault lasted.
+    # The raise is cached too, which bounds the cost: otherwise every kubelet probe would re-run an
+    # unadmitted RXNMapper forward pass for as long as the fault lasted.
     assert (await _probe()).status_code == 200
     assert calls == ["tried"], (
         f"the failing probe ran {len(calls)} times for two /healthz calls; an exception outside "
@@ -502,23 +448,12 @@ def test_the_app_wires_the_probe_in() -> None:
 
 
 def test_the_verdict_window_is_bounded_by_the_probe_cadence_this_server_declares() -> None:
-    """The two tests above patch the window they then rely on, and that is not a bound.
+    """The shipped verdict window is bounded by the probe cadence this server declares.
 
-    Driven: raising `VERDICT_TTL_SECONDS` to 1e9 — `lru_cache`'s behaviour restored under another
-    spelling — left the whole `rxnlabel` suite green, because
-    `test_a_component_that_breaks_after_a_good_probe_stops_reporting_ready` sets the TTL to zero
-    itself. The expiry *mechanism* is what those tests prove; what the shipped *number* has to be is
-    this, and it is two-sided because both directions are real:
-
-    - below one probe period the fixture's unadmitted RXNMapper forward pass runs on nearly every
-      probe, which is the cost caching the verdict exists to avoid;
-    - above a dozen the component that broke keeps serving for minutes, which is the defect
-      expiring it exists to end.
-
-    The cadence is read out of this server's own `deployment.yaml` rather than transcribed, because
-    a kubelet reads that file and not this one — the same reason
-    `tests/test_deploy_shape.py::test_liveness_and_readiness_do_not_share_a_route` uses literals
-    for the paths.
+    The tests above patch the window, so they prove the mechanism, not the number. Below one probe
+    period the fixture's forward pass runs on nearly every probe; above a dozen a broken component
+    keeps serving for minutes. The cadence is read from `deployment.yaml`, which is what a kubelet
+    reads.
     """
     import yaml
 

@@ -15,11 +15,10 @@ from chemclaw_mcp_suitability.engine import precision
 def test_the_rsd_uses_the_sample_denominator_which_is_what_the_criterion_is_written_against() -> (
     None
 ):
-    """n-1, not n — and the test states both so the difference is visible rather than asserted.
+    """The RSD uses the sample (n-1) denominator, which acceptance limits are written against.
 
-    [1,2,3,4,5] has mean 3 and a sample standard deviation of sqrt(2.5), giving 52.705%. The
-    population form gives sqrt(2.0), 47.140%. Every chromatography data system reports the first,
-    and an acceptance limit is written against it.
+    [1,2,3,4,5] gives 52.705% (sample) against 47.140% (population); both are stated so the
+    difference is visible.
     """
     result = precision.relative_standard_deviation([1.0, 2.0, 3.0, 4.0, 5.0])
     assert result.relative_standard_deviation_percent == pytest.approx(
@@ -46,11 +45,9 @@ def test_the_denominator_matters_by_nearly_nine_percent_at_six_injections() -> N
 
 
 def test_the_injection_rule_runs_the_counter_intuitive_way_round() -> None:
-    """A tighter limit takes FEWER injections. Both sides of the 2.0% boundary are pinned.
+    """A tighter limit takes fewer injections; both sides of the 2.0% boundary are pinned.
 
-    This is the assertion that would catch somebody "fixing" the rule to the intuitive direction,
-    which is the realistic edit: five at 2.0% and six above it reads like a typo until you know it
-    is not.
+    This catches a "fix" to the intuitive direction, the realistic edit.
     """
     assert precision.injections_required_for(0.5) == 5
     assert precision.injections_required_for(2.0) == 5  # at the boundary, inclusive
@@ -59,11 +56,10 @@ def test_the_injection_rule_runs_the_counter_intuitive_way_round() -> None:
 
 
 def test_a_series_that_meets_its_limit_on_too_few_injections_is_flagged() -> None:
-    """The half a data system does not check, and the reason the rule is served at all.
+    """A series that meets its limit on too few injections is flagged.
 
-    Five injections at a 3.0% limit: the RSD passes, and the series is still short of what <621>
-    requires for a limit that size. A report that said only "passed" would be wrong in the
-    direction nobody looks at.
+    At a 3.0% limit five injections pass the RSD yet fall short of what <621> requires for that
+    limit; data systems do not check this.
     """
     result = precision.relative_standard_deviation([100.0, 101.0, 99.0, 100.5, 99.5], 3.0)
     assert result.meets_limit is True
@@ -116,12 +112,10 @@ def test_a_negative_mean_gives_a_positive_rsd() -> None:
 
 
 def test_the_eval_corpus_six_injections_compute_to_what_a_data_system_would_report() -> None:
-    """The six injections pasted into Chemclaw3's `an-04` probe, as the motivating case.
+    """The six injections from Chemclaw3's `an-04` probe compute to what a data system would report.
 
-    That probe's prose says "Area RSD 2.4%". The sample form gives 2.476% and the population form
-    2.260%, so the pasted summary matches neither — which is realistic fixture data and is exactly
-    the point: six seven-digit numbers summarised by hand in prose is the arithmetic this server
-    exists to take off a chemist and off a model.
+    The probe's hand-written "2.4%" matches neither the sample (2.476%) nor population (2.260%)
+    form, which is the arithmetic this server exists to take off a chemist and a model.
     """
     areas = [1024110.0, 1038902.0, 1001455.0, 1061203.0, 998774.0, 1049318.0]
     result = precision.relative_standard_deviation(areas, limit_percent=2.0)

@@ -1,18 +1,11 @@
 """The memoised validator must accept and refuse exactly what upstream's does.
 
-`schema_cache` exists for speed, and a speed-up that changes *which* payloads a server accepts, or
-what it says when it refuses one, is a correctness regression wearing a benchmark. So the central
-test here is a differential one: the same schemas and the same instances through
-`jsonschema.validate` and through `cached_validate`, asserting the outcomes agree down to the
-message, the failing keyword and the JSON path — the four things the SDK folds into
-`Input validation error: ...` and hands to the model.
+A differential test runs the same schemas and instances through `jsonschema.validate` and
+`cached_validate`, comparing message, failing keyword and JSON path, which is what the SDK hands
+to the model.
 
-The second thing asserted is the property that makes the *key* safe. Keying a compiled validator on
-`id(schema)` is the obvious choice and it is wrong here, because `FastMCP.list_tools` rebuilds every
-tool's schema dicts on every `tools/list` and Chemclaw3 sends one per turn per connector. These
-tests pin content-addressing from both sides: equal-but-distinct schema objects share one entry
-(so the cache does not grow per turn), and different schemas never do (so no instance is ever
-checked against the wrong schema).
+The key is the schema's content, not `id()`: `FastMCP.list_tools` rebuilds schema dicts on every
+call, so equal schemas must share one entry and different schemas never do.
 """
 
 from __future__ import annotations
@@ -92,9 +85,8 @@ def empty_cache() -> Iterator[None]:
 def _outcome(validate: Any, instance: Any, schema: Any) -> tuple[Any, ...]:
     """What one validation did, in the terms a caller can observe.
 
-    `message` is what the SDK puts in front of the model; `validator` and `validator_value` are
-    which keyword failed and against what; `json_path` and `absolute_path` are where. Two
-    validators that agree on all five are indistinguishable to everything downstream.
+    Message, failing keyword and value, and both paths; two validators agreeing on all five are
+    indistinguishable downstream.
     """
     try:
         validate(instance=instance, schema=schema)
@@ -130,11 +122,9 @@ def test_the_cached_validator_agrees_with_upstream_on_every_instance(schema_name
 
 
 def test_an_invalid_schema_still_raises_schema_error_every_time() -> None:
-    """`check_schema` is skipped on a cache *hit*, and a bad schema never produces one.
+    """An invalid schema raises `SchemaError` on every call, not just the first.
 
-    The saving is the whole point of the module, so the risk it creates has to be pinned: a schema
-    that upstream refuses must be refused on the hundredth call as loudly as on the first, which is
-    true only because a schema that raises is never stored.
+    `check_schema` is skipped on a hit, which is safe only because a raising schema is never stored.
     """
     broken = {"type": "obhect"}
     for _ in range(3):
@@ -146,13 +136,10 @@ def test_an_invalid_schema_still_raises_schema_error_every_time() -> None:
 
 
 def test_equal_schemas_from_different_objects_share_one_compiled_validator() -> None:
-    """The reason the key is the schema's *content* and not its address.
+    """Equal schemas from different objects share one compiled validator.
 
-    `FastMCP.list_tools` builds a new `mcp.types.Tool` per call, and pydantic re-validates its
-    `inputSchema`/`outputSchema` into new dicts — so every `tools/list` hands the validator a fresh
-    object holding the same schema. An identity key would miss on all of them; this asserts the
-    content key does not, which is what keeps the cache both effective and bounded by the served
-    surface rather than by the request rate.
+    Every `tools/list` hands the validator fresh dicts, so a content key keeps the cache effective
+    and bounded by the served surface rather than the request rate.
     """
     for _ in range(50):
         cached_validate(instance={"name": "toluene"}, schema=copy.deepcopy(SCHEMAS["scalar"]))
@@ -160,12 +147,10 @@ def test_equal_schemas_from_different_objects_share_one_compiled_validator() -> 
 
 
 def test_different_schemas_never_share_an_entry() -> None:
-    """The other direction, and the one that would be a *wrong answer* rather than a slow one.
+    """Different schemas never share an entry.
 
-    Measured on a one-tool server, four `tools/list` rounds apart: round 3's `outputSchema` was
-    allocated at the address round 0's `inputSchema` had used. A cache keyed on `id()` without a
-    strong reference would therefore have validated a tool's result against its arguments schema
-    and accepted it. Content keys cannot collide that way, and this is the assertion that says so.
+    Freed dicts' addresses get reused, so an `id()` key could validate a result against an arguments
+    schema; content keys cannot collide that way.
     """
     for schema in SCHEMAS.values():
         # `{}` satisfies some of these and not others; the verdict is not what this test is about.
@@ -190,11 +175,9 @@ def test_an_explicit_validator_class_falls_through_to_upstream() -> None:
 
 
 def test_a_schema_that_is_not_json_serialisable_falls_through_to_upstream() -> None:
-    """A `set` in a schema has no canonical JSON, so it cannot be keyed — and must still validate.
+    """A schema that is not JSON-serialisable falls through to `jsonschema.validate` unchanged.
 
-    Nothing upstream produces one; the branch exists so that a schema this module cannot address
-    is handed to `jsonschema.validate` unchanged rather than becoming a `TypeError` from
-    `json.dumps` that a caller would read as a validation failure.
+    It cannot be keyed, and a `TypeError` from `json.dumps` would read as a validation failure.
     """
     schema = {"type": "object", "properties": {"name": {"const": {1, 2}}}}
     assert _outcome(cached_validate, {"name": "toluene"}, schema) == _outcome(

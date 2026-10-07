@@ -1,34 +1,15 @@
 """Constant-pressure cake filtration: the time to pass a volume of filtrate through a growing cake.
 
-Integrating Darcy's law through a cake whose thickness grows with the filtrate already passed gives
-the standard parabolic law:
+Darcy's law through a growing cake gives the parabolic law:
 
     t = µ·alpha·c/(2·A²·ΔP) · V²  +  µ·R_m/(A·ΔP) · V
 
-The first term is the **cake**, quadratic in volume because every litre that passes leaves solids
-that the next litre has to flow through. The second is the **filter medium**, linear. Which one
-dominates decides what to do about a slow filtration: a cake-dominated one is fixed in the
-crystalliser, a medium-dominated one by the cloth, so the split is returned rather than just the
-total.
-
-**The cake is assumed incompressible**, which is the assumption most likely to be wrong on a real
-plant filter and the one that fails in the dangerous direction. A compressible cake — and a
-gelatinous, fine, or needle-like organic solid usually is one — has an `alpha` that rises
-with pressure, so pushing harder buys less than this predicts and can buy nothing at all.
-There is no `alpha = alpha_0·ΔP^s` compressibility exponent here, because fitting one
-needs filtration tests at several pressures and a server that invented `s` would be
-inventing the answer.
-
-**`alpha` and `R_m` are inputs, from a leaf test or a filtration test on this slurry at this
-pressure.** They are not properties of the compound, they are properties of the *crystals* — habit,
-size distribution and how the batch was cooled — which is why the same product filters in forty
-minutes one week and six hours the next with nothing in the recipe changed. Nothing in this system
-holds a specific cake resistance for anything.
-
-**What this is not.** No wash, no displacement efficiency, no cake moisture, no deliquoring, no
-blow-down, no centrifuge. A wash volume in particular is *not* derivable here: displacement
-efficiency is a measured property of the cake, and a plausible "three displacements" rule quoted as
-an answer is exactly the failure Chemclaw3's probe set names for this question.
+The quadratic term is the cake (fixed in the crystalliser), the linear one the medium (fixed by the
+cloth), so the split is returned. The cake is assumed **incompressible**, which fails in the
+dangerous direction: compressible organic cakes gain less from more pressure than predicted. No
+compressibility exponent is invented. `alpha` and `R_m` are measured inputs from a filtration test
+on this slurry, properties of the crystals rather than the compound. No wash, cake moisture,
+deliquoring or centrifuge; wash volumes are not derivable here.
 """
 
 from __future__ import annotations
@@ -56,14 +37,12 @@ class CakeFiltration:
     cake_time_seconds: float
     #: The medium's share, in seconds — the linear term.
     medium_time_seconds: float
-    #: The cake term as a fraction of the total. Above ~0.9 the cloth is irrelevant and the answer
-    #: is in the crystallisation; below ~0.5 the medium is worth looking at first.
+    #: Cake term as a fraction of the total: above ~0.9 look at the crystallisation; below ~0.5 the
+    #: medium first.
     cake_fraction_of_time: float
-    #: Mean filtrate flux over the whole filtration, in m³ per m² per hour — the number a filter is
-    #: usually sized on and the one that compares across areas.
+    #: Mean filtrate flux over the filtration, m³/(m²·h); what a filter is usually sized on.
     average_flux_m3_per_m2_h: float
-    #: The instantaneous rate when the last of the filtrate passes, in m³/s. It is the slowest the
-    #: filtration ever runs, and the number that says whether the end is worth waiting for.
+    #: Instantaneous rate as the last filtrate passes, m³/s: the slowest the filtration runs.
     final_rate_m3_per_s: float
     #: Dry cake deposited, in kg, from the solids loading and the filtrate volume.
     cake_mass_kg: float
@@ -82,30 +61,22 @@ def filtration_time(
     """Time to filter a given volume at constant pressure, and the cake/medium split.
 
     Args:
-        filtrate_volume_m3: Filtrate to be collected, in m³ (100 L = 0.1 m³).
-        filter_area_m2: Filtration area, in m². A 30-inch Nutsche is about 0.46 m² — the *area*,
-            not the diameter, and the time goes as its square.
-        pressure_drop_pa: Pressure difference across cake and medium, in Pa. 1 bar = 1.0e5 Pa; a
-            full vacuum is at most about 1.0e5 Pa of driving force and usually less.
-        filtrate_viscosity_pa_s: Viscosity of the **filtrate**, in Pa·s (1 cP = 0.001 Pa·s) — the
-            mother liquor that flows, not the slurry.
-        specific_cake_resistance_m_per_kg: `alpha`, in m/kg, from a filtration or leaf test on this
-            slurry at this pressure. Ordinary organic cakes span 1e9 (free-filtering, coarse) to
-            1e13 and beyond (fine or gelatinous), so it is the input that decides the answer and it
-            has no default.
-        dry_cake_per_filtrate_kg_per_m3: `c`, kg of dry cake deposited per m³ of filtrate collected.
-            For a dilute slurry this is close to the solids concentration in the feed.
-        medium_resistance_per_m: `R_m`, the cloth's own resistance in 1/m. Defaults to 0, which
-            gives the cake-only answer — an honest lower bound rather than an invented cloth, and
-            the returned split says how much of the time it accounted for.
+        filtrate_volume_m3: Filtrate to be collected, m³ (100 L = 0.1 m³).
+        filter_area_m2: Filtration area, m² (a 30-inch Nutsche is about 0.46 m²); time goes as its
+        square. pressure_drop_pa: Pressure difference across cake and medium, Pa (1 bar = 1.0e5 Pa;
+        vacuum gives at most about that). filtrate_viscosity_pa_s: Viscosity of the **filtrate**,
+        Pa·s (1 cP = 0.001 Pa·s), not the slurry. specific_cake_resistance_m_per_kg: `alpha`, m/kg,
+        from a test on this slurry at this pressure; organic cakes span about 1e9 to 1e13+. No
+        default. dry_cake_per_filtrate_kg_per_m3: `c`, kg dry cake per m³ filtrate; near the feed
+        solids concentration for a dilute slurry. medium_resistance_per_m: `R_m`, the cloth's
+        resistance, 1/m. Defaults to 0, a cake-only lower bound.
 
     Returns:
         The time, its two contributions, the mean flux and the rate at the end.
 
     Raises:
-        UnitOpsInputError: If a volume, area, pressure, viscosity, resistance or loading is not
-            positive, the medium resistance is negative, or a result overflows or underflows
-            a floating-point number.
+        UnitOpsInputError: A volume, area, pressure, viscosity, resistance or loading is not
+        positive, the medium resistance is negative, or a result overflows or underflows.
     """
     positive(filtrate_volume_m3, "the filtrate volume")
     positive(filter_area_m2, "the filter area")
@@ -135,18 +106,16 @@ def filtration_time(
         "the medium filtration time",
     )
     total = finite_result(lambda: cake_time + medium_time, "the total filtration time")
-    # **Every term is a product of inputs, so it can underflow as well as overflow.** A total of
-    # exactly zero is not a fast filtration, it is a number too small for a float — and dividing by
-    # it below used to leave as a bare `ZeroDivisionError`, an opaque `error_id` to the caller.
+    # Products of inputs can underflow: a zero total is too small for a float, not a fast
+    # filtration.
     if total <= 0.0:
         raise UnitOpsInputError(
             "the filtration time underflows to zero for these inputs, which is not a physical "
             "answer; check the units of the viscosity and the specific cake resistance."
         )
 
-    # dV/dt at the end, from Darcy's law with the whole cake in place. Written from the differential
-    # form rather than differentiated out of `total`, which is what lets `engine/selftest.py` check
-    # one against a finite difference of the other.
+    # dV/dt from Darcy's law with the whole cake, written from the differential form so
+    # `engine/selftest.py` can check it against a finite difference of `total`.
     final_rate = finite_result(
         lambda: (
             (filter_area_m2 * pressure_drop_pa)

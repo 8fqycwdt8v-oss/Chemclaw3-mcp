@@ -115,8 +115,8 @@ def _check_integrator_order() -> None:
         )
 
 
-#: A 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60 — the stiff fixture the reviews
-#: drove — at a rate constant six orders past RK4's ceiling.
+#: A 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60, at a rate constant six orders
+#: past RK4's ceiling.
 _STIFF_DOSE = {
     "rate_constant": 1.0e6,
     "dose_time_seconds": 3600.0,

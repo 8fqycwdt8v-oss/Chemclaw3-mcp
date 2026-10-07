@@ -1,19 +1,9 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will. Two things here are
-specific to `safety` and worth the extra tests. First, **the verdict has to survive the wire**:
-every result this server produces carries a sentence saying what it is not, and that sentence is a
-pydantic `computed_field` — a plain property would be dropped by serialization, and the caveat would
-exist in the code, pass every unit test, and never reach the model writing the answer. Second, **a
-refusal has to arrive as a readable message**: a SMILES this server cannot read in full is refused
-rather than screened, and a chemist told "internal error" would re-ask the same malformed question.
+Runs uvicorn on loopback so a session manager nobody ran, an unchecked bearer credential, or a
+manifest that disagrees with the served surface fails here. Specific to `safety`: the verdict
+(a `computed_field`) must survive serialization to reach the model, and a refused SMILES must
+arrive as a readable message rather than an internal error.
 """
 
 from __future__ import annotations
@@ -47,9 +37,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because the server start is the expensive part. The bearer token is set in the
+    environment as a deployment sets it, so the auth path under test is the deployed one.
     """
     import os
 
@@ -80,33 +69,24 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did."""
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    # `revision` is part of the probe payload since the handshake started carrying the
-    # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
-    # for a test process, which is not built from a Containerfile — that the *image*
-    # supplies a real one is asserted in `tests/test_fleet_*.py`, because a value nothing
-    # fills is a provenance record that quietly says nothing.
+    # "unknown" is the correct revision for a test process; that an image supplies a real one is
+    # asserted fleet-wide.
     from chemclaw_mcp_safety.engine.readiness import verified_corpora
 
     body = response.json()
     assert body["status"] == "ok"
     assert body["server"] == "safety"
     assert body["revision"] == "unknown"
-    # The corpora this pod actually verified, which is the half `/healthz` did not have. It was a
-    # constant 200: it proved the session manager was running and said nothing about whether the
-    # server could answer, so a pod whose table failed its checksum passed the probe, took traffic
-    # and failed every tool call. `readiness` in this server's `app.py` is what runs the load, and
-    # naming the version here is what lets an operator confirm which table a pod serves without a
-    # shell on it.
+    # The corpora this pod verified, by name and version, so `/healthz` reports whether the server
+    # can answer and an operator can confirm which tables it serves.
     assert body["datasets"] == [f"{corpus.name}@{corpus.version}" for corpus in verified_corpora()]
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    Not "counts only": the default registry publishes `python_info` and the `process_*`
-    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
-    correlation id or a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    The no-caller/session/argument rule is asserted over the live exposition for every server in
+    `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -115,14 +95,11 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """Chemclaw3's own `safety` bundle declares `auth: {mode: none}`; across a network it cannot.
+    """The bearer credential is enforced on the mounted MCP surface, driven against the running server.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
-    the wrong scheme, the declared credential actually serving, and the declared variable unset —
-    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
-    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    `/mcp` is mounted, and a mount bypasses the enclosing app's dependencies, so this cannot be read
+    off the source. `assert_bearer_is_enforced` drives every arm (anonymous, wrong token, wrong
+    scheme, valid credential, variable unset) once for the whole fleet.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -131,9 +108,8 @@ async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
 async def _session(base: str) -> AsyncIterator[ClientSession]:
     """An initialised MCP session against the running server, carrying the bearer token.
 
-    The token rides on a caller-supplied httpx client because that is how this version of the MCP
-    client takes headers — which also means the credential is exercised on the real path rather than
-    injected past it.
+    The token rides on a caller-supplied httpx client, so the credential is exercised on the real
+    path rather than injected past it.
     """
     async with (
         httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,
@@ -164,11 +140,10 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 
 
 async def test_a_clean_screen_arrives_carrying_its_disclaimer(running_server: str) -> None:
-    """The one thing that must never be lost in transit: "no match" is not "safe".
+    """A clean screen arrives on the wire carrying its disclaimer: "no match" is not "safe".
 
-    A `computed_field` rather than a plain property, because a plain property is not serialized —
-    the caveat would be in the code, green under every unit test, and absent from the payload the
-    model actually reads. Asserting it on the wire is the only place that distinction is visible.
+    A plain property is not serialized; only the wire shows whether the `computed_field` reached
+    the payload the model reads.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("screen_hazards", {"smiles": ["CCO"]})
@@ -180,12 +155,10 @@ async def test_a_clean_screen_arrives_carrying_its_disclaimer(running_server: st
 
 
 async def test_a_clean_genotoxicity_screen_says_what_it_is_not(running_server: str) -> None:
-    """The same property on the result that hedges hardest, and for a different reason.
+    """A clean genotoxicity screen says on the wire what it is not.
 
-    An empty alert list reads as "not mutagenic" — a (Q)SAR conclusion drawn from a ten-row table.
-    The four things this system cannot produce are named individually in the payload because "expert
-    assessment required" on its own did not stop a live run inventing an ICH M7 class and a worked
-    purge factor.
+    An empty alert list reads as "not mutagenic"; the payload names individually the four things
+    this system cannot produce, since a generic "expert assessment required" was not enough.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("screen_genotoxic_alerts", {"smiles": ["CCO"]})
@@ -197,11 +170,10 @@ async def test_a_clean_genotoxicity_screen_says_what_it_is_not(running_server: s
 
 
 async def test_a_miss_comes_back_as_a_result_not_an_error(running_server: str) -> None:
-    """A miss is an answer. If it arrived as an error the agent would recite a limit instead.
+    """An ICH miss is a result, not an error, so the agent does not recite a limit instead.
 
-    This is the tool that exists because a live run recited a palladium PDE from training, so the
-    shape of a miss is the whole capability: `limit: null`, plus the sentence saying the tables do
-    not carry the substance rather than that no limit exists.
+    The miss carries `limit: null` and says the tables do not carry the substance, not that no limit
+    exists.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("ich_impurity_limit", {"substance": "unobtainium"})
@@ -230,10 +202,9 @@ async def test_a_refused_structure_reaches_the_agent_as_a_usable_message(
 ) -> None:
     """A deliberately worded domain error passes through; an internal one would not.
 
-    `SafetyRulesError` is a `ValueError` for exactly this reason — `connector_app` replaces every
-    other exception with a generic notice — and it matters more here than on a calculator. RDKit
-    reads `"CCO CCCN=[N+]=[N-]"` as ethanol and drops the azide after the space, so the alternative
-    to a readable refusal is not an unhelpful error: it is a *clean screen of the wrong molecule*.
+    `SafetyRulesError` is a `ValueError` so `connector_app` passes it on. RDKit reads
+    `"CCO CCCN=[N+]=[N-]"` as ethanol, so the alternative to a readable refusal is a clean screen of
+    the wrong molecule.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("screen_hazards", {"smiles": ["CCO CCCN=[N+]=[N-]"]})

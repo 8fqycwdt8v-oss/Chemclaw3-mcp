@@ -64,9 +64,8 @@ def test_calculation_key_offers_the_number_of_tools_it_actually_accepts() -> Non
 def test_calculation_key_names_only_tools_that_exist_as_the_ones_without_a_key() -> None:
     """A named exception must be callable, or the docstring routes a model into a refusal.
 
-    Derived rather than transcribed: the keyless set is whatever the SMILES-in tools actually answer
-    with no `key`. (The structure-in primitives all key on the geometry they are handed, so there is
-    nothing to discover there and no embedding to pay for.)
+    Derived: the keyless set is whatever the SMILES-in tools answer with no `key`. Structure-in
+    primitives all key on their geometry.
     """
     keyless = {
         tool
@@ -85,11 +84,8 @@ def test_calculation_key_names_only_tools_that_exist_as_the_ones_without_a_key()
 def _answers_without_a_key(tool: str) -> bool:
     """Whether `tool` derives an identity carrying no key — which a *refusal* is not.
 
-    The four tools that need a program this image may not carry refuse instead of answering, and a
-    refusal is the opposite of what this set is about: "no key" reads to a caller as "not computed
-    yet", which is why it has to be named in the docstring, while a refusal says what to fix. Before
-    the two binary-only xTB panels refused, they answered a key naming `xtb-absent` and fell through
-    this comprehension as "has a key" — which was true and was the defect.
+    "No key" tells a caller "not computed yet", so it is named in the docstring; a refusal says what
+    to fix. Tools that need an absent binary refuse and are not in this set.
     """
     try:
         return calculation_identity(tool, {"smiles": "CCO"}).key is None

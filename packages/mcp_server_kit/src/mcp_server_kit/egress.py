@@ -93,8 +93,7 @@ def _is_loopback(host: str) -> bool:
 
     Loopback and unspecified IP literals (decided by `ipaddress`) and the exact name `localhost`
     pass. No other name does — not even a `.localhost` suffix — because only the resolver knows
-    where
-    a name points, and resolving it here would itself be egress.
+    where a name points, and resolving it here would itself be egress.
     """
     bare = host.strip("[]").lower()
     if bare in {"localhost", ""}:
@@ -149,8 +148,7 @@ def _check(address: Any) -> None:
 
     Logged and counted before raising, because callers that catch `OSError` (retries, degraded
     ensembles, backend-resolution errors) would otherwise hide that the guard fired. Only the host
-    is
-    logged; the counter is unlabelled because the host is unbounded.
+    is logged; the counter is unlabelled because the host is unbounded.
     """
     host = _host_of(address)
     if host is None or _is_loopback(host) or host.strip("[]").lower() in _allowed:

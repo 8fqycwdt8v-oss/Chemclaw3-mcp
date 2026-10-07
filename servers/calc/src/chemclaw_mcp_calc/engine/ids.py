@@ -1,15 +1,8 @@
 """Deterministic content-addressed hashing — the identity scheme Chemclaw3's keys are built on.
 
-**A copy of Chemclaw3's `chemclaw/core/ids.py`, and the copy that matters most in this
-repository.** The other two servers copy a *canonicalizer*; this one copies the function whose
-output becomes half of a cache key and half of a calibration-ledger primary key. If the algorithm,
-the digest width, the JSON separators or the sort order drifted from Chemclaw3's, every
-`input_hash` this server emits would address nothing on the other side — and it would do so
-silently, because a hash that no row matches is indistinguishable from a calculation nobody has
-run before.
-
-So this file is deliberately minimal, and `tests/test_key_contract.py` pins its output as literal
-strings produced by running Chemclaw3's own function.
+A copy of Chemclaw3's `chemclaw/core/ids.py`. Its output is half of every cache and ledger key,
+so any drift in algorithm, width, separators or ordering would silently address nothing;
+`tests/test_key_contract.py` pins it against Chemclaw3's literal outputs.
 """
 
 from __future__ import annotations
@@ -20,18 +13,15 @@ from typing import Any
 
 __all__ = ["stable_hash"]
 
-# Default digest width for a content-addressed key. 16 hex chars = 64 bits: enough that a collision
-# between two distinct calculations is not a practical concern. **Not a knob** — it is part of the
-# wire contract with Chemclaw3's `calculation_results` and `predictions` tables.
+# Digest width: 16 hex chars (64 bits). Part of the wire contract with Chemclaw3, not a knob.
 _DEFAULT_CHARS = 16
 
 
 def stable_hash(payload: Any, *, chars: int = _DEFAULT_CHARS) -> str:
     """Return a stable short SHA-256 of the canonical JSON form of `payload`.
 
-    Sorted keys and tight separators make the hash independent of dict ordering and whitespace, so
-    semantically identical inputs collapse to the same key. `default=str` lets values that are not
-    JSON-native serialize deterministically.
+    Sorted keys and tight separators make the hash independent of ordering and whitespace;
+    `default=str` serialises non-JSON values deterministically.
 
     Args:
         payload: Any JSON-serializable value (mapping, list, scalar).

@@ -1,37 +1,13 @@
 """What a chemist calls each atom of a molecule, so a per-atom number can be reported by name.
 
-**The problem this exists to remove is `enumerate_torsions`' problem, one dimension down.**
-`predict_site_reactivity` ranks atoms and returns `index=4, element=C`; the chemist asked which ring
-position is nitrated. Nothing maps between the two, so either the request stops or the model works
-the mapping out in its head from a SMILES string — the second being the dangerous one, because a
-mis-attributed index produces a well-formed sentence about the wrong atom with no error anywhere.
+A per-atom result (`index=4`) is useless, and dangerous if mis-mapped, until a position has a
+name. So each site gets a **handle** derived from the molecule rather than atom order, as
+`torsion_handle` does for a bond (`D-2026-08-26-a-torsion-is-named-not-indexed`).
 
-So a site needs a name that survives being written down: a **handle** derived from the molecule
-rather than from the order its atoms happen to appear in, exactly as `torsion_handle` does for a
-bond. `D-2026-08-26-a-torsion-is-named-not-indexed` is the decision this module sits under.
-
-**A site is a symmetry class, not an atom, and that is the load-bearing choice.** Toluene's two
-*ortho* carbons are one question, asked once. Reporting them separately invites a comparison between
-two atoms that are the same atom — measured on phenol, the two *ortho* carbons' Fukui indices
-differ by 0.0088 purely because the planar O-H makes one *syn* and the other *anti*, which is the
-same size as the *ortho*-to-*meta* difference a reader would draw a conclusion from. Grouping is
-what lets the caller report a mean and a spread instead of a spurious ordering.
-
-**Symmetry is topological, and that means resonance-equivalent atoms are *not* merged.** RDKit's
-canonical ranking works on the written structure, so a nitro group's two oxygens come back as two
-sites (one `=O`, one `[O-]`) where a chemist sees one, and a carboxylate's do the same. This is left
-as it is rather than papered over: merging them properly needs the resonance structures, and merging
-them by a heuristic would silently join atoms that a substituted case really does distinguish. What
-the module guarantees instead is that the two are *distinguishable* — `_disambiguate` appends the
-atom index to any label that would otherwise collide — so a reader is never shown one name standing
-for two sites. Treat a split like that the way you treat phenol's two *ortho* carbons: average them
-and use the spread.
-
-**Nothing here calculates anything.** It is the molecular graph and a table of SMARTS, so it is
-free,
-it is `read_only`, and it can be asked *before* a plan is approved — which matters, because "which
-positions would you even be comparing?" is a question a chemist wants answered before authorising
-minutes of CPU.
+A site is a symmetry class, not an atom: toluene's two *ortho* carbons are one site, so a caller
+reports their mean and spread rather than a spurious ordering. Symmetry is topological, so
+resonance-equivalent atoms (a nitro group's two oxygens) stay separate; `_disambiguate` keeps
+their labels distinct. Pure graph work: `read_only`, and askable before a plan is approved.
 """
 
 from __future__ import annotations
@@ -55,9 +31,7 @@ __all__ = [
     "site_handle",
 ]
 
-# What sort of atom this is, in the words a chemist uses. The classification decides nothing on its
-# own — it is what a request in words ("the carbonyl", "the ring positions") is matched against, and
-# what a reader checks the choice by.
+# What sort of atom this is, in a chemist's words: what a request in words is matched against.
 SiteKind = Literal[
     "aromatic_carbon",
     "aryl_halide_carbon",
@@ -84,10 +58,8 @@ SiteKind = Literal[
     "heteroatom",
 ]
 
-# Which question a site is a candidate answer to. A scope is how a caller asks for the *right rows*
-# rather than more rows: `predict_site_reactivity` on phenol already returns every atom and still
-# buries the para carbon at rank 6, behind the oxygen and four hydrogens, so truncation is not the
-# knob that was missing.
+# Which question a site is a candidate answer to, so a caller can ask for the right rows rather
+# than more rows.
 SiteScope = Literal[
     "ring_carbons",
     "ch_sites",
@@ -104,14 +76,11 @@ SCOPES: tuple[SiteScope, ...] = (
     "all",
 )
 
-# The environment each kind is recognised by, **matched atom zero being the site itself**, in
-# priority order: the first pattern whose first matched atom is this atom wins. Ordering is the
-# whole specificity mechanism — a carboxylic acid carbon also matches the plain carbonyl pattern,
-# and an amide nitrogen also matches the amine one, so the specific rows come first.
+# Each kind's environment, matched atom zero being the site itself, in priority order: the first
+# pattern whose atom zero is this atom wins, so specific rows precede general ones.
 _KINDS: tuple[tuple[SiteKind, str], ...] = (
-    # Carbons an electrophile-seeking question is about. The three acyl rows are separate because
-    # "which of these two carbonyls reacts first" is the chemoselectivity question, and answering it
-    # with one `carbonyl_carbon` label for both would make the answer unsayable.
+    # Electrophilic carbons. The acyl rows are separate so a chemoselectivity answer can name which
+    # carbonyl.
     ("carboxyl_carbon", "[CX3](=[OX1])[OX2H1]"),
     ("ester_carbon", "[CX3](=[OX1])[OX2H0][#6]"),
     ("amide_carbon", "[CX3](=[OX1])[NX3]"),
@@ -127,18 +96,12 @@ _KINDS: tuple[tuple[SiteKind, str], ...] = (
     ("benzylic_carbon", "[CX4][a]"),
     ("aromatic_carbon", "[c]"),
     # Heteroatoms, specific before general.
-    # The charge-separated form, because that is what RDKit actually builds: measured, the
-    # pentavalent `[NX3](=O)=O` matches nothing in `c1ccccc1[N+](=O)[O-]`, which RDKit canonicalises
-    # to `O=[N+]([O-])c1ccccc1`. The dead pattern left nitrobenzene's nitrogen labelled "the
-    # heteroatom" — the strongest electron-withdrawing group there is, unnamed.
+    # Nitro in the charge-separated form RDKit builds; a pentavalent pattern matches nothing.
     ("nitro_nitrogen", "[NX3+](=[OX1])[OX1-]"),
     ("amide_nitrogen", "[NX3][CX3]=[OX1]"),
     ("aromatic_nitrogen", "[n]"),
     ("amine_nitrogen", "[NX3;!$([NX3]=*)]"),
-    # `[OX1]~[N+]` rather than a spelled-out nitro: both oxygens are terminal on a cationic
-    # nitrogen whichever resonance form RDKit picked, and writing the charges out matched nothing
-    # because the two oxygens differ in charge between forms. Measured against the canonical
-    # molecule rather than reasoned about, which is how the pentavalent pattern below was caught.
+    # `[OX1]~[N+]` matches both nitro oxygens whichever resonance form RDKit picked.
     ("nitro_oxygen", "[OX1]~[NX3+]"),
     ("carbonyl_oxygen", "[OX1]=[CX3]"),
     ("hydroxyl_oxygen", "[OX2H1]"),
@@ -148,9 +111,7 @@ _KINDS: tuple[tuple[SiteKind, str], ...] = (
     ("halogen", "[F,Cl,Br,I]"),
 )
 
-# What each kind is called in a sentence. Kept beside the patterns rather than derived from the
-# enum name, because "aryl_halide_carbon" is a classification and "the aromatic carbon bearing the
-# leaving group" is what a chemist reads.
+# What each kind is called in a sentence a chemist reads.
 _NOUNS: dict[SiteKind, str] = {
     "aromatic_carbon": "aromatic carbon",
     "aryl_halide_carbon": "aromatic carbon bearing the leaving group",
@@ -177,9 +138,7 @@ _NOUNS: dict[SiteKind, str] = {
     "heteroatom": "heteroatom",
 }
 
-# The classical relationship names, by how many ring bonds separate a position from the reference.
-# Six-membered rings only: "meta" on a five-ring is not a thing anyone says, and inventing a name
-# for it would be worse than leaving the field empty.
+# Classical relationship names by ring bonds from the reference; six-membered rings only.
 _RELATIONS: dict[int, str] = {0: "ipso", 1: "ortho", 2: "meta", 3: "para"}
 
 # Which kinds are electrophilic carbons for scope purposes. Written as a set rather than inferred
@@ -269,24 +228,15 @@ def site_handle(
 ) -> str:
     """A content-addressed name for one symmetry class of `mol`.
 
-    The three properties are `torsion_handle`'s, for the same three reasons one dimension down:
-
-    - **It does not change when the SMILES is rewritten.** The atom is named by its canonical
-      symmetry class rather than by its index, so `CC(=O)Nc1ccccc1` and `c1ccc(NC(C)=O)cc1` give the
-      amide nitrogen one handle while the indices differ.
-    - **Symmetry-equivalent atoms share it.** Toluene's two *ortho* carbons are one site, and get
-      one handle, so they cannot be reported as two competing answers.
-    - **It fails loudly after a toolchain bump.** The RDKit version is in the payload, because the
-      canonical ranking is a function of that build, and a handle that quietly resolved to a
-      different atom under a new build is the silent failure this module exists to remove.
+    Stable under SMILES rewriting (named by canonical symmetry class, not index), shared by
+    symmetry-equivalent atoms, and carrying the RDKit version so a handle fails loudly under a
+    different build rather than resolving to a different atom.
 
     Args:
         mol: The molecule the atom belongs to.
         atom_index: Any atom of the class; every member gives the same handle.
-        classes: The molecule's canonical symmetry classes, if the caller already has them.
-            Omitted, they are computed here. This is not a micro-optimisation: the two
-            whole-molecule passes below are the *whole* cost of naming an atom, and paying them
-            once per atom made a 600-atom molecule 18 s of GIL-holding CPU.
+        classes: The molecule's canonical symmetry classes, if already computed. Pass them when
+            naming many atoms: the whole-molecule passes are the entire cost.
         written: The molecule's canonical SMILES, on the same terms.
 
     Returns:
@@ -329,21 +279,10 @@ class SiteSet(BaseModel):
 def describe_atom_sites(smiles: str) -> SiteSet:
     """Every symmetry-distinct heavy atom of `smiles`, named the way a chemist names it.
 
-    Hydrogens are not sites of their own: a C-H question is asked about the carbon and answered on
-    the carbon, with `hydrogens` carrying the indices a calculator will have put its numbers on.
-    That is the same refusal `enumerate_torsion_candidates` makes for a symmetric top — a hydrogen
-    index is meaningful only inside one particular explicit-H numbering, and handing one out invites
-    it to be carried somewhere it means something else.
-
-    **The molecule is canonicalised first, and that is the whole join.** Every calculator in this
-    family embeds through `require_canonical_smiles`, so its atom 0 is the canonical form's atom 0.
-    Numbering from the caller's spelling instead would hand back indices for a different atom
-    ordering: measured, phenol written `c1ccccc1O` puts the oxygen at index 6 here and index 0
-    there, so every per-atom number joined on these indices would be attributed to the wrong atom —
-    silently, and in exactly the way this module exists to prevent.
-
-    So the canonical form is returned beside the sites, because a number is only a position if the
-    reader has the molecule it counts in — see `SiteSet`.
+    Hydrogens are not sites: a C-H question is answered on the carbon, with `hydrogens` carrying the
+    indices a calculator puts its numbers on. The molecule is canonicalised first, since every
+    calculator embeds the canonical form; indices from the caller's spelling would address different
+    atoms. The canonical form is returned beside the sites.
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
@@ -360,12 +299,8 @@ def describe_atom_sites(smiles: str) -> SiteSet:
 
     by_handle: dict[str, list[int]] = {}
     for atom in mol.GetAtoms():
-        # **A hydrogen is never a site, including an isotopically-labelled one.** `MolFromSmiles`
-        # keeps a `[2H]` as an explicit atom in the graph, so it arrived here as a site of
-        # `kind="heteroatom"` labelled "the heteroatom" — in a module that promises every
-        # symmetry-distinct *heavy* atom — while the carbon it hangs off reported no hydrogens at
-        # all. On CD3OH, which is a substrate somebody chose for a C-H/C-D question, that is the
-        # question's own join key missing and an element named that is not there.
+        # A hydrogen is never a site, including an explicit isotopic `[2H]` that `MolFromSmiles`
+        # keeps in the graph; it is reported in its carbon's `hydrogens` instead.
         if atom.GetAtomicNum() == 1:
             continue
         handle = site_handle(mol, atom.GetIdx(), classes, written)
@@ -409,16 +344,8 @@ def describe_atom_sites(smiles: str) -> SiteSet:
 def _disambiguate(sites: list[Site]) -> list[Site]:
     """Make every label unique within the molecule, appending an index only where it has to.
 
-    **A colliding label is a broken answer, not an untidy one.** The reactivity skill instructs the
-    model to name sites by `label` and never by index, so two distinct sites sharing one is two
-    different answers spelled identically. Measured, this happens wherever a relationship to a
-    single reference cannot separate two positions: quinoline's two "one ring bond from the ring
-    fusion" carbons, 2-methylnaphthalene's two "ortho", and both chlorines of
-    2,4-dichloropyrimidine.
-
-    The disambiguator is the representative atom index, which is the same convention
-    `_reference_label` already uses for a ring with two nitrogens: a poor name and a fine
-    tiebreaker. It is appended only to labels that actually collide, so the common case stays clean.
+    Callers name sites by `label`, so a collision would be two answers spelled identically. The
+    representative atom index is the tiebreaker, appended only to labels that collide.
     """
     counts: dict[str, int] = {}
     for site in sites:
@@ -434,16 +361,8 @@ def _disambiguate(sites: list[Site]) -> list[Site]:
 def _hydrogen_indices(with_hydrogens: Chem.Mol) -> dict[int, list[int]]:
     """Map each heavy atom to the indices its hydrogens carry once hydrogens are explicit.
 
-    Read off the `AddHs` molecule rather than computed from an offset. The arithmetic happens to
-    work — `AddHs` preserves the heavy prefix and appends hydrogens in parent order — but that is a
-    property of an RDKit implementation, and every calculator in this family numbers atoms by
-    calling the same function, so reading the answer is both free and exact.
-
-    **Every hydrogen of that molecule, not only the appended ones.** The filter used to be "index
-    past the heavy count", which is what `AddHs` appends — and an isotopically-labelled hydrogen is
-    written explicitly in the SMILES, so it sits *inside* the heavy prefix and was dropped. CD3OH's
-    methyl carbon therefore reported `hydrogens=[]`, which is the field the docstring calls the
-    join key for a C-H question.
+    Read off the `AddHs` molecule rather than computed from an offset, and covering every hydrogen,
+    including an isotopic one written explicitly inside the heavy-atom prefix.
     """
     attached: dict[int, list[int]] = {}
     for atom in with_hydrogens.GetAtoms():
@@ -455,13 +374,8 @@ def _hydrogen_indices(with_hydrogens: Chem.Mol) -> dict[int, list[int]]:
 def _matched_atoms(mol: Chem.Mol, pattern: str) -> set[int]:
     """The atoms this SMARTS puts in position zero — the site the pattern is about.
 
-    **Compiled per call on purpose, after measuring it.** The twenty-one `_KINDS` patterns cost
-    0.2-1.2 ms to parse against a whole `describe_atom_sites` of 3.9-11 ms on tyrosine and 13-46 ms
-    on imatinib (`cc3-gate`, RDKit 2026.03.5): **2-11%**, falling as the molecule grows, and inside
-    the run-to-run noise of the call itself. A shared compiled query also puts two recursive
-    patterns under the `RDK_BUILD_THREADSAFE_SSS` dependency `species.py::_compiled` documents,
-    which is a real cost for a saving this size. The decision and the other four tables' numbers are
-    `D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter`.
+    Compiled per call: parsing is a small share of the call, and a shared compiled query would bring
+    the `RDK_BUILD_THREADSAFE_SSS` dependency `species.py::_compiled` documents.
     """
     query = Chem.MolFromSmarts(pattern)
     return {match[0] for match in mol.GetSubstructMatches(query)}
@@ -470,9 +384,7 @@ def _matched_atoms(mol: Chem.Mol, pattern: str) -> set[int]:
 def _classify(atom: Chem.Atom, matched: dict[SiteKind, set[int]]) -> SiteKind:
     """Which kind of site this is, in the order the patterns are written.
 
-    The fallbacks are deliberate rather than a default branch: an unmatched carbon is aliphatic, and
-    an unmatched anything-else is a heteroatom — which is still a true statement a caller can scope
-    on, where `"other"` would not be.
+    Unmatched carbon is aliphatic and anything else a heteroatom — still true, and scopeable.
     """
     for kind, _ in _KINDS:
         if atom.GetIdx() in matched[kind]:
@@ -481,11 +393,7 @@ def _classify(atom: Chem.Atom, matched: dict[SiteKind, set[int]]) -> SiteKind:
 
 
 def _scopes(atom: Chem.Atom, kind: SiteKind) -> list[SiteScope]:
-    """Which question scopes this site answers.
-
-    A site can be in several — the beta carbon of an acrylamide is an electrophilic carbon *and*,
-    if it carries a hydrogen, a C-H site — because the scopes are questions, not a partition.
-    """
+    """Which question scopes this site answers; scopes are questions, not a partition."""
     found: list[SiteScope] = []
     if atom.GetSymbol() == "C" and atom.IsInRing():
         found.append("ring_carbons")
@@ -508,16 +416,9 @@ def _ring_size(mol: Chem.Mol, index: int) -> int | None:
 def _ring_references(mol: Chem.Mol, ranks: list[int]) -> dict[tuple[int, ...], int]:
     """Choose the atom each ring's positions are counted from.
 
-    A locant is meaningless without saying what it counts from, and the two conventions a chemist
-    actually uses are different: a heteroaromatic is numbered **from its heteroatom** (pyridine's
-    C4), and a substituted carbocycle is described **relative to its substituent** (phenol's
-    *para*).
-    So the reference is the lowest-canonically-ranked heteroatom if the ring has one, else the
-    lowest-ranked substituted ring atom, else nothing — benzene has no reference because every
-    position of benzene is the same position, and inventing one would number six identical atoms.
-
-    Ranked rather than lowest-index throughout, for `torsion_handle`'s reason: an index depends on
-    how the molecule was written.
+    The lowest-ranked ring heteroatom (pyridine's C4), else the lowest-ranked substituted ring atom
+    (phenol's *para*), else none (every benzene position is the same). Ranked rather than by index,
+    so the choice does not depend on how the molecule was written.
     """
     references: dict[tuple[int, ...], int] = {}
     for ring in mol.GetRingInfo().AtomRings():
@@ -555,17 +456,9 @@ def _ring_placement(
 ) -> _Placement:
     """Where in its ring this atom sits, relative to the reference `_ring_references` chose.
 
-    The distance is counted **through the ring**, not through the molecule, because a fused
-    system's shortest path between two positions of one ring can leave that ring.
-
-    **`relation` is emitted only for the substituent convention.** *Ortho*, *meta* and *para* name
-    positions relative to a substituent on a six-membered ring; applying them to a ring heteroatom's
-    own numbering mixes that convention with IUPAC locants, and the two disagree. So a heteroatom
-    reference yields the distance and the reference name — "two ring bonds from the ring N" is true
-    and checkable — while `relation` stays None unless the ring is a six-ring numbered from a
-    substituent. Pyridine is the exception worth having: with a single ring heteroatom and no
-    competing convention, "para to the ring N" *is* what a chemist says, so a six-ring whose
-    reference is its only heteroatom keeps the classical names.
+    Distance is counted through the ring, since a fused system's shortest path can leave it.
+    `relation` (*ortho*/*meta*/*para*) is set only where `_classical` allows; otherwise the distance
+    and reference name are given.
     """
     for ring in mol.GetRingInfo().AtomRings():
         if index not in ring or ring not in references:
@@ -587,13 +480,8 @@ def _ring_placement(
 def _classical(mol: Chem.Mol, ring: tuple[int, ...], reference: int) -> bool:
     """May this ring's positions carry the *ortho*/*meta*/*para* names?
 
-    Three conditions, each removing a case where the classical names would be read as saying more
-    than they do. The ring must be a six-ring. There must be one convention in play — either the
-    reference is a substituted carbon (benzene chemistry) or it is the ring's *sole* heteroatom
-    (pyridine, where "para to N" is standard); a ring with two heteroatoms is numbered rather than
-    related, so pyrimidine gets a distance instead. And the reference must not be a **ring fusion**:
-    naphthalene's positions are alpha and beta, not *ortho* and *para*, and calling a fusion carbon
-    a substituent would be a claim about a bond that is not there.
+    Only a six-ring whose reference is a substituted carbon or the ring's sole heteroatom
+    (pyridine), and never a ring-fusion reference (naphthalene is alpha/beta).
     """
     if len(ring) != 6 or _is_fusion(mol, reference, ring):
         return False
@@ -615,9 +503,7 @@ def _is_fusion(mol: Chem.Mol, index: int, ring: tuple[int, ...]) -> bool:
 def _adjacent_ring_heteroatoms(mol: Chem.Mol, index: int) -> int:
     """Ring heteroatoms bonded to this atom.
 
-    Counted over neighbours that share a ring with it, so an exocyclic amine on an aromatic carbon
-    is not mistaken for a ring nitrogen — the two have opposite electronic effects, and confusing
-    them would invert exactly the answer this field exists to support.
+    Only neighbours sharing a ring count, so an exocyclic amine is never taken for a ring nitrogen.
     """
     atom = mol.GetAtomWithIdx(index)
     if not atom.IsInRing():
@@ -660,14 +546,9 @@ def _ring_order(ring: tuple[int, ...], mol: Chem.Mol) -> list[int] | None:
 def _reference_label(mol: Chem.Mol, reference: int, ring: tuple[int, ...]) -> str:
     """Name the atom a position is measured from, in the terms each convention uses.
 
-    A heteroatom reference is named as itself ("the ring N"); a substituted-carbon reference is
-    named by *what it carries* ("the OH substituent"), because "para to the OH" is the sentence a
-    chemist reads and "para to C1" is not; a ring-fusion carbon is named as a fusion, because it
-    carries no substituent at all.
-
-    **The index is appended when the name alone does not identify the atom** — a pyrimidine has two
-    ring nitrogens, and "two ring bonds from the ring N" is ambiguous without saying which. An index
-    is a poor name and a fine disambiguator, which is the only role it has here.
+    A heteroatom as itself ("the ring N"), a substituted carbon by what it carries ("the OH
+    substituent"), a fusion carbon as a fusion. An index is appended when the name alone is
+    ambiguous (pyrimidine's two nitrogens).
     """
     atom = mol.GetAtomWithIdx(reference)
     if _is_fusion(mol, reference, ring):
@@ -695,10 +576,8 @@ def _reference_label(mol: Chem.Mol, reference: int, ring: tuple[int, ...]) -> st
 def _label(atom: Chem.Atom, kind: SiteKind, placement: _Placement) -> str:
     """What to call this site in a sentence a chemist can check the choice against.
 
-    A ring position gets the placement that makes it identifiable — `"the para aromatic carbon
-    (para to the OH substituent)"` — because the whole purpose of this module is that an answer
-    names a position rather than an index. Where the classical names do not apply, the distance is
-    spelled out instead of being dressed up as a locant.
+    A ring position carries its placement ("the para aromatic carbon (para to the OH substituent)");
+    where classical names do not apply, the distance is spelled out.
     """
     noun = _NOUNS[kind]
     if placement.reference is None or placement.distance is None:

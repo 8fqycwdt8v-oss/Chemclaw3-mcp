@@ -204,23 +204,11 @@ def run(
     solvent: str | None = None,
     temperature_k: float | None = None,
 ) -> list[EnsembleMember]:
-    """Run one CREST search and return its ensemble, lowest energy first.
+    """Run one CREST search on `structure` and return its ensemble, lowest energy first.
 
-    Args:
-        structure: The starting geometry, its charge and its multiplicity.
-        search: Which space to sample.
-        method: GFN parametrization; CREST accepts GFN1/GFN2 and GFN-FF.
-        effort: How hard to search.
-        solvent: ALPB implicit solvent name, or None for gas phase.
-        temperature_k: Sampling temperature; None uses the configured default.
-
-    Returns:
-        The ensemble members ordered by energy.
-
-    Raises:
-        TimeBudgetError: the search was killed at its timeout, opening with `TIME_BUDGET_MARKER`.
-        CliError: CREST is absent, exited non-zero, or wrote no ensemble.
-        ValueError: the method is not one CREST accepts.
+    `temperature_k=None` uses the configured default; `solvent=None` is gas phase. Raises
+    `TimeBudgetError` (killed at its timeout), `CliError` (absent, non-zero exit, no ensemble) or
+    `ValueError` (a method CREST does not accept).
     """
     path = binary_path()
     if path is None:

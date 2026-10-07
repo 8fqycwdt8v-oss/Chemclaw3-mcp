@@ -1,21 +1,9 @@
-"""What the three tools answer, and what they refuse. All offline, all against the real tables.
+"""What the three tools answer, and what they refuse, offline against the real tables.
 
-Three things must hold for an advisory safety screen to be worth having: the rules fire on real
-examples of the motifs they name, they stay quiet on ordinary chemistry (a screen that cries wolf is
-switched off), and nothing anywhere renders "no match" as "safe". The rule table is data, so these
-tests pin its behavior with named molecules rather than mocking the matcher.
-
-The last two sections cover this server's other two cited tables, which answer *different* questions
-and must keep answering them separately: the genotoxicity structural alerts (`engine/genotox.py`)
-and the transcribed ICH Q3C/Q3D limits (`engine/ich.py`). Both are here rather than in files of
-their own because the property that matters most about them is how they relate to the hazard screen
-— that a genotoxicity alert is not a process-safety flag, and that neither is a classification — and
-that is only assertable with all three in one place.
-
-Ported from Chemclaw3's `tests/test_safety.py`, minus the sections covering that repository's
-`kg-validate` hazard gate, which reads agent-authored knowledge-graph notes. No such gate exists
-here — a server answers questions and does not gate a pull request — so `science/safety/notes.py`
-and its ~370 lines of tests came across as nothing at all rather than as something unreachable.
+An advisory screen must fire on real examples of its motifs, stay quiet on ordinary chemistry,
+and never render "no match" as "safe"; rules are pinned with named molecules, not a mocked
+matcher. The genotoxicity alerts and ICH limits are tested here too, because what matters is how
+they relate to the hazard screen: separate questions, none of them a classification.
 """
 
 from __future__ import annotations
@@ -86,10 +74,8 @@ _BENIGN = [
 def _rule_corpus(directory: Path, body: str) -> Path:
     """Write a stand-in rule table plus the `dataset.json` `load_dataset` will verify it against.
 
-    The checksum is computed here rather than pasted, because this file's subject is the *loader's*
-    behaviour on a broken table, not the checksum arithmetic — a hand-typed digest would make every
-    one of these tests fail for the wrong reason. The real corpus's checksum is pinned in
-    `dataset.json` and asserted by `test_dataset.py`, which is where that property belongs.
+    The checksum is computed, not pasted, so these tests are about the loader's behaviour on a
+    broken table; the real corpus's checksum is asserted in `test_dataset.py`.
     """
     directory.mkdir(parents=True, exist_ok=True)
     table = directory / screen_module.RULES_FILE
@@ -128,30 +114,20 @@ def test_each_rule_fires_on_its_reference_molecule(rule_id: str, smiles: str) ->
 
 @pytest.mark.parametrize(("name", "smiles"), sorted(_POLYNITRO.items()))
 def test_polynitroarenes_flag_at_every_substitution_pattern(name: str, smiles: str) -> None:
-    """TNT and picric acid must flag, not only the ortho isomer the old pattern happened to match.
+    """Polynitroarenes flag at every substitution pattern, not only ortho.
 
-    `polynitro-aromatic` shipped as a written six-atom ring chain (`[nitro]c1ccccc1[nitro]`), which
-    hangs the second nitro group off the ring-closure atom and therefore matches **ortho only**.
-    TNT, picric acid and both the meta and para dinitrobenzenes screened clean, and no other rule
-    caught them: the screen answered "no rule in the hazard table matched" about high explosives.
-
-    **The interesting part is why a green test suite allowed it.** The discipline was one reference
-    molecule per rule, and every fixture picked 1,2-dinitrobenzene — the single arrangement the
-    broken pattern *did* match. One example is a complete test of a rule that names a motif, and a
-    blind one for a rule whose own words say "multiple" or "on one ring": those semantics are a
-    count and a set of relative positions, so the discipline has to be one molecule per arrangement
-    claimed.
+    A ring-chain SMARTS hanging the second nitro off the ring-closure atom matches ortho only, which
+    let TNT and picric acid screen clean. A rule whose semantics are a count and relative positions
+    needs one molecule per arrangement it claims, not one reference molecule.
     """
     assert "polynitro-aromatic" in {flag.rule_id for flag in screen_structure(smiles).flags}, name
 
 
 def test_a_mononitroarene_is_not_polynitro() -> None:
-    """A count of two: one nitro group on a ring must not fire the polynitro rule.
+    """One nitro group on a ring does not fire the polynitro rule.
 
-    Pinned separately from the benign list because it is what makes the count real: `min_matches`
-    wired up as `>= 1` would satisfy every match assertion above while turning the archetypal
-    explosive alert into "contains a nitro group", and a flag that fires on nitrobenzene is a flag
-    people learn to scroll past.
+    This makes the count real: `min_matches` wired as `>= 1` would pass every match above while
+    turning the explosive alert into "contains a nitro group".
     """
     flags = {flag.rule_id for flag in screen_structure("O=[N+]([O-])c1ccccc1").flags}
     assert "polynitro-aromatic" not in flags
@@ -185,13 +161,10 @@ def test_a_flag_carries_its_explanation_and_citation() -> None:
     ],
 )
 def test_azide_not_bonded_to_carbon_is_flagged(smiles: str, reagent: str) -> None:
-    """Every azide that is not carbon-bound flags, not just the organic ones.
+    """Every azide not bonded to carbon flags, not just the organic ones.
 
-    Sodium azide is one of the most-reached-for reagents in the building, and it screened *clean*:
-    `organic-azide` and `acyl-azide` both open on `[#6]`, so a salt matched neither and the screen
-    reported nothing — which a reader takes as "no hazard found" on a compound that is acutely toxic
-    and liberates explosive HN3 on contact with acid. The same hole swallowed hydrazoic acid and the
-    silyl/phosphoryl azide transfer reagents, so each is pinned here by name.
+    `organic-azide` and `acyl-azide` open on carbon, so sodium azide, hydrazoic acid and the
+    silyl/phosphoryl transfer reagents would otherwise screen clean; each is pinned by name.
     """
     flags = {flag.rule_id for flag in screen_structure(smiles).flags}
     assert "non-carbon-azide" in flags, f"{reagent} screened clean"
@@ -246,18 +219,11 @@ def test_unparseable_smiles_is_a_clear_error() -> None:
 
 
 def test_a_structure_with_trailing_text_is_refused_and_not_quietly_narrowed() -> None:
-    """The test that would have caught it: trailing garbage must not screen as a clean result.
+    """A structure with trailing text is refused, not quietly narrowed to its prefix.
 
-    RDKit's SMILES parser accepts a valid *prefix* and ignores whatever follows a space, so
-    `screen_structure` used to answer this call with zero flags, the verdict "No rule in the hazard
-    table matched", and `screened == ["CCO"]` — a clean screen of **ethanol**, for an input whose
-    ignored tail is an azide. That is the worst failure mode available to this module: its own
-    docstring says an empty result must never read as a clearance, and here the empty result was not
-    even about the molecule asked about.
-
-    Asserted as a refusal *and* as an absence of a clean result, because the second is the part that
-    was wrong: a test that only pinned the exception would pass against a version that returned
-    `ScreenResult(flags=[], screened=["CCO"])`.
+    RDKit parses a valid prefix and ignores what follows a space, which would give a clean screen of
+    ethanol for an input whose tail is an azide. Asserted as a refusal and as the absence of a clean
+    result, since pinning only the exception would pass a version that returned one.
     """
     concatenated = f"CCO {_HAZARDOUS['organic-azide']}"
     assert screen_structure(_HAZARDOUS["organic-azide"]).flags  # the tail alone is a real flag
@@ -283,24 +249,19 @@ def test_a_reaction_refusal_names_which_component_it_could_not_read() -> None:
 
 
 def test_a_screened_reaction_still_echoes_what_it_looked_at() -> None:
-    """The refusal above does not cost a good call its `screened` list.
+    """A good call still echoes `screened`, canonical and deduplicated.
 
-    `screened` is the evidence that a screen is about the molecules the caller meant: it is the
-    canonical form of every structure parsed, deduplicated, so two spellings of one substance appear
-    once.
+    `screened` is the evidence that a screen is about the molecules the caller meant.
     """
     result = screen_reaction(["OCC", "CCO", "O"])
     assert result.screened == ["CCO", "O"]
 
 
 def test_a_screen_of_nothing_is_refused_rather_than_answered_cleanly() -> None:
-    """An empty list used to produce a clean screen of nothing, which is the whole thesis inverted.
+    """A screen of nothing is refused rather than answered cleanly.
 
-    `screen_hazards([])` returned `flags=[]`, `screened=[]` and "No rule in the hazard table
-    matched. This is not a safety assessment." — the exact payload a clean screen produces, with
-    nothing in it to say that no molecule was ever looked at. `screened` exists so a clean result
-    names its subject; an empty result with an empty `screened` is the one case where that evidence
-    is missing and the verdict still reads like an answer.
+    An empty input would produce exactly a clean screen's payload with no molecule ever looked at;
+    `screened` exists so a clean result names its subject.
     """
     for screen in (screen_reaction, screen_genotoxic_alerts):
         with pytest.raises(SafetyRulesError, match="at least one structure"):
@@ -310,11 +271,8 @@ def test_a_screen_of_nothing_is_refused_rather_than_answered_cleanly() -> None:
 def test_a_missing_rule_table_fails_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing table stops the screen instead of silently reporting no hazards.
 
-    Screening with half a rule table would report "no rule matched" for a hazard the table covers —
-    the exact failure this module exists to prevent, so it is fatal, not skipped. The filename is in
-    the message: `read_table` is shared with the genotoxicity screen and both ICH tables, and a
-    reader sent to the wrong file by a generic "hazard rules" is the confusion this package spends
-    the most effort preventing.
+    The message names the file, because `read_table` is shared by the hazard, genotoxicity and ICH
+    tables.
     """
     monkeypatch.setattr(screen_module, "RULES_DIR", tmp_path / "missing")
     with pytest.raises(SafetyRulesError, match=r"cannot read the safety table rules\.yaml"):
@@ -324,12 +282,9 @@ def test_a_missing_rule_table_fails_loudly(tmp_path: Path, monkeypatch: pytest.M
 def test_a_rule_table_that_is_not_the_approved_file_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A corpus edited after review is refused by its checksum, not screened against.
+    """A rule table that is not the approved file is refused by its checksum.
 
-    This is what the vendored-dataset contract buys a safety table specifically: a rule table
-    truncated by a bad COPY or swapped in a rebuild is a *shorter* rule table, and a shorter rule
-    table answers "no rule matched" — which is indistinguishable from a clean molecule and is the
-    one outcome this whole server is built around not producing.
+    A truncated or swapped table answers "no rule matched", indistinguishable from a clean molecule.
     """
     directory = _rule_corpus(tmp_path / "tampered", "structural: []\nincompatible_pairs: []\n")
     (directory / screen_module.RULES_FILE).write_text("structural: []\n", encoding="utf-8")
@@ -385,9 +340,8 @@ def test_the_limit_tool_answers_the_same_as_its_engine() -> None:
 def _distinct_pair_matching(n: int, left: str, right: str) -> list[str]:
     """`n` distinct SMILES of constant size, half matching each side of a pair rule.
 
-    Constant size matters and is the reason for the atom-map labels: generating variety by growing a
-    chain makes the *total atom count* quadratic too, so a timing curve measures the input rather
-    than the code.
+    Atom-map labels give variety at constant size; growing a chain would make the total atom count
+    grow too and a timing curve would measure the input.
     """
     half = n // 2
     return [left.format(i=i + 1) for i in range(half)] + [
@@ -396,11 +350,10 @@ def _distinct_pair_matching(n: int, left: str, right: str) -> list[str]:
 
 
 def test_a_reaction_screen_refuses_more_components_than_it_can_screen() -> None:
-    """Pair rules are a cross-product, so an oversized list is refused before any matching.
+    """Pair rules are a cross-product, so an oversized component list is refused before matching.
 
-    The measured defect: 13 KiB of SMILES produced 251,000 flags and blocked the serving connector's
-    event loop for 2.48 s. A request-size cap is no bound on it, because the amplification is in the
-    *response*. Raise `CHEMCLAW_SAFETY_MAX_COMPONENTS` and this fails.
+    The amplification is in the response, so a request-size cap does not bound it. Raising
+    `CHEMCLAW_SAFETY_MAX_COMPONENTS` fails this.
     """
     oversized = _distinct_pair_matching(MAX_COMPONENTS + 1, "[NH2:{i}]N", "[OH:{i}]O")
     with pytest.raises(SafetyRulesError, match="at most"):
@@ -408,11 +361,9 @@ def test_a_reaction_screen_refuses_more_components_than_it_can_screen() -> None:
 
 
 def test_a_genotoxicity_screen_refuses_the_same_way() -> None:
-    """The sibling screen has the identical cross-product shape and had the identical hole.
+    """The genotoxicity screen has the same cross-product shape and refuses the same way.
 
-    Only `screen_hazards` was reported; `screen_genotoxic_alerts` was measured at 640 components
-    producing 102,400 alerts in 933 ms. One bound, both callers — a screen that refused in one place
-    and not the other would just move the defect.
+    One bound for both callers; refusing in one place only would just move the defect.
     """
     oversized = _distinct_pair_matching(MAX_COMPONENTS + 1, "C[NH:{i}]C", "[O:{i}]=NO")
     with pytest.raises(SafetyRulesError, match="at most"):
@@ -433,12 +384,10 @@ def test_the_bound_admits_a_real_reaction_unchanged() -> None:
 
 
 def test_a_clean_screen_carries_its_disclaimer_into_the_serialized_result() -> None:
-    """The "not a safety assessment" line must survive `model_dump()`, not just exist.
+    """The "not a safety assessment" line survives `model_dump()`.
 
-    A bare `property` is dropped by pydantic serialization, so a clean screen reached the model as
-    `{"flags": []}` and the caveat never entered the context window the answer was written from.
-    Asserting on the dumped payload — not on the attribute — is the whole point: reading
-    `result.verdict` in a test passes either way.
+    A bare `property` is dropped by serialization, so the assertion is on the dumped payload;
+    reading `result.verdict` would pass either way.
     """
     dumped = screen_structure("CCO").model_dump()
     assert "verdict" in dumped, "verdict is not serialized; a clean screen reads as an empty result"
@@ -467,22 +416,19 @@ _PREVIOUSLY_SILENT = [
 
 @pytest.mark.parametrize(("name", "smiles", "rule"), _PREVIOUSLY_SILENT)
 def test_a_previously_silent_hazard_now_fires(name: str, smiles: str, rule: str) -> None:
-    """A textbook member of a covered hazard class must not screen clean.
+    """A textbook member of a covered hazard class does not screen clean.
 
-    Sodium peroxide writes its oxygens as one-coordinate anions, UDMH carries H on only one
-    nitrogen, and chloramine-T's nitrogen is anionic and two-coordinate — each fell outside a
-    pattern written for the neutral, fully-substituted case. A silent rule is the one failure mode
-    this module exists to prevent, because the screen reports it as "nothing matched".
+    Sodium peroxide (anionic one-coordinate oxygens), UDMH (H on one nitrogen) and chloramine-T
+    (anionic two-coordinate nitrogen) each fall outside a pattern written for the neutral case.
     """
     assert rule in {flag.rule_id for flag in screen_structure(smiles).flags}, name
 
 
 def test_a_peroxide_salt_is_an_oxidizer_to_the_pair_rule_as_well() -> None:
-    """The widening that made `peroxide` see Na2O2 must reach the pair rule it also belongs to.
+    """A peroxide salt is an oxidiser to the pair rule as well as to `peroxide`.
 
-    Measured before the fix: `H2O2 + NaBH4` raised ['oxidizer-with-reductant', 'peroxide'] while
-    `Na2O2 + NaBH4` raised ['peroxide'] alone. A strong solid oxidiser mixed with a complex hydride
-    is the case the rule is named for, and it was the one that did not fire.
+    `Na2O2 + NaBH4`, a strong oxidiser with a complex hydride, is the case the pair rule is named
+    for.
     """
     hydride = "[BH4-].[Na+]"
     for oxidizer in ("OO", "[O-][O-].[Na+].[Na+]"):
@@ -497,12 +443,10 @@ def test_a_peroxide_salt_is_an_oxidizer_to_the_pair_rule_as_well() -> None:
 
 
 def test_a_hydrazinium_salt_is_a_hydrazine_to_both_rules() -> None:
-    """The salt is how hydrazine is actually weighed out, and it screened clean on both rules.
+    """A hydrazinium salt is a hydrazine to both rules.
 
-    Protonating a hydrazine makes that nitrogen `NX4+`, so `[NX3;H2,H1]` stopped matching: hydrazine
-    monohydrochloride and hydrazine sulfate raised neither the structural `hydrazine` rule nor
-    `oxidizer-with-reductant` beside an oxidiser, while free hydrazine raised both. Same class, same
-    hazard, same waste stream — and the protonated spelling is the ordinary catalogue form.
+    Protonation makes the nitrogen `NX4+`, and the hydrochloride or sulfate is the ordinary
+    catalogue form, so both the structural and the pair rule must match it.
     """
     salts = ("[NH3+]N.[Cl-]", "[NH3+]N.[O-]S([O-])(=O)=O", "[NH3+][NH3+].[Cl-].[Cl-]")
     for salt in salts:
@@ -520,10 +464,8 @@ def test_a_hydrazinium_salt_is_a_hydrazine_to_both_rules() -> None:
         assert "hydrazine" not in {f.rule_id for f in screen_structure(innocent).flags}, innocent
 
 
-# A 1,1-disubstituted hydrazine beside an oxidiser, kept as (name, SMILES, rule) for the same reason
-# `_PREVIOUSLY_SILENT` is. UDMH + H2O2 / N2O4 is the archetypal hypergolic pair — it ignites on
-# contact, with no ignition source — and it is the exact molecule the structural rule already
-# learned about once.
+# A 1,1-disubstituted hydrazine beside an oxidiser, as (name, SMILES, rule). UDMH with H2O2 or
+# N2O4 is the archetypal hypergolic pair: it ignites on contact.
 _HYPERGOLIC = [
     ("UDMH (1,1-dimethylhydrazine)", "CN(C)N", "oxidizer-with-reductant"),
     ("1,1-dimethylhydrazinium chloride", "C[NH+](C)N.[Cl-]", "oxidizer-with-reductant"),
@@ -536,11 +478,10 @@ _HYPERGOLIC = [
 def test_a_disubstituted_hydrazine_is_a_reductant_to_the_pair_rule(
     name: str, smiles: str, rule: str
 ) -> None:
-    """The pair rule kept the H-on-both-nitrogens form its structural twin had already dropped.
+    """A disubstituted hydrazine is a reductant to the pair rule, as to its structural twin.
 
-    Measured before the fix: `NN + OO` and `[NH3+]N.[Cl-] + OO` both raised
-    `oxidizer-with-reductant`, while `CN(C)N + OO` raised only `hydrazine` and `peroxide` — the
-    hypergolic pair was the one that screened clean on the rule named for it.
+    The pair arm must not require H on both nitrogens, or UDMH plus peroxide would miss the rule
+    named for it.
     """
     assert rule in {f.rule_id for f in screen_reaction([smiles, "OO"]).flags}, name
 
@@ -556,12 +497,11 @@ _ARYL_HYDRAZINES = [
 
 @pytest.mark.parametrize(("name", "smiles", "rule"), _ARYL_HYDRAZINES)
 def test_a_diarylhydrazine_is_still_a_hydrazine(name: str, smiles: str, rule: str) -> None:
-    """A guard aimed at azo systems hit hydrazines instead, and only when *both* N were aryl.
+    """A diarylhydrazine is still a hydrazine.
 
-    Measured with and without `!$(N[a])`: azobenzene was False either way, phenylhydrazine True
-    either way, and hydrazobenzene was the single molecule the guard changed — from True to False.
-    It bit only when both nitrogens are aryl-bound, because with one aryl nitrogen the match is
-    simply found from the other direction, which is why it looked harmless.
+    An aryl guard meant for azo systems only changes the verdict when both nitrogens are aryl-bound
+    (otherwise the match is found from the other side), so hydrazobenzene is the molecule that
+    shows it.
     """
     assert rule in {f.rule_id for f in screen_structure(smiles).flags}, name
 
@@ -616,10 +556,9 @@ def test_widening_a_rule_did_not_make_a_routine_reagent_hazardous(name: str, smi
     assert widened.isdisjoint({f.rule_id for f in screen_structure(smiles).flags}), name
 
 
-# The false-positive half of dropping the H requirement and the aryl guard. Every one of these
-# carries a nitrogen the widened pattern could plausibly reach — a second nitrogen, a cation, an
-# N-O bond, an aryl amine, an acylated N-N - and none of them is a hydrazine. A widened safety
-# pattern that cries wolf gets the whole screen switched off, so this half is load-bearing.
+# The false-positive half of the widened hydrazine pattern: each carries a nitrogen it could
+# plausibly reach (second N, cation, N-O bond, aryl amine, acylated N-N) and none is a hydrazine.
+# A pattern that cries wolf gets the whole screen switched off.
 _NOT_A_HYDRAZINE = [
     ("ammonium chloride", "[NH4+].[Cl-]"),
     ("ethylenediamine", "NCCN"),
@@ -654,13 +593,7 @@ _NOT_A_HYDRAZINE = [
 def test_the_widened_hydrazine_pattern_stays_quiet_on_ordinary_nitrogen(
     name: str, smiles: str
 ) -> None:
-    """Neither hydrazine rule may fire on a molecule that merely contains nitrogen.
-
-    Measured over a 106-row panel — the 61 distinct structures of the reagent identity table plus 45
-    hand-picked hydrazine-adjacent and nitrogen-bearing reagents — exactly five molecules changed
-    verdict across both rules, every one a hydrazine. Nothing in this list moved, in either
-    direction.
-    """
+    """Neither hydrazine rule fires on a molecule that merely contains nitrogen."""
     fired = {f.rule_id for f in screen_reaction([smiles, "OO"]).flags}
     assert "hydrazine" not in fired, name
     assert "oxidizer-with-reductant" not in fired, name
@@ -688,12 +621,10 @@ _ALERTS = {
 
 
 def test_every_structural_alert_has_a_worked_example_and_a_counterexample() -> None:
-    """A row added to the table without a molecule beside it is a row nothing checks.
+    """Every structural alert has a worked example and a counterexample.
 
-    The vinyl-sulfone gap below lived in the table because the motif was claimed in an
-    explanation rather than encoded in a pattern, and no test named a molecule that had to
-    match. Tying the parametrisation to the table itself is what makes the next row's absence
-    fail here instead of in a screen.
+    Parametrised from the table itself, so a row added without a molecule that must match fails here
+    rather than hiding a claimed-but-unencoded motif.
     """
     table = read_table(ALERTS_DIR, ALERTS_FILE, AlertTable)
     assert {alert.id for alert in table.structural} == set(_ALERTS)
@@ -719,12 +650,10 @@ def test_each_alert_fires_on_its_example_and_stays_quiet_on_its_counterexample(
     ],
 )
 def test_a_vinyl_sulfone_raises_an_alkylating_alert(name: str, smiles: str) -> None:
-    """The false negative that mattered most: a claimed motif that no pattern could match.
+    """A vinyl sulfone raises an alkylating alert.
 
-    `michael-acceptor` requires a carbonyl carbon conjugated to the alkene, so a vinyl sulfone —
-    an electrophilic warhead with no carbonyl anywhere — screened clean while the alert's own
-    explanation told the reader vinyl sulfones matched. A screen that names a motif it cannot
-    see is worse than one that stays silent about it, because the miss reads as a pass.
+    `michael-acceptor` needs a conjugated carbonyl, so a vinyl sulfone warhead would screen clean
+    while the alert's explanation claims it; a miss on a named motif reads as a pass.
     """
     fired = {alert.alert_id for alert in screen_genotoxic_alerts([smiles]).alerts}
     assert "vinyl-sulfone" in fired, name
@@ -745,11 +674,10 @@ def test_an_unactivated_sulfone_stays_quiet(name: str, smiles: str) -> None:
 
 
 def test_a_nitrosating_agent_meeting_an_amine_flags_the_formation_route() -> None:
-    """The nitrosamine question the run fabricated: an amine plus a nitrosating agent.
+    """A nitrosating agent beside an amine flags the nitrosamine formation route.
 
-    Neither component is an alert on its own — DIPEA is an everyday base and sodium nitrite is an
-    everyday reagent — so this is only visible across a component list, which is why it is a pair
-    rule rather than a structural one.
+    Neither component is an alert alone (DIPEA, sodium nitrite), so this is a pair rule over the
+    component list.
     """
     together = screen_genotoxic_alerts(["CCN(C(C)C)C(C)C", "[Na+].[O-]N=O"])
     assert [a.alert_id for a in together.alerts] == ["nitrosatable-amine-with-nitrosating-agent"]
@@ -775,12 +703,10 @@ def test_every_alert_carries_a_citation_and_the_motif_it_names() -> None:
 
 @pytest.mark.parametrize("smiles", [["CN(C)N=O"], ["CCO"]])
 def test_the_result_says_a_flag_is_an_alert_and_not_a_classification(smiles: list[str]) -> None:
-    """The disclaimer rides in the payload, on a hit *and* on a miss, not only in a docstring.
+    """The disclaimer rides in the payload, on a hit and on a miss.
 
-    `ScreenResult.verdict` was made a `computed_field` for exactly this reason: a plain property is
-    not serialized, so the caveat never reached the model that had to write the answer. The four
-    things this system cannot produce are named individually, because "expert assessment required"
-    on its own did not stop the live run inventing an ICH M7 class and a worked purge factor.
+    `ScreenResult.verdict` is a `computed_field` so it is serialized; the four things this system
+    cannot produce are named individually.
     """
     rendered = screen_genotoxic_alerts(smiles).model_dump()
     verdict = rendered["verdict"]
@@ -795,11 +721,10 @@ def test_a_clean_alert_screen_is_not_reported_as_a_negative_prediction() -> None
 
 
 def test_the_two_screens_stay_separate() -> None:
-    """The genotoxicity table must not leak into the process-safety screen, or vice versa.
+    """The genotoxicity table does not leak into the process-safety screen, or vice versa.
 
-    This is the conflation the split exists to prevent, and it is testable in both directions.
-    Nitrobenzene is the case that proves it: an ordinary reagent the hazard table is right to pass
-    and the alert table is right to flag.
+    Nitrobenzene shows both directions: the hazard table rightly passes it and the alert table
+    rightly flags it.
     """
     assert screen_structure("O=[N+]([O-])c1ccccc1").flags == []
     assert [a.alert_id for a in screen_genotoxic_alerts(["O=[N+]([O-])c1ccccc1"]).alerts] == [
@@ -817,13 +742,10 @@ def test_an_unparseable_component_stops_the_alert_screen() -> None:
 
 
 def test_a_component_with_trailing_text_stops_the_alert_screen_too() -> None:
-    """The same silent narrowing, on the screen where a clean result is hedged hardest.
+    """A component with trailing text stops the alert screen too.
 
-    `"CCO O=[N+]([O-])c1ccccc1"` used to parse as ethanol, drop the nitroarene after the space, and
-    come back with no alerts — under a verdict spending three lines explaining that an empty list is
-    not a negative mutagenicity prediction, about a molecule the payload never identifies. Refusing
-    is the only answer that does not require the reader to know which of the two things the
-    emptiness meant.
+    Otherwise the nitroarene after the space would be dropped and an empty alert list returned about
+    a molecule the payload never identifies.
     """
     nitroarene = "O=[N+]([O-])c1ccccc1"
     assert screen_genotoxic_alerts([nitroarene]).alerts  # the ignored tail is a real alert
@@ -901,11 +823,10 @@ def test_the_solvent_classes_are_carried_not_inferred() -> None:
 
 @pytest.mark.parametrize("query", ["nickel", "Ni", "tert-butyl alcohol", "water", "unobtainium"])
 def test_a_miss_is_a_miss_and_says_what_it_does_not_mean(query: str) -> None:
-    """The load-bearing half: an untranscribed substance returns nothing, and explains the nothing.
+    """An untranscribed substance returns nothing, and explains the nothing.
 
-    Nickel and `tert`-butyl alcohol are the sharp cases — both are genuinely in a guideline, and
-    both were left out of the transcription because their values could not be verified against the
-    source. A miss that read as "no limit exists" would be worse than the fabrication this replaces.
+    Nickel and tert-butyl alcohol are in a guideline but omitted as unverified; a miss reading as
+    "no limit exists" would be worse than a fabricated value.
     """
     lookup = impurity_limit(query)
     assert lookup.limit is None

@@ -1,29 +1,16 @@
 """How much this pod will run at once, and what it does with the call that arrives when it is full.
 
-Every heavy tool here offloads to a worker thread and awaits it, and until this gate nothing counted
-how many were in flight. The image pins `OMP_NUM_THREADS=1` for the in-process stack, so one
-in-process calculation is one core and a burst is a thrash: every call slower than it would have
-been alone, the caller's own timeout firing, and — because `cached_compute` is check-then-act — the
-retry starting another identical burn beside the ones already running.
+Heavy tools offload to worker threads and each in-process calculation is one core
+(`OMP_NUM_THREADS=1`), so an unbounded burst thrashes and retries pile on. Properties:
 
-Four properties, each with its own failure:
+- **The refusal is prompt.** A full pod refuses before any work starts, rather than queueing.
+- **The slot outlives a caller that gave up.** Releasing on cancellation would hand the slot to a
+  retry while the original thread still burns.
+- **The cheap tools stay answerable**, notably `calculation_key`.
+- **A slot is a core, not a call.** CREST runs `CHEMCLAW_CREST_THREADS` threads and is charged
+  them.
 
-- **The refusal is prompt.** A full pod turns a call away before any work starts, rather than
-  queueing it behind calculations that take minutes. That is admission control and not the wall
-  clock `CLAUDE.md` argues against: nothing is abandoned mid-burn, because nothing was started.
-- **The slot outlives a caller that gave up.** The half that breaks the retry loop. Releasing on
-  cancellation would hand the freed slot straight to the retry while the original thread was
-  still burning — the pod would believe it had room it did not have.
-- **The cheap tools stay answerable.** `calculation_key` is how a client asks "have I computed this
-  already?" *before* paying for it, so refusing it under load would push work onto a saturated pod.
-- **A slot is a core, not a call.** The pin above binds this process and is scrubbed out of CREST's
-  environment, which is then told `-T`/`OMP_NUM_THREADS` from `CHEMCLAW_CREST_THREADS`. Counting
-  calls admitted four searches at the shipped ceiling — sixteen runnable threads on a four-core pod,
-  measured at 4.2x the wall clock of one search alone.
-
-The gated set is checked against `connector.yaml`'s own `state_changing` list rather than a list
-kept here, for `test_event_loop_offload.py`'s reason: the thing that must not be forgotten is
-exactly the thing a forgetful change adds.
+The gated set is checked against `connector.yaml`'s `state_changing` list, not a list kept here.
 """
 
 from __future__ import annotations
@@ -100,14 +87,9 @@ def test_the_gate_refuses_once_the_ceiling_is_reached_and_reopens_when_one_finis
 def test_a_saturation_refusal_is_typed_and_marked_rather_than_worded() -> None:
     """Saturation and a bad molecule must be separable by something other than reading English.
 
-    Chemclaw3 classifies every `isError=True` from this server, and the transport gives it exactly
-    one field to classify on: the text. So the type is for this repository (`AtCapacityError`) and
-    the marker is for the wire — at the *head* of the message, because FastMCP prefixes it with
-    `Error executing tool <name>: ` before anybody downstream sees it.
-
-    `ValueError` is asserted rather than assumed: `mcp_server_kit` decides a refusal is caller-safe
-    by that family alone, so a subclass outside it would reach the model as "an internal error
-    occurred" and lose both halves of the message at once.
+    The type (`AtCapacityError`) is for this repository and the marker is for the wire, at the head
+    of the message because FastMCP prefixes it. It must be a `ValueError`, the family the sanitiser
+    passes through as caller-safe.
     """
     gate = Admission(1)
     gate.acquire("a search_conformer_ensemble")
@@ -156,11 +138,10 @@ async def test_a_full_pod_refuses_the_next_calculation_before_starting_it(
 async def test_the_slot_is_held_until_the_work_finishes_not_until_the_caller_gives_up(
     one_slot: Admission, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The half that breaks the retry loop.
+    """The slot is held until the work finishes, not until the caller gives up.
 
-    Cancelling the awaiting coroutine does not stop the worker thread, so a slot released on
-    cancellation would be handed to the retry while the first calculation was still burning a core —
-    two calculations on a pod that believes it is running one.
+    Cancelling the awaiting coroutine does not stop the worker thread, so releasing on cancellation
+    would admit a retry beside a calculation still burning a core.
     """
     blocking = _BlockingCalculation()
     monkeypatch.setattr(tools, "run_xtb", blocking)
@@ -210,18 +191,11 @@ WATER = Structure(
 async def test_a_crest_search_is_charged_its_threads_rather_than_one_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A slot is a core, and CREST is the one tool here that spends more than one of them.
+    """A CREST search is charged its threads rather than one call.
 
-    The image's `OMP_NUM_THREADS=1` binds this process and provably cannot reach the sampler:
-    `crest_cli._environment()` scrubs the child environment to four allow-listed variables and then
-    sets `OMP_NUM_THREADS` — and `-T` beside it — from `CHEMCLAW_CREST_THREADS`, 4 in the shipped
-    image. So a gate that counted calls admitted four searches at the shipped ceiling of 4: sixteen
-    runnable threads on the ~4-core pod that ceiling was sized for. Measured against a stub `crest`
-    burning its `-T` count on a 4-core machine, one search took 1.51 s and four together took
-    6.3-6.4 s each.
-
-    Charged its threads, one search fills a four-slot pod, and the next call — of any kind — is
-    refused rather than admitted onto a machine that has no core left for it.
+    `crest_cli._environment()` scrubs the child environment and sets `-T`/`OMP_NUM_THREADS` from
+    `CHEMCLAW_CREST_THREADS` (4 shipped), so counting calls would oversubscribe the pod. Charged its
+    threads, one search fills a four-slot pod and the next call is refused.
     """
     gate = Admission(4)
     monkeypatch.setattr(tools, "_admission", gate)
@@ -249,11 +223,10 @@ async def test_a_crest_search_is_charged_its_threads_rather_than_one_call(
 async def test_an_unpinned_crest_search_takes_the_whole_pod(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`crest_threads = 0` means the sampler sizes itself from `/proc/cpuinfo` — the node's cores.
+    """`crest_threads = 0` means the sampler sizes itself from the node, so the search runs alone.
 
-    There is no honest cost smaller than "all of it" for that case, so the search runs alone. The
-    clamp is the other half: a ceiling below one search's thread count must not make the tool
-    permanently unadmittable, so the charge is capped at the budget rather than refused forever.
+    The charge is capped at the budget, so a ceiling below one search's threads does not make the
+    tool permanently unadmittable.
     """
     gate = Admission(2)
     monkeypatch.setattr(tools, "_admission", gate)
@@ -279,9 +252,7 @@ async def test_an_unpinned_crest_search_takes_the_whole_pod(
 def test_every_state_changing_tool_is_gated_and_no_read_only_one_is() -> None:
     """The manifest's own classification is the rule, so a new tool cannot be gated by accident.
 
-    Read off the *served* surface: a tool that exists and is not in either list would already fail
-    `tests/test_server.py`, and one that is classified `state_changing` and left ungated here would
-    otherwise ship as the one uncounted way to load this pod.
+    Read off the served surface, so a `state_changing` tool left ungated fails here.
     """
     endpoint = load_manifest(MANIFEST).endpoint
     state_changing = set(endpoint.state_changing)
@@ -302,32 +273,20 @@ def test_every_state_changing_tool_is_gated_and_no_read_only_one_is() -> None:
         f"gated tools the manifest calls read_only: {sorted(gated - state_changing)}"
     )
     assert not (gated & read_only)
-    # Cheapness is **not** the rule, and this pair is what proves it rather than argues it: both
-    # run no SCF — Delaney over RDKit descriptors, and MolWt/MolLogP/TPSA/QED — and both are gated,
-    # because both this manifest and Chemclaw3's classify them `state_changing`. The docstring here
-    # once said the split was "the three tools that run no SCF", which was wrong on the count (five
-    # served tools run none) and inverted on the cost (these two are 1.4 ms and 2.4 ms warm against
-    # 10.5 ms for the ungated `calculation_key`). Re-deriving the split from cost would ungate them
-    # and break an agreement that spans two repositories.
+    # Cheapness is not the rule: these two run no SCF and are gated anyway, because both this
+    # manifest and Chemclaw3's classify them `state_changing`.
     assert {"predict_solubility", "predict_developability_profile"} <= gated
 
 
 def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """This pod's ceiling is settable from outside the image, which is easy to read the other way.
+    """This pod's ceiling is settable from outside the image, though it reads like a constant.
 
-    `engine/config.py` writes `calc_max_concurrent_requests: int = Field(default=4, ge=1)`, which
-    looks like a constant on the page. `CalcSettings` is a `pydantic-settings` class with
-    `env_prefix="CHEMCLAW_"`, so the real name of that number is
-    `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` and a `deploy/deployment.yaml` `env:` entry moves it —
-    along with `xtb_max_atoms`, the bound that keeps one call's cost priced.
-
-    Asserted here because the belief that these are constants is what would let the fleet ratchet
-    (`tests/test_fleet_deploy.py::test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment`)
-    be written to cover only the servers that call `os.environ` — and this server, whose calls take
-    minutes and whose ceiling is the one `CLAUDE.md` calls non-negotiable, would be the one it
-    skipped. The measurement, not the shape: the object is constructed twice and the numbers differ.
+    `CalcSettings` has `env_prefix="CHEMCLAW_"`, so `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` (and the
+    `xtb_max_atoms` bound) can be moved by a Deployment `env:` entry. The fleet ratchet must
+    therefore cover this server too. Asserted by constructing the settings twice and seeing the
+    numbers differ.
     """
     default = CalcSettings()
     assert (default.calc_max_concurrent_requests, default.xtb_max_atoms) == (4, 450)
