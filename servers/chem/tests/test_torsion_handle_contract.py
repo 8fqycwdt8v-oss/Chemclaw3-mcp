@@ -1,15 +1,8 @@
 """The torsion-handle contract with Chemclaw3, asserted from this side.
 
-Chemclaw3 checks the handles this server mints, and neither repository may import the other — so
-the definition is written twice and this table is what makes a divergence detectable. The same
-literals are asserted in Chemclaw3's `tests/test_torsion_handle.py`, so whichever side moves first
-turns a test red instead of the two quietly answering differently. Exactly the arrangement
-`test_canonicalization_contract.py` already has for `require_canonical_smiles`, applied to the one
-other value that crosses between the repositories.
-
-**Why this matters more than a canonical SMILES does.** A canonical form that drifts fragments a
-cache: work is repeated, which is waste. A torsion handle that drifts is *accepted for the wrong
-bond* on one side, which is a rotational profile of a different bond reported as an answer.
+Neither repository imports the other, so the definition is written twice and the same literals
+are asserted in Chemclaw3's `tests/test_torsion_handle.py`. A drifted handle would be accepted
+for the wrong bond on one side, reporting the rotational profile of a different bond.
 """
 
 from __future__ import annotations

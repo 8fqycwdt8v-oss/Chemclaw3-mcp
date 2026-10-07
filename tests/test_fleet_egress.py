@@ -59,13 +59,11 @@ def test_the_lint_ban_names_its_exemptions_and_they_are_the_scan_s_own_boundary(
     )
 
 
-# The blind handlers that answer without classifying, each argued here because ruff cannot be made
-# to ask for the argument at the site: see `test_every_blind_handler_that_answers_anyway_is_argued`.
+# Blind handlers that answer without classifying, each argued here because ruff cannot ask for
+# the argument at the site (see `test_every_blind_handler_that_answers_anyway_is_argued`).
 #
-# `auth.py`'s body-cap guard discards the downstream app's exception **only when this middleware has
-# already refused the request** — the app raised because the guard cut its receive channel, which is
-# this code's own doing rather than a component going missing. A `record()` there would publish a
-# degradation every time a caller sent an oversized body.
+# `auth.py`'s body-cap guard discards the app's exception only when the guard itself already
+# refused the request; recording a degradation there would fire on every oversized body.
 BLIND_ANSWER_IS_ARGUED = {
     "packages/mcp_server_kit/src/mcp_server_kit/auth.py::BodySizeLimit.__call__",
 }
@@ -143,11 +141,9 @@ def test_every_blind_handler_that_answers_anyway_is_argued() -> None:
 
 
 def test_the_argued_blind_handlers_are_still_there() -> None:
-    """An allowlist entry that no longer names a handler is an argument about nothing.
+    """Every allowlisted blind handler still exists.
 
-    The same two-directions rule the rest of this file is built on: without it, moving `auth.py`'s
-    body-cap guard would leave a line here asserting a property of a handler that had gone, and the
-    next one added in its place would inherit the exemption.
+    Otherwise a moved handler leaves an exemption that the next handler in its place would inherit.
     """
     roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
     found = set(_blind_handlers_that_answer(roots))

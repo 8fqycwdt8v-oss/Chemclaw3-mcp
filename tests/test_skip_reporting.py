@@ -1,16 +1,9 @@
-"""The run says what it did not look at, and the saying is measured rather than believed.
+"""The run names what it did not look at, and the count comes from the run.
 
-A bare `18 skipped` is a count with no names: a reviewer of this repository had to re-run the whole
-suite with `-rs` to learn that a green line was not evidence about ten servers' wheel builds, every
-`xtb`- and `crest`-computed answer in `servers/calc`, or the torch degradation arm. The epilogue
-`conftest.py::_report_every_skip` prints closes that, and this file is what keeps it closed —
-including the property that matters most about it: **the count comes from the run.** A reporter that
-prints a literal is the defect it was written to fix, wearing the fix's clothes.
-
-Driven against a real pytest process rather than a stubbed `TerminalReporter`, because the thing
-being checked is a hook's behaviour inside a session: `-p conftest` loads this repository's root
-`conftest.py` as a plugin over a throw-away test file, which is the only way to skip a controlled
-number of tests without writing them into the tree.
+`conftest.py::_report_every_skip` prints every skip and its reason, so a green line says what it
+is not evidence about; a reporter printing a literal would be the defect it was written to fix.
+Driven in a real pytest process, loading the root `conftest.py` as a plugin over a throw-away
+test file, since the subject is a hook's behaviour inside a session.
 """
 
 from __future__ import annotations

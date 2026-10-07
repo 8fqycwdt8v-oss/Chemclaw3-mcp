@@ -261,7 +261,7 @@ def test_ctypes_is_outside_both_in_repo_layers_and_has_exactly_one_caller() -> N
         "one file needed it for `prctl`, and a second caller has to argue that again"
     )
 
-    # The three spellings that used to walk past this check, and the one that never did.
+    # Spellings of a `ctypes` import that must all count, beside the plain one.
     for source in (
         "import ctypes.util",
         "from ctypes.util import find_library",

@@ -94,8 +94,7 @@ def _deployment() -> dict[str, object]:
 
 def test_the_pod_is_hardened() -> None:
     """Every deny-by-default securityContext field is present and set — the fields a plain cluster
-    otherwise leaves at root/all-capabilities/unconfined/unbounded, since `deploy/` shipped no
-    workload at all until these files were added.
+    otherwise leaves at root/all-capabilities/unconfined/unbounded.
     """
     dep = _deployment()
     spec = dep["spec"]["template"]["spec"]  # type: ignore[index]

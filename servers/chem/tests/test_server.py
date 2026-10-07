@@ -1,17 +1,9 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will. One thing here is
-specific to `chem` and worth the extra test: `resolve_compound` answers an unknown name with a
-miss, and "the tool answered, and the name is not one it knows" has to survive the wire as a
-*result* rather than as an error — and as words rather than as nothing — or the agent will read a
-miss as a broken tool and start guessing structures.
+This tests the deployment surface: the session manager runs, the bearer credential is checked,
+and the manifest matches the served tools. Specific to `chem`: an unknown name in
+`resolve_compound` must arrive as a worded result, not an error or empty content, or the agent
+reads a miss as a broken tool.
 """
 
 from __future__ import annotations
@@ -46,9 +38,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because a server start is expensive. The bearer token is set in the environment as
+    a deployment sets it.
     """
     import os
 
@@ -79,11 +70,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did."""
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    # `revision` is part of the probe payload since the handshake started carrying the
-    # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
-    # for a test process, which is not built from a Containerfile — that the *image*
-    # supplies a real one is asserted in `tests/test_fleet_*.py`, because a value nothing
-    # fills is a provenance record that quietly says nothing.
+    # `revision` is "unknown" in a test process, which is not built from a Containerfile; the fleet
+    # tests assert the image supplies a real one.
     from chemclaw_mcp_chem.engine import reagents
 
     corpus = reagents.dataset()
@@ -91,22 +79,16 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     assert body["status"] == "ok"
     assert body["server"] == "chem"
     assert body["revision"] == "unknown"
-    # The corpora this pod actually verified, which is the half `/healthz` did not have. It was a
-    # constant 200: it proved the session manager was running and said nothing about whether the
-    # server could answer, so a pod whose table failed its checksum passed the probe, took traffic
-    # and failed every tool call. `readiness` in this server's `app.py` is what runs the load, and
-    # naming the version here is what lets an operator confirm which table a pod serves without a
-    # shell on it.
+    # `/healthz` names the corpora this pod actually verified, so a failed checksum is unready and
+    # an operator can see which table a pod serves.
     assert body["datasets"] == [f"{corpus.name}@{corpus.version}"]
 
 
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    Not "counts only": the default registry publishes `python_info` and the `process_*`
-    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
-    correlation id or a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    What it must never publish (caller, session, correlation id, tool argument) is asserted over the
+    live exposition in `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -115,14 +97,10 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """Chemclaw3's own `chem` bundle declares `auth: {mode: none}`; across a network it cannot.
+    """The bearer credential is enforced on the mounted `/mcp` surface.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
-    the wrong scheme, the declared credential actually serving, and the declared variable unset —
-    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
-    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    Driven against the running server, because a mount bypasses the enclosing app's dependencies.
+    `mcp_server_kit.testing.assert_bearer_is_enforced` holds every arm once for all servers.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -131,9 +109,8 @@ async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
 async def _session(base: str) -> AsyncIterator[ClientSession]:
     """An initialised MCP session against the running server, carrying the bearer token.
 
-    The token rides on a caller-supplied httpx client because that is how this version of the MCP
-    client takes headers — which also means the credential is exercised on the real path rather
-    than injected past it.
+    The token rides on a caller-supplied httpx client, so the credential is exercised on the real
+    path.
     """
     async with (
         httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,
@@ -170,11 +147,9 @@ async def test_an_unknown_name_comes_back_as_a_result_not_an_error(running_serve
 
 
 async def test_an_unknown_name_is_said_in_words_on_the_wire(running_server: str) -> None:
-    """The live defect: a miss used to arrive as *no content*, which the agent read as `""`.
+    """An unknown name is said in words on the wire.
 
-    FastMCP writes a `None` return as zero content blocks, so "aniline" reached the model as an
-    empty string and the audit recorded `ok` with an empty result. The text block is what every
-    client renders, so that is where the miss has to be said.
+    FastMCP writes a `None` return as zero content blocks, so the miss must be a text block.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("resolve_compound", {"name": "aniline"})
@@ -226,9 +201,7 @@ async def test_a_charge_table_survives_the_wire(running_server: str) -> None:
 async def test_a_bad_argument_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """A deliberately worded domain error passes through; an internal one would not.
 
-    `InvalidSmilesError` is a `ValueError` for exactly this reason — `connector_app` replaces every
-    other exception with a generic notice, and a chemist who typed a malformed structure needs to
-    be told which string was refused.
+    `InvalidSmilesError` is a `ValueError` so the chemist is told which string was refused.
     """
     async with _session(running_server) as session:
         result = await session.call_tool("render_structure", {"smiles": "CCO junk"})

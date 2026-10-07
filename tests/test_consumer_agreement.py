@@ -1,57 +1,16 @@
-"""What this fleet declares and another repository consumes, checked from *this* side.
+"""What this fleet declares and `Chemclaw3` consumes, checked from *this* side.
 
-Two facts leave this tree and are read by `Chemclaw3`:
+Two facts leave this tree: the bundle manifests it also ships copies of (whichever directory
+comes first on `CHEMCLAW_CONNECTORS_DIR` wins the name, unmerged), and
+`servers/calc/tool-surface.json`, the only record Chemclaw3's hardcoded `calc` calls are checked
+against. A rename done completely here passes `make check` and fails only in the consumer, so
+this runs the consumer's own agreement module rather than a copy that would agree with itself.
 
-1. **Three bundle manifests it also ships a copy of** — `chem`, `rxnpredict` and `safety`. Both
-   trees declare the tool list, the read-only partition and the bearer variable; whichever
-   directory comes first on `CHEMCLAW_CONNECTORS_DIR` wins the name outright, with no merge and no
-   warning, so a tool added on one side is simply unreachable in the order the other deploys in.
-2. **`servers/calc/tool-surface.json`** — the seam with no manifest in either direction.
-   `Chemclaw3` reaches this fleet's `calc` server from inside `science/calc/store.py`, with the
-   tool names and argument dicts hardcoded in `connectors/calc/`, and that file is the only record
-   they are checked against.
-
-Both are already checked *there*. Here, `assert_manifest_matches` drives each manifest against its
-own running server and pins `tool-surface.json` with it — so a manifest that has drifted from its
-server fails in this tree. What no check in this tree could see is the drift that matters most for
-these three: a rename carried out correctly and completely **here**, server and manifest and
-recorded surface together, exactly as `CLAUDE.md` requires in one commit. That commit is green
-through `make check` and red only in the consumer's suite, on somebody else's merge. **The gate
-that catches a change has to be the gate of the tree the change is made in.**
-
-**So this file runs the consumer's own agreement module rather than reproducing it.** Not because
-duplication is untidy — because the copy would be the thing under test. That module parses
-`connectors/calc/compose.py` and `remote.py` with an AST walker resolving literals, ternaries and
-name bindings; a second implementation here would agree with itself and drift from the call sites
-it is meant to read, which is the failure `tests/test_identity_contract.py` records for the header
-names — two constants consistent with each other, both wrong about the sender. It also means an
-agreement check the consumer adds next month is inherited here with no edit.
-
-**Opt-in, and it can only skip or fail.** A consumer checkout is a fact about a machine, not a
-property of a commit. Without one this skips with the reason in the message, and a skip is not a
-pass. What it must never do is *quietly* shrink: a checkout that is present while the module it
-would run is not is a **failure**, because that is a rename this side has to hear about.
-
-**And one lane makes it run before a merge.** `.github/workflows/agreement.yml` shallow-clones the
-consumer's `main`, builds its environment, and runs this file with `CHEMCLAW3_AGREEMENT_REQUIRED`
-set, under which a skip is a failure — on every pull request touching a manifest, a recorded
-surface or a tool module, and nightly. The consumer already runs its half against this fleet's
-`main` on every one of its own runs; what this adds is hearing about a disagreement *before* it
-reaches that `main` (`D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge`).
-
-What the arrangement costs, stated rather than implied. Two things:
-
-- The consumer's suite is the authority on what is compared, so a check deleted there is silently
-  deleted here, and this side would not know. That is a smaller risk than a divergent copy and it
-  is not zero; `D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary` names the
-  consumer's file as the trust boundary and says why a pass count here would not close it.
-- **It reads that checkout's working tree, not its `HEAD`.** Observed on 2026-09-14: the sibling
-  checkout on this machine carried an uncommitted rewrite of the very module this runs, and an
-  uncommitted mutation in the code that module reads — somebody else's mutation check, in flight.
-  So a failure here can be about a colleague's unstaged edit rather than about this tree, and the
-  first thing to do with one is `git -C <checkout> status`. Reading `HEAD` instead was considered
-  and is worse: it would check this tree against a revision nobody is running, and miss exactly the
-  pre-merge disagreement this file exists to catch.
+Opt-in: without a consumer checkout it skips with the reason; a present checkout missing the
+module fails. `.github/workflows/agreement.yml` runs it with `CHEMCLAW3_AGREEMENT_REQUIRED` set,
+where a skip fails. It reads the checkout's working tree, not `HEAD`, so a failure may come from
+an uncommitted edit there; check `git -C <checkout> status` first. A check deleted in the
+consumer is silently deleted here too.
 """
 
 from __future__ import annotations
@@ -115,11 +74,8 @@ def skip_unless_required(message: str) -> NoReturn:
 def consumer_repo() -> tuple[Path | None, str]:
     """The `Chemclaw3` checkout, or `None` and the reason there is not one.
 
-    Not delegated to a shell the way the consumer's own sibling lookup is: no script in this
-    repository already answers this question, so asking one would mean writing it first. The search
-    *mirrors* `Chemclaw3/infra/live/siblings.sh` deliberately — the same two roots, the same two
-    casings — because a lookup that resolves differently from the live lanes' is a second answer to
-    one question, which is the defect that file exists to have ended.
+    Mirrors `Chemclaw3/infra/live/siblings.sh` (same two roots, same two casings), so this lookup
+    cannot resolve differently from the live lanes'.
     """
     for variable in CONSUMER_ENV_VARS:
         named = os.environ.get(variable)
@@ -139,9 +95,8 @@ def consumer_repo() -> tuple[Path | None, str]:
 def consumer_python() -> tuple[Path | None, str]:
     """The consumer checkout's own interpreter, or `None` and the reason there is not one.
 
-    Its interpreter rather than this one's: its tests import `chemclaw` out of its own environment.
-    Separate from `consumer_repo` because the two costs differ — reading that tree needs a shallow
-    clone, running its suite needs its whole dependency closure built.
+    Its tests import `chemclaw` from its own environment. Separate from `consumer_repo` because
+    reading the tree needs only a clone, while running its suite needs its dependencies built.
     """
     root, reason = consumer_repo()
     if root is None:
@@ -162,10 +117,8 @@ _OUTCOME_COUNT = re.compile(r"(\d+) (passed|skipped|xfailed|xpassed|deselected)\
 def inert_outcome(output: str) -> str | None:
     """Why a green consumer run asserted nothing about this tree, or `None` if it did assert.
 
-    Read off pytest's own counts rather than off two substrings, because a returncode of 0 is what
-    pytest reports for a pass, a skip, an xfail, an xpass and an empty selection alike — so
-    "returncode 0 and the word `skipped` is absent" accepts three of those five. The rule is the
-    positive one: at least one test passed, and nothing inert ran beside it.
+    Read off pytest's counts: returncode 0 covers pass, skip, xfail, xpass and an empty selection
+    alike. The rule is positive: at least one pass and nothing inert beside it.
     """
     counts: dict[str, int] = {}
     for number, outcome in _OUTCOME_COUNT.findall(output):
@@ -179,26 +132,11 @@ def inert_outcome(output: str) -> str | None:
 
 
 def test_an_inert_consumer_run_is_not_agreement() -> None:
-    """The bite test for `inert_outcome`, on pytest's real summary lines.
+    """`inert_outcome` on pytest's real summary lines.
 
-    A table rather than a synthetic checkout: what is under test is the reading of an outcome, and
-    building a second repository to produce one would test `subprocess` instead.
-
-    **Every row carries a `passed` count, and that is the whole point of the table.** A row with no
-    pass in it returns non-`None` whatever `_INERT_OUTCOMES` holds, so it cannot tell a widened
-    implementation from the blind one it replaced — which is what a bite test is for. Driven against
-    the shipped function, `'1 xfailed in 0.31s'` is answered `'reported 1 xfailed'` by the
-    `_INERT_OUTCOMES` arm, which is consulted *first*; gutted back to `("skipped",)`, the same row
-    falls through and is answered `'ran no test that passed'` by the pass arm. Both are non-`None`,
-    so a table of lone-`xfailed`, lone-`xpassed` and lone-`deselected` rows proves the weaker rule
-    four times over and the widening not once — measured: that table stayed green against the gutted
-    tuple. The shape that actually occurs has a pass beside the inert outcome, because the consumer
-    module being run has more than one test and an xfail is added to one of them.
-
-    **This paragraph shipped saying such a row "never reaches `_INERT_OUTCOMES` at all"**, which is
-    false in the direction that makes the reasoning look tighter than it is: the two arms are in the
-    other order. The conclusion is unchanged and the route to it is not, which is why the route is
-    now written as the measurement rather than as the story.
+    Every row carries a `passed` count: a row without one is rejected by the pass arm whatever
+    `_INERT_OUTCOMES` holds, so it could not tell the widened rule from a blind one. The shape that
+    occurs is a pass beside an xfail, skip, xpass or deselection.
     """
     assert inert_outcome("2 passed in 0.31s") is None
     assert inert_outcome("1 passed, 1 warning in 0.4s") is None
@@ -216,12 +154,10 @@ def test_an_inert_consumer_run_is_not_agreement() -> None:
 def test_a_missing_consumer_fails_where_the_lane_requires_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both directions of `skip_unless_required`, because the lane's whole claim rests on the first.
+    """Both directions of `skip_unless_required`.
 
-    With `CHEMCLAW3_AGREEMENT_REQUIRED` set, a missing checkout must *fail*: that variable is set
-    only by the job that clones and builds the consumer, so a skip there means the clone or the
-    build did not happen and the job would otherwise report green having compared nothing. Without
-    it, the same call must skip, or every laptop without a sibling checkout goes red.
+    With `CHEMCLAW3_AGREEMENT_REQUIRED` set (only by the lane that clones and builds the consumer) a
+    missing checkout fails, or the job would pass having compared nothing; without it, it skips.
     """
     monkeypatch.setenv(REQUIRED_ENV, "1")
     with pytest.raises(pytest.fail.Exception, match=REQUIRED_ENV):
@@ -234,20 +170,9 @@ def test_a_missing_consumer_fails_where_the_lane_requires_one(
 def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None:
     """Run `Chemclaw3`'s agreement suite against *this* checkout, and fail on its failure.
 
-    `CHEMCLAW_MCP_REPO` is set to this tree rather than left to that repository's own search, so
-    what is under test is this working copy and not whichever fleet checkout happens to sit beside
-    it. A **skip** over there is a failure here for the same reason: the checkout was supplied, so
-    a skipped run means the module could not read what it was pointed at.
-
-    **A skip was the only inert outcome this refused, and it is not the only one.** Driven against a
-    synthetic consumer module at `24b50ec`: a `pytest.skip(...)` fails here correctly and a renamed
-    module fails here correctly, but a `@pytest.mark.xfail` test whose body is `assert False`
-    **passes** — returncode 0, output `1 xfailed`, and neither of the two substrings this looked
-    for. `inert_outcome` reads pytest's own counts instead, and requires at least one `passed` with
-    no skip, xfail, xpass or deselection beside it.
-
-    Nothing is written into the consumer's tree — `-p no:cacheprovider` and
-    `PYTHONDONTWRITEBYTECODE` between them leave no `.pytest_cache` and no `__pycache__`.
+    `CHEMCLAW_MCP_REPO` points at this tree, so this working copy is what is checked. Any inert
+    outcome (skip, xfail, xpass, deselection, no pass) fails, since the checkout was supplied.
+    `-p no:cacheprovider` and `PYTHONDONTWRITEBYTECODE` leave nothing in the consumer's tree.
     """
     interpreter, reason = consumer_python()
     if interpreter is None:
@@ -293,17 +218,11 @@ def test_the_consumer_still_agrees_with_the_surface_this_tree_declares() -> None
 def test_every_place_the_live_lanes_look_for_the_checkout_is_looked_in_here(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The search here must not be a second, different answer to "where is Chemclaw3".
+    """The checkout search here looks everywhere the live lanes look.
 
-    `Chemclaw3/infra/live/siblings.sh` is that family's one resolution, and the defect its header
-    records is a lookup that resolved for one caller and not another *on a machine that had the
-    checkout*: one path in one casing against four in two. So all four candidates are **driven**
-    here — built under a temporary root, one at a time — rather than asserted as a tuple of names,
-    which would pass on a search that consulted the tuple and looked nowhere.
-
-    Driven with no checkout present too, because the reason string is what a reader gets on the
-    machine where the check above can only skip: it has to name both roots and both variables, or
-    a missing checkout is indistinguishable from a lookup that never looked there.
+    All four candidates (two roots, two casings) are driven under a temporary root, rather than
+    asserted as names a search might never consult. With no checkout present, the reason must name
+    both roots and both variables.
     """
     for variable in CONSUMER_ENV_VARS:
         monkeypatch.delenv(variable, raising=False)
@@ -341,13 +260,8 @@ def test_every_place_the_live_lanes_look_for_the_checkout_is_looked_in_here(
 
 
 # ---------------------------------------------------------------------------------------------
-# The manifest model this fleet validates against, held to the one that actually reads a manifest.
-#
-# `mcp_server_kit.testing.ConnectorManifest` says in its own docstring that it is modelled "the way
-# the repository that reads it models it… so the refusal happens here instead" of aborting the
-# consumer's startup. Nothing checked it, and at `6c6a0eb` it was wrong in **both** directions at
-# once (`D-2026-09-16-a-stand-in-that-refuses-a-real-field-is-not-a-stand-in`). Which is the shape
-# this whole file is about: a claim about another repository is checked by reading it.
+# `mcp_server_kit.testing.ConnectorManifest` is a stand-in for the consumer's manifest model, so
+# the refusal happens in this tree; it is held here to the model that actually reads a manifest.
 # ---------------------------------------------------------------------------------------------
 
 #: A well-formed endpoint block, reused by every probe below so each one varies exactly one thing.
@@ -372,10 +286,9 @@ def _queued(**queued: object) -> dict[str, object]:
     return _manifest(endpoint={**_ENDPOINT, "queued": {"inline_wait_seconds": 45, **queued}})
 
 
-#: `(label, document, verdict here, verdict over there)`. Where the two columns differ, the reason
-#: is one of the deliberate differences `ConnectorManifest`'s docstring lists and nothing else; the
-#: rows that used to differ *by accident* are the reason this table exists. The verdicts are written
-#: per side rather than as "agree"/"disagree" precisely so a difference has to be typed out.
+#: `(label, document, verdict here, verdict over there)`. Where the columns differ the reason must
+#: be one of the deliberate differences `ConnectorManifest`'s docstring lists; verdicts are written
+#: per side so a difference has to be typed out.
 _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
     ("a plain manifest", _manifest(), True, True),
     # The false accepts, measured at 6c6a0eb: both of these validated here and abort startup there.
@@ -393,10 +306,8 @@ _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
     ("top-level profiles", _manifest(profiles=["a-profile"]), True, True),
     ("top-level note_types", _manifest(note_types=["job-result"]), True, True),
     ("top-level relations", _manifest(relations=["computed-from"]), True, True),
-    # The consumer's switch for a declared-but-unbound bundle. `pyexec`, which only this fleet
-    # declares, sets it; the five bundles both trees declare do not (the consumer argues that
-    # divergence in `_ARGUED_DIVERGENCES`). Refusing it here would be the false refusal this table
-    # exists to catch.
+    # The consumer's switch for a declared-but-unbound bundle (`pyexec` sets it); refusing it here
+    # would be a false refusal.
     ("default_enabled: false", _manifest(default_enabled=False), True, True),
     # Still refused on both sides, which is what makes the row above a widening rather than a hole.
     ("an invented key", _manifest(nonsense=["x"]), False, False),
@@ -478,11 +389,9 @@ def _accepts_here(document: dict[str, object]) -> bool:
 
 
 def test_the_stand_in_manifest_model_refuses_what_it_says_it_refuses() -> None:
-    """This half runs everywhere, because a table nobody can read is worth nothing on a laptop.
+    """The stand-in model's own verdicts on every probe, which need no checkout.
 
-    The verdicts *over there* need a checkout; the verdicts *here* need only this model, and they
-    are what fails the moment somebody loosens it. Both halves read one table, so the two cannot
-    describe different probes.
+    Both halves read one table, so they cannot describe different probes.
     """
     for label, document, here, _ in _MANIFEST_PROBES:
         assert _accepts_here(document) is here, (
@@ -494,20 +403,10 @@ def test_the_stand_in_manifest_model_refuses_what_it_says_it_refuses() -> None:
 def test_the_stand_in_manifest_model_agrees_with_the_model_that_reads_a_manifest() -> None:
     """Every probe, and every manifest this fleet ships, through the consumer's own model.
 
-    **Why the shipped manifests are in here as well as the probes.** The stand-in accepts `jobs`,
-    `skills`, `profiles`, `note_types` and `relations` without validating their contents, because
-    a second copy of `JobSpec` and its three cross-field validators would be a second answer to one
-    question. That is a real gap in the stand-in and this is what closes it: the files that are
-    actually published go through the model that will actually read them, so a fleet manifest the
-    consumer would refuse fails here regardless of how loosely the stand-in is typed.
-
-    `manifests-internal/` is expected to be **refused** over there, and that refusal is the whole
-    mechanism behind `manifests-internal/`: `mount:` is a key the consumer's `extra="forbid"` model
-    will not take, so pointing `CHEMCLAW_CONNECTORS_DIR` at that directory is a startup error
-    naming the file rather than a backend winning a name collision.
-
-    Skips with the reason when there is no checkout, and a skip is not a pass — `conftest.py`
-    counts it and says what the run is therefore not evidence about.
+    The stand-in does not validate `jobs`, `skills`, `profiles`, `note_types` or `relations` (a
+    second `JobSpec` would be a second answer), so shipped manifests go through the real model.
+    `manifests-internal/` must be refused there: its `mount:` key is what makes mounting that
+    directory a startup error. Skips with the reason when there is no checkout.
     """
     interpreter, reason = consumer_python()
     if interpreter is None:

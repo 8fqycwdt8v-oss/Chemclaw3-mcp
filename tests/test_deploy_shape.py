@@ -1,29 +1,11 @@
-"""Whether a capability in this fleet can survive a rollout, and whether it has a capacity lever.
+"""Whether each capability in this fleet survives a rollout and has a capacity lever.
 
-Each server's own `tests/test_deploy.py` checks the things a server can see about itself — its port,
-its labels, its securityContext, its egress rule. None of them could see the property that mattered
-most at 200 users, because it was identical in all seven and therefore invisible in each: **every
-server shipped `replicas: 1` with no autoscaler, no disruption budget, no topology spread and no
-`terminationGracePeriodSeconds`.** So a node drain, an image rollout, an eviction or one failed
-liveness probe was a 100% outage of that capability for every user, and there was no second pod to
-add when the first one filled.
-
-Measured before this file existed, on `servers/calc` — the pod every process-chemistry turn reaches:
-4 admission slots, 1 replica, and 60 concurrent `compute_xtb_energy` calls refused **68%** of the
-time, with one `optimize_geometry` on a 50-atom fragment costing 390 core-seconds by itself. There
-was no knob that added capacity; `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS`, which the refusal message
-suggests raising, does not add cores.
-
-**The derivation is the point of the grace-period check, not the number.** A server's
-`connector.yaml` already declares `request_timeout` — the longest a caller waits — which is also the
-longest an in-flight call is still worth finishing, because this fleet is stateless by design and a
-result exists nowhere until the response is written. So the grace period is that number plus a fixed
-drain, checked here rather than transcribed into seven files that then drift apart. Chemclaw3
-derives its own front door's grace period from its turn budget the same way and for the same reason;
-this fleet is where that fix never arrived.
-
-Everything here reads the server list off the filesystem, never a list in this file: a server added
-next year is covered the day its directory exists, which is the failure mode a hand-kept list has.
+Per-server deploy tests cannot see a property identical across all servers, such as a single
+replica with no autoscaler, disruption budget or spread, which makes every drain or rollout a
+full outage. The grace period is derived from each manifest's `request_timeout` (the longest a
+caller waits, and the longest an in-flight call is worth finishing, since nothing is persisted
+before the response) plus a fixed drain. The server list is read from the filesystem, so a new
+server is covered the day its directory exists.
 """
 
 from __future__ import annotations
@@ -72,9 +54,8 @@ def _pod_spec(server: Path) -> dict[str, Any]:
 def _request_timeout(server: Path) -> int:
     """The manifest's declared caller budget, in seconds.
 
-    Read out of the text rather than the parsed document on purpose: this is the one number the
-    grace period is derived from, so a manifest that stopped declaring it should fail here with a
-    message naming the file, not with a `KeyError` several frames away.
+    Read from the text so a manifest that stops declaring it fails here naming the file, not with a
+    distant `KeyError`.
     """
     text = (server / "connector.yaml").read_text(encoding="utf-8")
     match = re.search(r"^\s*request_timeout:\s*(\d+)\s*$", text, re.M)
@@ -100,10 +81,9 @@ def test_a_capability_is_never_one_pod(server: Path) -> None:
 def test_the_grace_period_is_derived_from_the_budget_the_manifest_declares(server: Path) -> None:
     """`terminationGracePeriodSeconds` == the manifest's `request_timeout` + the drain.
 
-    Both directions. Too short and Kubernetes SIGKILLs work the caller is still waiting for — the
-    shipped default of 30 s killed a `calc` optimisation 30 s into 390 s, and this fleet writes
-    nothing down until a call returns, so that work is simply lost. Too long and every rollout and
-    every node drain stalls on a pod nobody is waiting for any more.
+    Both directions: too short and Kubernetes SIGKILLs work a caller is still waiting for, which is
+    lost because nothing is written until a call returns; too long and every rollout stalls on pods
+    nobody is waiting for.
     """
     declared = _pod_spec(server).get("terminationGracePeriodSeconds")
     expected = _request_timeout(server) + DRAIN_SECONDS
@@ -140,13 +120,11 @@ def test_replicas_are_spread_across_nodes(server: Path) -> None:
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_scratch_space_is_bounded(server: Path) -> None:
-    """An unbounded `emptyDir` draws on the *node's* disk, so one pod evicts its neighbours.
+    """Every scratch `emptyDir` has a `sizeLimit`.
 
-    `calc` writes xtb and CREST scratch here for runs of minutes to hours, and `pyexec` lets
-    caller-supplied Python write up to `Limits.file_bytes` per call. Filling the node is a
-    `DiskPressure` eviction that takes unrelated pods with it — the one failure a fleet of small
-    single-purpose pods cannot absorb. With a `sizeLimit` the kubelet evicts the offending pod
-    alone.
+    Unbounded, it draws on the node's disk (`calc` writes long-running scratch, `pyexec` writes
+    caller output), and `DiskPressure` evicts unrelated pods; with a limit the kubelet evicts the
+    offending pod alone.
     """
     volumes = _pod_spec(server)["volumes"]
     for volume in volumes:
@@ -193,9 +171,8 @@ def test_a_voluntary_disruption_cannot_take_the_whole_capability(server: Path) -
 def test_capacity_has_a_lever(server: Path) -> None:
     """An HPA exists, targets *this* Deployment, and its floor is the Deployment's own replicas.
 
-    The floor check is the one that catches a real drift: an HPA whose `minReplicas` is below the
-    Deployment's `replicas` silently scales the baseline *down* on the first quiet minute, which
-    undoes `test_a_capability_is_never_one_pod` without touching the file it asserts.
+    An HPA whose `minReplicas` is below `replicas` scales the baseline down on the first quiet
+    minute, undoing `test_a_capability_is_never_one_pod` without touching its file.
     """
     hpa = _load(server / "deploy" / "hpa.yaml")
     assert hpa["kind"] == "HorizontalPodAutoscaler"
@@ -217,13 +194,10 @@ def test_capacity_has_a_lever(server: Path) -> None:
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_the_autoscaler_reads_a_signal_the_requests_make_meaningful(server: Path) -> None:
-    """Utilization is measured against `requests.cpu`, so an under-set request breaks the HPA.
+    """CPU requests are realistic, because HPA utilization is measured against `requests.cpu`.
 
-    This is the half of a CPU-based autoscaler that is easy to ship wrong and impossible to see: at
-    `requests.cpu: 100m` — which five of these servers shipped — one caller doing a single core's
-    work reads as 1000% utilization, and the autoscaler runs to `maxReplicas` on one request. The
-    requests in `deployment.yaml` are set to the draw of a pod doing real work for exactly this
-    reason, so the check is that they are not the token value.
+    At a token request one caller doing a core's work reads as many times 100%, and the autoscaler
+    runs to `maxReplicas` on one request.
     """
     hpa = _load(server / "deploy" / "hpa.yaml")
     metrics = hpa["spec"]["metrics"]
@@ -248,23 +222,12 @@ def test_the_autoscaler_reads_a_signal_the_requests_make_meaningful(server: Path
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_liveness_and_readiness_do_not_share_a_route(server: Path) -> None:
-    """The two probes mean different things and kubelet acts on them differently.
+    """Liveness and readiness use different routes, because kubelet acts on them differently.
 
-    Every Deployment here pointed both at `/healthz`. That route consults a corpus checksum, a
-    sandbox fork, an optional predictor's checkpoint and a transformer's construction, so a 503 from
-    any of them was a **kill** after `periodSeconds x failureThreshold` — 30 s x 3 — rather than a
-    pod leaving its Service. Driven on `rxnpredict` before the split: one missing checkpoint among
-    eleven *optional* predictors answered 503, and since a restart cannot recreate a missing
-    file the
-    result was `CrashLoopBackOff` on a pod that had been serving ten of eleven.
-
-    **Both directions, and the inequality as well**, because "liveness is on `/livez`" and
-    "readiness
-    is on `/healthz`" are each satisfiable by a file that points *both* at the same one of them. The
-    paths are literals rather than constants imported from `mcp_server_kit`, deliberately: a kubelet
-    reads these files and not this repository's Python, so a test that derived the expected path
-    from
-    the code under test would agree with a rename that broke every probe in the cluster.
+    `/healthz` consults corpora, sandboxes and optional components, so as a liveness probe any 503
+    would become a kill; a restart cannot recreate a missing file, so a pod serving ten of eleven
+    predictors would crash-loop. Both paths and their inequality are asserted, as literals rather
+    than imported constants, since a kubelet reads these files and not this repository's Python.
     """
     container = _pod_spec(server)["containers"][0]
     readiness = container["readinessProbe"]["httpGet"]["path"]
@@ -284,13 +247,10 @@ def test_liveness_and_readiness_do_not_share_a_route(server: Path) -> None:
 def test_mcp_admits_the_host_its_own_service_is_dialled_by(server: Path) -> None:
     """`MCP_ALLOWED_HOSTS` is this server's Service `name:port`, read off `service.yaml`.
 
-    Upstream's DNS-rebinding guard admits a loopback `Host` only, so a caller dialling the Service
-    — `http://chemclaw-mcp-<name>:<port>/mcp`, the short-name form Chemclaw3's chart ships — was
-    answered 421 on every `/mcp` request, measured on a kind cluster, while `/healthz` stayed green
-    (`D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`). The expected value
-    is derived from the Service rather than written here, so renaming a Service or moving its port
-    without carrying the allow-list along is red; and it is parsed by the kit's own reader, so a
-    value the pod would refuse at startup is red here first.
+    Upstream's DNS-rebinding guard admits only a loopback `Host`, so a caller dialling the Service
+    gets 421 on `/mcp` while `/healthz` stays green. Derived from the Service, so a rename or port
+    move without the allow-list fails, and parsed by the kit's own reader, so a value the pod would
+    refuse at startup fails here first.
     """
     service = _load(server / "deploy" / "service.yaml")
     port = service["spec"]["ports"][0]["port"]
@@ -315,41 +275,14 @@ def _network_policy(server: Path) -> dict[str, Any]:
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_the_egress_policy_denies_and_selects_the_workload(server: Path) -> None:
-    """Layer 4 of the no-egress posture, read fleet-wide rather than left to each server.
+    """Layer 4 of the no-egress posture: a default-deny NetworkPolicy, checked fleet-wide.
 
-    `CLAUDE.md` lists default-deny NetworkPolicies as one of the four independent layers, and until
-    this test the fleet held none of it: `test_a_server_ships_the_whole_set` required the *file*,
-    and every assertion about its *content* lived in `servers/*/tests/test_deploy.py` — seven copies
-    of one rule, none of them owed by an eighth server. Driven at `24b50ec`: dropping `- Egress`
-    from `servers/props/deploy/networkpolicy.yaml` reds that server's own `test_egress_is_denied`,
-    but **deleting that file** leaves the whole fleet suite green with the policy permitting all
-    outbound traffic. That is the standing the bearer check had before
-    `D-2026-09-12-a-shared-helper-is-not-a-proof-it-was-applied`, one layer over.
-
-    Three clauses, because "default-deny" has three independent ways to be false and each looks
-    unchanged in review:
-
-    - `Egress` absent from `policyTypes` — the direction is simply not governed, and the file still
-      reads as a network policy. This is the regression the per-server tests were written for.
-    - a non-empty `egress:` — the hole stated outright. Empty list rather than an absent key,
-      because only the list says "deny all" where a reader can see it.
-    - a `podSelector` that matches no pod this fleet runs. A policy is bound to workloads by label,
-      so a one-character drift between the Deployment's pod label and the selector exempts the
-      workload entirely — deny-all against nothing.
-
-    **All three clauses are also asserted by every `servers/*/tests/test_deploy.py`, and the
-    redundancy is deliberate.** `grep -L` over the seven at `24b50ec` returns nothing: each already
-    carried `test_the_pod_label_matches_the_networkpolicy_selector`, `calc`'s calling it "the
-    highest-value check here", and driven, `calc`'s own file reds on the drift. So this test is not
-    supplying a clause the others lacked — **it is the one that binds a server that has no file
-    yet**, which is what `server_dirs()` buys and a copied-and-trimmed per-server file cannot. It
-    is therefore the gate for a new server; the seven stay because each is read beside that
-    server's own ports, ingress peers and scrape wiring, which is where a reviewer looks when
-    changing them, and because a fleet-wide failure names a parametrised id while a per-server one
-    names the file to open.
-
-    Deliberately not here: ports, ingress peers and the scrape wiring. Those are per-server numbers,
-    and `servers/*/tests/test_deploy.py` is where a number that belongs to one server is checked.
+    Three clauses, each an independent way for "default-deny" to be false while looking unchanged:
+    `Egress` absent from `policyTypes` (the direction is not governed); a non-empty `egress:` list
+    (an explicit hole; an empty list, not an absent key, is what reads as deny-all); a `podSelector`
+    that matches no pod (a label drift exempts the workload). The per-server deploy tests assert the
+    same, deliberately; this one binds a new server that has no such file yet. Ports, ingress peers
+    and scrape wiring are per-server and checked there.
     """
     spec = _network_policy(server)["spec"]
     assert isinstance(spec, dict)
@@ -372,12 +305,9 @@ def test_the_egress_policy_denies_and_selects_the_workload(server: Path) -> None
     )
 
 
-#: The namespaces a Prometheus in this family actually scrapes from, and the whole reason this is a
-#: list. Plain Kubernetes with kube-prometheus-stack runs it in `monitoring`; OpenShift's
-#: user-workload Prometheus runs in `openshift-user-workload-monitoring`, which is the namespace
-#: Chemclaw3's chart names and the platform `docs/integration.md` heads its deployment section with.
-#: Written here as literals rather than read from the manifests, because a test that derived the
-#: expected set from the files it checks would agree with any set those files happened to hold.
+#: The namespaces a Prometheus in this family scrapes from: `monitoring` (kube-prometheus-stack)
+#: and `openshift-user-workload-monitoring` (OpenShift's user-workload Prometheus). Written as
+#: literals, since deriving them from the checked files would agree with whatever they hold.
 SCRAPER_NAMESPACES = frozenset({"monitoring", "openshift-user-workload-monitoring"})
 
 
@@ -385,27 +315,12 @@ SCRAPER_NAMESPACES = frozenset({"monitoring", "openshift-user-workload-monitorin
 def test_the_scrape_hole_admits_the_namespace_this_platform_runs_prometheus_in(
     server: Path,
 ) -> None:
-    """A ServiceMonitor is wiring; the NetworkPolicy is whether the wiring carries anything.
+    """The scrape ingress hole admits the namespaces the platform runs Prometheus in, and no others.
 
-    Every policy here admitted `monitoring` and nothing else. On the documented target that is the
-    wrong namespace: OpenShift's user-workload Prometheus is in
-    `openshift-user-workload-monitoring`, so all eleven ServiceMonitors resolved targets whose own
-    ingress rule dropped the scrape. The failure is **silence**, which `servers/props/tests/
-    test_deploy.py` already names as indistinguishable from a healthy server nobody is calling — and
-    what would have gone silent is the fleet's own evidence: `chemclaw_mcp_egress_refused_total`,
-    `chemclaw_mcp_degraded_total` and the session-ceiling gauges.
-
-    Held fleet-wide rather than per server for the reason
-    `test_the_egress_policy_denies_and_selects_the_workload` gives: the per-server files each assert
-    the Service-to-ServiceMonitor *port name*, which is a number that belongs to one server, and
-    none of them is owed by a twelfth server that has no file yet. Both directions, because a policy
-    that admitted every namespace would satisfy "the platform's namespace is admitted" while
-    admitting the internet's sidecar as well.
-
-    **Not observed against an API server**, because there is none in this environment. It rests on
-    `NetworkPolicyPeer`'s documented semantics — a peer with a `namespaceSelector` selects pods in
-    the namespaces that selector matches — which is the same rule
-    `D-2026-09-07-a-seam-that-stops-at-the-chart-is-not-a-seam` relies on one repository over.
+    On OpenShift the user-workload Prometheus is not in `monitoring`, so admitting only that would
+    silently drop every scrape, including the fleet's egress and degradation counters. Held
+    fleet-wide so a new server is bound; both directions, since admitting every namespace would also
+    pass. Based on `NetworkPolicyPeer`'s documented semantics, not observed against an API server.
     """
     ingress = _network_policy(server)["spec"]["ingress"]
     selectors = [
@@ -460,12 +375,10 @@ def _scaled_object(server: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 @pytest.mark.parametrize("server", gated_server_dirs(), ids=lambda path: path.name)
 def test_the_keda_alternative_is_the_hpa_with_a_better_signal(server: Path) -> None:
-    """Swapping the CPU HPA for the ScaledObject changes the signal and nothing else.
+    """Swapping the CPU HPA for the KEDA ScaledObject changes the signal and nothing else.
 
-    Same target, same floor, same ceiling, same behaviour and the same CPU target as a second
-    trigger — so adopting KEDA cannot quietly move a bound the rest of this file holds. The first
-    trigger has to read *this* server's admission occupancy: a query copied from another server
-    would scale this pod on a neighbour's load and report no error.
+    Same target, floor, ceiling, behaviour and CPU trigger, so adopting KEDA moves no bound held
+    here; the first trigger must read *this* server's admission occupancy, not a neighbour's.
     """
     scaled, auth = _scaled_object(server)
     hpa = _load(server / "deploy" / "hpa.yaml")["spec"]
@@ -519,12 +432,9 @@ def _manifest_token_env(server: Path) -> str:
 def test_the_bearer_is_wired_from_the_secret_the_manifest_names(server: Path) -> None:
     """The Deployment hands the server exactly its manifest's `token_env`, from `chemclaw-secrets`.
 
-    The server fails closed, so a Deployment that sets no bearer serves a 401 to every `/mcp` call
-    while `/healthz` stays 200 — every Deployment here shipped that way, with the variable left for
-    an operator step a missed apply reads as a working pod. The expected name is the manifest's
-    rather than a `CHEMCLAW_<NAME>_TOKEN` convention, because the manifest is what the serving side
-    and Chemclaw3 both read. Not `optional`: a missing key is a pod that never starts
-    (`CreateContainerConfigError`), which is loud, instead of one that starts and refuses.
+    The server fails closed, so a missing bearer is a 401 on every `/mcp` call with `/healthz` at
+    200. The name comes from the manifest, which both sides read. Not `optional`: a missing key
+    should stop the pod starting, loudly.
     """
     token_env = _manifest_token_env(server)
     from_secrets = {
@@ -572,12 +482,9 @@ def _final_stage_user_and_home(server: Path) -> tuple[str, str | None]:
 def test_the_pod_runs_under_whatever_uid_the_platform_assigns(server: Path) -> None:
     """No pinned UID, GID or fsGroup; non-root still enforced; the image verifiable as non-root.
 
-    OpenShift's default `restricted-v2` SCC assigns a UID from the namespace's range and rejects
-    any other, so a Deployment pinning `runAsUser: 1001` got no pods at all
-    (`unable to validate against any security context constraint`). What hardening needs is
-    `runAsNonRoot`, and the kubelet can verify that only against a *numeric* image `USER` — so the
-    image half is held here too. And an assigned UID has no `/etc/passwd` entry, so `HOME` must be
-    set in the image to a path this Deployment mounts writable, or it defaults to an unwritable `/`.
+    OpenShift's `restricted-v2` SCC assigns a UID from the namespace range and rejects pinned ones.
+    `runAsNonRoot` needs a numeric image `USER` to verify, and an assigned UID has no passwd entry,
+    so `HOME` must point at a writable mounted path.
     """
     spec = _pod_spec(server)
     container = spec["containers"][0]
@@ -609,16 +516,10 @@ def test_the_pod_runs_under_whatever_uid_the_platform_assigns(server: Path) -> N
 def test_the_image_is_the_one_placeholder_the_overlay_rewrites(server: Path) -> None:
     """Every Deployment names `registry.invalid/chemclaw-mcp-<name>:unset`, and nothing else.
 
-    Raw manifests cannot know a site's registry, so the image is a placeholder the deploy step
-    rewrites to a published digest — kustomize `images:` in `docs/operations.md` §2 and in
-    Chemclaw3's `deploy/kind/render-fleet.sh`, both matching on exactly this name. A server whose
-    string drifted would be skipped by that rewrite without an error and applied unrewritten.
-
-    **And the placeholder must be unresolvable, which the previous one was not.** It read
-    `chemclaw3/chemclaw-mcp-<name>:latest`: a short name, which a node expands against its
-    configured search registries — Docker Hub on most of them — so applied unrewritten it pulled
-    whatever a third party had registered under a namespace this fleet does not own. `.invalid` is
-    reserved by RFC 2606 and never resolves, so the same mistake is an `ErrImagePull` naming it.
+    The deploy step rewrites exactly this name to a published digest (`docs/operations.md` §2,
+    Chemclaw3's `deploy/kind/render-fleet.sh`); a drifted name would be applied unrewritten.
+    `.invalid` never resolves (RFC 2606), so an unrewritten apply fails with `ErrImagePull` instead
+    of pulling from a search registry.
     """
     image = _pod_spec(server)["containers"][0]["image"]
     expected = f"registry.invalid/chemclaw-mcp-{server.name}:unset"

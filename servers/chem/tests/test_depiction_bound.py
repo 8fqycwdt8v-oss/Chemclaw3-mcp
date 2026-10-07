@@ -307,7 +307,7 @@ def test_the_render_size_floor_is_the_size_below_which_a_depiction_says_nothing(
 def test_the_render_size_refuses_below_its_floor_and_accepts_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The render size refuses at `minimum - 1` and accepts the floor, through the module's own import.
+    """The render size refuses at `minimum - 1` and accepts the floor, via the module's import.
 
     The fleet test drives `0` and `-1`, which a floor of 1 would also reject; the interesting value
     here is between.

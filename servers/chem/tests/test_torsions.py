@@ -1,17 +1,13 @@
 """Naming a torsion: what stays the same when the molecule is rewritten, and what must not merge.
 
-Every claim `engine/torsions.py` makes is checked here as a number or a literal rather than as
-prose, because the failure this module exists to prevent is *silent* — a scan of the wrong bond
-returns a well-formed profile, not an error, so nothing downstream can catch it.
+A scan of the wrong bond returns a well-formed profile, so every claim is checked as a number or
+literal:
 
-Three groups:
-
-- **Invariance.** The same bond of the same compound, written three ways, is one handle.
-- **The candidate set.** The rotatable-bond descriptor omits exactly the bonds people ask barriers
-  about, and this module does not.
-- **Equivalence.** Symmetry-distinct means symmetry-distinct: the cheap key (RDKit's canonical
-  symmetry classes) is checked against the expensive one (the automorphism group), so a molecule
-  where the two disagree turns this red instead of quietly merging two different bonds.
+- **Invariance.** The same bond, written three ways, is one handle.
+- **The candidate set.** Bonds the rotatable-bond descriptor omits, but barriers are asked about,
+  are included.
+- **Equivalence.** The cheap key (canonical symmetry classes) is checked against the automorphism
+  group, so a disagreement goes red instead of merging two different bonds.
 """
 
 from __future__ import annotations
@@ -78,11 +74,9 @@ class TestTheHandleSurvivesARewrittenSmiles:
         assert len(handles) == 1, f"the amide C-N got {len(handles)} handles: {sorted(handles)}"
 
     def test_the_indices_it_replaces_do_not_survive(self) -> None:
-        """The measurement this module exists for: same compound, same bond, different integers.
+        """The indices a handle replaces do not survive a rewrite, yet stay valid for another bond.
 
-        And worse than different — *valid*. The indices that name the amide C-N in one writing name
-        a real aromatic ring bond in another, so a scan driven from them runs, converges, and
-        answers a question nobody asked.
+        So a scan driven from them would run and answer a question nobody asked.
         """
         indices = {tuple(_by_kind(smiles, "amide").bond) for smiles in ACETANILIDE}
         assert len(indices) > 1, "the premise failed: these writings agree on the indices"
@@ -99,11 +93,8 @@ class TestTheHandleSurvivesARewrittenSmiles:
         assert len({torsion.torsion_id for torsion in torsions}) == len(torsions)
 
     def test_the_handle_names_the_rdkit_build(self) -> None:
-        """A canonical ranking is a function of the build, so a stale handle must fail loudly.
-
-        Resolving to a *different* bond after a toolchain bump is the silent failure this module
-        exists to remove — so the version goes into the payload and an old handle simply stops
-        matching. Asserted by construction rather than by upgrading RDKit inside a test.
+        """The handle names the RDKit build, so a stale handle fails loudly rather than resolving
+        elsewhere.
         """
         mol = Chem.MolFromSmiles("CC(=O)Nc1ccccc1")
         ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
@@ -123,11 +114,9 @@ class TestTheCandidateSetIsNotTheRotatableBondCount:
     def test_the_descriptor_omits_what_a_barrier_question_is_about(
         self, smiles: str, descriptor_says: int
     ) -> None:
-        """Pinned as literals: terminal tops and amides are excluded from that count by definition.
+        """The rotatable-bond descriptor omits terminal tops and amides by definition.
 
-        Toluene reports zero rotatable bonds and has a methyl rotation; acetanilide reports one and
-        that one is *not* the amide. Both are exactly the bond a chemist asking about a rotational
-        barrier means.
+        Toluene's methyl and acetanilide's amide are exactly what a barrier question means.
         """
         mol = Chem.MolFromSmiles(smiles)
         assert rdMolDescriptors.CalcNumRotatableBonds(mol) == descriptor_says
@@ -219,11 +208,8 @@ class TestSymmetry:
     def test_the_cheap_equivalence_agrees_with_the_expensive_one(self, smiles: str) -> None:
         """Symmetry classes group bonds the way the automorphism group does — checked, not assumed.
 
-        The handle merges two bonds when their canonical *symmetry classes* match, which is cheap
-        and writing-invariant. Vertex orbits do not determine edge orbits in general, so this
-        compares the grouping against the real thing: the bond orbits under the molecule's own
-        automorphisms. A false merge would mean two chemically different bonds sharing a handle,
-        and a scan of one being reported as the other.
+        Vertex orbits do not determine edge orbits in general, so the grouping is compared against
+        bond orbits under the molecule's automorphisms.
         """
         mol = Chem.MolFromSmiles(smiles)
         orbit = _bond_orbits(mol)
@@ -269,21 +255,15 @@ def _bond_orbits(mol: Chem.Mol) -> dict[tuple[int, int], int]:
 class TestTheKindIsACheckableClaim:
     """`kind` and `smarts` are what a human checks the choice by, so both have to be true.
 
-    The label is prose and the atoms are integers; the pair (kind, smarts) is the only part of a
-    `Torsion` that says *why* this bond was called what it was called. A kind nothing can be
-    assigned and a pattern that matches everything are the two ways that claim rots without any
-    test noticing, and both had happened.
+    A kind that can never be assigned and a pattern that matches everything both rot silently.
     """
 
     @pytest.mark.parametrize(("smiles", "kind"), ONE_PER_PATTERN)
     def test_every_pattern_kind_can_actually_be_assigned(self, smiles: str, kind: str) -> None:
         """One representative per pattern in `_KINDS`, because a dead pattern is invisible.
 
-        `ether` was `[CX4][OX2][CX4]` — three atoms, and `_matched_pairs` reads the *first and
-        last*, which for that pattern are the two carbons and are not bonded to each other. So no
-        bond ever matched it and every ether came back `alkyl`, with a `smarts` naming a pattern
-        that had not been matched. Nothing was red: no test asked for a kind that was never
-        produced.
+        `_matched_pairs` reads the first and last matched atoms as the bond, so a pattern whose ends
+        are not bonded can never match a bond.
         """
         assert _by_kind(smiles, kind).kind == kind
 
@@ -296,11 +276,10 @@ class TestTheKindIsACheckableClaim:
         [("CC(C)CC(C)C", "alkyl"), ("C=CC=C", "conjugated"), ("Cc1ccccc1", "top")],
     )
     def test_a_kind_decided_by_topology_reports_no_pattern(self, smiles: str, kind: str) -> None:
-        """Empty, not `[*]-[*]`.
+        """A kind decided by topology reports an empty pattern, not `[*]-[*]`.
 
-        These three are decided by the bond's own topology, so there is no environment to show. It
-        used to report `[*]-[*]`, which matches every bond in every molecule — an unfalsifiable
-        claim in the one field whose job is to make the label falsifiable.
+        A pattern matching every bond would be unfalsifiable in the field meant to make the label
+        checkable.
         """
         assert _by_kind(smiles, kind).smarts == ""
 
@@ -308,11 +287,8 @@ class TestTheKindIsACheckableClaim:
     def test_every_pattern_names_a_bond(self, pattern_kind: str, pattern: str) -> None:
         """Wherever a pattern matches, its first and last matched atoms are bonded to each other.
 
-        This is the invariant `_matched_pairs` rests on — it reads exactly those two atoms and
-        treats them as the bond — and it is what the dead `ether` pattern broke: `[CX4][OX2][CX4]`
-        matched the two *carbons*, which are two bonds apart. Stated over `_KINDS` against every
-        compound in this module, so a future three-atom pattern is red the day it is written
-        rather than silently unassignable.
+        The invariant `_matched_pairs` rests on, checked over every pattern and compound so a new
+        three-atom pattern is red immediately.
         """
         query = Chem.MolFromSmarts(pattern)
         assert query is not None, f"{pattern_kind}: {pattern} is not a parseable SMARTS"
@@ -330,11 +306,9 @@ class TestAMonovalentEndIsNotARotation:
 
     @pytest.mark.parametrize("smiles", ["CCCl", "ClCCCl", "FC(F)(F)c1ccccc1", "CCBr"])
     def test_a_terminal_halogen_is_not_a_torsion(self, smiles: str) -> None:
-        """`CCCl` listed "the Cl top on C1" — a rotation about an axis with nothing off it.
+        """A terminal halogen is not a torsion: nothing rotates off that axis.
 
-        Every other rule here accepted it: acyclic, single, neither end linear, both ends heavy. A
-        chemist asked for a barrier about that bond would get a flat profile and no indication that
-        the question was meaningless.
+        A barrier scan about it would return a flat, meaningless profile.
         """
         halogens = {9, 17, 35, 53}
         mol = Chem.MolFromSmiles(smiles)
@@ -371,13 +345,9 @@ _PERIOD_TOLERANCE_KCAL = 1.5
 def _relaxed_profile(smiles: str, atoms: list[int]) -> dict[float, float]:
     """A relaxed constrained MMFF scan of one dihedral, in kcal/mol relative to its own minimum.
 
-    **Deliberately not this module's own symmetry reasoning.** `symmetry_order` is derived from
-    RDKit's canonical symmetry classes, so checking it against those classes checks nothing; a force
-    field walks the real potential, and whether that potential repeats is the claim being made.
-
-    Every point is minimized with the dihedral constrained and everything else free, and the walk is
-    made in both directions with the geometry carried forward, taking the lower energy at each
-    angle — a relaxed scan is basin-local, and the two directions leave different basins.
+    Independent of `symmetry_order`'s graph reasoning: the force field walks the real potential.
+    Walked in both directions with geometry carried forward, taking the lower energy, since a
+    relaxed scan is basin-local.
     """
     mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
     rdDistGeom.EmbedMolecule(mol, randomSeed=0xC0FFEE)
@@ -417,13 +387,9 @@ def _period_deviation(profile: dict[float, float], period_degrees: float) -> flo
 class TestThePeriodIsARotationAndNotAGraphEquivalence:
     """A period is a claim about the potential, and it is checked against one.
 
-    `symmetry_order` was credited whenever the substituents on one end shared an RDKit canonical
-    symmetry class. That is a **graph** equivalence: on a pyramidal three-coordinate centre — an
-    aliphatic tertiary amine, a phosphine — the lone pair takes the third azimuthal slot, so two
-    constitutionally identical substituents sit ~120 and ~240 degrees apart and no C2 axis exists.
-    The tool reported `period_degrees=180` anyway, and Chemclaw3's `rotation_profile` scans exactly
-    `[0, period)` and weights populations by `symmetry_order` — so half of every tertiary-amine
-    profile was never computed and the Boltzmann average was taken over it.
+    Graph-equivalent substituents on a pyramidal centre (tertiary amine, phosphine) are not related
+    by a C2 axis, because the lone pair takes the third slot. Chemclaw3 scans `[0, period)` and
+    weights by `symmetry_order`, so a false period would skip half of the profile.
     """
 
     @pytest.mark.parametrize(
@@ -470,12 +436,10 @@ class TestThePeriodIsARotationAndNotAGraphEquivalence:
         ],
     )
     def test_the_claimed_period_survives_a_relaxed_force_field_scan(self, smiles: str) -> None:
-        """The independent check: MMFF walks the potential and it must repeat where we say it does.
+        """The claimed period survives a relaxed MMFF scan.
 
-        A relaxed scan is basin-local, so a rotor whose *other* rotors have to re-orient with it —
-        a tert-butyl's own three methyls — cannot be measured this way and is not in this corpus.
-        That is a limit of the measurement, not of the claim: the pinned expectations above cover
-        those.
+        Rotors whose neighbours must re-orient with them (e.g. tert-butyl) cannot be measured this
+        way and are covered by the pinned expectations above.
         """
         for torsion in enumerate_torsion_candidates(smiles):
             if not torsion.atoms:
@@ -491,11 +455,9 @@ class TestThePeriodIsARotationAndNotAGraphEquivalence:
 
 
 class TestTheCanonicalViewIsComputedOncePerCall:
-    """`torsion_handle` re-canonicalised the whole molecule on every candidate bond.
+    """`torsion_handle` computes the canonical view once per call, not per candidate bond.
 
-    The same quadratic shape as `site_handle`, and the same measurement: 300 heavy atoms was 3.37 s
-    and 600 was 18.31 s, for a tool whose docstring said "Free: a graph operation, no calculation,
-    no cache". The caller already had the canonical ranks and threw them away.
+    Re-canonicalising per bond is quadratic in the atom count.
     """
 
     def test_a_six_hundred_atom_molecule_is_still_a_graph_operation(self) -> None:
@@ -520,15 +482,11 @@ class TestTheCanonicalViewIsComputedOncePerCall:
 
 
 class TestAnXHRotorIsNotASymmetricTop:
-    """A methyl's barrier is carried by the free-rotor treatment of the low modes. An O-H's is not.
+    """A methyl's barrier is carried by the free-rotor treatment of the low modes. An X-H rotor's is
+    not.
 
-    Both ended up as `kind="top"` because the test was "does the rotating end carry a *heavy*
-    substituent", and both were then described to the model — here and in Chemclaw3's refusal —
-    as "a methyl or tert-butyl rotation" whose "energetic effect is already in the free-rotor
-    treatment of the low modes". For acetamide's C-N (the most-asked rotational-barrier question in
-    med chem, 16-18 kcal/mol) and acetic acid's syn/anti O-H (5-6 kcal/mol, two genuinely distinct
-    rotamers) that sentence is false, and it is the sentence that decides whether the model reports
-    "not answered" or "already accounted for".
+    An amide C-N or an acid's O-H rotor has real, distinct rotamers; calling it a symmetric top
+    would tell the model the barrier is already accounted for when it is not.
     """
 
     @pytest.mark.parametrize(

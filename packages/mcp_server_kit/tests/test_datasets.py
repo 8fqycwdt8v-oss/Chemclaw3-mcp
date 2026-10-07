@@ -203,8 +203,7 @@ def test_a_whole_month_or_year_cadence_is_accepted(tmp_path: Path, value: str) -
 
 
 def test_every_shipped_corpus_names_a_refresh_owner_and_cadence() -> None:
-    """Every `dataset.json` in the fleet loads its refresh fields through `DatasetManifest` itself.
-    """
+    """Every shipped `dataset.json` loads its refresh fields through `DatasetManifest`."""
     root = Path(__file__).resolve().parents[3]
     manifests = sorted(root.glob("servers/*/src/*/data/**/dataset.json"))
     assert manifests, "no shipped dataset manifests found — the glob is wrong, not the fleet"

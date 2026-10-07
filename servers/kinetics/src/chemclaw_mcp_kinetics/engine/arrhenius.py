@@ -52,8 +52,7 @@ def representable(what: str, compute: Callable[[], float]) -> float:
 
     Input guards check finiteness, not magnitude, so finite inputs can still overflow: `**` and
     `math.exp` raise `OverflowError` (not a `ValueError`, so the model would see an opaque error
-    id),
-    while `*` and `/` return infinity or NaN. Both are caught here and worded.
+    id), while `*` and `/` return infinity or NaN. Both are caught here and worded.
 
     Args:
         what: The quantity being computed, as a chemist would name it in the refusal.

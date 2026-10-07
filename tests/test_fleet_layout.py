@@ -33,54 +33,32 @@ def manifest_of(server: Path) -> dict[str, object]:
     return loaded
 
 
-# The files a server is not deployable or reviewable without. Hoisted out of the test below so the
-# checklist a new server is written from can be held against it — `docs/adding-a-server.md` is the
-# one declaration of this set in prose, and `test_the_required_file_set_is_declared_once` is what
-# keeps the two from drifting. A second copy stood in `CLAUDE.md` for months listing barely half of
-# these, which is the failure this constant exists to make impossible to repeat quietly.
+# The files a server is not deployable or reviewable without. `docs/adding-a-server.md` is the one
+# prose declaration of this set, and `test_the_required_file_set_is_declared_once` keeps them in
+# step.
 REQUIRED_SERVER_FILES = (
     "connector.yaml",
     "pyproject.toml",
     "Containerfile",
     "README.md",
     "deploy/networkpolicy.yaml",
-    # The two files that make `/metrics` reachable by a scrape. Listed here rather than left to
-    # each server's own `test_deploy.py`, because the failure they prevent is a *new* server
-    # shipping without them — which its own tests, if it copied a directory that had none,
-    # would never notice. `deploy/` held only the NetworkPolicy on every server in this fleet
-    # while every one of those policies admitted the monitoring namespace: the hole was open
-    # and nothing was told to go through it.
+    # The two files that make `/metrics` reachable by a scrape. Required fleet-wide because a new
+    # server copied from a directory without them would not notice through its own tests.
     "deploy/service.yaml",
     "deploy/servicemonitor.yaml",
-    # The workload itself, and the file that carries every pod-hardening field — runAsNonRoot,
-    # dropped capabilities, seccomp, resource limits, no service-account token. `deploy/` used
-    # to ship the NetworkPolicy/Service/ServiceMonitor but *no* Deployment, so nothing
-    # in-cluster set any of those and each defaulted to the cluster's — root, all capabilities,
-    # unconfined, unbounded. A new server copying a directory without one would inherit that
-    # gap silently, which is why the requirement lives here rather than only in each
-    # `test_deploy.py`.
+    # The workload itself, carrying every pod-hardening field (runAsNonRoot, dropped capabilities,
+    # seccomp, resource limits, no service-account token); without it each defaults to the
+    # cluster's.
     "deploy/deployment.yaml",
-    # The two objects that decide whether a capability survives a rollout and whether it has a
-    # capacity lever at all. Same argument as the Deployment above, one round later: every
-    # server here shipped `replicas: 1` with neither, so a drain took the capability to zero
-    # and a full pod had no second pod to overflow into — and because all seven were identical,
-    # no server's own tests could see it. `tests/test_deploy_shape.py` checks what is *in*
-    # them; this is what checks they exist for a server that copied a directory predating them.
+    # The objects that decide whether a capability survives a rollout and has a capacity lever.
+    # `tests/test_deploy_shape.py` checks their content; this checks they exist.
     "deploy/hpa.yaml",
     "deploy/pdb.yaml",
     "tests/test_no_egress.py",
     "tests/test_server.py",
-    # The per-server half of layer 4. The fleet-wide half —
-    # `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload` —
-    # is what actually closes the hole this line was missing from: until it existed, a server
-    # could ship a NetworkPolicy permitting all outbound traffic and no `test_deploy.py`, and
-    # the whole suite stayed green. This entry is the *other* half and is not redundant with
-    # it: a server's own file is where its port, its ingress peers and the Service-to-
-    # ServiceMonitor port *name* are held, and those are numbers and strings belonging to one
-    # server that no fleet-wide reader can derive. Listed here for the same reason
-    # `deploy/deployment.yaml` and `deploy/hpa.yaml` are: the failure is a *new* server copying
-    # a directory that predates the file, whose own tests then cannot notice what it does not
-    # have.
+    # The per-server half of layer 4: a server's own file holds its port, ingress peers and the
+    # Service-to-ServiceMonitor port name, which no fleet-wide reader can derive. The fleet-wide
+    # half is `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload`.
     "tests/test_deploy.py",
 )
 
@@ -104,11 +82,8 @@ def test_the_name_is_one_string_used_four_times(server: Path) -> None:
 def test_ports_are_unique_and_inside_this_repository_s_block() -> None:
     """Every served port is unique and inside 8850-8899, which is all this repository can check.
 
-    Why the block *is* 8850-8899 — that everything else in the family was observed below it — is
-    recorded in `CLAUDE.md` as a dated reason rather than asserted here. It is a fact about
-    repositories this suite cannot see, and the version of it that lived in prose as a boundary was
-    wrong for as long as it existed: it published Chemclaw3's connectors as 8810-8815 while `bo` sat
-    on 8816.
+    Why the block starts at 8850 is a fact about other repositories, recorded in `CLAUDE.md` as a
+    dated reason rather than asserted here.
     """
     seen: dict[int, str] = {}
     for server in server_dirs():
@@ -144,13 +119,10 @@ def test_every_server_has_a_run_target_on_the_port_its_manifest_publishes() -> N
 
 
 def test_the_scripts_map_lists_everything_beside_it() -> None:
-    """`scripts/README.md` is a map, and the top-level check only asks that the README exists.
+    """`scripts/README.md` lists every file beside it, and nothing else.
 
-    `CLAUDE.md`'s row said `scripts/` holds "today, the offline check", and `scripts/README.md`
-    listed that one file — while `calibrate_rxnpredict_priors.py` has sat beside it since
-    2026-08-12. Both documents were edited in the commit that this check follows, and neither was
-    read against the directory. This is `test_the_docs_map_lists_everything_beside_it` one folder
-    over, for the same reason: a map nobody verifies is read, believed, and wrong.
+    The same rule as `test_the_docs_map_lists_everything_beside_it`, one folder over: a map nobody
+    verifies goes stale.
     """
     scripts = ROOT / "scripts"
     listed = set(re.findall(r"`([^`]+\.py)`", (scripts / "README.md").read_text(encoding="utf-8")))
@@ -164,9 +136,7 @@ def test_the_scripts_map_lists_everything_beside_it() -> None:
 def test_the_map_and_the_tree_agree() -> None:
     """Every top-level directory has a README and a row in CLAUDE.md, and vice versa.
 
-    Chemclaw3 asks for exactly this and enforces it, having twice found a README asserting a
-    structure the tree no longer had. Prose about a directory layout is worth what the check behind
-    it is worth.
+    Prose about a directory layout is worth what the check behind it is worth.
     """
     guidance = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     for directory in sorted(path for path in ROOT.iterdir() if path.is_dir()):
@@ -179,14 +149,11 @@ def test_the_map_and_the_tree_agree() -> None:
 
 
 def test_every_server_is_wired_into_the_type_gate() -> None:
-    """`make type` (what CI's `Types` step and `make check` both run) must see every server.
+    """`make type` (what CI and `make check` run) must see every server.
 
-    This recurred once already for `servers/safety/src` — the CI workflow's own comment records it
-    — and the fix (centralising on `make type` instead of a hardcoded path list in CI) only moved
-    the drift one level down: the Makefile's own `SRC` variable then silently dropped
-    `servers/rxnlabel/src` and `servers/rxnpredict/src`, and `rxnlabel` sat with five real
-    `mypy --strict` errors CI had never run against it. `docs/adding-a-server.md`'s checklist never
-    mentions this step, which is why it keeps not happening — so this is the check, not the prose.
+    The Makefile's `SRC` list can silently drop a server's source root, leaving it unchecked by
+    `mypy --strict`; the checklist in `docs/adding-a-server.md` does not cover this, so the check
+    does.
     """
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     src_line = next(line for line in makefile.splitlines() if line.startswith("SRC :="))
@@ -208,15 +175,11 @@ def test_every_server_is_wired_into_the_type_gate() -> None:
 
 
 def _tracked_python_files() -> list[Path]:
-    """Every `.py` file this repository ships — tracked, or newly written and not ignored.
+    """Every `.py` file this repository ships: tracked, or newly written and not ignored.
 
-    `git ls-files` rather than a filesystem walk with a list of directories to prune. The criterion
-    wanted is "what this repository ships", `.gitignore` already states it for `.venv`, the three
-    caches and every build artefact, and a prune list written here would be the second declaration
-    of that — the hand list the check below exists to stop using, one layer down. `--others
-    --exclude-standard` includes a file somebody has just written and not staged, which is exactly
-    when the gate most needs to notice it; a tracked file that has been deleted is dropped, because
-    a path with nothing behind it is not something mypy can fail to read.
+    `git ls-files` defers to `.gitignore` instead of a second prune list here; `--others
+    --exclude-standard` includes unstaged new files, when the gate most needs to see them, and
+    deleted tracked files are dropped.
     """
     listed = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py"],
@@ -273,14 +236,9 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
     """`[tool.mypy]` does not carry the narrowing that was measured and rejected."""
     import tomllib
 
-    # Nothing outranks the table this function is about to read. mypy's configuration discovery is
-    # `mypy.ini`, then `.mypy.ini`, then `pyproject.toml` — documented and fixed upstream, so this
-    # is an enumeration of somebody else's constant rather than of the ways to say "check less",
-    # which is the distinction that makes it a control and not a list. Driven: a root `mypy.ini`
-    # holding `disable_error_code = arg-type` reds nothing else here, because `arg-type` is a code
-    # no line of `_TYPE_GATE_CANARY` violates and the execution check below is a floor rather than a
-    # proof of strictness. `setup.cfg` ranks *after* `pyproject.toml`, and a driven `[mypy]` section
-    # in one changes no answer, so it is not asserted against: a file that cannot win is not a hole.
+    # Nothing outranks the table this reads: mypy's discovery order is `mypy.ini`, `.mypy.ini`, then
+    # `pyproject.toml`, so those two must not exist. `setup.cfg` ranks after `pyproject.toml` and
+    # cannot win, so it is not asserted against.
     for shadowing in ("mypy.ini", ".mypy.ini"):
         assert not (ROOT / shadowing).exists(), (
             f"{shadowing} wins mypy's config discovery over `pyproject.toml`, so every assertion "
@@ -303,14 +261,9 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
         "a record, not a configuration key"
     )
 
-    # The second and last verbatim copy of "print the recipe, find the mypy line", and it stays a
-    # copy on purpose: **two callers, and this repository's rule is no abstraction without a third**
-    # (`CLAUDE.md`'s Rule of Three, and an abstraction with one caller gets inlined). The reviewer
-    # who flagged the duplication measured the same boundary and left it there. It nearly became
-    # three: `test_a_planted_error_in_a_gated_file_reds_make_type` was the obvious third caller and
-    # is not, because it runs `make type` rather than `make -n type` — the exit code is exactly what
-    # a dry run cannot show, and that is the whole point of it. If a genuine third reader of the
-    # printed recipe arrives, extract then.
+    # A second copy of "print the recipe, find the mypy line", kept inline: two callers, and the
+    # Rule of Three says extract at the third. The planted-error test runs `make type` itself, not a
+    # dry run, so it is not a third reader.
     printed = subprocess.run(
         ["make", "-n", "type"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout
@@ -328,13 +281,10 @@ def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
     )
 
 
-# A module that violates four checks at once, planted into the tree and removed again by the test
-# below. Each line is here because a *different* relaxation silences it, driven one at a time:
-# `--allow-untyped-defs` (or `strict = false`) takes `no-untyped-def`, `--no-strict-optional` takes
-# `assignment`, `--no-warn-unused-ignores` (or `strict = false`) takes `unused-ignore`, and
-# `--disable-error-code=return-value` takes `return-value`. Four codes rather than one because the
-# assertion is that *each* is reported: a canary with a single error proves only that mypy still
-# runs, and `make type` would stay red under every flag the deleted deny-list used to name.
+# A module violating four checks at once, planted and removed by the test below. Each line is
+# silenced by a different relaxation (`no-untyped-def`, `assignment` via strict-optional,
+# `unused-ignore`, `return-value`), so asserting each is reported proves strictness, not only that
+# mypy runs.
 _TYPE_GATE_CANARY = '''"""Planted by the type gate's execution check, and removed by it.
 
 If this file is in a checkout, `test_a_planted_error_in_a_gated_file_reds_make_type` died between
@@ -357,11 +307,8 @@ gate_canary_unused: int = 1  # type: ignore[assignment]
 '''
 
 
-# One gated `src/` root and one gated `tests/` root, named rather than derived. Derivation is what
-# `test_the_type_gate_reads_the_test_tree_and_not_only_the_source` does, and it is the wrong tool
-# here: a canary planted under whatever the command happens to name is checked by definition, which
-# is the "agrees with itself forever" basis that test's own docstring warns about. These two paths
-# are checked because they are two real places in this tree, and if either stops being read the
+# One gated `src/` root and one gated `tests/` root, named rather than derived: a canary planted
+# under whatever the command names would be checked by definition. If either stops being read, the
 # assertion below says so.
 _TYPE_GATE_CANARY_PATHS = (
     Path("packages/mcp_server_kit/src/mcp_server_kit/_type_gate_canary.py"),

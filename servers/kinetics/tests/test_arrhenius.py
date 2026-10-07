@@ -11,9 +11,7 @@ from chemclaw_mcp_kinetics.engine import arrhenius
 def test_determining_ea_from_two_points_and_extrapolating_back_is_a_round_trip() -> None:
     """The two operations are inverses, so composing them must return the input exactly.
 
-    Not "approximately": both are closed-form algebra on the same two-parameter line, so a
-    discrepancy would mean one of them has a sign or a unit wrong, not that a solver converged
-    loosely.
+    Both are closed-form algebra on one line, so any discrepancy is a sign or unit error.
     """
     pair = arrhenius.activation_energy_from_two_points(
         lower_temperature_c=25.0,
@@ -34,9 +32,8 @@ def test_determining_ea_from_two_points_and_extrapolating_back_is_a_round_trip()
 def test_ln_a_is_consistent_with_both_points_not_just_the_one_it_was_taken_at() -> None:
     """`ln A` is computed at the lower point; the line passes through both by construction.
 
-    If it did not reproduce the upper point too, the determination would be inconsistent with half
-    its own input — which is exactly the kind of error that survives a round trip through the same
-    endpoint.
+    Reproducing the upper point too catches an error a round trip through the same endpoint would
+    hide.
     """
     pair = arrhenius.activation_energy_from_two_points(
         lower_temperature_c=10.0,
@@ -143,11 +140,10 @@ def test_a_narrow_span_really_does_amplify_error_which_is_why_the_flag_exists() 
 
 
 def test_a_rate_constant_that_falls_with_temperature_is_refused_by_name() -> None:
-    """It is real chemistry and Arrhenius does not describe it, so a negative E_a must not appear.
+    """A rate constant that falls with temperature is refused, not reported as a negative E_a.
 
-    Computed anyway, the number would be quoted as an activation energy — and the causes (a
-    pre-equilibrium, a changing mechanism, a decomposing catalyst, or two points measuring
-    different things) are all things a chemist needs told rather than folded into a sign.
+    The likely causes (pre-equilibrium, mechanism change, catalyst decomposition, inconsistent
+    points) are what the chemist needs told.
     """
     with pytest.raises(arrhenius.KineticsInputError, match="rate that falls"):
         arrhenius.activation_energy_from_two_points(
@@ -176,16 +172,12 @@ def test_a_kelvin_figure_entered_as_celsius_is_refused_with_the_units_mistake_na
 
 
 def test_this_module_returns_no_tmr_and_no_temperature() -> None:
-    """The boundary against `servers/thermalsafety`, asserted over the surface rather than trusted.
+    """The boundary against `servers/thermalsafety`, asserted over the surface.
 
-    `temperature_for_tmr` there already extrapolates along Arrhenius — of **q**, the specific
-    heat-release rate of a decomposition, inside a TMR_ad inversion, returning a *temperature*.
-    This module extrapolates **k**, the rate constant of the reaction being run, and returns a
-    *rate constant*. A tool here that returned a temperature or a time-to-maximum-rate would be the
-    duplication the fleet's one-capability-one-server rule exists to prevent, and it would let a
-    decomposition's apparent E_a be quoted as a synthesis reaction's.
-
-    Checked by name, because the two modules are in different servers and no import can tie them.
+    `thermalsafety` extrapolates a decomposition's heat-release rate and returns a temperature
+    (TMR); this module extrapolates the reaction's rate constant and returns a rate constant. A
+    temperature or TMR tool here would duplicate that server and invite quoting a decomposition's
+    E_a for the synthesis. Checked by name, since no import can tie two servers.
     """
     public = {name for name in dir(arrhenius) if not name.startswith("_")}
     for forbidden in ("tmr", "temperature_for", "d24", "criticality", "adiabatic", "runaway"):
@@ -234,7 +226,9 @@ def test_an_extrapolation_that_overflows_is_refused_by_name() -> None:
 
 
 def test_an_activation_energy_that_overflows_is_refused_rather_than_returned_as_infinity() -> None:
-    """Two points 1e-9 K apart spanning 600 decades used to return `E_a = inf` and `ln A = inf`."""
+    """Two points 1e-9 K apart spanning 600 decades would give an infinite E_a; it is refused
+    instead.
+    """
     with pytest.raises(arrhenius.KineticsInputError, match="overflows a double"):
         arrhenius.activation_energy_from_two_points(
             lower_temperature_c=0.0,

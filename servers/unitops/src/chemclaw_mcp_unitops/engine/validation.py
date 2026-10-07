@@ -102,8 +102,7 @@ def fraction(value: float, what: str) -> float:
 
 
 def kelvin(celsius: float, what: str) -> float:
-    """Convert °C to K, refusing NaN or anything below absolute zero (usually a kelvin figure as °C).
-    """
+    """Convert °C to K, refusing NaN or below absolute zero (often a kelvin figure given as °C)."""
     finite(celsius, what)
     value = celsius - ABSOLUTE_ZERO_C
     if value <= 0.0:

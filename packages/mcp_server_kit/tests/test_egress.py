@@ -192,10 +192,9 @@ def test_a_passive_lookup_is_not_a_lookup_out() -> None:
 
 
 def test_udp_payload_cannot_leave() -> None:
-    """A connectionless socket never calls `connect`, so `sendto` was the whole channel.
+    """A connectionless socket never calls `connect`, so `sendto` must be guarded too.
 
-    Measured before the fix: 16 bytes actually reached 8.8.8.8:53 with the guard armed. This is
-    the only unguarded channel that moved payload, which is why it is closed rather than documented.
+    It is the channel that can carry a payload, which is why it is closed rather than documented.
     """
     with (
         pytest.raises(egress.EgressForbidden, match=r"203\.0\.113\.10"),

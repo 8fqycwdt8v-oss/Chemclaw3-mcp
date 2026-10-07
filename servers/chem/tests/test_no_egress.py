@@ -1,9 +1,6 @@
-"""This server's own code holds no way to call out. Three lines, and every server ships them.
+"""This server's own code holds no way to call out.
 
-The scan covers the whole package — engine, tools and transport — because the rule is about the
-server, not about one layer of it. `app.py` names loopback in its docstring, which the scanner
-exempts on purpose: showing somebody how to reach the server they are running is documentation,
-while naming somebody else's host is the thing being forbidden.
+The scan covers the whole package. Loopback named in `app.py`'s docstring is exempt by design.
 """
 
 from __future__ import annotations
@@ -22,12 +19,10 @@ def test_no_module_can_reach_the_network() -> None:
 
 
 def test_the_answers_come_from_the_vendored_corpus() -> None:
-    """The positive half: the names this server resolves are on disk, checksummed, and licensed.
+    """The names this server resolves are on disk, checksummed, and licensed.
 
-    Worth stating for this server in particular. Chemclaw3's own module argued the point at length —
-    an external resolver (PubChem, OPSIN) is the obvious thing to reach for and is exactly what the
-    no-egress rule forbids — so the table being sufficient is a property that has to be provable
-    rather than assumed. It is provable because the whole suite runs with the guard armed.
+    An external resolver (PubChem, OPSIN) is the obvious alternative and forbidden; the suite runs
+    with the guard armed, which proves the table suffices.
     """
     from chemclaw_mcp_chem.engine.reagents import dataset, resolve_compound_name
 

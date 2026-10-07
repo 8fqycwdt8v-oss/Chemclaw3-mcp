@@ -1,16 +1,9 @@
 """What `chem`'s published tool surface costs every model call that binds it, held as a ratchet.
 
-Chemclaw3 sends every bound tool's name, description and argument schema on every model call, and
-bounds the three bundles this fleet serves it (`chem`, `rxnpredict`, `safety`) with
-`SERVED_ELSEWHERE_ALLOWANCE` in its `tests/test_context_floor.py`. Both of its compaction defaults
-are derived from that allowance, so growth here is paid out of every chemist's thread there.
-
-That repository measures it in its own CI, against this repository's `main` — so a breach used to
-be heard there only after the merge that caused it (Chemclaw3-mcp#152: `chem` grew 2,027 tokens of
-description across seven tools and nothing here went red). This is the same quantity measured on
-this side, before the merge: the characters of each tool's `{name, description, inputSchema}`,
-which is within a few percent of what Chemclaw3's `count_tokens_approximately` reads off the
-converted schema, divided by four.
+Chemclaw3 sends every bound tool's name, description and schema on every model call and budgets
+this fleet's bundles with `SERVED_ELSEWHERE_ALLOWANCE` in its `tests/test_context_floor.py`. This
+measures the same quantity here, before merge: characters of each tool's `{name, description,
+inputSchema}`, roughly four per token.
 """
 
 from __future__ import annotations
@@ -20,10 +13,9 @@ import json
 
 from chemclaw_mcp_chem import tools
 
-#: The ratchet, in characters of the published surface. 19,455 after #152 narrowed the
-#: descriptions to their rules; this is ~8% over that. Raising it is a decision about every
-#: Chemclaw3 request, not a bump: say in the pull request what the new prose buys, and check it
-#: against `SERVED_ELSEWHERE_ALLOWANCE` there.
+#: The ratchet, in characters of the published surface, with modest headroom. Raising it is a
+#: decision about every Chemclaw3 request: say what the new prose buys and check it against
+#: `SERVED_ELSEWHERE_ALLOWANCE` there.
 PUBLISHED_SURFACE_MAX_CHARS = 21_000
 
 

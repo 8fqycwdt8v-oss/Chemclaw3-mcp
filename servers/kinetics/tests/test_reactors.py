@@ -1,8 +1,7 @@
 """The reactors, checked against relations that hold independently of this code.
 
-The strong tests here are not "does the exponential return an exponential". They are the ones that
-use a relation the implementation does not contain: a textbook ratio, an exact quadratic root, an
-inverse that must round-trip, and a convergence *order* — which is the one that caught a real bug.
+A textbook ratio, an exact quadratic root, an inverse that must round-trip, and a convergence
+order, none of which the implementation contains.
 """
 
 from __future__ import annotations
@@ -15,13 +14,8 @@ from chemclaw_mcp_kinetics.engine import reactors
 from chemclaw_mcp_kinetics.engine.arrhenius import KineticsInputError
 
 #: The worked semi-batch case used throughout: an acid chloride dosed into an amine over two hours.
-#:
-#: Passed through `_dose` with explicit keywords rather than splatted. A `**{**DOSE, ...}` splat is
-#: a float-valued mapping, so a type checker must assume it could supply *any* parameter — including
-#: `steps`, the one `int` in that signature — and reports every such call as mis-typed. That is true
-#: of the type and false of every call here, and annotating the dict does not fix it because the
-#: mapping is still float-valued. Naming the arguments is what makes the fixture and the signature
-#: agree, and it is what a reader gets to see at each call site anyway.
+#: Passed to `_dose` by keyword, because a float-valued `**` splat cannot type-check against the
+#: signature's one `int` parameter.
 _RATE_CONSTANT = 0.02
 _DOSE_TIME_SECONDS = 7200.0
 _INITIAL_VOLUME = 50.0
@@ -51,10 +45,8 @@ def _dose(
 def test_a_cstr_needs_three_point_nine_times_a_pfr_at_ninety_percent_first_order() -> None:
     """The textbook ratio, which neither function contains and both must agree with.
 
-    `τ_CSTR/τ_PFR = X/((1-X)·ln(1/(1-X)))`, which at X = 0.9 is 3.909. A chemist moving a batch
-    process to continuous meets this number, and it is the clearest single statement of why a
-    perfectly mixed tank is expensive: the whole reactor sits at the outlet composition, so at the
-    slowest rate in the system.
+    `τ_CSTR/τ_PFR = X/((1-X)·ln(1/(1-X)))`, 3.909 at X = 0.9: the whole tank sits at the outlet
+    composition, so at the slowest rate.
     """
     rate = 0.01
     plug = reactors.time_for_batch_conversion(
@@ -83,9 +75,7 @@ def test_the_time_and_the_conversion_are_exact_inverses_at_every_order(order: fl
 def test_a_pfr_is_a_batch_reactor_and_is_computed_as_one() -> None:
     """Identical, not merely close: `pfr_conversion` calls `batch_conversion`.
 
-    Asserted with `==` on purpose. If somebody re-derives the PFR integral separately, this fails
-    even though the two would agree to ten decimals — which is the point, because two copies of one
-    equation is two places for it to be wrong in.
+    `==` on purpose, so a separately re-derived PFR integral fails even if it agrees numerically.
     """
     common = {"rate_constant": 0.01, "initial_concentration": 1.0}
     assert reactors.pfr_conversion(residence_time_seconds=90.0, **common) == (
@@ -94,11 +84,10 @@ def test_a_pfr_is_a_batch_reactor_and_is_computed_as_one() -> None:
 
 
 def test_the_second_order_cstr_bisection_matches_the_exact_quadratic_root() -> None:
-    """The bisection is only trustworthy where a closed form exists to check it against.
+    """The second-order CSTR bisection matches the exact quadratic root.
 
-    `τkC² + C - C₀ = 0` has the root `C = (-1 + √(1+4τkC₀))/(2τk)`, written here and nowhere in the
-    module. Second order is the one non-trivial case with an exact answer, so it is the one that
-    can audit the general solver.
+    `τkC² + C - C₀ = 0` has the root `C = (-1 + √(1+4τkC₀))/(2τk)`, written only here; the one
+    non-trivial case with a closed form audits the general solver.
     """
     rate, initial, residence = 0.05, 1.0, 40.0
     numeric = reactors.cstr_conversion(
@@ -126,17 +115,11 @@ def test_a_cstr_always_converts_less_than_a_pfr_of_the_same_residence_time() -> 
 
 
 def test_the_integrator_converges_at_fourth_order_which_is_what_caught_the_bug() -> None:
-    """A rate, not a tolerance — and the assertion a loosened tolerance would have hidden.
+    """The integrator converges at fourth order: a rate, not a tolerance.
 
-    The first version of this module guarded the feed term with `time < dose_time_seconds`. That
-    reads as defensive and is a defect: the last step's k4 stage evaluates at exactly
-    `dose_time_seconds`, so it alone saw the feed switched off, putting one step of O(h) error into
-    an O(h⁴) scheme. The symptom was that the error fell as 1/N rather than 1/N⁴ — which no
-    absolute tolerance would have flagged, because the answer was still right to three figures and
-    a test written to pass would have used four.
-
-    So the assertion is on the *order*: refining by 2.5x must improve the answer by about 39.
-    Under the defect it improved by 2.5.
+    A feed term switched off at exactly `dose_time_seconds` would put O(h) error into the last RK4
+    stage, an error a tolerance would not flag. Refining by 2.5x must improve the answer by about
+    2.5^4 = 39.
     """
     reference = _peak(20_000)
     coarse = abs(_peak(200) - reference) / reference
@@ -158,9 +141,8 @@ def test_two_thousand_steps_is_enough_for_the_answer_this_server_returns() -> No
 def _peak(steps: int) -> float:
     """Peak accumulation for the worked case at a given step count.
 
-    Raises the module bound for the reference grid only. A test that could not measure past the
-    shipped default could not show the default is sufficient — it could only show it agrees with
-    itself.
+    Raises the module bound for the reference grid only, so the shipped default can be shown
+    sufficient rather than self-consistent.
     """
     original = reactors.MAX_INTEGRATION_STEPS
     reactors.MAX_INTEGRATION_STEPS = max(original, steps)
@@ -171,23 +153,11 @@ def _peak(steps: int) -> float:
 
 
 def test_an_instant_reaction_accumulates_nothing_and_an_inert_one_accumulates_everything() -> None:
-    """The two limits the profile must hit, which bound every case between them.
+    """An instant reaction accumulates almost nothing and an inert one accumulates everything.
 
-    A reaction fast enough to consume the feed as it arrives leaves nothing to accumulate; one slow
-    enough to be inert leaves the whole dose. Anything outside that range is a sign error.
-
-    **The fast arm asserted `approx(0.0, abs=1e-6)` at `k = 50`, and the physics contradicts it.**
-    The true peak there is `3.22e-05` — thirty times the tolerance. The assertion passed because at
-    the old fixed 200 steps `h*lambda` was 1,620, RK4 diverged, and `max(dosed, 0.0)` clamped the
-    negative excursion to exactly zero. So the test was satisfied by the integrator failing, not by
-    the limit: it would have passed just as well if the function had returned nothing at all, and at
-    the same fixture's own `k = 1` (an entirely ordinary rate) the reported peak was `0.000408`
-    against a true `0.001572` — 3.85x low, which is the dangerous direction for a number a dose time
-    is chosen from.
-
-    So the limit is asserted as the limit rather than as a zero: the peak *falls monotonically* as
-    the reaction gets faster, and at `k = 50` it is the small number it actually is. `_dose` no
-    longer needs a step count for this — `_steps_for_stability` derives one.
+    These limits bound every case; anything outside them is a sign error. The fast limit is asserted
+    as a monotone fall to its true small value, not as an exact zero, because a clamped divergent
+    integrator would also return zero.
     """
     peaks = [_dose(rate_constant=k).peak_accumulation_fraction for k in (0.02, 1.0, 5.0, 50.0)]
     assert peaks == sorted(peaks, reverse=True), (
@@ -205,13 +175,10 @@ def test_an_instant_reaction_accumulates_nothing_and_an_inert_one_accumulates_ev
 
 
 def test_a_dose_past_the_explicit_ceiling_is_answered_by_the_stable_scheme() -> None:
-    """The dose that used to be refused as "too fast for this integrator" now has an answer.
+    """A dose past the explicit-scheme step ceiling is answered by the stable scheme.
 
-    At `k = 200` the worked dose needs ~465,000 RK4 steps to be stable, past
-    `MAX_INTEGRATION_STEPS`, so it was refused as mixing-limited — a refusal set by what an explicit
-    scheme can afford rather than by the chemistry. The reference is RK4 itself with the ceiling
-    lifted (465,000 steps, 8.0545086724e-06), which the stable scheme's fixed 2,000 steps meet to
-    9.3e-08. The mixing-limited warning the refusal carried is kept, as the answer's caveat.
+    The reference is RK4 with the ceiling lifted; the stable scheme's fixed steps match it. The
+    mixing-limited warning is kept as the answer's caveat.
     """
     profile = _dose(rate_constant=200.0)
     assert profile.method == reactors.METHOD_STABLE
@@ -282,11 +249,10 @@ def test_the_stable_scheme_agrees_with_rk4_on_every_fixture_rk4_answers(
     initial_coreagent_concentration: float,
     order_in_dosed: float,
 ) -> None:
-    """The regression that lets the stable scheme be trusted where RK4 cannot check it.
+    """The stable scheme agrees with RK4 on every fixture RK4 answers.
 
-    Every fixture in this file that RK4 answers, integrated by both. Measured worst is 2.6e-07, on
-    the worked dose at `k = 50`; the tolerance is ten times that, on a number reported to four
-    figures — a coefficient typed wrong in the SDIRK tableau moves it by orders of magnitude.
+    The tolerance is tight enough that a mistyped SDIRK coefficient would miss by orders of
+    magnitude.
     """
     rk4, stable = _both(
         rate_constant=rate_constant,
@@ -301,11 +267,10 @@ def test_the_stable_scheme_agrees_with_rk4_on_every_fixture_rk4_answers(
 
 
 def test_the_stable_scheme_converges_at_third_order_on_a_smooth_dose() -> None:
-    """The order, re-measured for the new scheme as the row asked, and not just a tolerance.
+    """The stable scheme converges at third order on a smooth dose.
 
-    Alexander's SDIRK is third order: doubling the steps on the worked dose must improve the answer
-    by about 2^3 = 8 (measured 7.8). The floor is 5 — a scheme that had lost an order (a stage
-    weight typed wrong gives second order at best, 4x) is below it.
+    Alexander's SDIRK: doubling the steps improves the answer by about 8; the floor of 5 catches a
+    scheme that lost an order.
     """
     reference = _peak(20_000)
 
@@ -332,11 +297,8 @@ def test_a_dose_that_reacts_as_it_arrives_lands_on_the_quasi_steady_limit(
 ) -> None:
     """Far past the RK4 ceiling the answer has a closed form the scheme does not contain.
 
-    The feed reacts as fast as it arrives, so the unreacted reagent is `F / (k * C_co)`, and at the
-    end of the dose — where the co-reagent is lowest and the accumulation highest — that is a
-    fraction `1 / (k * C_co,end * t_dose)` of the charge. On the stiff fixture `C_co,end` is
-    (6 - 5) mol / 0.1 = 10. Measured agreement is 2.8e-06 at `k = 100`, where the limit's own
-    `1/(k*C_co*t)` correction is still visible, and 1e-9 beyond.
+    The feed reacts as it arrives, so the peak unreacted fraction at the end of the dose is
+    `1 / (k * C_co,end * t_dose)`; on the stiff fixture `C_co,end` is (6 - 5) mol / 0.1 = 10.
     """
     profile = _stiff(rate_constant=rate_constant)
     assert profile.method == reactors.METHOD_STABLE
@@ -353,9 +315,8 @@ def test_a_co_reagent_used_up_mid_dose_leaves_exactly_the_excess(
 ) -> None:
     """A fast reaction that runs out of co-reagent halfway leaves half the charge, exactly.
 
-    At `k = 100` the stable scheme's truncation left the co-reagent at -0.011 mol where it ran out
-    inside a step, which reported the peak 1.1e-04 low; moving the state back onto the conserved
-    line `n_d - n_co` makes it exact. All three were refused before, as too fast for RK4.
+    The state is projected back onto the conserved line `n_d - n_co`, so truncation within a step
+    cannot drive the co-reagent negative.
     """
     profile = reactors.semibatch_accumulation(
         rate_constant=rate_constant,
@@ -374,9 +335,8 @@ def test_a_co_reagent_used_up_mid_dose_leaves_exactly_the_excess(
 def test_the_start_of_a_stiff_dose_does_not_overshoot_into_a_false_peak() -> None:
     """With a zero-order co-reagent the true profile rises monotonically to `F/k` and stays there.
 
-    The SDIRK stability function is negative at large `h*lambda`, so its first step from zero
-    overshot that plateau and the overshoot became the reported peak — 0.78% high at `k = 200`. The
-    backward-Euler start approaches from below.
+    SDIRK's stability function is negative at large `h*lambda`, so a first step from zero would
+    overshoot into a false peak; the backward-Euler start approaches from below.
     """
     rate_constant = 200.0
     profile = reactors.semibatch_accumulation(
@@ -482,8 +442,8 @@ def _stiff(*, rate_constant: float, order_in_dosed: float = 1.0) -> reactors.Sem
 def test_a_profile_keeps_a_bounded_set_of_points_whatever_the_step_count() -> None:
     """Memory is O(samples), not O(steps), and the peak is exact rather than the nearest sample.
 
-    At `k = 2.5` the stability floor integrates ~194,000 steps; every one used to be materialised as
-    an `AccumulationPoint` to return 25.
+    At `k = 2.5` the stability floor integrates ~194,000 steps, and only the returned samples are
+    kept.
     """
     profile = _stiff(rate_constant=2.5)
     assert len(profile.points) <= reactors.PROFILE_POINTS
@@ -504,8 +464,8 @@ def test_an_order_below_one_that_runs_its_reagent_out_says_so_rather_than_blamin
 ) -> None:
     """Below first order the rate does not fall smoothly to zero, so no step floor covers it.
 
-    Before the fix both cases were reported as "went unstable … a stiffness the step floor did not
-    catch", which misstates the cause: the reaction consumes the dose as fast as it arrives.
+    The refusal says the reaction consumes the dose as fast as it arrives, rather than blaming
+    stiffness.
     """
     with pytest.raises(KineticsInputError, match="ran out") as refused:
         _stiff(rate_constant=rate_constant, order_in_dosed=order_in_dosed)
@@ -564,9 +524,8 @@ def _second_order_dose(
 def test_a_second_order_dose_that_reacts_as_it_arrives_is_answered_rather_than_refused() -> None:
     """The step floor bounds `C_d` by what a dose reaches, not by the whole charge unreacted.
 
-    Bounding it by `dosed_moles / initial_volume` put this dose at 2.3 million steps and refused it
-    as "too fast for this integrator", while 5,000 steps answers it to eleven figures. The reference
-    is a 20,000-step integration, which agrees with a 190,000-step one to 1e-15.
+    The loose bound would refuse a dose a few thousand steps answer; the reference is a finer
+    integration.
     """
     profile = _second_order_dose(
         rate_constant=0.5, dosed_moles=40.0, initial_coreagent_concentration=45.0, dosed_volume=0.5
@@ -575,12 +534,11 @@ def test_a_second_order_dose_that_reacts_as_it_arrives_is_answered_rather_than_r
 
 
 def test_a_slow_second_order_dose_is_not_under_stepped(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The half the bound must still catch: a dose slow enough that its reagent accumulates.
+    """A slow second-order dose is not under-stepped.
 
-    Here the co-reagent runs out halfway, so half the charge is left unreacted — exactly, which is
-    the reference. `J_d = 2*k*C_d*C_co` is then far above `k*C_co`, and the bound that ignored the
-    order in the dosed reagent took 200 steps and diverged. The second half pins that direction, so
-    the first half is evidence that the floor is doing the work rather than the default count.
+    The co-reagent runs out halfway, so half the charge is the exact reference, and the stiffness
+    `J_d = 2*k*C_d*C_co` is far above `k*C_co`. This direction proves the floor, not the default
+    step count, does the work.
     """
     profile = _second_order_dose(
         rate_constant=1e-3, dosed_moles=200.0, initial_coreagent_concentration=100.0, dosed_volume=0
@@ -615,10 +573,10 @@ _FLOAT_ARGUMENTS = (
 @pytest.mark.parametrize("bad", [math.inf, math.nan])
 @pytest.mark.parametrize("argument", _FLOAT_ARGUMENTS)
 def test_a_non_finite_dose_input_is_refused_by_name(argument: str, bad: float) -> None:
-    """Infinity passes `gt=0` and `value <= 0.0`, and used to leave `math.ceil` as an overflow.
+    """Infinity passes `gt=0` and `value <= 0.0`, so it is refused explicitly.
 
-    `connector_app` replaces an `OverflowError` with an opaque `error_id`; a `KineticsInputError`
-    reaches the caller as a sentence.
+    An `OverflowError` would reach the caller as an opaque `error_id`; a `KineticsInputError`
+    reaches it as a sentence.
     """
     values = {
         "rate_constant": 0.02,
@@ -682,9 +640,9 @@ def test_a_rate_law_too_large_to_represent_is_refused_by_name(order_in_dosed: fl
 def test_a_rate_constant_times_time_past_dbl_max_is_complete_conversion_at_every_order(
     order: float,
 ) -> None:
-    """`(n-1)·k·t` past DBL_MAX used to be refused as an overflow at every order but the first,
-    which answered 1.0 for the same inputs — so the outcome depended on the order. The exact answer
-    is complete conversion, and it is an ordinary double.
+    """`(n-1)·k·t` past DBL_MAX is complete conversion at every order, not an overflow.
+
+    The outcome must not depend on the order; the exact answer is an ordinary double.
     """
     assert reactors.batch_conversion(
         rate_constant=1e200, initial_concentration=1.0, time_seconds=1e200, order=order
@@ -756,11 +714,10 @@ def test_a_pfr_whose_damkohler_number_overflows_is_complete_conversion() -> None
 def test_an_intermediate_past_dbl_max_does_not_refuse_a_representable_answer(
     call: Callable[[], float], expected: float
 ) -> None:
-    """Each of these used to be refused as "no finite number to report", and each has one.
+    """An intermediate past DBL_MAX does not refuse a representable answer.
 
-    At order 200 and `C₀ = 1e-5`, `C₀^(1-n)` is 1e995 but `k·t` is 199 against it, so conversion is
-    effectively zero; a CSTR at `C₀ = 1e120`, order 3, has an outlet near 1e40 although `τ·k·C₀³`
-    overflows during the bisection.
+    E.g. at order 200 the `C₀^(1-n)` term overflows while conversion is effectively zero; a CSTR's
+    bisection may overflow while the outlet is finite.
     """
     assert call() == pytest.approx(expected, abs=1e-12)
 
@@ -783,12 +740,10 @@ def test_an_intermediate_past_dbl_max_does_not_refuse_a_representable_answer(
     ],
 )
 def test_a_closed_form_that_overflows_is_refused_by_name(call: Callable[[], float]) -> None:
-    """Finite inputs the field bounds admit (`order >= 0`, `C0 > 0`, `k > 0`) reached a float `**`
-    that raised `OverflowError` — not a `ValueError`, so `connector_app` handed the model an opaque
-    `error_id` — or a `*`/`/` that quietly returned `inf` or `nan` as the answer.
+    """A closed form that genuinely overflows is refused by name.
 
-    Only answers that really are past DBL_MAX belong here: at order 200 and `C₀ = 1e-5` the time to
-    half conversion is ~1e1052 s, not a false refusal of a finite one.
+    An `OverflowError` would reach the model as an opaque `error_id`, and `inf`/`nan` must not be
+    returned as answers. Only results really past DBL_MAX belong here.
     """
     with pytest.raises(KineticsInputError, match="overflows a double"):
         call()

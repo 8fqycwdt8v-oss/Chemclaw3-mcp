@@ -79,8 +79,8 @@ def test_a_megastring_smiles_is_refused_rather_than_crashing_the_pod(tool: str) 
     )
     kind, length = finished.stdout.split()[-2:]
     assert kind == "InvalidSmilesError", f"{tool} answered {kind}, not a worded refusal"
-    # Finding 3, checked here too because this is the path that produces the biggest string: the
-    # refusal must not echo the caller's megastring back into the model's context.
+    # This path produces the biggest string, so the refusal must not echo the caller's megastring
+    # back into the model's context.
     assert int(length) < 500, f"{tool}'s refusal is {length} characters"
 
 

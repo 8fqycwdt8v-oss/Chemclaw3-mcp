@@ -30,10 +30,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVERS = ROOT / "servers"
 
 
-# A variable a shipped file sets, and the value it sets it to — or `None` where the file *names* the
-# variable and does not hold the value: a `valueFrom:` reference into a ConfigMap or Secret, or a
-# Containerfile `ARG` the build supplies. Both ratchets below read `None` as unprovable rather than
-# as absent, which is the only safe reading of a file that cannot answer the question.
+# A variable a shipped file sets and its value, or `None` where the file names the variable
+# without holding the value (a `valueFrom:` reference, a build-supplied `ARG`). Both ratchets read
+# `None` as unprovable rather than absent.
 EnvSetting = tuple[str, str | None]
 
 
@@ -46,10 +45,9 @@ _SHELL_ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
 def _inline_assignments(command: object) -> list[EnvSetting]:
     """Every `NAME=value` a command line sets, whether it is a JSON array or one shell string.
 
-    A container that sets a variable in its own `command:` sets it for the server process exactly
-    as an `env:` entry would, and a parser reading only `env:` reports clean. Both shapes reduce to
-    the same thing: split every string with `shlex` and keep the tokens that are assignments —
-    over-inclusive on purpose, since a flag (`--port=8850`) cannot match and a real assignment must.
+    A variable set in `command:` reaches the server like an `env:` entry. Every string is split with
+    `shlex` and assignment tokens kept, over-inclusive on purpose: a flag like `--port=8850` cannot
+    match.
     """
     parts = command if isinstance(command, list) else [command]
     found: list[EnvSetting] = []
@@ -153,9 +151,8 @@ def _command_words(remainder: str) -> list[str] | str:
 def _env_settings(label: str, text: str) -> list[EnvSetting]:
     """Every environment variable one shipped file sets, whichever kind of file it is.
 
-    `label` decides how the text is read — a deployment manifest is YAML with `env:` entries, a
-    Containerfile is `ENV` instructions. Shared by both ratchets below, so the two cannot disagree
-    about what a file sets.
+    `label` decides the reading (YAML `env:` entries or Containerfile `ENV`); shared by both
+    ratchets so they cannot disagree about what a file sets.
     """
     if label.endswith(".yaml"):
         return _env_pairs(list(yaml.safe_load_all(text)))
@@ -205,14 +202,10 @@ def shipped_deployment_files() -> list[Path]:
 
 
 def test_a_deployment_directory_holds_only_shapes_the_ratchets_can_read() -> None:
-    """`deploy/` is YAML and nothing else, because the readers of it dispatch on that suffix.
+    """`deploy/` holds only `.yaml` files, because the ratchets dispatch on that suffix.
 
-    The two ratchets now glob every file under `deploy/`, which closes the "a third filename is
-    invisible" hole — but reading a file is not understanding it. `_env_settings` treats anything
-    not ending `.yaml` as a Containerfile, so a `deployment.yml`, a `kustomization.yaml.tpl` or a
-    JSON patch would be scanned for `ENV` instructions, find none, and be reported clean. This is
-    the half that stops a file arriving in a shape the parser answers wrongly rather than not at
-    all.
+    `_env_settings` reads anything else as a Containerfile, so a `.yml`, a template or a JSON patch
+    would be scanned for `ENV`, find none, and be reported clean.
     """
     unreadable = sorted(
         str(path.relative_to(ROOT))
@@ -346,24 +339,11 @@ def test_no_shape_that_hides_a_value_from_this_ratchet_reads_as_clean() -> None:
     ) == ["servers/x/Containerfile: sets MCP_EGRESS_ALLOW='evil.example.com'"]
 
 
-# Every environment variable a first-party module turns into a number is something a deployment can
-# move, and `_BOUND_ANCHORS` is the floor under the derivation below: a scan that silently stopped
-# finding variables — a renamed `env_prefix`, a read through a helper — would agree with an empty
-# tree forever. These five are the ones whose loss would matter most, one per
-# mechanism and one per server that owns an admission ceiling, which `CLAUDE.md` calls the bound a
-# slow tool owes the fleet. They are named here rather than in prose for the reason this repository
-# keeps relearning: a count or a list in a document goes stale on somebody else's merge.
-#
-# **Five of these six now arrive through `_BOUND_HELPERS` rather than through a bare `os.environ`
-# read**, which makes this floor load-bearing in a way it was not before: renaming
-# `mcp_server_kit.limits.env_bound` without telling the scan takes them out of the inventory, and
-# this is the assertion that says so instead of the set silently shrinking.
-#
-# `CHEMCLAW_PROPS_MAX_TB_RATIO` is anchored for a sharper version of the same reason: it is the one
-# bound read through `env_ratio`, so it is the *whole* of what a rename of that second helper would
-# cost. Measured when it moved behind the helper, the derived set went 44 -> 43 until the helper's
-# name was added to `_BOUND_HELPERS` — a bound made safe at import and invisible to the deployment
-# ratchet in the same commit, which is exactly the trade this floor exists to make loud.
+# A floor under the derived inventory of environment-read numeric bounds: a scan that silently
+# stopped finding variables (a renamed `env_prefix` or helper) would agree with an empty tree. One
+# anchor per mechanism and per server owning an admission ceiling. Most arrive through
+# `_BOUND_HELPERS`, and `CHEMCLAW_PROPS_MAX_TB_RATIO` is the only bound read through `env_ratio`,
+# so renaming either helper fails here instead of shrinking the set.
 _BOUND_ANCHORS = frozenset(
     {
         "MCP_MAX_SMILES_CHARS",
@@ -376,18 +356,13 @@ _BOUND_ANCHORS = frozenset(
 )
 
 
-# A shipped deployment file that sets a derived numeric setting, and the argument for it. One row,
-# and it is the one this check found on its first run over the real tree — which is also the
-# counter-example to the widening check this one replaced. `crest_threads` defaults to `0`, meaning
-# "let CREST's OpenMP size itself from `/proc/cpuinfo`", which is the *node's* core count and not
-# something a container CPU limit changes; `servers/calc/Containerfile` sets `4`, and a comparison
-# against the default would have read that narrowing as `4 > 0` and called it a widening.
+# A shipped deployment file that sets a derived numeric setting, and the argument for it.
+# `crest_threads` defaults to `0` (CREST sizes OpenMP from the node's cores, which a container
+# limit does not change); `servers/calc/Containerfile` sets `4`, which narrows rather than widens.
 #
-# Everything else derived below is either a resource bound (`MCP_MAX_*`, the admission ceilings, the
-# thread pool) or — in `servers/calc` — a *scientific* constant that enters `calc_version`, the
-# primary key of Chemclaw3's calibration ledger; that server's own config docstring says changing
-# one "is a scientific decision, not a deployment tweak". The two classes fail differently and need
-# the same gate: one lets a pod be exhausted, the other writes rows nothing reconciles against.
+# Everything else derived below is a resource bound or, in `servers/calc`, a scientific constant
+# entering `calc_version`, the key of Chemclaw3's calibration ledger. One lets a pod be exhausted,
+# the other writes rows nothing reconciles against; both need this gate.
 _ARGUED_DEPLOYMENT_SETTINGS: frozenset[tuple[str, str]] = frozenset(
     {
         # CREST is the one thing in this image that should use more than one core, and the scrubbed
@@ -400,29 +375,13 @@ _ARGUED_DEPLOYMENT_SETTINGS: frozenset[tuple[str, str]] = frozenset(
 _NUMERIC_CASTS = frozenset({"int", "float"})
 
 
-# The one first-party helper the derivation below follows into, by name.
+# The first-party bound readers the derivation follows into, by name.
 #
-# **Following a helper at all is a decision this scan spent a while refusing**, and the docstring of
-# `numeric_env_bounds` named "a read through a helper" as a shape it does not parse. What changed is
-# that eleven of this fleet's bounds moved behind exactly one such helper —
-# `mcp_server_kit.limits.env_bound`, which reads the variable, refuses a value that would stop the
-# server working, and returns an `int` — so not following it would have taken eleven variables out
-# of the inventory in a single commit, four of the five `_BOUND_ANCHORS` rows among them. Measured
-# on 2026-09-16 before this constant existed, the derived set went from 45 bounds to 34.
-#
-# It is a *name*, which is a coupling: renaming the helper stops the scan seeing its call sites.
-# That is survivable only because `_BOUND_ANCHORS` fails loudly when it happens instead of letting
-# the set quietly shrink, which is the floor the rest of this derivation already rests on. An
-# arbitrary helper is still not followed, and
+# `mcp_server_kit.limits.env_bound` (int) and `env_ratio` (float) read a variable and refuse a
+# value that would stop the server working; most of the fleet's bounds go through them, so not
+# following them would drop those variables from the inventory. Matching by name is a coupling, made
+# safe by `_BOUND_ANCHORS` failing loudly on a rename. An arbitrary helper is still not followed;
 # `test_the_derivation_reads_the_two_spellings_it_used_to_miss` asserts both halves.
-#
-# **`env_ratio` joined it the day it existed, and adding the helper without adding the name would
-# have been a silent shrink of exactly the kind this comment is about.** Measured: moving
-# `CHEMCLAW_PROPS_MAX_TB_RATIO` off its bare `float(os.environ.get(...))` and behind that reader
-# took the derived set from 44 bounds to 43 — the bound became safe at import and invisible to the
-# ratchet that keeps a Containerfile or a ConfigMap from setting it outside its floor, which is a
-# worse trade than the defect it fixed. The two readers are one entry per parsed type, not a
-# general capability: `env_ratio` is followed because it is `env_bound` for a `float`.
 _BOUND_HELPERS = frozenset({"env_bound", "env_ratio"})
 
 
@@ -445,10 +404,7 @@ def _called_name(node: ast.Call) -> str:
 def _env_read(node: ast.AST) -> str | None:
     """The variable name `node` reads from the environment, when it is a literal.
 
-    Three spellings: `os.environ["X"]`, `os.environ.get("X", …)` and `os.getenv("X", …)`. The third
-    was missed until 2026-09-12 — nothing in `src/` uses it today, so the gap was latent, and a
-    derivation that silently omits the most ordinary spelling of an environment read is the failure
-    this whole ratchet is about.
+    Three spellings: `os.environ["X"]`, `os.environ.get("X", …)` and `os.getenv("X", …)`.
     """
     if isinstance(node, ast.Call):
         func = node.func
@@ -560,10 +516,9 @@ def _base_name(base: ast.expr) -> str:
 def _resolve_class(name: str, label: str, index: dict[str, list[_Declared]]) -> _Declared | None:
     """The first-party class `name` means from inside `label`, or `None` for a library class.
 
-    The same module first, then the whole tree when exactly one class has the name. **Two
-    candidates is refused rather than guessed**: the parent is where an inherited `env_prefix` comes
-    from, so picking the wrong one would derive a set of names nothing reads — the defect the
-    `validation_alias` arm below exists for, reached a different way.
+    The same module first, then the whole tree when exactly one class has the name. Two candidates
+    are refused rather than guessed, since the parent supplies an inherited `env_prefix` and a wrong
+    guess would derive names nothing reads.
     """
     candidates = index.get(name, [])
     local = [declared for declared in candidates if declared.label == label]
@@ -598,12 +553,9 @@ def _derives_from(lineage: list[_Declared], root: str) -> bool:
 def _settings_config(lineage: list[_Declared]) -> dict[str, object]:
     """The `SettingsConfigDict` keys this derivation reads, merged down `lineage` as pydantic does.
 
-    **Inherited, which is the first of the three shapes the derivation used to miss.** pydantic
-    merges `model_config` along the class hierarchy, so a subclass of a settings class that sets
-    `env_prefix` reads its fields under the *parent's* prefix — and this read only the class's own
-    body, so it derived `MAX_RUNS` where the environment reads `CHEMCLAW_MAX_RUNS`. A value it
-    cannot read as a literal is refused rather than skipped, because a skipped prefix is a wrong
-    name rather than a missing one.
+    pydantic merges `model_config` along the class hierarchy, so a subclass reads its fields under
+    the parent's `env_prefix`. A non-literal value is refused rather than skipped, since a skipped
+    prefix yields a wrong name rather than a missing one.
     """
     config = dict(_SETTINGS_CONFIG_DEFAULTS)
     for declared in lineage:
@@ -655,11 +607,9 @@ def _settings_config(lineage: list[_Declared]) -> dict[str, object]:
 def _field_aliases(value: ast.expr | None, where: str) -> list[str] | None:
     """The environment names a `Field(validation_alias=...)` or `Field(alias=...)` reads, if any.
 
-    **The third shape, and the one worse than absent**: pydantic-settings reads an aliased field
-    from the alias *as written*, with no `env_prefix` — so deriving the prefixed field name
-    reported a variable nothing reads, and a ratchet built on it would refuse the harmless name and
-    wave the real one through. `AliasChoices` of literals is every one of them; an `AliasPath` or a
-    computed alias is refused, because this cannot name what it reads.
+    pydantic-settings reads an aliased field from the alias as written, with no `env_prefix`, so the
+    prefixed field name would be a variable nothing reads. Every literal in an `AliasChoices`
+    counts; an `AliasPath` or computed alias is refused.
     """
     if not (isinstance(value, ast.Call) and _called_name(value) == "Field"):
         return None
@@ -710,12 +660,11 @@ def _model_numbers(
     delimiter: str | None,
     seen: frozenset[int] = frozenset(),
 ) -> dict[str, str]:
-    """Every environment name a settings class — or a model nested in one — reads a number from.
+    """Every environment name a settings class, or a model nested in one, reads a number from.
 
-    **Nested models are the second shape.** A field annotated with a first-party `BaseModel` is one
-    environment variable carrying JSON — which moves every number inside it — and, where the
-    settings class sets `env_nested_delimiter`, one variable per nested field as well. Both are
-    derived; before this the field was skipped as "not numeric" and its numbers were invisible.
+    A field annotated with a first-party `BaseModel` is one variable carrying JSON (moving every
+    number inside it) and, with `env_nested_delimiter`, one variable per nested field too; both are
+    derived.
     """
     fields: dict[str, tuple[str, ast.AnnAssign]] = {}
     for ancestor in _lineage(declared, index):
@@ -788,10 +737,9 @@ def _numeric_settings_fields(modules: dict[str, ast.Module]) -> dict[str, _Setti
 def _annotation_is_numeric(annotation: ast.expr) -> bool:
     """Whether `annotation` is `int`, `float`, one of those unioned with `None`, or wrapped.
 
-    `Annotated[int, Field(ge=1)]` is the spelling a field grows the moment somebody wants a
-    constraint on it, and it was invisible here until 2026-09-12 — so a bound could have left the
-    ratchet's set by acquiring a validator. No field in the tree is written that way today;
-    `Optional[int]` is covered as the `|` form only, which is the form this repository writes.
+    `Annotated[int, Field(ge=1)]` is how a field gains a constraint, so a bound must not leave the
+    set by acquiring a validator. `Optional[int]` is covered only as the `|` form this repository
+    writes.
     """
     if isinstance(annotation, ast.Name):
         return annotation.id in _NUMERIC_CASTS
@@ -839,9 +787,7 @@ def numeric_env_bounds() -> dict[str, Bound]:
 def _matching_bound(name: str, bounds: dict[str, Bound]) -> tuple[str, Bound] | None:
     """The bound a shipped spelling of `name` moves, under that bound's own matching rule.
 
-    A lowercase `ENV chemclaw_calc_max_concurrent_requests=99` moved `servers/calc`'s admission
-    ceiling to 99 with both ratchets silent, because the derivation uppercases a settings field's
-    name and matching was `name in bounds`.
+    Settings fields are read case-insensitively, so a lowercase `ENV` spelling must match too.
     """
     exact = bounds.get(name)
     if exact is not None:
@@ -985,10 +931,8 @@ def test_no_spelling_that_moved_a_bound_past_this_ratchet_reads_as_clean() -> No
     # mutation flipping every bound to case-insensitive left this test green until these two lines
     # existed, because a hand-built fixture asserts the matching rule and not the derivation.
     derived = numeric_env_bounds()
-    # Named rather than indexed, because the two assertions below are about a bound's *case* rule
-    # and a bare `KeyError` from the subscript would say only that a dict lacked a key — in a file
-    # whose whole standard is that a failure names what broke. A bound disappearing from the
-    # derivation is the more serious of the two failures and has to read as the more serious one.
+    # Named rather than indexed, so a bound disappearing from the derivation fails with a message
+    # saying so rather than a bare `KeyError`.
     for variable in ("MCP_MAX_SMILES_CHARS", "CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS"):
         assert variable in derived, (
             f"{variable} is no longer in `numeric_env_bounds()`, so the ratchet that stops a "
@@ -1064,14 +1008,11 @@ def test_the_session_ceiling_is_derived_from_the_smallest_pod_this_fleet_actuall
 
 
 def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
-    """`os.getenv` and `Annotated[int, …]`, neither of which exists in `src/` today.
+    """`os.getenv` and `Annotated[int, …]` are derived, though neither exists in `src/` today.
 
-    That is the point: a derivation is a claim about shapes rather than about this tree, and both of
-    these would have entered it as an ordinary line of code with the ratchet silent. Measured on
-    2026-09-12 before the fix, each of these modules contributed **nothing** to the bound set.
-
-    The shapes still outside it are named in `numeric_env_bounds`' docstring and queued with an
-    anchor, rather than left for the next reviewer to discover by writing one.
+    A derivation is a claim about shapes, not about this tree; either would otherwise enter as an
+    ordinary line with the ratchet silent. Shapes still outside it are named in
+    `numeric_env_bounds`' docstring.
     """
     getenv = ast.parse('import os\n\nLIMIT = int(os.getenv("MCP_MAX_THINGS", "4"))\n')
     assert set(_numeric_environ_reads(getenv)) == {"MCP_MAX_THINGS"}
@@ -1104,13 +1045,10 @@ def _settings_names(**sources: str) -> dict[str, _SettingsBound]:
 
 
 def test_the_derivation_follows_inheritance_nesting_and_aliases() -> None:
-    """The three shapes `numeric_env_bounds` used to name as invisible, each one driven.
+    """Inheritance, nesting and aliases are each followed, driven on synthetic modules.
 
-    Measured on 2026-09-12 against synthetic modules and queued since: none exists in `src/` today,
-    and each would have entered it as an ordinary line. Every assertion below was red against the
-    one-module derivation this replaced — the parent's prefix was lost, the nested model's numbers
-    were skipped as "not numeric", and the aliased field came back under `CHEMCLAW_MAX_RUNS`, a
-    name pydantic-settings does not read at all.
+    None exists in `src/` today. The parent's prefix must be kept, the nested model's numbers found,
+    and an aliased field reported under its alias.
     """
     # 1. The `env_prefix` is on the parent, and the parent is in another module.
     inherited = _settings_names(
@@ -1251,10 +1189,9 @@ def test_the_bound_scan_sees_both_configuration_mechanisms() -> None:
     )
 
 
-# The names a module reports to `/healthz` by writing them down, rather than by reading them through
-# `env_bound`/`env_ratio` (which report themselves) or by handing a whole settings object to
-# `report_settings`. Named here, not imported, for the reason `_BOUND_HELPERS` is: the scan reads
-# source, and a rename of either reporter has to fail this file rather than shrink what it sees.
+# The names a module uses to report a bound to `/healthz` explicitly, rather than through
+# `env_bound`/`env_ratio` (which report themselves) or `report_settings`. Named, not imported, so
+# a rename fails this file rather than shrinking what it sees.
 _BOUND_REPORTERS = frozenset({"report_bound"})
 
 
@@ -1309,26 +1246,21 @@ def _first_party_modules() -> dict[str, ast.Module]:
 
 
 def test_every_bound_a_deployment_can_move_is_reported_on_the_probe() -> None:
-    """The ratchets above read the shipped files; this makes the pod say what it actually runs.
+    """Every bound a deployment can move is reported on the probe.
 
-    `test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment` holds every
-    file this repository ships, and cannot see a bound moved by an overlay applied elsewhere, a
-    Helm value in a deploying repository or an operator's `kubectl set env` — by construction, and
-    for good. The serving side can: `connector_app`'s `/healthz` reports
-    `mcp_server_kit.limits.effective_bounds()`, and this holds every bound in the derived inventory
-    to reaching that record, so a new knob is observable from a probe the day it is added
-    (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    The ratchets above read shipped files and cannot see an overlay, a Helm value or
+    `kubectl set env`. `/healthz` reports `mcp_server_kit.limits.effective_bounds()`, and every
+    bound in the derived inventory must reach it, so a new knob is observable the day it is added.
     """
     offences = _unreported_bounds(_first_party_modules(), numeric_env_bounds())
     assert not offences, "\n".join(offences)
 
 
 def test_the_reporting_check_bites() -> None:
-    """A check that passes on everything is not a check, so it is shown failing on purpose.
+    """The reporting check fails where it should, on four synthetic modules.
 
-    Four synthetic modules, one per shape: a bare `int(os.environ[...])` nobody reports (flagged),
-    the same read with a literal `report_bound` (clean), a settings class whose module hands an
-    instance to `report_settings` (clean) and one whose module does not (flagged).
+    An unreported bare `int(os.environ[...])` is flagged; the same with `report_bound` is clean; a
+    settings class handed to `report_settings` is clean, and one not handed over is flagged.
     """
     source = {
         "a.py": 'import os\nX = int(os.environ["PROBE_BARE"])\n',
@@ -1377,9 +1309,9 @@ class BoundSite(NamedTuple):
 def env_bound_sites() -> list[BoundSite]:
     """Every `mcp_server_kit.limits.env_bound` call in first-party source, derived from the tree.
 
-    The first positional argument is the variable's name, which is the only shape this repository
-    writes and the only one `_numeric_environ_reads` follows — so a site spelled any other way is
-    absent from both this and the deployment ratchet, and that is one failure rather than two.
+    The variable name is the first positional argument, the only shape written here and the only one
+    `_numeric_environ_reads` follows, so a site spelled otherwise is missing from both checks at
+    once.
     """
     sites: list[BoundSite] = []
     for root in sorted(ROOT.glob("packages/*/src")) + sorted(ROOT.glob("servers/*/src")):

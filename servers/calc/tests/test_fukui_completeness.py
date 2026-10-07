@@ -17,7 +17,7 @@ from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.identity import COMPUTE_TOOLS
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
 
-# Aspirin: 21 atoms with hydrogens, comfortably past the 15 the truncation used to leave behind.
+# Aspirin: 21 atoms with hydrogens, enough that a top-15 truncation would drop sites.
 _ASPIRIN = "CC(=O)Oc1ccccc1C(=O)O"
 
 

@@ -21,8 +21,7 @@ server = FastMCP("props")
 # Declared rather than computed from the corpus, because loading the corpus at import would verify
 # it at import and turn a bad checksum into a crash instead of a 503.
 # `servers/props/tests/test_tools.py::test_the_compare_bound_is_the_size_of_the_table` keeps it
-# equal
-# to the live row count.
+# equal to the live row count.
 MAX_COMPARED_SOLVENTS = 44
 
 

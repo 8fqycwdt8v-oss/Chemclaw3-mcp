@@ -26,10 +26,9 @@ MANIFESTS = ROOT / "manifests"
 INTERNAL_MANIFESTS = ROOT / "manifests-internal"
 
 
-# What a server declares itself to be, and where its symlink therefore belongs. `connector` is the
-# default and is written nowhere: Chemclaw3's `ConnectorManifest` is `extra="forbid"`, so a `mount:`
-# key on a manifest it reads would abort its startup. That asymmetry is the design — see
-# `test_a_backend_declares_itself_in_a_key_chemclaw3_refuses`.
+# What a server declares itself to be, and so where its symlink belongs. `connector` is the
+# default and never written: Chemclaw3's `extra="forbid"` model would abort on a `mount:` key (see
+# `test_a_backend_declares_itself_in_a_key_chemclaw3_refuses`).
 MOUNTS = {"connector": MANIFESTS, "backend": INTERNAL_MANIFESTS}
 
 
@@ -73,9 +72,8 @@ def test_the_manifest_is_registered_by_symlink_in_the_bucket_it_declares(server:
 def test_the_directory_the_export_line_names_holds_only_connectors() -> None:
     """Chemclaw3's discovery, replicated over `manifests/`: everything it finds must be dialable.
 
-    The other direction of the test above, and the one that catches a directory appearing in
-    `manifests/` that no `servers/` entry claims. `_bundle_dirs` is non-recursive and reads any
-    subdirectory holding a `connector.yaml`, so that is exactly what is enumerated here.
+    `_bundle_dirs` reads any immediate subdirectory holding a `connector.yaml`, so that is what is
+    enumerated; a directory no `servers/` entry claims fails.
     """
     found = sorted(path.name for path in MANIFESTS.iterdir() if (path / "connector.yaml").is_file())
     connectors = sorted(s.name for s in server_dirs() if declared_mount(s) == "connector")
@@ -179,11 +177,9 @@ def test_every_server_hands_connector_app_a_readiness_check(server: Path) -> Non
     )
 
 
-# What one of these subprocesses does: refuse every vendored corpus at the loader, then import the
-# server and ask its probe. Run out of process because the import is the subject — a module already
-# in `sys.modules` from another test would make the answer depend on collection order — and because
-# patching a module-level `from mcp_server_kit import load_dataset` binding after the fact is not
-# the thing a corrupt file does.
+# Refuse every vendored corpus at the loader, then import the server and ask its probe. Out of
+# process because the import is the subject: a module cached by another test would make the result
+# depend on collection order.
 _DRIVER = """
 import importlib, json, sys
 
@@ -217,10 +213,9 @@ print(json.dumps({"status": answer.status_code, "body": answer.json(), "marker":
 def _dataset_servers() -> list[Path]:
     """Every server that loads a vendored corpus, derived from the corpora rather than listed.
 
-    `dataset.json` is what `mcp_server_kit.load_dataset` refuses without, so its presence under a
-    server's package is this repository's own definition of "has a corpus to be corrupt". Derived
-    so that the ninth server to vendor a table owes this proof the day it does, and so that a
-    server which *stops* carrying one drops out instead of leaving a test asserting nothing.
+    A `dataset.json` under a server's package is what `load_dataset` requires, so it defines "has a
+    corpus to be corrupt"; a new corpus owes the proof the day it lands, and a removed one drops
+    out.
     """
     return [server for server in server_dirs() if any((server / "src").glob("*/**/dataset.json"))]
 
@@ -256,57 +251,29 @@ def test_a_corrupt_corpus_is_the_probe_s_answer_rather_than_an_import_error(serv
 
 # Which servers answer for their own concurrency, and which are argued not to need to.
 #
-# **A ceiling is `engine/admission.py`**, and each server that ships one is held by its own module.
-# `kinetics` was argued out of one at 836 µs and moved in when its integrator's step count became
-# the caller's to set. The absence of a ceiling in an eighth server was held by
-# nobody, which `docs/BACKLOG.md` recorded as "an eighth server without one passes every test here"
-# — and then an eighth server arrived (`thermalsafety`) with exactly that shape: an argued absence
-# in a README that no test reads.
-#
-# It cannot be derived from the manifest. `D-2026-09-12-one-tool-call-is-not-one-thread` measured
-# that the `read_only`/`state_changing` split does not carry, because every `chem` tool is
-# `read_only`, correctly, and the heavy band of them shares a ceiling. So the rule is the same
-# shape as `BLIND_ANSWER_IS_ARGUED`: present, or argued here, and checked in both directions.
-#
-# Each argument below is a measurement rather than an adjective, because "it is fast" is what every
-# server's author believes on the day they write it.
-# Every figure below is **engine CPU per call** — `time.process_time` around the engine function,
-# warmed so the lazy dataset load is not in the average. One basis for all three deliberately: the
-# first draft of this table mixed 11.7 ms for `props` (a whole MCP round trip) with 63.7 µs for
-# `thermalsafety` (the engine alone) and read as though one were 200x the other, when the two
-# numbers were measuring different things. What a ceiling protects is the pod's CPU, so that is
-# what is measured; the transport each call also pays is the same for every server in this fleet
-# and is what the millisecond figures were mostly made of.
+# A ceiling is `engine/admission.py`. Whether a server needs one cannot be derived from the
+# manifest (`read_only` tools can still be heavy), so the rule matches `BLIND_ANSWER_IS_ARGUED`:
+# present, or argued here, checked in both directions. Each argument is a measurement of engine
+# CPU per call (`time.process_time` around the engine function, warmed), one basis for all,
+# since a ceiling protects the pod's CPU and transport cost is the same for every server.
 CEILING_IS_ARGUED_ABSENT = {
-    # A dict lookup and a bisection over a 44-row vendored table: 0.7 µs for the lookup, 1.8 µs for
-    # `vapour_pressure`, and 10.3 µs for a Hansen sweep across the whole table — which is the
-    # largest single call `MAX_COMPARED_SOLVENTS` permits, since that bound *is* the table's size.
-    # It was set after 100 000 x "dcm" was measured at 14.83 s holding the event loop with a
-    # `/healthz` probe stuck behind it, which is the input bound rather than a concurrency one.
+    # A dict lookup and a bisection over a small vendored table, microseconds per call; the largest
+    # call is a Hansen sweep over the whole table, which `MAX_COMPARED_SOLVENTS` bounds.
     "props": "a table lookup and a bisection, with its one unbounded input bounded",
-    # An RDKit screen against fixed alert tables, already under a component bound: 321 µs to screen
-    # a 37-heavy-atom drug structure (imatinib), 339 µs for the genotoxic alert pass. RDKit holds
-    # the GIL, which is why `chem` needs a ceiling and this does not: `render_structure` generates
-    # 2D coordinates and draws, tens of milliseconds, two orders of magnitude above a substructure
-    # match against a fixed table.
+    # An RDKit screen against fixed alert tables, a few hundred microseconds on a drug-sized
+    # molecule, under a component bound. `chem` needs a ceiling for depiction, which costs two
+    # orders of magnitude more.
     "safety": "a bounded screen over fixed tables, with no depiction and no subprocess",
-    # Closed-form arithmetic over `math`: 1.9 µs to 4.9 µs for the six single-peak tools and
-    # 29.8 µs for `system_suitability_report` over a three-peak table with two six-injection
-    # series — most of even those being pydantic building the result model rather than any
-    # chromatography. No subprocess, no pinned thread, and both list inputs are bounded
-    # (`MAX_INJECTIONS`, `MAX_PEAKS`) so the cost cannot run away unpriced.
+    # Closed-form arithmetic, microseconds per tool and tens for the full report. No subprocess, no
+    # pinned thread, and both list inputs bounded (`MAX_INJECTIONS`, `MAX_PEAKS`).
     "suitability": "closed-form arithmetic, transport-bound, with both list inputs bounded",
-    # Closed-form arithmetic over the standard library: 0.25 µs for `adiabatic_temperature_rise`,
-    # 63.7 µs for `tmr_ad` (a fixed 200-step bisection, the slowest of the seven) and 4.5 µs for
-    # `oxygen_balance_screen`. No subprocess, no pinned thread, and `MAX_FORMULA_CHARACTERS` bounds
-    # the one input whose length was unbounded.
+    # Closed-form arithmetic, tens of microseconds at most (`tmr_ad`'s fixed bisection). No
+    # subprocess, no pinned thread, and `MAX_FORMULA_CHARACTERS` bounds the one variable-length
+    # input.
     "thermalsafety": "closed-form arithmetic, transport-bound, with its one input bounded",
-    # Closed-form correlations over `math`: 1.4 µs for `crystallisation_yield`, 12.2 µs for
-    # `shortcut_distillation` (a fixed 200-step bisection for Underwood's root, the widest thing
-    # this server does) and 1.6-7.2 µs for the other five. No subprocess, no pinned thread, and no
-    # list input — every argument is one scalar, so there is no input whose length could run the
-    # cost away and nothing for a ceiling to bound. For scale: one whole call over a real MCP
-    # session on loopback is 8.49 ms, so the arithmetic is ~0.1% of what the pod spends serving it.
+    # Closed-form correlations, microseconds per call (the widest is Underwood's fixed bisection).
+    # No subprocess, no pinned thread, and every argument is a scalar, so nothing for a ceiling to
+    # bound; the arithmetic is a tiny fraction of an MCP round trip.
     "unitops": "closed-form correlations with one fixed-step solver, measured at 12.2 µs at its "
     "widest",
 }
@@ -335,13 +302,10 @@ def test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not() 
 
 
 def test_no_server_is_argued_out_of_a_ceiling_it_actually_has() -> None:
-    """The other direction, and the one that makes the first mean something over time.
+    """No server is argued out of a ceiling it actually has.
 
-    A server that grows real work adds a ceiling; if its exemption stays, the next reader finds an
-    argument for "this one is arithmetic" beside a module bounding its concurrency, and cannot tell
-    which is true. The same rule `test_the_argued_blind_handlers_are_still_there` states for the
-    allowlist above, and the same rule `DEFERRED.md` states for a closed row: delete it in the
-    commit that closes it.
+    When a server grows a ceiling its exemption must go, or a reader finds both and cannot tell
+    which is true.
     """
     declared = {server.name for server in server_dirs()}
     contradicted = sorted(set(CEILING_IS_ARGUED_ABSENT) & _servers_with_a_ceiling())
@@ -358,15 +322,12 @@ def test_no_server_is_argued_out_of_a_ceiling_it_actually_has() -> None:
 
 @pytest.mark.parametrize("server", sorted(_servers_with_a_ceiling()))
 def test_a_gated_call_its_signature_refuses_costs_no_slot(server: str) -> None:
-    """Every gated tool, in every server with a ceiling, builds its work before it charges for it.
+    """Every gated tool builds its work before it charges for it.
 
-    All six gates charged first — `acquire`, then `work(*args, **kwargs)` — and calling an
-    `async def` binds its arguments on the spot, so a call the signature refused raised `TypeError`
-    between the charge and the only code that gives a slot back. Driven on `kinetics` before the
-    fix, one such call left `in_flight` at 1, which at a ceiling of one is a pod that refuses every
-    well-formed call for the rest of its life. `mcp_server_kit.limits.Admission.admit` takes the
-    already-built awaitable, so the order cannot be written backwards through it; this holds each
-    server to going through it, derived from the served surface rather than a list of tool names.
+    Calling an `async def` binds its arguments immediately, so charging first would let a
+    signature-refused call raise between the charge and the release, leaking a slot for good.
+    `Admission.admit` takes the built awaitable, so going through it fixes the order; each server is
+    held to it, derived from the served surface.
     """
     import asyncio
 
@@ -397,11 +358,9 @@ def _gated_servers() -> list[str]:
 def test_a_full_pod_says_so_in_the_fleet_s_one_format(name: str) -> None:
     """Every gate refuses with `[<its own name>-at-capacity]` at the head of the message.
 
-    That token is the only thing that tells a caller "retry shortly" rather than "your input is
-    wrong", so a server that refuses without it has its full pods read as bad requests and never
-    retried — which is what five of six did before the format moved into the kit. Driven through
-    each server's real `acquire` on a full gate, because the property is what reaches the wire, and
-    a gate named after another server would mint a marker the caller attributes to the wrong pod.
+    That token is what tells a caller "retry shortly" rather than "bad input". Driven through each
+    server's real `acquire` on a full gate, since a marker naming another server would be attributed
+    to the wrong pod.
     """
     import importlib
 
@@ -418,10 +377,8 @@ def test_a_full_pod_says_so_in_the_fleet_s_one_format(name: str) -> None:
 def _admission_gated_tools(server: Path) -> set[str]:
     """The tools a server's `tools.py` decorates with its admission gate, read from the tree.
 
-    An AST read rather than an import: the gate's decorator is `_admitted` — or, in `rxnpredict`,
-    a cost-specific `_admitted_<kind>` — in every gated server (the coverage tests beside each one
-    hold that), and importing `rxnpredict`'s tools would load its predictor stack to answer a
-    question about decorators.
+    An AST read, not an import: the decorator is `_admitted` (or `_admitted_<kind>` in
+    `rxnpredict`), and importing `rxnpredict` would load its predictor stack.
     """
     gated: set[str] = set()
     for path in server.glob("src/*/tools.py"):
@@ -459,10 +416,8 @@ def test_the_gate_reader_finds_every_gated_server() -> None:
 def test_a_server_queues_exactly_what_it_gates(name: str) -> None:
     """The manifest's `queued:` set is the server's admission-gated set, in both directions.
 
-    A gated tool left off the list is refused by a full pod straight into a chemist's turn; a tool
-    on it that is not gated pays ~80 ms of broker round trip for a slot nothing would ever deny.
-    Both are a drift between two declarations of one fact — what is heavy on this server — so the
-    manifest is held to the code that decides it.
+    A gated tool missing from it is refused by a full pod straight into a chemist's turn; an ungated
+    one on it pays a broker round trip for a slot nothing would deny.
     """
     manifest = yaml.safe_load((ROOT / "manifests" / name / "connector.yaml").read_text())
     queued = set(((manifest.get("endpoint") or {}).get("queued") or {}).get("tools") or [])

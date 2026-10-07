@@ -266,9 +266,8 @@ def server_revision() -> str:
     """The build this process is, or `"unknown"`.
 
     Read from `MCP_SERVER_REVISION`, set by the Containerfile from a build argument;
-    `tests/test_fleet.py`
-    asserts the Containerfile supplies it. Never raises: a server that cannot name its build still
-    starts.
+    `tests/test_fleet.py` asserts the Containerfile supplies it. Never raises: a server that cannot
+    name its build still starts.
     """
     return os.environ.get("MCP_SERVER_REVISION", "") or "unknown"
 

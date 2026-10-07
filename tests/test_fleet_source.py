@@ -10,11 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-# The modules whose *product* is an assertion failure. Both are imported by tests and by nothing
-# else — `testing.assert_manifest_matches`, `testing.assert_bearer_is_enforced` and
-# `no_egress.assert_no_egress_sources` exist to fail a test — so an `assert` there is the verdict
-# rather than a control. Everything else under `src/` is serving code, where an `assert` is a
-# control `python -O` deletes.
+# Modules whose product is an assertion failure, imported only by tests, so an `assert` there is
+# the verdict. Everywhere else under `src/` is serving code, where `python -O` deletes asserts.
 ASSERT_IS_THE_PRODUCT = {
     "packages/mcp_server_kit/src/mcp_server_kit/testing.py",
     "packages/mcp_server_kit/src/mcp_server_kit/no_egress.py",
@@ -48,10 +45,8 @@ def _assert_offences(roots: list[Path]) -> list[str]:
 
 def test_no_serving_module_enforces_an_invariant_with_assert() -> None:
     """`python -O` deletes every `assert`, so an invariant enforced by one depends on a flag."""
-    # `src/` only: a test module's asserts are its verdict, which is the same exemption
-    # `ASSERT_IS_THE_PRODUCT` grants the two helpers that live under `src/` because they are
-    # imported *by* tests. Derived from the tree rather than listed, so a new package or server is
-    # scanned the day it appears.
+    # `src/` only, since a test module's asserts are its verdict. Derived from the tree, so a new
+    # package or server is scanned the day it appears.
     roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
     assert len(roots) > 1, "no source trees found; has the workspace layout changed?"
     offences = _assert_offences(roots)
@@ -83,16 +78,12 @@ def test_the_assert_scan_reads_a_tree_and_not_the_text(tmp_path: Path) -> None:
     assert offences == [f"{(tmp_path / 'flagged.py').as_posix()}:2"], offences
 
 
-# Refusal echo. A caller-derived string interpolated into a raised exception reaches the model
-# verbatim (a `ValueError` passes `connector_app` unchanged) and so is bounded by
-# `mcp_server_kit.limits.echo`, the one config-driven bound — see that function's docstring and
-# `D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it`.
+# Refusal echo: a caller-derived string in a raised `ValueError` reaches the model verbatim, so it
+# goes through `mcp_server_kit.limits.echo`.
 #
-# **What counts as caller-derived is a vocabulary, and the vocabulary is the rule's reach.** The
-# fleet's refusals name what they quote after what it is: a structure is `smiles` or `*_smiles` (or
-# `job.smiles`, `result.smiles`), a formula `formula`, a solvent `solvent`, a looked-up name `name`.
-# A value spelled any other way walks past this scan, and so does a message built into a variable
-# before the `raise` — both are written down here rather than implied.
+# Caller-derived means this vocabulary: `smiles`/`*_smiles` (also `job.smiles`, `result.smiles`),
+# `formula`, `solvent`, `name`. A value spelled otherwise, or a message built into a variable
+# before the `raise`, is outside this scan.
 _ECHO_VOCABULARY = frozenset({"formula", "name", "solvent"})
 
 
@@ -148,12 +139,8 @@ def _unbounded_echoes(roots: list[Path], relative_to: Path | None = None) -> lis
 def test_no_refusal_interpolates_caller_text_past_the_echo_bound() -> None:
     """A refusal quotes what it was given through `mcp_server_kit.limits.echo`, or not at all.
 
-    **Four servers carried their own copy of the bound and most refusals bypassed all four.**
-    `chem`, `calc`, `safety` and `rxnpredict` each declared a 120-character `_MAX_ECHO_CHARS`, and
-    `grep -rnE '\\{[a-z_]*\\.?smiles[^}]*!r\\}'` over the serving trees still found fifteen raises
-    interpolating the structure raw: measured, `predict_pka` on `"C" * 1500` — an ordinary accepted
-    call, inside both structural bounds — raised a 1,587-character refusal. Read as a tree rather
-    than grepped, so `{smiles}` without `!r` and a multi-line f-string are the same offence.
+    An accepted structure can still be long enough to flood a refusal message. Read as a tree, so
+    `{smiles}` with or without `!r` and multi-line f-strings are the same offence.
     """
     roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
     assert len(roots) > 1, "no source trees found; has the workspace layout changed?"

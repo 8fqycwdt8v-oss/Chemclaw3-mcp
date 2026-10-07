@@ -209,8 +209,7 @@ def boiling_point_at(solvent: Solvent, pressure_mbar: float) -> float:
     """The temperature at which `solvent` boils under `pressure_mbar` — the distillation question.
 
     Bisection on `vapour_pressure`, so it works for either route and cannot disagree with the
-    forward
-    direction.
+    forward direction.
 
     Args:
         solvent: The row to evaluate.
@@ -256,8 +255,7 @@ def hansen_distance(first: Solvent, second: Solvent) -> float:
 
     `Ra = sqrt(4*(dD1-dD2)^2 + (dP1-dP2)^2 + (dH1-dH2)^2)` — the factor 4 is Hansen's convention.
     Roughly: below 4 the two dissolve much the same things, above 8 they do not. It says nothing
-    about
-    reactivity.
+    about reactivity.
     """
     return math.sqrt(
         4.0 * (first.hansen_d - second.hansen_d) ** 2

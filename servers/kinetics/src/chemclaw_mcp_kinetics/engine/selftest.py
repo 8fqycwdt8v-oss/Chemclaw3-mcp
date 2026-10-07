@@ -49,8 +49,7 @@ class SelfTestFailed(RuntimeError):
     """A relation this server's arithmetic no longer satisfies.
 
     `RuntimeError`, not `ValueError`: this is the pod being wrong, and `connector_app` treats it as
-    a
-    permanent cause, so the pod leaves its Service.
+    a permanent cause, so the pod leaves its Service.
     """
 
 

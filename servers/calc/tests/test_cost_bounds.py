@@ -61,7 +61,7 @@ def test_a_structure_larger_than_the_ceiling_is_refused_before_any_engine_sees_i
 
 
 def test_the_ceiling_s_refusal_names_the_way_forward_its_own_docstring_states() -> None:
-    """The atom-ceiling refusal names the remedies: a smaller system or a deployment configured larger.
+    """The atom-ceiling refusal names the remedies: a smaller system or a larger deployment.
 
     The `ValueError` message is all the model and chemist see. The environment variable is asserted
     by name because it is the remedy a caller cannot guess.

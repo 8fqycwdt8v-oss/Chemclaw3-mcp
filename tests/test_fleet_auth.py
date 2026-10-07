@@ -22,15 +22,11 @@ def server_dirs() -> list[Path]:
 
 
 def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:
-    """`_PUBLISHED_VALUES` is a literal, so something has to hold it against what is published.
+    """Every published dev token default is in the redaction exemption, and only those.
 
-    `mcp_server_kit.logging` refuses to redact the credentials this repository commits, because a
-    value anybody can read is not a secret and scrubbing it only corrupts logs. The set that says
-    which ones those are is written out by hand; the `Makefile` is where they are actually
-    published. A default added there and not here is silently redacted out of every `make run-*`
-    log, and a value left here after the Makefile stops using it is a real credential this fleet
-    has quietly exempted — so both directions are the same check, run against the file rather than
-    against a memory of it.
+    `mcp_server_kit.logging` does not redact credentials this repository publishes in the
+    `Makefile`. A default missing here is redacted out of `make run-*` logs; a stale entry exempts
+    what may now be a real credential.
     """
     from mcp_server_kit.logging import _PUBLISHED_VALUES
 
@@ -67,12 +63,10 @@ _INERT_MARKS = frozenset({"skip", "skipif", "xfail"})
 
 
 def _is_inert(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """Whether a decorator makes this test's body no proof — a skip, a skipif or an xfail.
+    """Whether a decorator makes this test's body no proof: a skip, a skipif or an xfail.
 
-    Matched on the mark's bare name, so `@pytest.mark.skip`, `@mark.skipif(...)` and a bare
-    `@skip` all read the same, and a parametrisation carrying `pytest.param(..., marks=...)` is
-    deliberately *not* matched: that suppresses one case of a test that still runs for the others,
-    where these three suppress the whole function.
+    Matched on the mark's bare name. A `pytest.param(..., marks=...)` is not matched: it suppresses
+    one case of a test that still runs for the others.
     """
     for decorator in node.decorator_list:
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
@@ -99,10 +93,8 @@ def _calls_from_collected_tests(module: Path) -> set[str]:
 def test_a_suppressed_test_is_not_a_proof(tmp_path: Path) -> None:
     """The bite test for `_calls_from_collected_tests`: a marked-out body counts for nothing.
 
-    Written on a synthetic module rather than on a real server's, because no server here ships a
-    suppressed test — which is exactly why the gap was invisible, and why asserting it against the
-    tree would assert nothing. Four shapes in one file: the collected test is the only one whose
-    call may be seen.
+    On a synthetic module, since no server ships a suppressed test; four shapes, of which only the
+    collected test's call may be seen.
     """
     module = tmp_path / "test_sample.py"
     module.write_text(

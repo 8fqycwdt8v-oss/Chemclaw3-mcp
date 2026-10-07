@@ -154,12 +154,9 @@ def test_the_wavenumber_and_intensity_are_the_first_two_numbers_in_a_row_not_the
 def test_the_binary_backend_carries_a_wavenumber_beside_every_intensity(tmp_path: Path) -> None:
     """`_collect` hands the caller the pair, not half of it.
 
-    The whole hazard above is that an intensity alone cannot say which band it belongs to: the
-    caller has to reconstruct that by counting external modes on its own criterion and trusting that
-    xtb used the same one. The wavenumbers cost 3N floats beside a Hessian that is already megabytes
-    at drug size, and they turn the reconstruction into a lookup. Driven on the real `hessian` and
-    `vibspectrum` that one `xtb --ohess` run on water left behind — only the log is synthetic, and
-    only because `_collect` reads two lines out of 31 kB of it.
+    An intensity alone cannot say which band it belongs to; the wavenumbers (3N floats beside a
+    megabyte Hessian) turn the caller's reconstruction into a lookup. Driven on real `hessian` and
+    `vibspectrum` files from an `xtb --ohess` run on water; only the log is synthetic.
     """
     (tmp_path / "hessian").write_text((FIXTURES / "water-minimum.hessian").read_text())
     (tmp_path / "vibspectrum").write_text((FIXTURES / "water-minimum.vibspectrum").read_text())

@@ -67,13 +67,11 @@ def test_the_image_can_name_the_build_it_is(server: Path) -> None:
 
 
 def test_the_revision_reaches_the_handshake_and_the_probe() -> None:
-    """The other half: the value an image supplies is the one a client and a probe see.
+    """The revision an image supplies is the one a client handshake and the probe see.
 
-    Kept in the fleet file rather than in one server's, because it is a claim about `connector_app`
-    — every server's front door — and asserting it once per server would be five copies of one
-    fact. It reaches through `FastMCP._mcp_server`, a private attribute, deliberately: `FastMCP`
-    takes no `version`, so that coupling is real and an upstream rename must turn this red rather
-    than silently reverting the whole fleet to reporting the MCP SDK's own release number.
+    A claim about `connector_app`, so checked once here. It reaches through the private
+    `FastMCP._mcp_server` deliberately (`FastMCP` takes no `version`), so an upstream rename fails
+    this rather than silently reporting the SDK's own version.
     """
     from fastapi.testclient import TestClient
     from mcp.server.fastmcp import FastMCP
@@ -162,11 +160,9 @@ def test_an_image_that_installs_from_the_index_pins_what_the_audit_read(server: 
         )
 
 
-# The one `pip install` in every build stage that names a package from the index without a hash:
-# pip itself and `uv`, the tool that *does* the export. It runs in a stage that is thrown away, it
-# installs nothing the final image carries, and `uv`'s range is argued in each Containerfile —
-# `--frozen` means the resolution cannot drift whichever `uv` runs. Written out whole rather than
-# matched by prefix, so a second package appended to it is a new unhashed install and fails.
+# The one unhashed `pip install` allowed in a build stage: pip and `uv` themselves, in a discarded
+# stage, with `--frozen` keeping resolution fixed whichever `uv` runs. Matched whole, so a package
+# appended to it is a new unhashed install and fails.
 _BOOTSTRAP_INSTALL = 'python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1"'
 
 
@@ -279,13 +275,9 @@ _CUDA_RUNTIME = re.compile(r"^(nvidia-|cuda-|triton$)")
 def test_the_lock_resolves_a_cpu_torch_for_the_cpu_only_pods() -> None:
     """Linux torch comes from PyTorch's CPU index, and no CUDA runtime wheel is in the lock at all.
 
-    Every pod in this fleet is CPU-only, and PyPI's linux torch wheel drags ~2.2 GB of `nvidia-*`,
-    `cuda-*` and `triton` wheels into both model images
-    (`D-2026-09-27-a-cpu-pod-locks-the-cpu-torch`). The fix is a source in the root
-    `pyproject.toml`, which binds only where a package names torch directly — so a new extra that
-    reaches torch transitively, or a source edited away, re-locks the CUDA build with nothing in a
-    Containerfile changing. This reads the lock rather than the source for that reason: the lock is
-    what the images install.
+    Every pod is CPU-only, and PyPI's linux torch pulls gigabytes of CUDA wheels. The index source
+    binds only where a package names torch directly, so a transitive path or an edited source would
+    re-lock CUDA unseen; the lock is read because it is what images install.
     """
     import tomllib
 
@@ -319,12 +311,10 @@ def test_no_image_installs_what_the_lock_did_not_hash(server: Path) -> None:
 
 
 def test_the_unhashed_install_check_refuses_the_shapes_it_was_written_for() -> None:
-    """The bite test: the form `rxnlabel` shipped, and its near relatives, are each refused.
+    """The unhashed-install check refuses the shapes it was written for, and passes the real ones.
 
-    Without this, `unhashed_installs` could be weakened to return nothing and the parametrized
-    test above would go on passing over twelve real Containerfiles that no longer contain the
-    shape. So it is driven in the failing direction on synthetic instructions, and in the passing
-    direction on the four shapes every image is built from.
+    Driven on synthetic instructions in both directions, so `unhashed_installs` cannot be weakened
+    to return nothing while the parametrized test stays green.
     """
     refused = [
         # The exact install this test was written after.
@@ -525,10 +515,8 @@ def _sdist_only_distributions() -> set[str]:
 def _locked_closure(distribution: str) -> set[str]:
     """Every distribution reachable from `distribution` through `uv.lock`, extras included.
 
-    Extras are walked because an image installs them — `rxnpredict`'s Containerfile installs
-    `chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]`. That over-approximates a server's runtime
-    closure, and over-approximating is the safe direction here: it can only make a server *owe*
-    the build-backend pin, never excuse one from it.
+    Images install extras, and over-approximating the closure can only make a server owe the
+    build-backend pin, never excuse it.
     """
     packages = _lock()["package"]
     assert isinstance(packages, list)
@@ -558,10 +546,8 @@ def _locked_closure(distribution: str) -> set[str]:
 def _wheel_pass(block: str, distinguishing: str) -> str:
     """The one `pip wheel` invocation inside `block` that carries `distinguishing`.
 
-    A Containerfile's build stage runs two of them and they are pinned by different arguments — the
-    third-party pass by `--require-hashes -r /build/requirements.txt`, the workspace pass by
-    `--no-deps`. A substring match against the whole RUN cannot tell them apart, so a flag present
-    on either one would satisfy an assertion about the other.
+    The build stage runs two (third-party with `--require-hashes`, workspace with `--no-deps`); a
+    substring match over the whole RUN would let a flag on one satisfy an assertion about the other.
     """
     passes = [f"pip wheel {part}" for part in block.split("pip wheel ")[1:]]
     matching = [invocation for invocation in passes if distinguishing in invocation.split("&&")[0]]
@@ -669,12 +655,10 @@ def test_the_build_group_names_every_backend_this_workspace_declares() -> None:
 
 
 def test_the_build_group_is_what_the_calc_image_exports() -> None:
-    """The group the Containerfile exports has to exist in the lock, and hold a backend.
+    """The group the calc Containerfile exports exists in the lock and holds a build backend.
 
-    The assertion above reads a Containerfile. This one reads the other end of that pipe: an
-    `--only-group build` against a group `uv.lock` does not carry exports an empty requirements
-    file, `pip install` of nothing succeeds, and `--no-build-isolation` then builds `geometric`
-    against whatever `python:3.11-slim` ships — which is the defect wearing the fix's clothes.
+    Exporting a missing group yields an empty requirements file, the install succeeds, and
+    `--no-build-isolation` then builds against whatever the base image ships.
     """
     import tomllib
 

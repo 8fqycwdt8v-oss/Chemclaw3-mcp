@@ -1,15 +1,13 @@
 """The semi-batch integrator's ceiling, and the offload without which a ceiling means nothing.
 
-`engine/admission.py` has the measurement. Five properties, each with its own failure:
+`engine/admission.py` has the measurement. Properties:
 
-- **The integration runs off the event loop.** FastMCP 1.x calls a synchronous tool on the loop, so
-  before this the worst legal dose stopped every other request — `/healthz` included — for seconds,
-  and a ceiling on it could never trip because two could never be in flight.
+- **The integration runs off the event loop.** FastMCP 1.x runs a synchronous tool on the loop,
+  which would stall every request and make a ceiling unreachable.
 - **A full pod refuses promptly**, before any integration starts.
-- **The slot outlives a caller that gave up**, because cancelling the awaiting coroutine does not
-  stop the worker thread.
+- **The slot outlives a caller that gave up**, because cancellation does not stop the thread.
 - **Only the integrator is gated**, derived from the served surface.
-- **The ceiling fits the caller's budget**, read from `connector.yaml` rather than transcribed.
+- **The ceiling fits the caller's budget**, read from `connector.yaml`.
 """
 
 from __future__ import annotations
@@ -144,10 +142,8 @@ async def test_a_call_its_signature_refuses_leaves_the_ceiling_where_it_was(
 ) -> None:
     """A malformed call must not cost a slot, or one of them turns a ceiling of one into an outage.
 
-    The gate used to charge before it built the coroutine, and calling an `async def` binds its
-    arguments on the spot, so the `TypeError` escaped between the charge and the only code that
-    gives a slot back. Driven before the fix: `in_flight` stayed at 1 and the next well-formed
-    dose was refused as if an integration were running.
+    The coroutine is built before the charge, so the `TypeError` from binding bad arguments cannot
+    escape with a slot held.
     """
     with pytest.raises(TypeError):
         await tools.semibatch_accumulation_profile(**_DOSE, not_an_argument=1.0)

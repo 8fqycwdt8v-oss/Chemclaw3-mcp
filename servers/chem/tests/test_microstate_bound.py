@@ -1,58 +1,18 @@
-"""What `enumerate_microstates` costs, and the bound that is now the reason it cannot run away.
+"""What `enumerate_microstates` costs, and the bound that stops it running away.
 
-`test_depiction_bound.py` is this file's sibling: it bounds the one tool anybody had noticed was
-expensive. This one bounds the tool that turned out to be an order of magnitude worse and had no
-bound at all, plus the SMARTS cache the same commit added — and the cache is tested for *agreement*
-rather than for speed, because a cache that is fast and wrong is the failure worth catching.
+`MAX_MICROSTATES` bounds the answer, not the work: every ionisable site is shifted, sanitised and
+canonicalised before the count is compared. A molecule of hundreds of equivalent sites collapses
+to two species and still costs seconds, so the bound must be on the input.
 
-**The defect, measured before the fix.** `MAX_MICROSTATES` bounds the answer and nothing bounded
-the work: every ionisable site was shifted, sanitised and canonicalised, and only then was the
-species count compared with the cap. Two molecules inside every bound this server had:
+Each site costs one pass over the whole graph, so cost is the product of site count and molecule
+size; `MAX_SITE_ATOM_PRODUCT` prices that product. A site-only bound would refuse cheap symmetric
+molecules (PAMAM dendrimers, whose microstates collapse) while admitting costlier chains.
 
-    N + CCN*659           1,978 atoms, 660 sites  48,077 ms  then ValueError — nothing returned
-    C1 + CNC*659 + CN1    1,980 atoms, 660 sites  15,647 ms  then answered, with two species
+No separate admission ceiling for this tool: holding the GIL here does not starve the event loop
+enough to threaten the readiness probe, and a ceiling bounds how many calls run, not how long one
+runs. The species tools share the band's ceiling anyway (`engine/admission.py`).
 
-The second is the one an output cap can never reach, and it is why the bound had to go on the
-**input**: the sites are equivalent, every microstate collapses to the same string, the answer is
-comfortably inside `MAX_MICROSTATES`, and the tool still spends 15 s to return two structures. The
-first exceeds `connector.yaml`'s own `request_timeout` of 30 s, so the caller has already gone.
-
-**Why no second admission ceiling, which is the other thing `CLAUDE.md` says a slow tool owes.**
-Driven rather than argued, on this container. `enumerate_microstates` does hold the GIL — four
-concurrent calls of a 1.13 s molecule measured `cpu_util` 0.93x and `wall` 5.15 s, the same
-signature `engine/admission.py` records for `Compute2DCoords` — but holding it does **not** starve
-the loop the readiness probe is answered on, because the GIL is preemptive at a finer grain than a
-call. Measured against a 0.1 s event-loop tick beside bursts of the worst molecule the bound admits:
-
-    n=1  wall 0.67 s   loop lateness p50  12.7 ms  max  24.9 ms
-    n=2  wall 1.27 s   loop lateness p50  14.9 ms  max 103.9 ms
-    n=4  wall 2.96 s   loop lateness p50  47.6 ms  max 167.5 ms
-    n=5  wall 3.67 s   loop lateness p50  53.4 ms  max 580.4 ms
-    n=8  wall 5.23 s   loop lateness p50  70.1 ms  max 384.2 ms
-
-and one *unbounded* 14 s call left the tick 46.0 ms late at worst. The probe's `timeoutSeconds` is
-3, so nothing here comes near it. A ceiling would also be the wrong instrument: the harm measured
-above is *one* call burning 48 s of uncancellable CPU past its caller's timeout, and a ceiling
-bounds how many run, never how long one runs. Only an input bound prices that. (The five species
-tools now share one ceiling with the depiction anyway —
-`D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` — derived from the pod's
-thread pool rather than from this tool's cost, because two of its neighbours measurably hold the
-interpreter where this one does not.)
-
-**The first bound written here priced the site count alone, and that is the wrong variable.** Each
-site is one `_shift`, one `SanitizeMol` and one `_canonical` over the whole graph, so the cost is
-the *product* of the site count and the molecule size — which `servers/chem/README.md` said in the
-sentence beside the bound while the bound read one factor of it. Measured on the shipped entry
-point, a site-only bound of 32 refused this:
-
-    PAMAM G3 dendrimer      484 heavy atoms,  62 sites    128 ms   ->  6 species   REFUSED
-    PAMAM G4 dendrimer      996 heavy atoms, 126 sites    587 ms   ->  7 species   REFUSED
-
-while admitting a 1,891-atom polyamine at 31 sites for 413 ms. PAMAM dendrimers are catalogue
-items and their sites are symmetric, so their microstates collapse and the answer is small and
-cheap — degeneracy is the **normal** case for a symmetric real molecule, not the pathology the
-site-only derivation treated it as. `MAX_SITE_ATOM_PRODUCT` prices the product instead; the class
-below is what holds the two directions apart.
+The SMARTS cache is tested for agreement with an uncached implementation, not for speed.
 """
 
 from __future__ import annotations
@@ -76,10 +36,8 @@ from chemclaw_mcp_chem.engine.species import (
 from mcp_server_kit.testing import reimported
 from rdkit import Chem, rdBase
 
-#: What the refusal of an unbounded molecule may cost. Both pathological cases below took 15 s and
-#: 48 s before the bound; a second is three orders of magnitude of headroom over what they cost now
-#: (33 ms and 135 ms, measured) and still two orders inside what they cost then, so this fails on
-#: the bound being removed rather than on a slow runner.
+#: What the refusal of an unbounded molecule may cost: generous over the refusal's real cost, far
+#: under the unbounded enumeration, so it fails on the bound being removed, not on a slow runner.
 MAX_REFUSAL_SECONDS = 1.0
 
 
@@ -92,10 +50,8 @@ def distinct_sites(count: int, atoms: int = 1900) -> str:
 def aromatic_sites(rings: int) -> str:
     """A poly(pyridine) chain: `rings` basic nitrogens on an aromatic backbone.
 
-    The shape the cost derivation did not price. Every site sits in a ring, so each toggle re-runs
-    aromaticity perception over the whole conjugated graph rather than over a chain segment — which
-    is why it costs more per site-atom than any aliphatic shape, and why that cost *grows* with the
-    product instead of staying flat.
+    Every toggle re-runs aromaticity perception over the conjugated graph, so it costs more per
+    site-atom than aliphatic shapes, increasingly so near the bound.
     """
     return "c1ccncc1" * rings
 
@@ -119,13 +75,9 @@ def _pamam_arm(generation: int) -> str:
 def pamam(generation: int) -> str:
     """An ethylenediamine-core, amine-terminated PAMAM dendrimer, as SMILES.
 
-    A catalogue item rather than a fixture shape: PAMAM G0-G10 are sold by the gram and are routine
-    in formulation and delivery work. They are here because they are the molecules the *site-only*
-    bound refused — symmetric, so every microstate collapses to a handful of structures, which is
-    exactly the case a reader of "660 sites" imagines to be pathological and is not.
-
-    Sites are `2 + 4 x (2^(g+1) - 1)`: 30 at G2, 62 at G3, 126 at G4. G5 is 2,004 heavy atoms and
-    `MAX_MOLECULE_ATOMS` refuses it at the parse, so G4 is the largest this server can see at all.
+    A routine catalogue item whose symmetric sites collapse to a handful of microstates: many sites,
+    cheap answer. Sites are `2 + 4 x (2^(g+1) - 1)`; G5 exceeds `MAX_MOLECULE_ATOMS`, so G4 is the
+    largest this server can see.
     """
     arm = _pamam_arm(generation)
     return f"N({arm})({arm})CCN({arm}){arm}"
@@ -147,11 +99,10 @@ class TestTheSiteBound:
         )
 
     def test_a_molecule_whose_sites_collapse_is_refused_by_the_same_bound(self) -> None:
-        """The case `MAX_MICROSTATES` cannot reach, because its answer is inside the cap.
+        """A molecule whose sites all collapse is refused by the cost bound.
 
-        Every one of the 660 amines is equivalent, so the enumeration returns two species — after
-        15,647 ms, measured. An output cap never fires here at any value, which is the whole
-        argument for bounding the input instead.
+        Its answer is inside `MAX_MICROSTATES`, so an output cap never fires; only an input bound
+        can.
         """
         smiles = equivalent_sites(660)
         started = time.perf_counter()
@@ -160,16 +111,11 @@ class TestTheSiteBound:
         assert time.perf_counter() - started < MAX_REFUSAL_SECONDS
 
     def test_the_refusal_names_the_sites_rather_than_the_species_it_did_not_count(self) -> None:
-        """A caller told "660 microstates" about a molecule that yields two is told something false.
+        """The refusal names the sites rather than a species count it did not compute.
 
-        The two refusals in this module are deliberately different sentences: one is "the answer
-        would be too large", the other is "finding out would cost more than one call may spend",
-        and only the second can honestly name a number it has actually counted. It names both
-        factors of the product it priced, and no species count.
-
-        The name is `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work`'s and stays, because a
-        merged record cites it and `tests/test_decision_log.py` is what makes a rename visible. What
-        the bound prices changed; what this asserts about the refusal did not.
+        "Too large an answer" and "too costly to find out" are different sentences; this one names
+        both factors of the product it priced. The test name is cited by a merged record and is
+        kept.
         """
         with pytest.raises(ValueError) as raised:
             enumerate_microstates(equivalent_sites(660))
@@ -182,13 +128,9 @@ class TestTheSiteBound:
         assert f"{660 * 1980 / MAX_SITE_ATOM_PRODUCT:.1f}x" in message
 
     def test_the_refusal_states_no_cost_it_has_not_timed(self) -> None:
-        """The sentence this replaces was false about every molecule the old bound refused.
+        """The refusal states the overrun as a factor, not an untimed cost.
 
-        It said enumerating would "hold this server for tens of seconds - past the timeout you are
-        waiting on - to produce a set this tool would then refuse as too large". Measured on PAMAM
-        G3, which that bound refused: 128 ms and six structures. A refusal states the overrun as a
-        **factor**, which is exact for every input, needs no wall clock and cannot go stale on a
-        faster pod.
+        A factor is exact for every input and cannot go stale on a faster pod.
         """
         with pytest.raises(ValueError) as raised:
             enumerate_microstates(equivalent_sites(660))
@@ -198,11 +140,10 @@ class TestTheSiteBound:
         assert "too large" not in message
 
     def test_the_refusal_names_a_way_forward_the_caller_can_act_on(self) -> None:
-        """A fragment is no way forward for a dendrimer, where the question is the whole molecule.
+        """The refusal names a way forward the caller can act on.
 
-        Where the protonation question *is* about the whole molecule, the only real remedies are a
-        different tool and a deployment that allows more — and the old message named the first only
-        in `tools.py`'s docstring, never in the `ValueError` the caller actually receives.
+        Where the question is the whole molecule, the remedies are a different tool or a deployment
+        allowing more, and the `ValueError` itself must say so.
         """
         with pytest.raises(ValueError) as raised:
             enumerate_microstates(equivalent_sites(660))
@@ -214,10 +155,7 @@ class TestTheSiteBound:
     def test_a_molecule_at_the_bound_is_not_refused_by_the_bound(self) -> None:
         """The last molecule the cost bound admits must reach the enumeration.
 
-        `MAX_MICROSTATES + 1` distinct sites on a molecule small enough to stay under the product
-        is refused by the *microstate* cap, not by this one — so what this asserts is which of the
-        two bounds fired, not that the call succeeds. A cost bound that was off would refuse here
-        and the message is what says so.
+        Here the microstate cap fires, not the cost bound; the message says which.
         """
         sites = MAX_MICROSTATES + 1
         # 1,500 atoms rather than `MAX_SITE_ATOM_PRODUCT // sites`, which is 4,545 and past the
@@ -229,12 +167,9 @@ class TestTheSiteBound:
         assert "protonation microstates" in str(raised.value)
 
     def test_the_bound_prices_the_work_and_not_the_site_count(self) -> None:
-        """The defect this bound replaced, stated as the inequality that makes it a defect.
+        """The bound prices the work and not the site count.
 
-        A site-only bound is monotone in the site count alone, so it necessarily refuses *some*
-        molecule that is cheaper than one it admits. These two are that pair, measured: the
-        dendrimer carries twice the sites and costs about a third of the time (128 ms against
-        413 ms), because cost is the product and the chain carries 1,891 atoms under each of its 31.
+        A dendrimer with twice the sites costs less than a long chain, because cost is the product.
         """
         cheap_but_many_sites = pamam(3)  # 484 atoms, 62 sites, 30,008 product, ~128 ms
         dear_but_few_sites = distinct_sites(31, atoms=1900)  # 1,891 atoms, 58,621 product, ~413 ms
@@ -260,12 +195,9 @@ class TestTheSiteBound:
     def test_a_pamam_dendrimer_is_answered_rather_than_refused(
         self, generation: int, atoms: int, sites: int, species: int
     ) -> None:
-        """The regression the site-only bound shipped, on the molecules it took away.
+        """PAMAM G3 and G4 are answered rather than refused.
 
-        G3 and G4 both carry more than 32 ionisable sites and were refused; measured on the shipped
-        entry point they cost 128 ms and 587 ms and answer with six and seven structures. This is
-        the evidence `test_ordinary_chemistry_is_untouched_by_the_bound` claimed to be and was not:
-        its three molecules carry 3, 6 and 3 sites, and the bound bit from 33 upwards.
+        Both exceed a site-only limit yet are cheap and return a handful of structures.
         """
         smiles = pamam(generation)
         mol = Chem.MolFromSmiles(smiles)
@@ -277,27 +209,11 @@ class TestTheSiteBound:
         assert found.smiles[0] == found.parent
 
     def test_the_worst_call_the_bound_admits_stays_inside_the_probe_budget(self) -> None:
-        """The bound's cost derivation, driven rather than transcribed — on every shape, not three.
+        """The worst call the bound admits stays inside the probe budget, on several shapes.
 
-        **This drove one shape and named it the worst.** The derivation priced three aliphatic
-        molecules — 4.3-4.7 us per site-atom on a dendrimer, 5.6 on a macrocycle, up to 8.4 on a
-        long chain — and concluded "the bound prices the worst of the three", which is true and is
-        not the same sentence as "the bound prices the worst". Re-measured on this container with a
-        fourth ordinary shape, a poly(pyridine) at the same product:
-
-            branched dendrimer        367 at, 123 si,  45,141     197 ms    4.37 us/site-atom
-            chain, 100 amines       1,401 at, 100 si, 140,100   1,194 ms    8.52 us/site-atom
-            macrocycle, 223 amines    670 at, 223 si, 149,410   1,483 ms    9.92 us/site-atom
-            oligopyridine n=158       948 at, 158 si, 149,784   1,986 ms   13.26 us/site-atom
-
-        The three aliphatic figures reproduce the derivation's to within a few percent, which is
-        what makes the fourth comparable: it is **1.6x** the shape called the worst, and its cost
-        per site-atom *rises* with the product (10.75, 11.97, 13.26 us at n=100, 130, 158), so
-        `sites x atoms` under-prices an aromatic molecule by more the closer it gets to the bound.
-
-        Both shapes are driven here, and neither is named the worst — the assertion is the probe
-        budget, which is what the bound has to respect. A test that drives the shape its own
-        docstring calls worst can only ever confirm that choice.
+        `sites x atoms` under-prices aromatic molecules relative to aliphatic ones, increasingly
+        near the bound, so both kinds are driven and neither is named the worst; the assertion is
+        the probe budget the bound must respect.
         """
         sites = 100
         worst = {
@@ -318,13 +234,10 @@ class TestTheSiteBound:
             )
 
     def test_the_topology_tool_is_not_the_cheap_substitute_its_docstring_claimed(self) -> None:
-        """`describe_topology` is outside the bound and is **not** free, which it was advertised as.
+        """`describe_topology` is outside the bound and is not cheaper than the enumeration.
 
-        It is the right tool to ask first, because it answers for a molecule the enumeration
-        refuses. It is not the cheaper call: `tautomer_count` is an enumeration rather than a
-        descriptor read, so on PAMAM G3 it measures 839 ms against the enumeration's 128 ms, and on
-        G4 2,793 ms against 587 ms. Asserted as an ordering rather than as either number, so a
-        slower runner cannot red it and a `describe_molecule` that stopped enumerating can.
+        Its `tautomer_count` is itself an enumeration. Asserted as an ordering, so a slower runner
+        cannot red it and a `describe_molecule` that stopped enumerating can.
         """
         smiles = pamam(3)
         started = time.perf_counter()
@@ -340,18 +253,10 @@ class TestTheSiteBound:
         )
 
     def test_the_free_tool_still_answers_for_a_molecule_the_enumeration_refuses(self) -> None:
-        """`describe_topology` is deliberately outside the bound, and that is what makes it usable.
+        """`describe_topology` answers for a molecule the enumeration refuses.
 
-        It is the tool a caller consults to decide whether an enumeration is worth asking for, so
-        "this has 660 ionisable sites" is precisely the answer that should reach them. Perceiving
-        the sites is 7.4 ms at 1,978 atoms; walking them is what cost 48 s.
-
-        **"Free" in this name is wrong and the name stays**, because
-        `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` cites it and
-        `tests/test_decision_log.py` is what makes a rename visible. What the tool costs is
-        `test_the_topology_tool_is_not_the_cheap_substitute_its_docstring_claimed` above; what
-        this asserts — that it answers where the enumeration refuses — is unchanged and is the
-        property its callers actually rely on.
+        It is the tool a caller consults before asking for an enumeration, and perceiving sites is
+        cheap where walking them is not. The test name is cited by a merged record and is kept.
         """
         described = describe_molecule(equivalent_sites(660))
         assert described.mobile_proton_sites == 660
@@ -360,12 +265,8 @@ class TestTheSiteBound:
     def test_ordinary_chemistry_is_untouched_by_the_bound(self) -> None:
         """The molecules this tool exists for, with their answers written out.
 
-        A bound is only as good as the evidence that it refuses nothing real. **These three are not
-        that evidence on their own and this docstring used to claim they were**: tyrosine, EDTA and
-        lysine carry 3, 6 and 3 sites, and the bound they were written under bit from 33 upwards —
-        so they could not have seen it refuse a dendrimer at 62. The molecules in the 20-126 site
-        range are in `test_a_pamam_dendrimer_is_answered_rather_than_refused`; these hold the
-        answers themselves, which that one cannot.
+        These carry few sites; the high-site range is covered by the PAMAM test, while these hold
+        the answers themselves.
         """
         tyrosine = enumerate_microstates("N[C@@H](Cc1ccc(O)cc1)C(=O)O")
         assert tyrosine.smiles == [
@@ -388,11 +289,9 @@ class TestTheSiteBound:
     def test_the_bound_is_read_from_the_environment_and_is_not_a_constant(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A deployment can loosen it for a real polyelectrolyte without editing this image.
+        """A deployment can loosen the bound for a real polyelectrolyte without editing this image.
 
-        Read off the module under two environments rather than re-typed here, for the reason
-        `test_admission.py` gives about the ceiling beside it: a test that restates the expression
-        under test compares the test to itself.
+        Read off the module under two environments rather than re-typed here.
         """
         monkeypatch.delenv("CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT", raising=False)
         assert reimported(species).MAX_SITE_ATOM_PRODUCT == 150_000
@@ -437,11 +336,10 @@ class TestTheCompiledPatternCache:
     def _sites_uncompiled(
         mol: Chem.Mol, patterns: tuple[tuple[str, str], ...]
     ) -> list[tuple[str, int]]:
-        """`_sites` as it was before the cache, re-parsing each pattern on every call.
+        """`_sites` without the cache, re-parsing each pattern on every call.
 
-        Written out here rather than imported, because the point is to compare the shipped function
-        against an *independent* implementation of the same rule. A mock of `MolFromSmarts` would
-        only prove the shipped function calls what the shipped function calls.
+        An independent implementation to compare against; a mock would only prove the function calls
+        what it calls.
         """
         found: dict[int, str] = {}
         for name, smarts in patterns:
@@ -465,9 +363,8 @@ class TestTheCompiledPatternCache:
     def test_a_cached_pattern_gives_the_same_matches_on_its_second_use(self, smiles: str) -> None:
         """A shared query must answer the same thing the second time it is used.
 
-        Sharing one compiled pattern across every call is the whole mechanism. The reason first
-        written down for why that is safe — "`GetSubstructMatches` treats the query as read-only" —
-        is the wrong reason; see the two tests below.
+        Sharing one compiled pattern across calls is the mechanism; why that is safe is the next
+        test.
         """
         mol = Chem.MolFromSmiles(smiles)
         assert mol is not None
@@ -478,17 +375,11 @@ class TestTheCompiledPatternCache:
     def test_the_cache_rests_on_a_threadsafe_rdkit_build_and_not_on_an_immutable_query(
         self,
     ) -> None:
-        """What actually makes one shared compiled query safe across concurrent calls.
+        """The cache rests on a thread-safe RDKit build, not on an immutable query.
 
-        `_compiled`'s docstring said `GetSubstructMatches` does not mutate the query. Two of the
-        eleven patterns are **recursive** SMARTS — the aliphatic-amine pattern with its four
-        `!$(...)` guards, and the pyridine-type one — and RDKit caches a recursive query's match set
-        against the current target *on the query object*. That is why RDKit has a
-        `RDK_BUILD_THREADSAFE_SSS` build flag at all, and it is load-bearing here rather than
-        incidental: every tool body runs in `asyncio.to_thread`, so two concurrent calls match
-        against one shared query by construction. The cache is what introduced that dependency, and
-        nothing asserted it — so a wheel built without the flag would be a silent data race under
-        concurrency, not a test failure.
+        Two patterns are recursive SMARTS, and RDKit caches a recursive query's match set on the
+        query object. Tool bodies run in `asyncio.to_thread`, so concurrent calls share the query;
+        without `RDK_BUILD_THREADSAFE_SSS` that would be a silent data race.
         """
         recursive = [smarts for _, smarts in (*_ACIDIC, *_BASIC) if "$(" in smarts]
         assert recursive, "no recursive pattern left: this guard has lost its subject"
@@ -547,11 +438,9 @@ class TestTheCompiledPatternCache:
         assert info.hits == 4 * (len(_ACIDIC) + len(_BASIC))
 
     def test_the_topology_tool_perceives_each_table_once(self) -> None:
-        """`describe_molecule` read both tables twice for three numbers, two of them a sum.
+        """`describe_molecule` perceives each table once.
 
-        Asserted through the cache's own counters, which is the only place the duplication was
-        ever visible: with the cache warm the duplicate passes cost matching rather than parsing,
-        so nothing else in this server would have gone red if they came back.
+        Asserted through the cache's counters, the only place a duplicate pass would be visible.
         """
         _compiled.cache_clear()
         describe_molecule("N[C@@H](Cc1ccc(O)cc1)C(=O)O")

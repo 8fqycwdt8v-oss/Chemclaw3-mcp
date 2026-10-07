@@ -502,9 +502,9 @@ def test_a_ratio_has_a_floor_and_no_ceiling(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "infinity"])
 def test_a_ratio_that_is_not_finite_is_refused(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
-    """`float()` parses these, and `nan < minimum` is False, so the floor alone would let them through.
+    """NaN and infinity parse as floats and pass the floor, since `nan < minimum` is False.
 
-    A NaN or infinite ratio makes every comparison against it false, which disables the bound.
+    A non-finite ratio makes every comparison against it false, which disables the bound.
     """
     monkeypatch.setenv("MCP_A_RATIO", raw)
     with pytest.raises(ValueError, match=r"MCP_A_RATIO.*not a finite number"):
@@ -537,7 +537,7 @@ def test_an_echo_within_the_bound_is_the_text_itself() -> None:
 
 
 def test_an_echo_past_the_bound_keeps_the_head_and_names_the_length() -> None:
-    """The measured case: `"C" * 1500` is inside both structural bounds and was quoted whole."""
+    """`"C" * 1500` is inside both structural bounds, yet its echo must still be bounded."""
     payload = "C" * 1500
     shown = echo(payload)
     assert "C" * (MAX_ECHO_CHARS + 1) not in shown

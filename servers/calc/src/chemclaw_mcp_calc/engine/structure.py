@@ -174,8 +174,9 @@ def structure_from_smiles(
     Args:
         smiles: The molecule as a SMILES string.
         charge: Net charge. `None` takes the SMILES' formal charge; a contradicting value is
-        rejected. multiplicity: Spin multiplicity 2S+1, validated against the electron count. `None`
-        derives it from explicit radical electrons; the default 1 means closed-shell-or-error.
+            rejected.
+        multiplicity: Spin multiplicity 2S+1, validated against the electron count. `None`
+            derives it from explicit radical electrons; the default 1 means closed-shell-or-error.
         optimize: Pre-optimize with MMFF where the force field has parameters.
 
     Returns:

@@ -1,14 +1,12 @@
 """What `enumerate_substitutions` must get right for a ranking over its set to mean anything.
 
-Two kinds of assertion. The contract ones are what Chemclaw3's template reads: `smiles` and
-`labels` passed straight to `rank_species`, so they must be positional and every member must be an
-isomer of every other — a ranking over two formulas is not a ranking. The chemistry ones are the
-places this enumerator could produce a well-formed set for the wrong question: the input missing
-from a `move` set or present in an `add` one, a group bonded through the wrong atom, an aliphatic
-position offered as a regioisomer, a ring nitrogen stripped of its group.
+Contract: `smiles` and `labels` go straight to `rank_species`, so they are positional and every
+member is an isomer of every other. Chemistry: the input belongs in a `move` set and not in an
+`add` one, groups bond through the right atom, aliphatic positions are not regioisomers, and a
+ring nitrogen keeps its group.
 
-The cost bounds are driven on the shapes `engine/substitution.py` derived them from, and asserted
-prompt: a refusal costs a parse and a count, never the enumeration it refuses.
+The cost bounds are driven on the shapes `engine/substitution.py` derived them from, and a refusal
+costs a parse and a count.
 """
 
 from __future__ import annotations
@@ -144,9 +142,8 @@ def test_only_aromatic_positions_are_offered() -> None:
 def test_a_group_on_a_ring_nitrogen_stays_there_and_the_azole_question_is_still_answered() -> None:
     """1-Methyl-3-phenylpyrazole: the N-methyl is never moved; the phenyl reaches C5 and C4.
 
-    Moving the methyl off the nitrogen would leave an N-H pyrazole — a tautomer question, not a
-    positional one — and the regiochemistry chemists actually ask about here (1,3- against
-    1,5-disubstitution after N-alkylation) is the phenyl's C3/C5 choice, which this set carries.
+    Moving the methyl would make it a tautomer question; the regiochemistry asked about is the
+    phenyl's C3/C5 choice.
     """
     result = enumerate_substitution_set("Cn1ccc(-c2ccccc2)n1")
     assert _canonical("Cn1nccc1-c1ccccc1") in result.smiles

@@ -53,10 +53,9 @@ def _initialize(base: str, host: str | None) -> httpx.Response:
 def test_a_service_name_is_refused_without_the_variable(
     serving: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The defect as it was measured: a Service-name `Host` gets 421, loopback still gets 200.
+    """Without the variable, a Service-name `Host` gets 421 while loopback still gets 200.
 
-    Both halves, because a 421 for *everything* would also pass the first assertion and would mean
-    the server is broken rather than guarded.
+    Both halves, because a 421 for everything would also pass the first assertion.
     """
     monkeypatch.delenv(rebinding.ALLOWED_HOSTS_ENV, raising=False)
     with serving(connector_app(_probe(), name="rebinding-unset")) as base:
