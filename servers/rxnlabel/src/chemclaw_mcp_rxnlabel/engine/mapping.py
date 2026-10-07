@@ -1,19 +1,10 @@
 """Atom-atom mapping, when a mapper is installed — and a truthful answer when one is not.
 
-RXNMapper (Schwaller et al., *Science Advances* 2021; MIT) is an ALBERT transformer trained without
-supervision on patent reactions, and it maps 99.4% of a 49,000-reaction unbalanced USPTO test set
-correctly. It is also a transformer, so it drags torch behind it: the image installs it and the
-`models` extra carries it, and a developer's checkout does not.
-
-**Absence degrades, it does not fail.** Without the mapper `contributing_reactants` returns `None`,
-which the role assignment reads as "no evidence either way" and falls back to the slot the species
-was written in. What makes that safe rather than silent is that `engine/version.py` puts the
-mapper's presence into `labeller_version`: rows labelled without it carry a different version and go
-stale the moment a deployment installs it, so the corpus repairs itself instead of quietly holding
-two qualities of answer under one label.
-
-Loaded lazily and once. The model is ~50 MB of weights and several seconds to construct, and a
-server that paid that at import would fail its readiness probe on a cold start.
+RXNMapper (Schwaller et al., *Science Advances* 2021; MIT) is an ALBERT transformer, so it needs
+torch; the image installs it via the `models` extra. Without it `contributing_reactants` returns
+`None` ("no evidence") and roles fall back to the written slot. `engine/version.py` puts the
+mapper's presence into `labeller_version`, so rows labelled without it go stale once it is
+installed. Loaded lazily and once, so a cold start does not fail its readiness probe.
 """
 
 from __future__ import annotations
@@ -34,34 +25,25 @@ logger = logging.getLogger(__name__)
 
 SERVER = "rxnlabel"
 
-# What this module is, as a metric label and in an answer. A module constant rather than a string
-# spelled at each call site, because the two would drift and the label rule in
-# `mcp_server_kit/metrics.py` only holds while the set of them is closed.
+# This component's name as a metric label and in an answer; one constant keeps the label set closed.
 COMPONENT = "atom_mapper"
 degradation.register_components(COMPONENT)
 
-# How long a *transient* construction failure is believed before the mapper is built again. Weights
-# are ~50 MB and several seconds, so retrying per call would be a second way to exhaust the thing
-# that failed; a minute is the same window `readiness.VERDICT_TTL_SECONDS` uses, so at most one
-# retry happens per probe.
+# How long a transient construction failure stands before the mapper is built again; matches
+# `readiness.VERDICT_TTL_SECONDS`, so at most one retry per probe.
 CONSTRUCTION_RETRY_SECONDS = construction.RETRY_SECONDS
 
 _LOCK = threading.Lock()
 _MAPPER: Any | None = None
 _TRIED = False
-# When the last construction attempt ran, and what it failed with. **The cause used to be computed,
-# counted and discarded** — `readiness.verify_labeller` then refused without being able to say
-# whether the failure was a corrupt checkpoint or a busy minute, and `_TRIED` latched on that first
-# attempt so the process never looked again: measured, a `MemoryError` out of `RXNMapper()` left the
-# pod permanently unready with nothing able to change its mind.
+# When the last construction attempt ran and what it failed with, so readiness can tell a corrupt
+# checkpoint from a transient failure and a transient one is retried.
 _ATTEMPTED_AT: float | None = None
 _FAILURE: str | None = None
-# The exception behind `_FAILURE`, bounded for quoting, so a refusal can say *what* broke — the
-# missing shared library's own sentence — rather than only which bucket it fell in.
+# The exception behind `_FAILURE`, bounded for quoting, so a refusal can say what broke.
 _FAILURE_DETAIL: str | None = None
 
-# The top-level module whose absence is a deployment's decision. Anything else an import of it
-# cannot find is a dependency *of* an installed mapper, which is a broken image.
+# The module whose absence is a deployment's decision; any other missing module is a broken image.
 _OPTIONAL_MODULES = ("rxnmapper",)
 
 
@@ -69,17 +51,13 @@ _OPTIONAL_MODULES = ("rxnmapper",)
 class MapResult:
     """The atom map, and whether the mapper *ran and failed* — which `None` alone cannot say.
 
-    This type exists because `map_reaction` used to answer `None` to three different questions and
-    the caller could not tell them apart: no mapper installed, a reaction RDKit could not read, and
-    a mapper that raised. The first is a deployment's decision and the last is a broken pod, and
-    they reached a chemist as the same unmapped reaction stamped with the same `labeller_version` —
-    so a corpus labelled by a pod whose checkpoint had gone would never re-label, because the stamp
-    claimed the mapper had contributed.
+    A failed mapper must be distinguishable from an absent one, or a broken pod's rows carry a
+    version claiming the mapper contributed and never re-label.
 
     Attributes:
         mapped: The atom-mapped reaction, or `None` where there is none.
-        failure: `None` when nothing went wrong, otherwise the `mcp_server_kit.degradation` cause.
-            A cause here means the answer is *degraded* rather than merely mapless.
+        failure: `None` when nothing went wrong, otherwise the `mcp_server_kit.degradation` cause; a
+        cause means the answer is degraded, not merely mapless.
     """
 
     mapped: str | None = None
@@ -94,10 +72,7 @@ def available() -> bool:
 def construction_failure() -> str | None:
     """The `degradation` cause the last construction attempt failed with, or `None`.
 
-    Read by `readiness._probe`, which is the only caller and the whole reason this exists: the cause
-    was classified and counted inside `_mapper` and then thrown away, so the refusal it produced
-    could not say what had gone wrong — and nothing could tell a pod that needs replacing from one
-    that needs a moment.
+    Read by `readiness._probe` to tell a pod that needs replacing from one that needs a moment.
     """
     return _FAILURE
 
@@ -110,32 +85,22 @@ def construction_detail() -> str | None:
 def map_reaction(reaction_smiles: str) -> MapResult:
     """The atom-mapped form of `reaction_smiles`, and whether the mapper failed producing it.
 
-    Catching every exception is still right, and for the reason it always was: RXNMapper raises on
-    inputs it cannot tokenise (an over-long reaction, an element outside its vocabulary) and the
-    correct response is an unmapped reaction rather than a failed batch of two hundred. **What was
-    wrong is that the answer did not say so.** A torch OOM, a checkpoint that will not parse and an
-    `EgressForbidden` from a loader reaching for weights all became a plain `None` — the same value
-    a deployment with no mapper installed produces on purpose — with one unconditional WARNING that
-    named neither the reaction nor the fault, and no counter anywhere.
-
-    So the cause is classified, counted on `chemclaw_mcp_degraded_total` and returned. The log line
-    carries the exception's `repr` rather than only a sentence, because "this reaction could not be
-    mapped" is what a malformed input and a broken pod both look like from a log with nothing in it.
+    Every exception is caught so one untokenisable reaction does not fail a batch, but the cause is
+    classified, counted on `chemclaw_mcp_degraded_total`, logged with its `repr` and returned.
 
     Args:
         reaction_smiles: `reactants>agents>products`.
 
     Returns:
-        A `MapResult` whose `failure` is `None` on the two normal paths — no mapper, or a reaction
-        the mapper had nothing to say about — and a degradation cause when the mapper raised.
+        A `MapResult` whose `failure` is `None` when there is no mapper or nothing to say, and a
+        degradation cause when the mapper raised.
     """
     mapper = _mapper()
     if mapper is None:
         return MapResult()
     try:
         results = mapper.get_attention_guided_atom_maps([reaction_smiles], canonicalize_rxns=False)
-    # BLE001: blind on purpose and classified in the next line - this is one of the three call
-    # sites `degradation.py`'s docstring was written for.
+    # BLE001: blind on purpose and classified on the next line.
     except Exception as exc:  # noqa: BLE001
         cause = degradation.classify(exc)
         degradation.record(server=SERVER, component=COMPONENT, cause=cause)
@@ -155,18 +120,9 @@ def map_reaction(reaction_smiles: str) -> MapResult:
 def inference_threads() -> int:
     """Cores one mapped batch may spend, which is what the admission gate charges it.
 
-    **Read from torch rather than assumed**, for the reason `engine/admission.py` gives at length:
-    torch's intra-op width is sized from the machine's physical cores and not from the container's
-    cgroup, so a pod limited to two cores on a large node gives one forward pass a thread count
-    nobody chose. The image now pins `OMP_NUM_THREADS=1`
-    (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`), so this reads 1 there.
-    Charging the ceiling what the process is *actually* configured to spend is still the only
-    honest number, and it follows a deployment that raises the pin without this function knowing.
-
-    `1` with no mapper installed, which is the measured truth of the RDKit-only path: SMARTS
-    matching holds the GIL, and 1, 2 and 4 threads labelling 50 reactions each measured 581, 425
-    and 418 reactions/s — one core's worth at every width. `1` also when torch is present but
-    cannot be asked, because a cost of zero would make the tool uncounted.
+    Read from torch (`torch.get_num_threads()`), so the charge follows whatever the deployment pins
+    (the image sets `OMP_NUM_THREADS=1`). `1` with no mapper, since the RDKit path holds the GIL,
+    and `1` when torch cannot be asked, since a zero cost would leave the tool uncounted.
     """
     if _mapper() is None:
         return 1
@@ -181,19 +137,9 @@ def inference_threads() -> int:
 def contributing_reactants(mapped: str | None) -> set[str] | None:
     """The reactants that put at least one atom into a product, as canonical SMILES.
 
-    This is the reactant-versus-reagent split — the classical one from Schneider, Lowe, Sayle and
-    Landrum's "What's What" (JCIM 2016), computed here from the map rather than from their
-    heuristics because a map is available and is strictly better evidence. A species written on the
-    left that contributes no atoms to the right did not become the product: it is a base, an
-    oxidant, a coupling agent.
-
-    Returns `None` — not an empty set — when no mapper is installed. The distinction matters: an
-    empty set means "nothing contributed", which would demote every substrate to a reagent.
-
-    **Takes the mapped reaction rather than mapping it**, because the caller needs that string too
-    and a forward pass is the cost the batch bound is set against: mapping here as well ran the
-    transformer twice per reaction — 1000 passes for a 500-reaction batch — for two identical
-    results.
+    The reactant-versus-reagent split (Schneider et al., JCIM 2016), computed from the map. Returns
+    `None`, not an empty set, when there is no map: an empty set would demote every substrate to a
+    reagent. Takes the mapped reaction so the transformer runs once per reaction.
 
     Args:
         mapped: The atom-mapped reaction from `map_reaction`, or `None` where there was no map.
@@ -210,12 +156,10 @@ def contributing_reactants(mapped: str | None) -> set[str] | None:
     for token in parts[0].split("."):
         mol = Chem.MolFromSmiles(token)
         if mol is None or atom_count_error(mol.GetNumAtoms()) is not None:
-            # An oversize component is dropped rather than canonicalised: `MolToSmiles` on a large
-            # linear molecule overflows the C stack (an uncatchable SIGSEGV). See `mcp_server_kit`.
+            # Oversize components are dropped: `MolToSmiles` can overflow the C stack (SIGSEGV).
             continue
         if _labels(token) & product_labels:
-            # Re-canonicalised *without* the map, because that is the form every other module in
-            # this server compares against.
+            # Canonicalised without the map, the form every other module compares against.
             for atom in mol.GetAtoms():
                 atom.SetAtomMapNum(0)
             contributing.add(Chem.MolToSmiles(mol))
@@ -233,13 +177,9 @@ def _labels(smiles: str) -> set[int]:
 def _mapper() -> Any | None:
     """The process-wide mapper, or `None` where the extra is absent or would not build.
 
-    Built at most once on the happy path. A *transient* failure is retried no more often than
-    `CONSTRUCTION_RETRY_SECONDS`, and that retry is the difference between a pod that is not ready
-    *yet* and one that is stuck: `_TRIED` latched unconditionally before, so a `MemoryError` out of
-    `RXNMapper()` — a pod that would have built it fine a minute later — left the process
-    mapless for
-    its whole life, answering 503 that only a restart could clear. A permanent cause still latches,
-    because re-parsing a corrupt checkpoint every minute spends seconds of CPU to learn nothing.
+    Built at most once on success. A transient failure is retried after `CONSTRUCTION_RETRY_SECONDS`
+    so the pod can recover without a restart; a permanent cause latches, since re-parsing a corrupt
+    checkpoint learns nothing.
     """
     global _MAPPER, _TRIED, _ATTEMPTED_AT, _FAILURE, _FAILURE_DETAIL
     with _LOCK:
@@ -252,26 +192,18 @@ def _mapper() -> Any | None:
 
             _MAPPER = RXNMapper()
         except Exception as exc:
-            # **Only a `ModuleNotFoundError` naming `rxnmapper` itself is an absent extra.** This
-            # branch used to be `except ImportError`, which also caught an installed `rxnmapper`
-            # whose `transformers` was missing or whose torch could not load its shared library —
-            # a broken image, sorted as a deployment's choice, with nothing recorded for
-            # `readiness` to refuse on beyond "cause not recorded".
+            # Only a `ModuleNotFoundError` naming `rxnmapper` itself is an absent extra; a missing
+            # dependency of an installed mapper is a broken image.
             if degradation.is_not_installed(exc, _OPTIONAL_MODULES):
                 logger.info(
                     "rxnmapper is not installed; reactions will be labelled without an atom map, "
                     "and `labeller_version` records that so the rows re-label when it arrives"
                 )
                 return None
-            # Constructing it loads weights — from inside the installed package, which the image's
-            # build checks offline — so a failure here means a broken image rather than a missing
-            # network, and the server must still start and still assign roles.
-            #
-            # **Counted as well as logged**, and this branch is why the counter takes a cause: a
-            # deployment whose weights are absent from the image raises here, and one whose loader
-            # reached for the hub raises `EgressForbidden` here. `readiness.verify_labeller` already
-            # refuses to take traffic in both cases; the counter is what makes the difference
-            # visible from a scrape rather than from a pod's first log lines.
+            # Weights load from the installed package, so a failure here is a broken image (or an
+            # `EgressForbidden` from a loader reaching for the hub). The server still starts and
+            # assigns roles; readiness refuses, and the counter makes the cause visible from a
+            # scrape.
             _FAILURE = degradation.classify(exc, optional=_OPTIONAL_MODULES)
             _FAILURE_DETAIL = echo(repr(exc))
             degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
@@ -290,9 +222,7 @@ def _mapper() -> Any | None:
 def _retry_due() -> bool:
     """Whether a failed construction may be attempted again. Called under `_LOCK`.
 
-    The predicate moved to `engine/construction.py` when `naming` needed the same one: it was stated
-    here and only *asserted* there, and the module that asserted it latched for ever on a transient
-    failure. This wrapper stays so the retry window is still a module attribute a test can shorten.
+    Wraps `construction.retry_due` so the window stays a module attribute a test can shorten.
     """
     return construction.retry_due(
         failure=_FAILURE, attempted_at=_ATTEMPTED_AT, window_seconds=CONSTRUCTION_RETRY_SECONDS

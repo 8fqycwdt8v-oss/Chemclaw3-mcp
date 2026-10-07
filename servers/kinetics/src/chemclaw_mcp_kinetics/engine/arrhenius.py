@@ -2,32 +2,13 @@
 
     k(T) = A · exp( -E_a / (R·T) )
 
-Two operations, and the difference between them is the whole of this module's honesty.
+Extrapolation is exact arithmetic whose error is entirely that of the supplied E_a, so every
+answer reports how far it extrapolated. E_a from two points is exact algebra, not a fit — there is
+no residual, so none is reported; regression over more points is not served.
 
-**Extrapolating** takes a rate constant measured at one temperature and an activation energy the
-chemist supplies, and gives k at another. It is exact arithmetic on inputs, and its *error* is
-entirely the error in the E_a it was handed — which is why every answer carries how far it
-extrapolated.
-
-**Determining E_a from two measured points** is exact algebra, not a fit:
-
-    E_a = R · ln(k₂/k₁) / (1/T₁ - 1/T₂)
-
-Two points determine a line through two points. There is no residual, no goodness of fit and no
-confidence interval, because there is nothing left over — and this module says so rather than
-returning an r² of 1.0, which would be true and would read as a quality claim. A *fit* over three
-or more points is regression, it belongs with the tools this server deliberately does not ship, and
-calling this one "a fit" would blur exactly that line.
-
-**What this is not.** `servers/thermalsafety` already owns an Arrhenius extrapolation, and it is a
-different one: `temperature_for_tmr` extrapolates **q**, the specific heat-release rate of a
-*decomposition*, inside a TMR_ad inversion, and returns a temperature. This module extrapolates
-**k**, the rate constant of the reaction a chemist is running, and returns a rate constant. Nothing
-here returns a TMR, a T_D24 or a criticality class; a question about a runaway is that server's.
-
-The two are not interchangeable even where the algebra rhymes: a decomposition's apparent E_a from
-a DSC and a synthesis reaction's E_a from a kinetic study are different numbers about different
-processes, and a tool that accepted either would let one be quoted as the other.
+This extrapolates **k** of the reaction being run. `servers/thermalsafety` extrapolates the heat
+release of a *decomposition*; the two activation energies are different numbers and are kept in
+separate tools so one is never quoted as the other.
 """
 
 from __future__ import annotations
@@ -48,41 +29,31 @@ __all__ = [
     "representable",
 ]
 
-#: J/(mol·K). Written here rather than imported from `scipy` so this server's dependency closure
-#: stays the MCP transport and nothing else — the reason `servers/thermalsafety` gives for the same
-#: choice, and `servers/props` before it.
+# J/(mol·K). Written here so the dependency closure stays the MCP transport alone.
 GAS_CONSTANT_J_PER_MOL_K = 8.314462618
 
 #: °C at 0 K. The one conversion every function here starts with.
 ABSOLUTE_ZERO_C = -273.15
 
-#: Beyond this, an extrapolation is reported with the distance named rather than refused: how far is
-#: too far depends on whether the mechanism changes, which no arithmetic can know. 50 K is where a
-#: process chemist would normally want a second measured point.
+# Beyond this an extrapolation is reported with its distance named, not refused: whether the
+# mechanism changes is not something arithmetic can know.
 _EXTRAPOLATION_NOTICE_K = 50.0
 
 
 class KineticsInputError(ValueError):
     """An input that cannot be interpreted as kinetics.
 
-    `ValueError` deliberately: `mcp_server_kit` passes this family through to the model verbatim,
-    so the message is written for a chemist reading it in a chat rather than for a log.
+    A `ValueError`, so `mcp_server_kit` passes the message to the model verbatim.
     """
 
 
 def representable(what: str, compute: Callable[[], float]) -> float:
     """Evaluate one closed-form expression, refusing by name a result a double cannot hold.
 
-    **Every input guard here is about finiteness, not magnitude**, and finite inputs still reach
-    an unrepresentable answer: a float `**` or `math.exp` *raises* `OverflowError` — which is not a
-    `ValueError`, so `connector_app` hands the model an opaque `error_id` — while a float `*` or
-    `/` quietly returns infinity, and `inf / inf` returns NaN. Measured: a CSTR at order 3 with
-    `C0 = 1e200`, a batch reactor at order 200 with `C0 = 1e-5`, and an Arrhenius extrapolation from
-    -273 °C each raised, and two points 1e-9 K apart returned an infinite activation energy.
-
-    Caught at the expression rather than by an input ceiling, for the reason `_rate` in
-    `reactors.semibatch_accumulation` gives: no magnitude bound on the inputs is physical, and a
-    number that cannot be represented is the refusal the caller needs to read.
+    Input guards check finiteness, not magnitude, so finite inputs can still overflow: `**` and
+    `math.exp` raise `OverflowError` (not a `ValueError`, so the model would see an opaque error
+    id),
+    while `*` and `/` return infinity or NaN. Both are caught here and worded.
 
     Args:
         what: The quantity being computed, as a chemist would name it in the refusal.
@@ -111,8 +82,8 @@ def kelvin(celsius: float) -> float:
     """°C to K, refusing anything below absolute zero.
 
     Raises:
-        KineticsInputError: If the temperature is below absolute zero — which is a units mistake
-            (a kelvin figure entered as °C reads as -250 °C) far more often than a typo.
+        KineticsInputError: If the temperature is below absolute zero (usually a kelvin figure
+            entered as °C).
     """
     if not math.isfinite(celsius):
         raise KineticsInputError(f"a temperature must be a finite number; got {celsius} °C.")
@@ -128,8 +99,8 @@ def kelvin(celsius: float) -> float:
 def _positive(value: float, what: str) -> float:
     """A rate constant, an energy or a time that must be finite and above zero to mean anything.
 
-    Finite first, because `value <= 0.0` is False for NaN and infinity alike, and an infinite rate
-    constant passes pydantic's `gt=0` — the MCP JSON parser accepts the literal `Infinity`.
+    Finiteness is checked first: `value <= 0.0` is False for NaN, and the JSON parser accepts
+    `Infinity`, which passes pydantic's `gt=0`.
     """
     if not math.isfinite(value):
         raise KineticsInputError(f"{what} must be a finite number; got {value}.")
@@ -142,14 +113,11 @@ def _positive(value: float, what: str) -> float:
 class RateConstant:
     """A rate constant at a temperature, with how far it was carried to get there."""
 
-    #: In the same unit as the reference rate constant it came from. This module never names that
-    #: unit, because it depends on the reaction order, and a tool that guessed would be wrong for
-    #: every order but the one it assumed.
+    # In the unit of the reference rate constant; that unit depends on the reaction order, so it is
+    # never named here.
     rate_constant: float
     temperature_c: float
-    #: The gap between this temperature and the measured one, in kelvin. Signed, so a reader can
-    #: tell an extrapolation up from one down — they are not equally safe, since a mechanism that
-    #: switches usually does so on heating.
+    # Signed gap from the measured temperature, in kelvin: extrapolating up is less safe than down.
     extrapolated_by_k: float
     #: True when the gap is wide enough that a second measured point is the honest answer.
     far_from_the_measurement: bool
@@ -163,24 +131,20 @@ class ArrheniusPair:
     """An activation energy determined by two measured points, and the pre-exponential with it."""
 
     activation_energy_kj_per_mol: float
-    #: ln A, in the same unit as the two rate constants. Reported as a logarithm because A itself
-    #: routinely overflows a float for a real reaction (10^13 s^-1 is ordinary) and because the
-    #: number a chemist compares against literature is the logarithm anyway.
+    # ln A, in the unit of the rate constants; A itself routinely overflows a float.
     ln_pre_exponential: float
     lower_temperature_c: float
     upper_temperature_c: float
-    #: The temperature gap the two points span, in kelvin. An E_a determined over 5 K carries the
-    #: measurement error of both points amplified by the reciprocal of that gap, so the span is
-    #: part of the answer rather than context.
+    # The temperature span of the two points, in kelvin; measurement error in E_a scales with its
+    # reciprocal.
     span_k: float
     #: True when the two points are close enough together that the determination is dominated by
     #: measurement error rather than by the temperature dependence.
     span_is_narrow: bool
 
 
-#: Below this span, the reciprocal-temperature difference is small enough that ordinary error in
-#: two rate constants dominates the answer. Stated as a measurement rather than a feeling: over a
-#: 5 K span at 300 K, a 5% error in each k propagates to roughly 35% in E_a; over 30 K, to 6%.
+# Below this span ordinary error in the two rate constants dominates E_a (5% per k gives ~35%
+# over 5 K at 300 K).
 _NARROW_SPAN_K = 10.0
 
 
@@ -196,12 +160,9 @@ def rate_constant_at(
     Args:
         target_temperature_c: The temperature wanted, in °C.
         reference_temperature_c: The temperature the rate constant was measured at, in °C.
-        reference_rate_constant: The measured rate constant, in whatever unit its reaction order
-            implies. The unit is not asked for and not converted: the answer comes back in the same
-            one, and a ratio is unitless either way.
-        activation_energy_kj_per_mol: The activation energy of *this* reaction, in kJ/mol. There is
-            no default — an assumed E_a is the whole of the answer's error, and supplying one would
-            be this tool inventing the number the chemist came to ask about.
+        reference_rate_constant: The measured rate constant; the answer is in the same unit.
+        activation_energy_kj_per_mol: The activation energy of this reaction, in kJ/mol. No
+            default: an assumed E_a is the whole of the answer's error.
 
     Returns:
         The rate constant at the target temperature, the ratio to the measured one, and how far it
@@ -243,10 +204,6 @@ def activation_energy_from_two_points(
 ) -> ArrheniusPair:
     """E_a and ln A from two measured (T, k) pairs — exact algebra, not a fit.
 
-    Two points determine a line through two points, so there is no residual and no goodness of fit
-    to report. A regression over three or more points is a different operation and is not served
-    here.
-
     Args:
         lower_temperature_c: The cooler temperature, in °C.
         lower_rate_constant: The rate constant measured there.
@@ -258,10 +215,8 @@ def activation_energy_from_two_points(
         enough for measurement error to dominate.
 
     Raises:
-        KineticsInputError: If the two temperatures are equal (no span, so E_a is undefined rather
-            than large), if they are given in the wrong order, if a rate constant is not positive,
-            or if the rate constant *falls* with temperature — which is a real phenomenon with a
-            real cause and not one Arrhenius describes.
+        KineticsInputError: If the temperatures are equal or out of order, a rate constant is not
+            positive, or the rate constant falls with temperature (not Arrhenius behaviour).
     """
     lower_k = kelvin(lower_temperature_c)
     upper_k = kelvin(upper_temperature_c)
