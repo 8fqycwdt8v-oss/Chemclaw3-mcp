@@ -170,7 +170,7 @@ def test_the_default_is_derived_from_the_smallest_pod_and_the_measured_session_c
 
     Re-derived here rather than transcribed, so lowering `SESSION_COST_BYTES` or raising
     `DEFAULT_MAX_SESSIONS` without the other cannot pass. The budget is an eighth of the smallest
-    pod's memory limit; `tests/test_fleet.py` is what checks that limit against the shipped
+    pod's memory limit; `tests/test_fleet_*.py` is what checks that limit against the shipped
     Deployments, because the kit cannot see a server.
     """
     assert SESSION_BACKLOG_BUDGET_BYTES == SMALLEST_POD_MEMORY_LIMIT_BYTES // 8

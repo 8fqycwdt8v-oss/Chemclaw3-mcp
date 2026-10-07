@@ -383,7 +383,7 @@ def test_every_value_that_disarms_the_guard_is_in_the_set_the_ratchet_reads(
 ) -> None:
     """`GUARD_DISABLED_VALUES` is what `arm_from_env` does, driven rather than transcribed.
 
-    `tests/test_fleet.py` refuses a shipped `MCP_EGRESS_GUARD` it cannot prove arms the guard, and
+    `tests/test_fleet_*.py` refuses a shipped `MCP_EGRESS_GUARD` it cannot prove arms the guard, and
     it
     imports this set to decide. That makes the set a contract between a ratchet and a runtime, so it
     is driven here through the real entry point: every member disarms, and the values a reader is

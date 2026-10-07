@@ -25,7 +25,7 @@ as tools to choose between.
 This directory is what prevents both, in two layers:
 
 1. **No published `export` line names it.** `manifests/` holds only connectors, and
-   `tests/test_fleet.py::test_the_directory_the_export_line_names_holds_only_connectors` replicates
+   `tests/test_fleet_manifests.py::test_the_directory_the_export_line_names_holds_only_connectors` replicates
    Chemclaw3's discovery over it to say so.
 2. **Every manifest here declares `mount: backend`, a key Chemclaw3 *refuses*.** Its
    `ConnectorManifest` is `extra="forbid"` and `registry.discovered()` loads every manifest it

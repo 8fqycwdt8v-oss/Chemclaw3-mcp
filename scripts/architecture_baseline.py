@@ -209,8 +209,11 @@ def prose_share(rev: str) -> dict[str, Any]:
         bucket[1] += total
     prose_total = sum(p for p, _ in per_package.values())
     lines_total = sum(t for _, t in per_package.values())
+    commit = subprocess.run(
+        ["git", "rev-parse", "--short", rev], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
     return {
-        "rev": rev,
+        "rev": commit,
         "total": {
             "prose_lines": prose_total,
             "non_blank_lines": lines_total,

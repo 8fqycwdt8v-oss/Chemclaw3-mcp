@@ -20,7 +20,7 @@ So the checks below are the ones that are real:
 
 The checks that actually catch drift for this corpus live elsewhere, and deliberately:
 `test_canonicalization_contract.py` pins the structure definition against Chemclaw3, and
-`tests/test_fleet.py` pins the densities against `props`'s independently compiled solvent table.
+`tests/test_fleet_*.py` pins the densities against `props`'s independently compiled solvent table.
 """
 
 from __future__ import annotations

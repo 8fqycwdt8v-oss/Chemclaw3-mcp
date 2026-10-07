@@ -183,7 +183,7 @@ def test_healthz_reports_the_bounds_the_process_is_running_with(
 ) -> None:
     """An operator's override is read off the probe, not inferred from the image.
 
-    The deployment ratchets in `tests/test_fleet.py` read the files this repository ships, so a
+    The deployment ratchets in `tests/test_fleet_*.py` read the files this repository ships, so a
     bound moved by an overlay applied elsewhere, a Helm value or `kubectl set env` is invisible to
     them and always will be (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`). This
     drives the other half: a server bound read through `env_bound`, the kit's own session ceiling

@@ -227,26 +227,10 @@ def test_the_header_still_shows_how_to_derive_the_count() -> None:
 
 
 def test_every_anchor_a_row_names_exists() -> None:
-    """Every path a row names resolves, so the row can be looked up rather than argued about.
+    """Every row resolves at least one path anchor, and every path it names exists.
 
-    Only backticked tokens rooted at a real top-level entry are treated as paths, which needs no
-    allowlist — the same trick `tests/test_fleet.py` uses on `CLAUDE.md`. A row's prose names many
-    things that are not paths (`MCP_EGRESS_ALLOW`, `dict[str, float]`, `make check`), and none of
-    them begins with an entry that exists here. A `::symbol` suffix is cut: the path is what makes
-    the row findable, and resolving a symbol means parsing every language in the tree. The limit of
-    that trick is stated where it is shared, in `tests/test_fleet.py`: a *single-segment* anchor is
-    self-rooting, so a row naming a root-level file that has been deleted stops being read as a path
-    at the same moment it stops resolving.
-
-    **Resolution is tracked per row, which is the half that was missing.** The count was global and
-    the assertion was `assert checked` once at the end, so a row every one of whose backticked
-    tokens is *shorthand* — `mcp_server_kit/egress.py` is the shape, and `CLAUDE.md` writes it
-    thirteen times — contributed nothing, was reported by nothing, and the assertion passed on other
-    rows' hits. Rule 2 of the register's header says every row names an anchor; this is now the
-    check that says so rather than a check that says *some* row does.
-
-    Rows marked as another repository's are skipped, and the skip is **reported** — a check that
-    quietly shrinks tells you nothing about what it did not look at.
+    Only backticked tokens rooted at a real top-level entry are paths; a `::symbol` suffix is cut.
+    Rows marked as another repository's are skipped, and the skip is reported.
     """
     top_level = {path.name for path in ROOT.iterdir()}
     missing: list[str] = []

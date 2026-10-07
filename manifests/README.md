@@ -39,5 +39,5 @@ anywhere else names, and both declare `mount: backend` — a key Chemclaw3's `ex
 model refuses, so an operator who points a path there anyway gets a startup error naming the file.
 
 That split is the whole reason the command above is safe to copy, and it is held by a test rather
-than by this paragraph: `tests/test_fleet.py` replicates Chemclaw3's discovery over this directory
+than by this paragraph: `tests/test_fleet_*.py` replicates Chemclaw3's discovery over this directory
 and asserts everything it finds is a connector. See `docs/integration.md`.

@@ -1,40 +1,14 @@
-"""A degraded answer, counted and classified — because until this existed none of them were.
+"""A degraded answer, counted and classified.
 
-Three `except Exception` blocks in this fleet turned a broken component into a *plausible* answer:
-`rxnlabel`'s mapper raising became "no atom map", its namer raising became "nothing matched", and a
-`rxnpredict` predictor module that would not import became a quieter ensemble. Each logged a line
-and none of them moved a number, so from a scrape a pod whose weights had vanished was
-indistinguishable from a pod being asked easy questions.
+Wherever a broken component still yields an answer, the cause is counted on
+`chemclaw_mcp_degraded_total{server,component,cause}` so a degraded pod is visible from a scrape.
 
-**`EgressForbidden` is the reason this is a vocabulary rather than a boolean.** It subclasses
-`OSError` precisely so it surfaces where a connection error would, which means any library's own
-`except OSError: retry` swallows it whole — and `egress.py` says as much. A refusal that arrives
-inside a model's loader is therefore the single most likely way this fleet's no-egress posture
-becomes invisible: the counter `egress.py` increments fires, the *call* still returns something, and
-the answer carries no trace. Classifying it here puts the same fact on the degradation the caller
-actually sees.
-
-**Both labels are closed sets, and that is the label rule rather than a preference.** `/metrics` is
-unauthenticated (`CLAUDE.md`, and `metrics.py` at length): no actor, no session, no correlation id,
-no tool argument may be a label. A cause drawn from `CAUSES` is bounded by this file; a
-`type(exc).__name__` folded straight into a label would be bounded by whatever a dependency decides
-to raise, which is not a bound anybody here controls. `component` is bounded by
-`register_components`, which exists because for one wave it was bounded by nothing at all while this
-paragraph read as though it were — `record` clamps an unregistered one onto `UNKNOWN_COMPONENT`
-rather than minting a series for it, and clamps rather than raises for the reason `record` gives.
-
-**What `classify` deliberately does not do is read a message.** A CUDA out-of-memory arrives as
-`torch.cuda.OutOfMemoryError`, a *subclass of `RuntimeError`* whose text has changed across
-releases; matching on that text would be a control that works until upstream rewords itself. So the
-resource
-branch matches the exception's **type name** against a two-element set — a name is a stable API
-surface in a way a message is not — and every torch failure that is not one of those two is counted
-as `failed` on purpose, with the `repr` in the log beside it. A wrong cause is worse than a coarse
-one, and since liveness stopped reading `/healthz` the asymmetry is decidable rather than a matter
-of taste: a cause wrongly sorted *into* `resource_exhausted` leaves a broken pod in service, while
-one wrongly sorted out of it sheds traffic for one probe interval. The first is the expensive
-mistake, so the resource branch stays narrow and explicit — two type names and four errno values,
-each argued where it is written.
+- `EgressForbidden` is classified first: it subclasses `OSError`, so a library's own retry could
+  otherwise bury a no-egress refusal inside a plausible answer.
+- Both labels are closed sets (`CAUSES`, `register_components`), because `/metrics` is
+  unauthenticated and unbounded labels are not allowed.
+- `classify` reads exception types and errnos, never messages, and the resource branch stays
+  narrow: a cause wrongly marked transient leaves a broken pod in service.
 """
 
 from __future__ import annotations
@@ -65,74 +39,45 @@ __all__ = [
     "registered_components",
 ]
 
-# The in-process egress guard refused an outbound call this component needed. Permanent by
-# construction: a NetworkPolicy and an armed guard do not change under load, so a component that
-# reaches for the network at request time is a component that will never work in this deployment.
+# The in-process egress guard refused an outbound call this component needed. Permanent: the
+# deployment's posture does not change under load.
 CAUSE_EGRESS_REFUSED = "egress_refused"
 
 # The process ran out of something it can get back: memory, a device allocation. **The one cause
 # that is transient**, and the one a readiness check must not act on — see `PERMANENT_CAUSES`.
 CAUSE_RESOURCE_EXHAUSTED = "resource_exhausted"
 
-# The component's distribution is not in this image. A deployment's decision, not a fault: this
-# fleet's optional components are optional by design and say so in the answer. **Only a
-# `ModuleNotFoundError` earns it** — an installed module that fails to load is a broken image and is
-# `CAUSE_FAILED`; see `is_not_installed`.
+# The component's distribution is not in this image — a deployment's decision, not a fault. Only a
+# `ModuleNotFoundError` earns it; see `is_not_installed`.
 CAUSE_NOT_INSTALLED = "not_installed"
 
-# Everything else: a checkpoint that will not parse, a corrupt table, a library raising on an input
-# it cannot tokenise. Coarse on purpose — see the module docstring on why the resource branch is
-# narrow rather than generous.
+# Everything else: an unparseable checkpoint, a corrupt table, a library raising on an input.
 CAUSE_FAILED = "failed"
 
 CAUSES = frozenset(
     {CAUSE_EGRESS_REFUSED, CAUSE_RESOURCE_EXHAUSTED, CAUSE_NOT_INSTALLED, CAUSE_FAILED}
 )
 
-# The causes that mean *this pod will keep answering wrongly until it is replaced*. A readiness
-# check may act on these and must not act on the others, and `connector_app`'s `/healthz` now
-# enforces that for every server rather than leaving each callable to remember it — which is how two
-# of the seven came to answer 503 for a transient anyway.
-#
-# **The reason used to be that a 503 here restarted the pod, and that reason is gone.** Every
-# Deployment pointed `readinessProbe` *and* `livenessProbe` at this one route, so an unready answer
-# replaced the pod instead of shedding load;
-# `D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` gave liveness its own
-# `/livez` and a 503 here now means only "do not send me traffic", reversed by the next passing
-# probe. What survives the decoupling is the narrower argument, and it is the one that matters for
-# `rxnlabel`: its probe runs a transformer forward pass, which is *heavier* than most of the traffic
-# it gates, so a probe that fails on an allocation is evidence about the probe rather than about the
-# calls — shedding a pod that can still serve. `CAUSE_NOT_INSTALLED` is excluded for the opposite
-# reason: an absent optional component is the deployment working as designed.
+# The causes meaning *this pod will keep answering wrongly until replaced*. Only these may make a
+# readiness check unready (enforced by `connector_app`'s `/healthz`): a transient failure says more
+# about a heavy probe than about the calls, and an absent optional component is by design.
 PERMANENT_CAUSES = frozenset({CAUSE_EGRESS_REFUSED, CAUSE_FAILED})
 
-# Exception *type names* that mean the process ran out of a resource. `MemoryError` is CPython's;
-# `OutOfMemoryError` is the name torch gives both `torch.OutOfMemoryError` and
-# `torch.cuda.OutOfMemoryError`, which subclass `RuntimeError` and so cannot be caught by type here
-# without importing torch into a package that must not depend on it.
+# Exception type names meaning a resource ran out: CPython's `MemoryError`, and torch's
+# `OutOfMemoryError` (a `RuntimeError` subclass), matched by name so this package need not import
+# torch.
 _RESOURCE_TYPE_NAMES = frozenset({"MemoryError", "OutOfMemoryError"})
 
-# `OSError.errno` values that mean the same thing the two type names above do: the process asked the
-# kernel for something it can get back and was told no. **Added because the narrow type-name branch
-# was narrower than its own comment claimed**: `CAUSE_RESOURCE_EXHAUSTED` describes "memory, a
-# device allocation", and `OSError(ENOMEM, "Cannot allocate memory")` — literally that sentence,
-# raised by every allocating syscall in libc — classified `failed` and therefore *permanent*, as did
-# the two textbook load-induced transients `EMFILE`/`ENFILE` (a pod at its descriptor ceiling) and
-# `EAGAIN` (a pod at its thread or process ceiling). Measured before this set existed: all four sat
-# in the permanent bucket beside a corrupt checkpoint.
-#
-# `EWOULDBLOCK` is `EAGAIN` on Linux and is therefore already here. A bare `TimeoutError` carries no
-# errno and stays `failed` deliberately — see `classify`.
+# `OSError.errno` values meaning the kernel refused a recoverable resource: memory, file
+# descriptors (`EMFILE`/`ENFILE`), threads/processes (`EAGAIN`, which is `EWOULDBLOCK` on Linux).
 _RESOURCE_ERRNOS = frozenset({errno.ENOMEM, errno.EMFILE, errno.ENFILE, errno.EAGAIN})
 
 # The component label a name nothing registered collapses onto. The sentinel spelling `app.py` uses
 # for an unserved tool name, for the same reason and with the same bound.
 UNKNOWN_COMPONENT = "<unknown>"
 
-# Every component name this process may publish, filled by `register_components` at the import of
-# whichever module owns the name. A module-level set rather than a frozenset constant because the
-# names belong to the servers and this package must not know them; what it owns is the *rule* that
-# the set is closed before anything is counted. See `record`.
+# Every component name this process may publish, filled by `register_components` at import of the
+# owning module; the set is closed before anything is counted.
 _COMPONENTS: set[str] = set()
 
 DEGRADED = Counter(
@@ -145,29 +90,12 @@ DEGRADED = Counter(
 def classify(exc: BaseException, *, optional: Collection[str] | None = None) -> str:
     """Which `CAUSES` member `exc` is, checked most specific first.
 
-    **`not_installed` is a `ModuleNotFoundError` and nothing else.** A plain `ImportError` means a
-    module was found and would not load — a missing shared library, a symbol an installed
-    dependency no longer exports — and is `failed`, because the distribution is in the image and
-    broken. Where the caller knows which modules it tolerates the absence of, it passes them as
-    `optional`, and a `ModuleNotFoundError` for anything else (an installed extra missing one of
-    its own dependencies) is `failed` too; see `is_not_installed`. Without `optional` a
-    `ModuleNotFoundError` is still taken at its word, because a call site that cannot say what it
-    imported cannot say more.
-
-    `EgressForbidden` is tested before anything else deliberately: it is an `OSError`, so any
-    branch that sorted `OSError` first would bury the one cause this fleet most needs to see. The
-    errno branch below is exactly such a branch, which is why the order is load-bearing rather than
-    tidy: a refusal carries `errno.EHOSTUNREACH`, not one of `_RESOURCE_ERRNOS`, so the two do not
-    overlap today — and the ordering is what keeps that an accident the fleet does not depend on.
-
-    **What stays `failed` on purpose, and is not an oversight.** A bare `TimeoutError` and an
-    `asyncio.CancelledError` carry no errno, and a `RuntimeError("CUDA out of memory")` carries no
-    type name this can match — matching its *message* is the control this module's docstring refuses
-    to write, because torch has reworded it across releases. All three therefore read as permanent.
-    That verdict is the cheap one to get wrong in this direction: since
-    `D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` gave liveness its own
-    route, an unready answer sheds traffic and is reversed by the next passing probe, where the
-    opposite mistake leaves a broken pod serving.
+    `EgressForbidden` is tested first because it is an `OSError` and the errno branch would
+    otherwise
+    see it. `not_installed` is a `ModuleNotFoundError` only (see `is_not_installed`); a plain
+    `ImportError` is a broken image. A bare `TimeoutError`, a cancellation and a CUDA OOM reported
+    only
+    by message stay `failed` — messages are never matched.
 
     Args:
         exc: The exception a component raised.
@@ -193,36 +121,13 @@ def classify(exc: BaseException, *, optional: Collection[str] | None = None) -> 
 def is_not_installed(exc: BaseException, optional: Collection[str]) -> bool:
     """Whether `exc` says one of the `optional` top-level modules is simply absent from this image.
 
-    **The type is the half of this that `classify` used to skip, and the name is the other half.**
-    Every `ImportError` was sorted `not_installed`, which is right for exactly one of the shapes an
-    import can fail in:
-
-        ModuleNotFoundError(name="rxnmapper")      the extra is not installed   -> a decision
-        ModuleNotFoundError(name="transformers")   the extra is installed and   -> a broken image
-                                                   one of *its* dependencies
-                                                   is missing
-        ImportError("libcudart.so.11: cannot       the module was found and     -> a broken image
-        open shared object file")                  its compiled half would
-                                                   not load
-
-    The second and third read as "an extra nobody installed" to every probe in this fleet, which is
-    the one verdict that keeps a pod whose image is broken in service. Neither needs the message
-    read — the thing `classify`'s docstring refuses to do: `ModuleNotFoundError` is the interpreter
-    saying *no finder located the module*, and a plain `ImportError` is it saying *one was located
-    and loading it failed*, which is never an absent distribution. What only the caller knows is
-    which module's absence it chose to tolerate, so `exc.name` — set by the import system on every
-    real `ModuleNotFoundError` — is compared against that. **Exactly, not by prefix**: importing
-    `a.b` with `a` absent reports `name="a"`, so a `name` of `a.b` means `a` is installed and its
-    submodule is missing — an incompatible version, which is a broken image too.
-
-    A `ModuleNotFoundError` constructed without a `name` answers `False` here: a real import always
-    sets it, so one without it is a library raising the type by hand, and "absent" is not something
-    this can conclude from a type a library chose.
+    Only a `ModuleNotFoundError` whose `name` is exactly one of `optional` qualifies. A plain
+    `ImportError` (found but would not load), a missing dependency of an installed extra, a missing
+    submodule (`name="a.b"`), or an error without `name` all mean a broken image.
 
     Args:
         exc: What the guarded import raised.
-        optional: The top-level module names whose absence is a deployment's decision — the ones
-            the guard's own `import` statements name.
+        optional: The top-level module names whose absence is a deployment's decision.
 
     Returns:
         `True` only for a `ModuleNotFoundError` naming one of `optional` itself.
@@ -235,17 +140,8 @@ def is_not_installed(exc: BaseException, optional: Collection[str]) -> bool:
 def register_components(*names: str) -> None:
     """Declare component names this process may publish on `DEGRADED`.
 
-    Called at the import of whichever module owns the name — `mapping.COMPONENT`, the predictor
-    registry's own map — so the set is closed before the first `record`. Idempotent.
-
-    **Why a registry and not a convention.** `cause` was clamped to `CAUSES` and `component` was
-    clamped by nothing but the habit of spelling it as a module constant, so the two halves of one
-    label rule were enforced by two different mechanisms and only one of them was a mechanism.
-    Measured: `record(component='hostile"}\n fake_metric 99', ...)` minted that series, on an
-    endpoint `CLAUDE.md` and `metrics.py` both describe as unauthenticated. No caller-reachable path
-    reached it — every call site passes a source constant, and `rxnpredict`'s `_select` intersects a
-    caller's model list with its registry before any of them — so this closes a gap rather than a
-    breach, and it closes it the way `app._served_tool_name` closes the same gap for a tool name.
+    Called at import of the owning module, so the label set is closed before the first `record`;
+    an unregistered name is clamped rather than minted as a series. Idempotent.
 
     Args:
         names: Component names, each a constant in the calling package's source.
@@ -261,26 +157,14 @@ def registered_components() -> frozenset[str]:
 def record(*, server: str, component: str, cause: str) -> None:
     """Count one degraded answer, clamping both labels rather than raising at either.
 
-    **Lenient on purpose, and it is the `except` block around every call site that makes it so.**
-    This function's three callers are all inside one — `mapping.map_reaction`, `naming.name`,
-    `predictors.mark_unavailable` — whose whole job is to answer anyway. An earlier version raised
-    `ValueError` for an unclamped cause, which `connector_app` passes to the model *verbatim*:
-    driven with `classify` patched to return a fifth cause a later wave forgot to add to `CAUSES`,
-    `map_reaction` raised instead of degrading and a chemist's answer became a sentence about
-    Prometheus labels. The error reporter became the error. So an unrecognised cause is logged and
-    counted as `CAUSE_FAILED`, an unregistered component as `UNKNOWN_COMPONENT`, and the hard
-    assertion lives in the suite
-    (`tests/test_degradation.py::test_every_cause_a_call_site_passes_is_one_of_the_four`), where a
-    failure costs a red build rather than a chemist's answer.
-
-    The clamp is still a clamp: a label outside the declared set never reaches `/metrics`, so the
-    series count stays bounded by this file and by `register_components`' callers.
+    Every caller is inside an `except` whose job is to answer anyway, so raising here would turn a
+    label problem into the model's answer. An unknown cause is logged and counted as `CAUSE_FAILED`,
+    an unregistered component as `UNKNOWN_COMPONENT`; the strict check lives in the test suite.
 
     Args:
         server: The `connector_app` name of the server reporting it.
-        component: What went missing. A module-level constant at every call site, declared through
-            `register_components`; anything else is collapsed onto `UNKNOWN_COMPONENT`.
-        cause: A member of `CAUSES`; anything else is logged and counted as `CAUSE_FAILED`.
+        component: What went missing, declared through `register_components`.
+        cause: A member of `CAUSES`; anything else is counted as `CAUSE_FAILED`.
     """
     if cause not in CAUSES:
         logger.error(

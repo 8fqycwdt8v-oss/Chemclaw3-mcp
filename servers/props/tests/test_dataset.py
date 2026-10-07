@@ -10,7 +10,7 @@ internal-consistency arguments strong enough to catch that:
 - **Formula against molecular weight — and it is no longer here.** The two columns are written
   independently in the row and must agree, but checking that needs a periodic table, and the
   seventeen-element one this file used to carry a sixth of was a third copy of a number the fleet
-  already holds twice. It moved to `tests/test_fleet.py`, to
+  already holds twice. It moved to `tests/test_fleet_*.py`, to
   `test_the_three_answers_to_molecular_mass_agree`, which weighs each row's formula with
   `servers/thermalsafety`'s table *and* its SMILES with
   RDKit — a stronger check than this file could make, because it reconciles three servers rather

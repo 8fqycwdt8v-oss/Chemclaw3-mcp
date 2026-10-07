@@ -286,7 +286,7 @@ def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     this replaces had a `_configured_ceiling()` helper *here* that restated `tools.py`'s own
     expression, so it compared the test to itself and never touched `tools._admission` — the same
     shape that left `servers/rxnlabel` able to hardcode its batch bound with 209 tests green.
-    `tests/test_fleet.py` is what then refuses a shipped file that moves the variable.
+    `tests/test_fleet_*.py` is what then refuses a shipped file that moves the variable.
     """
     monkeypatch.delenv(VARIABLE, raising=False)
     monkeypatch.delenv(RETIRED_VARIABLE, raising=False)

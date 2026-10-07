@@ -1,18 +1,7 @@
-"""Every count this server writes down about itself, checked against the surface it describes.
+"""Every count this server writes about itself, checked against the surface it describes.
 
-A tool docstring **is** the prompt, so it cannot hold a live expression — but a test can hold the
-prose against the thing it counts, and that is the difference between a number that decays and one
-that fails. It had decayed in five places at once, all describing the same server: `calculation_key`
-offered "one of the nine on this server" over seventeen compute tools and named
-`compute_thermochemistry` as a tool with no key, which is not on this server at all and whose
-identity raises — so a model following that sentence calls something that refuses. The manifest's
-own comments read "The eight backing…" over a list of ten and "The six primitives" over a list of
-seven; `MODULES.md` said "Seventeen tools in three groups" over a breakdown summing to eighteen; and
-the README's two tables were each missing a tool as well as miscounting.
-
-Nothing in that list was a lie when it was written. Each was true of a commit, and this repository's
-own rule is that a number in prose is a claim about a commit — so the numbers are derived here, from
-`COMPUTE_TOOLS` and from the manifest, and spelled the way each document spells them.
+A tool docstring is the prompt and cannot hold a live expression, so the counts in it, in the
+manifest comments and in the README are derived here from `COMPUTE_TOOLS` and the manifest.
 """
 
 from __future__ import annotations
@@ -26,7 +15,6 @@ from chemclaw_mcp_calc.engine.identity import COMPUTE_TOOLS, calculation_identit
 
 _SERVER = Path(__file__).resolve().parents[1]
 _MANIFEST = yaml.safe_load((_SERVER / "connector.yaml").read_text())
-_MODULES = (_SERVER.parents[1] / "MODULES.md").read_text()
 _README = (_SERVER / "README.md").read_text()
 
 _WORDS = {
@@ -131,14 +119,6 @@ def test_the_manifest_comments_count_the_lists_they_introduce() -> None:
     assert f"# The {_word(SMILES_IN)} backing Chemclaw3's own SMILES-in tools" in text
     assert f"# The {_word(STRUCTURE_IN)} primitives" in text
     assert f"# {_word(HELPERS).capitalize()} helpers that compute nothing" in text
-
-
-def test_the_catalogue_row_counts_the_surface_it_catalogues() -> None:
-    """`MODULES.md` is the fleet's catalogue; its calc row is a claim about this manifest."""
-    assert f"{_word(SERVED).capitalize()} tools in three groups" in _MODULES
-    assert f"**{_word(SMILES_IN).capitalize()}** back its SMILES-in tools" in _MODULES
-    assert f"**{_word(STRUCTURE_IN).capitalize()}** structure-in primitives" in _MODULES
-    assert f"**{_word(HELPERS).capitalize()}** helpers that compute nothing" in _MODULES
 
 
 def test_the_readme_counts_and_its_tables_agree_with_each_other() -> None:

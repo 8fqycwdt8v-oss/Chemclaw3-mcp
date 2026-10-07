@@ -448,3 +448,23 @@ def test_the_coverage_basis_is_every_distribution_this_workspace_ships() -> None
         f"{stale} are named in the coverage basis and ship nowhere in this workspace. Coverage "
         "over a package that does not exist is silently zero-weighted, which flatters the total."
     )
+
+
+def test_the_docs_map_lists_everything_beside_it() -> None:
+    """`docs/README.md` links every entry beside it and nothing absent; subtrees have a README."""
+    docs = ROOT / "docs"
+    listed = set(
+        re.findall(r"\]\((?!\.\./|https?://)([^)#]+)\)", (docs / "README.md").read_text("utf-8"))
+    )
+    present = {
+        path.name + ("/" if path.is_dir() else "")
+        for path in docs.iterdir()
+        if path.name != "README.md"
+    }
+    unlisted = sorted(n for n in present if n not in listed and n.rstrip("/") not in listed)
+    assert not unlisted, f"present in docs/ and not linked from docs/README.md: {unlisted}"
+    stale = sorted(link for link in listed if not (docs / link).exists())
+    assert not stale, f"linked from docs/README.md and not present: {stale}"
+    for path in sorted(docs.iterdir()):
+        if path.is_dir():
+            assert (path / "README.md").exists(), f"docs/{path.name}/ has no README.md"

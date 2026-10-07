@@ -363,7 +363,7 @@ def test_the_render_size_refuses_below_its_floor_and_accepts_it(
 ) -> None:
     """The bound itself, at the floor and one below it, driven through the module's own import.
 
-    `tests/test_fleet.py::test_every_environment_bound_refuses_at_import_and_names_its_own_variable`
+    `tests/test_fleet_deploy.py::test_every_environment_bound_refuses_at_import_and_names_its_own_variable`
     drives every bound in the fleet at `0` and `-1`, which every floor of 1 or more rejects. This
     is the one site where that would pass on a floor of 1 as well, so the interesting value is the
     one *between* the two: `minimum - 1`.

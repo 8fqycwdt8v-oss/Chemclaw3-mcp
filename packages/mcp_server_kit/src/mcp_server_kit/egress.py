@@ -1,46 +1,17 @@
-"""The runtime egress guard: a server in this repository never calls out, and this is what says so.
+"""The runtime egress guard: a server in this repository never calls out.
 
-Every server here answers from data that was put on disk at build time or mounted read-only. That
-is a *deployment* property in the end — a NetworkPolicy with an empty `egress:` block — but a
-control that exists only in the chart is a control nobody can test, and one that exists only in
-`CLAUDE.md` is a sentence. Chemclaw3 has recorded that failure twice: a README asserting a deletion
-that had not happened, and `NoAuth`'s docstring describing a validator that did not exist. So the
-rule is armed inside the process too.
+Armed in-process because it catches what a static scan of our own modules cannot — third-party
+code fetching weights, sending telemetry, or checking a licence over DNS. `arm()` rebinds the
+outbound calls (connects, datagram sends, forward and reverse name lookups); a refusal is
+logged, counted on `chemclaw_mcp_egress_refused_total`, and raised as `EgressForbidden`.
 
-**What it catches that a static scan cannot.** `tests/test_no_egress.py` reads our own modules and
-proves *we* import no HTTP client. It says nothing about the third-party code underneath: an ML
-library fetching model weights on first use, a package phoning home with usage telemetry, a licence
-check over DNS. Those are the realistic ways a "no egress" claim stops being true.
+Serving (`bind`/`listen`/`accept`), loopback and non-inet families pass. Outside any in-process
+patch by construction: a child process, `ctypes` into libc, the C type `_socket.socket`, and
+syscalls from compiled extensions — `no_egress.py` refuses the importable ones statically, and
+`make offline-run` removes the network for the rest.
 
-**They do not all end at `socket.socket.connect`, and believing they did left two of the three
-examples above uncovered.** A licence check over DNS never calls `connect` at all — `getaddrinfo`
-and `gethostbyname` are module-level C functions, and an armed process resolved any name it liked,
-which is a full round trip to a resolver. A datagram socket never calls `connect` either, so
-`sendto`/`sendmsg` carried payload straight out. Both were measured, and both are patched here now,
-along with `connect`/`connect_ex`. **A reverse lookup is the same round trip run backwards** —
-`getnameinfo` and `gethostbyaddr` resolve an address to a name, and the *address* is then the covert
-channel; both completed with the guard armed until they were patched too.
-
-**What it deliberately does not touch, and what covers each instead.** Serving is
-`bind`/`listen`/`accept`, which are different calls, so an armed process still answers requests
-normally. Loopback stays open: a sidecar, a health probe against ourselves, and the in-process test
-client all live there. Non-`AF_INET` families (Unix sockets) pass, because they cannot leave the
-host. And four channels are outside any in-process patch by construction — a **child process**
-(`subprocess`, `os.system`), a **`ctypes` call straight into `libc.connect`**, the private C type
-**`_socket.socket`** (whose methods `arm()` rebinds only on the Python `socket.socket` subclass, so
-a `_socket.socket().connect(...)` never sees the guard — caught statically by `no_egress.py`, which
-lists `_socket`), and any syscall made from a compiled extension — of which `grpc` is the instance
-this lockfile reaches, and `no_egress.py` lists it for `_socket`'s reason: a *named* extension can
-be refused statically, the channel as a class cannot. A child process is the one of the four that
-no static reader can help with either, because `subprocess` is how `pyexec` and `calc` do their
-work. Those are `make offline-run`'s job: it takes the network namespace away, which is the only
-layer that does not depend on the caller going through Python. `servers/pyexec` is the server this
-matters most for, and its README states the same division — the child process and its rlimits are
-the boundary there, not the guards inside the parent.
-
-The allowlist is `MCP_EGRESS_ALLOW`, and it is **empty by default and empty in the shipped chart**.
-It exists so a build-time ingestion step — the one sanctioned moment a dataset is fetched — can run
-with the guard relaxed *outside* the serving image, not so a server can be talked into calling out.
+`MCP_EGRESS_ALLOW` is empty by default and in every shipped deployment; it exists for build-time
+ingestion outside the serving image.
 """
 
 from __future__ import annotations
@@ -49,9 +20,7 @@ import ipaddress
 import logging
 import os
 
-# The guard *is* the rebinding of this module's methods, so it is the one file in `src/` that has
-# to hold `socket` at module level. `TID253` is the belt over `no_egress.network_imports`, and the
-# scan has never read this package's own sources — it is pointed at a server's `src/<package>`.
+# The guard is the rebinding of this module's methods, so this file must import `socket`.
 import socket  # noqa: TID253
 import threading
 from collections.abc import Iterable, Sequence
@@ -74,20 +43,15 @@ logger = logging.getLogger(__name__)
 class EgressForbidden(OSError):
     """A server tried to open an outbound connection. That is a bug, not a configuration problem.
 
-    Derived from `OSError` so it surfaces where a connection error would, but named so nobody has
-    to guess: a stack trace ending here names the library that tried to call out.
+    An `OSError` so it surfaces where a connection error would; the stack trace names the caller.
     """
 
 
 _ALLOW_ENV = "MCP_EGRESS_ALLOW"
 _GUARD_ENV = "MCP_EGRESS_GUARD"
 
-# The values of `MCP_EGRESS_GUARD` that mean "do not arm". Public and a module constant rather than
-# a literal inside `arm_from_env`, because the ratchet that refuses a shipped disabling
-# (`tests/test_fleet.py`) has to know *exactly* this set: it flags any value it cannot prove arms
-# the guard, and a transcribed copy would go on agreeing with itself if a spelling were added here.
-# Everything else arms, **the empty string included** — a bare `ENV MCP_EGRESS_GUARD=` is not a
-# disabling, and `tests/test_egress.py` drives the whole table rather than asserting it in prose.
+# The `MCP_EGRESS_GUARD` values that mean "do not arm"; everything else arms, the empty string
+# included. Public because `tests/test_fleet.py` refuses any shipped value it cannot prove arms.
 GUARD_DISABLED_VALUES = frozenset({"off", "0", "false", "no"})
 
 _original_connect = socket.socket.connect
@@ -107,10 +71,7 @@ _allowed: frozenset[str] = frozenset()
 def allowed_hosts() -> frozenset[str]:
     """The hosts the guard currently permits, beyond loopback. Empty in every shipped deployment.
 
-    "Empty in every shipped deployment" is a claim, and `chemclaw_mcp_egress_allowed_hosts` is what
-    makes it checkable from outside the pod: this set's *size*, never its contents — a destination
-    host cannot be a metric label on an unauthenticated endpoint. `tests/test_fleet.py` holds the
-    other end, that no deployment manifest in this repository sets `MCP_EGRESS_ALLOW` at all.
+    Its size (never its contents) is published as `chemclaw_mcp_egress_allowed_hosts`.
     """
     return _allowed
 
@@ -130,24 +91,10 @@ def _parse_allow(raw: str | None) -> frozenset[str]:
 def _is_loopback(host: str) -> bool:
     """Whether `host` names this machine — the one destination that is never egress.
 
-    Literal addresses are decided by `ipaddress`, so the whole of `127.0.0.0/8` and `::1` count
-    rather than the two spellings people remember. A name is only loopback if it *is* exactly
-    `localhost`: resolving an arbitrary name here would mean a DNS lookup, which is itself a call
-    out, and a guard whose check leaks is not a guard.
-
-    **A `.localhost` *suffix* is not loopback, and treating it as one was a bypass.** The rule used
-    to exempt any name ending in `.localhost`, but the OS resolver decides what such a name points
-    at — measured, `connect(("exfil.localhost", 80))` reached a public address given an
-    `/etc/hosts` entry, and `getaddrinfo("<payload>.localhost")` was permitted, i.e. DNS
-    exfiltration through a name the guard waved through. Only the exact string `localhost` and real
-    loopback IP literals pass now. A site that genuinely serves a `.localhost` name adds it to
-    `MCP_EGRESS_ALLOW`, the one sanctioned way to widen the guard.
-
-    **The unspecified address counts too, and it started mattering when this guard grew to cover
-    `getaddrinfo`.** `0.0.0.0` and `::` are what a container binds to, not somewhere to reach — and
-    a `connect` to either lands on this machine anyway. CPython short-circuits a numeric bind
-    address before it reaches `getaddrinfo`, so nothing observed this; a guard that refuses a
-    server's own bind on some other path would be an outage rather than a control.
+    Loopback and unspecified IP literals (decided by `ipaddress`) and the exact name `localhost`
+    pass. No other name does — not even a `.localhost` suffix — because only the resolver knows
+    where
+    a name points, and resolving it here would itself be egress.
     """
     bare = host.strip("[]").lower()
     if bare in {"localhost", ""}:
@@ -162,15 +109,8 @@ def _is_loopback(host: str) -> bool:
 def _host_of(address: Any) -> str | None:
     """The destination host of a `connect()` argument, or `None` when the family cannot leave.
 
-    `AF_INET`/`AF_INET6` pass a tuple whose first element is the host. Everything else — a Unix
-    socket path (a `str`/`bytes`), an `AF_NETLINK` tuple of ints — cannot reach another machine,
-    so it is not this guard's business.
-
-    **The host inside the tuple may be `bytes`, and reading only `str` was a complete bypass.**
-    CPython accepts `connect((b"1.1.1.1", 80))`, so a tuple built from an already-encoded buffer
-    produced `None` here and `_check` read that as a family that cannot leave the host. The two
-    shapes stay distinguishable — a Unix address *is* the `bytes`, an inet address *contains* one
-    — so the branch above still exempts the path case and only the element is decoded.
+    `AF_INET`/`AF_INET6` pass a tuple whose first element is the host, as `str` or `bytes` (both
+    read); a Unix path or `AF_NETLINK` tuple cannot reach another machine.
     """
     if isinstance(address, (str, bytes, bytearray)):
         return None
@@ -183,29 +123,16 @@ def _host_of(address: Any) -> str | None:
     return None
 
 
-# Set while a refusal is being recorded, so the recording cannot record itself. Thread-local
-# rather than a module flag: two threads refusing two different destinations at the same instant
-# are two events, and a shared flag would drop one of them. See `_report`.
+# Set while a refusal is being recorded, so the recording cannot record itself; thread-local so
+# concurrent refusals on two threads are both recorded.
 _reporting = threading.local()
 
 
 def _report(host: str) -> None:
     """Count and log one refusal, unless this is the *recording* of a refusal calling back in.
 
-    **The record is what re-entered the guard.** `logger.error` runs whatever handlers the
-    deployment configured, and a network-backed one — `SysLogHandler`, `SocketHandler`, anything
-    wired through uvicorn's `--log-config` — connects on emit. That connect is egress, so it lands
-    back in `_check`, which counts it, logs it, and connects again. Measured with a `SocketHandler`
-    pointed at an unreachable collector: **one** refused `connect` booked **83** on
-    `chemclaw_mcp_egress_refused_total` and produced 83 log lines, 82 of them naming the *log
-    server* rather than the destination that was actually refused — so the one line an operator
-    needs was buried, and `rate(chemclaw_mcp_egress_refused_total) > 0`, the alert this counter
-    exists for, fired at 83 times the real rate. The recursion itself ended in a `RecursionError`
-    that logging's own error path swallowed, so nothing said any of this had happened.
-
-    The inner connection is still **refused** — `_check` raises for it exactly as before, which is
-    the guard doing its job. It is only the second, third and eighty-third *record* of one event
-    that is dropped.
+    A network-backed log handler connects on emit, which re-enters `_check`; without this guard one
+    refusal would count and log many times. The inner connection is still refused.
     """
     if getattr(_reporting, "active", False):
         return
@@ -220,24 +147,10 @@ def _report(host: str) -> None:
 def _check(address: Any) -> None:
     """Raise `EgressForbidden` unless `address` is loopback or explicitly allowed.
 
-    **The refusal is logged and counted before it is raised, and that is not decoration.**
-    `EgressForbidden` derives from `OSError` — the family libraries retry on — so what a refusal
-    looks like from outside depends entirely on who catches it, and three real catchers in this
-    fleet turn it into something else: `servers/calc/src/chemclaw_mcp_calc/tools.py` catches
-    `(OSError, SubprocessError)` and reports "could not resolve the xTB backend",
-    `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/tools.py` gathers with `return_exceptions=True`
-    so a transformer reaching for weights degrades the ensemble silently, and any library's own
-    `except OSError: retry` swallows it whole. The fleet's central security promise was therefore
-    enforceable and invisible: nothing recorded that it had ever fired.
-
-    **The host and nothing else.** A destination is enough to name the library that tried to call
-    out, which is what a stack trace ending here is for; the payload of a refused `sendto` is not
-    this log line's business. `EGRESS_REFUSED` is unlabelled for the reason `metrics.py` gives —
-    the host is attacker-influenced and unbounded, and a bare counter is all `rate(...) > 0` needs.
-
-    **The recording is itself re-entrant, and `_report` is where that is handled** — a log handler
-    that writes to the network connects, and that connect arrives back here. The refusal is
-    unconditional either way; only the count and the line are guarded.
+    Logged and counted before raising, because callers that catch `OSError` (retries, degraded
+    ensembles, backend-resolution errors) would otherwise hide that the guard fired. Only the host
+    is
+    logged; the counter is unlabelled because the host is unbounded.
     """
     host = _host_of(address)
     if host is None or _is_loopback(host) or host.strip("[]").lower() in _allowed:
@@ -254,14 +167,12 @@ def arm(allow: Iterable[str] = ()) -> None:
     """Install the guard. Idempotent, so importing two servers in one process is safe.
 
     Args:
-        allow: Extra hosts to permit, merged with `MCP_EGRESS_ALLOW`. Callers should leave this
-            empty; it is here for the ingestion scripts that run outside the serving image.
+        allow: Extra hosts to permit, merged with `MCP_EGRESS_ALLOW`; for ingestion scripts outside
+            the serving image only.
     """
     global _armed, _allowed
     _allowed = _parse_allow(os.environ.get(_ALLOW_ENV)) | frozenset(h.lower() for h in allow)
-    # Published on every call, including the idempotent-return path below, because the allowlist is
-    # recomputed here: a second `arm()` with a wider environment must not leave the scrape
-    # describing the first one.
+    # Published on every call, so a second `arm()` with a wider environment is reflected.
     EGRESS_ALLOWED_HOSTS.set(len(_allowed))
     if _armed:
         return
@@ -288,9 +199,8 @@ def arm(allow: Iterable[str] = ()) -> None:
         return int(_original_sendmsg(self, *args, **kwargs))
 
     def getaddrinfo(host: Any, port: Any, *args: Any, **kwargs: Any) -> Any:
-        # A name resolution is a round trip to a resolver, so it is egress in its own right — and
-        # it is the shape a licence check takes. `host` is `None` for an `AI_PASSIVE` bind lookup,
-        # which `_host_of` reads as "nothing to leave for".
+        # A name resolution is a round trip to a resolver, so it is egress. `host` is `None` for an
+        # `AI_PASSIVE` bind lookup.
         _check((host, port))
         return _original_getaddrinfo(host, port, *args, **kwargs)
 
@@ -303,9 +213,7 @@ def arm(allow: Iterable[str] = ()) -> None:
         return _original_gethostbyname_ex(hostname)
 
     def getnameinfo(sockaddr: Any, flags: Any) -> Any:
-        # A reverse lookup: `sockaddr` is the `(address, port)` tuple `_host_of` already reads, and
-        # the address it resolves is the covert channel. Loopback still passes, so a name for the
-        # server's own socket resolves normally.
+        # A reverse lookup: the address it resolves is the channel. Loopback still resolves.
         _check(sockaddr)
         return _original_getnameinfo(sockaddr, flags)
 
@@ -347,16 +255,11 @@ def disarm() -> None:
 def arm_from_env() -> None:
     """Arm unless `MCP_EGRESS_GUARD` holds one of `GUARD_DISABLED_VALUES`.
 
-    Called from this package's `__init__`, so importing any part of a server arms it. The opt-out
-    exists for the ingestion scripts and for debugging; it is not set in any shipped deployment,
-    and `tests/test_egress.py` asserts the default is on.
+    Called from this package's `__init__`. The opt-out is for ingestion scripts and debugging and is
+    set in no shipped deployment.
     """
     if os.environ.get(_GUARD_ENV, "on").strip().lower() in GUARD_DISABLED_VALUES:
-        # Recorded rather than merely returned: a deployment that shipped `MCP_EGRESS_GUARD=off`
-        # used to be visible only in a docstring, and the gauge is what makes "the guard is armed"
-        # a fact a scrape can check instead of a claim a document makes. The allowlist it was
-        # *also* given is published here for the same reason — the guard being off does not make
-        # the configured widening uninteresting, it makes it the second half of the same finding.
+        # Published so a disarmed guard (and the allowlist it was given) is visible from a scrape.
         EGRESS_GUARD_ARMED.set(0)
         EGRESS_ALLOWED_HOSTS.set(len(_parse_allow(os.environ.get(_ALLOW_ENV))))
         return

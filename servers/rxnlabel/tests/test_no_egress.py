@@ -32,7 +32,7 @@ def test_the_models_are_loaded_from_the_image_and_never_fetched() -> None:
 
     What is asserted here is the code-level half of that: nothing in this package asks for a model
     by URL or triggers a download path of its own. The build-time load check is asserted by
-    `tests/test_fleet.py` reading the `Containerfile`, and the runtime denial by
+    `tests/test_fleet_*.py` reading the `Containerfile`, and the runtime denial by
     `tests/test_deploy.py` reading the NetworkPolicy — three layers, checked in three places,
     because "no outbound call at request time" is this fleet's one unconditional rule.
     """

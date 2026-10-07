@@ -17,7 +17,7 @@ enforced rather than requested.
 | | |
 | --- | --- |
 | [`MODULES.md`](MODULES.md) | The catalogue — every server this fleet has built or proposed, grouped in tranches, with their tools, their data, and the port registry. |
-| [`CLAUDE.md`](CLAUDE.md) | The conventions every server follows, and the reasons behind them. |
+| [`CLAUDE.md`](CLAUDE.md) | The conventions every server follows; the reasons are in `docs/decisions/`. |
 | [`servers/props/`](servers/props/) | The reference server: solvent and pure-component properties. Copy this one. |
 | [`packages/mcp_server_kit/`](packages/mcp_server_kit/) | The shared shape: FastAPI transport, bearer auth, identity logging, vendored datasets, the egress guard. |
 | [`manifests/`](manifests/) | One directory per **connector**, holding its `connector.yaml`. Point `CHEMCLAW_CONNECTORS_DIR` here — and only here. |

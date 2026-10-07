@@ -324,7 +324,7 @@ def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     along with `xtb_max_atoms`, the bound that keeps one call's cost priced.
 
     Asserted here because the belief that these are constants is what would let the fleet ratchet
-    (`tests/test_fleet.py::test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment`)
+    (`tests/test_fleet_deploy.py::test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment`)
     be written to cover only the servers that call `os.environ` — and this server, whose calls take
     minutes and whose ceiling is the one `CLAUDE.md` calls non-negotiable, would be the one it
     skipped. The measurement, not the shape: the object is constructed twice and the numbers differ.

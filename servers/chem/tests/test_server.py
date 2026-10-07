@@ -82,7 +82,7 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # `revision` is part of the probe payload since the handshake started carrying the
     # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
     # for a test process, which is not built from a Containerfile — that the *image*
-    # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
+    # supplies a real one is asserted in `tests/test_fleet_*.py`, because a value nothing
     # fills is a provenance record that quietly says nothing.
     from chemclaw_mcp_chem.engine import reagents
 

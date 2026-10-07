@@ -343,7 +343,7 @@ def test_the_reagent_corpus_is_byte_identical_to_the_one_chem_ships() -> None:
     One server never imports another, so a table two servers both need is carried by both — and two
     copies of one corpus is exactly how a chemist ends up with two answers about one substance. The
     duplication is made safe by being provable: identical bytes, therefore an identical checksum,
-    therefore an identical manifest. `tests/test_fleet.py` asserts the same thing from outside, so
+    therefore an identical manifest. `tests/test_fleet_*.py` asserts the same thing from outside, so
     the property survives either file being edited.
 
     If the two ever have to diverge, that is a decision with an argument behind it, and this test is

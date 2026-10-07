@@ -79,7 +79,7 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     assert body["status"] == "ok"
     assert body["server"] == "thermalsafety"
     # "unknown" is the correct answer for a test process, which is not built from a Containerfile;
-    # that the *image* supplies a real one is asserted in `tests/test_fleet.py`.
+    # that the *image* supplies a real one is asserted in `tests/test_fleet_*.py`.
     assert body["revision"] == "unknown"
 
 
@@ -97,7 +97,7 @@ def test_the_readiness_probe_refuses_when_the_atomic_weight_table_is_wrong() -> 
     """Break a dependency and read the status — the proof D-2026-09-12 asks a new probe to give.
 
     This server's first version passed no `readiness=` callable at all, on the argument that there
-    is nothing here to load. `tests/test_fleet.py` refused that, and the refusal was right on the
+    is nothing here to load. `tests/test_fleet_*.py` refused that, and the refusal was right on the
     facts as well as the policy: `ATOMIC_WEIGHTS` and the screening bands *are* a vendored corpus,
     living in Python source rather than in a CSV, and a transposed digit in one is the exact failure
     a corpus checksum exists to catch.
