@@ -179,14 +179,46 @@ class XtbSpec(BaseModel):
 class CrestSpec(XtbSpec):
     """Base of the specs whose work is done by `crest`, not by `engine`.
 
-    Keys on crest's build (the program that produced the ensemble), drops `engine` from the key, and
-    makes `for_structure` a no-op, since crest runs whatever `engine` says. So an open-shell CREST
-    search has no spin-polarization fallback. A subclass that does run `engine` puts it back
-    (`ComplexSpec` in `crest_search`).
+    Two things are wrong for a CREST search if it inherits `XtbSpec` unchanged, and both are key
+    defects rather than cosmetic ones.
 
-    A CREST key promises the settings, not the ensemble: metadynamics is stochastic and no seed is
-    set, so two runs of one spec may differ. Reproducibility comes from the caller's cache (first
-    writer wins); do not read a small energy difference between deployments as physical.
+    **CREST's own build would be in no key.** `calc_version` names the tblite/xtb build, so
+    upgrading crest — the program that actually produced the ensemble — would serve every stored
+    ensemble unchanged.
+
+    **`engine` would be inherited but never honoured.** A search calls `crest_cli.run` whatever it
+    says, so a spec could be keyed as `tblite` while crest did the work — which `for_structure`
+    made routine rather than hypothetical, because it rewrites `engine` to `tblite` for any
+    open-shell input.
+
+    So `engine` is dropped from this key and `for_structure` is a no-op. Note what the second one
+    means and does not mean: an open-shell CREST search is **not** protected by the
+    spin-polarization fallback, because there is nowhere to fall back to — crest has no in-process
+    equivalent. That is a real limitation of radical conformer searches, and it is stated instead of
+    hidden behind a key that claimed tblite had run.
+
+    **What the drop is not: a claim that backends do not belong in keys.** It is the same rule
+    `XtbSpec.calc_version` states, applied to a spec whose numbers all come from crest — name what
+    ran. A subclass that *does* run `engine` therefore has to put it back, and `ComplexSpec` in
+    `crest_search` is one.
+
+    ## A key here is a promise about the settings, not about the ensemble
+
+    Every other spec on this server keys a deterministic calculation: `CalculationKey` says two
+    calculations share a key iff they are the same calculator version on the same input with the
+    same parameters, and a reader takes the converse for granted — same key, same answer. **The
+    converse is false for a CREST search, and this is the only place on this server where it is.**
+    Metadynamics is a stochastic search; `crest_cli.run` sets no seed, and nothing else in this
+    package sets one either, so two runs of one identical spec are not guaranteed to return the
+    same ensemble — the same members, the same populations, or the same lowest conformer.
+
+    What makes `search_conformer_ensemble` reproducible is therefore the **caller's cache** rather
+    than the calculation: first writer wins, and every later request for that key is served the
+    first search's answer. That is a reasonable trade rather than a defect to fix — the alternative
+    is running a many-hour metadynamics again for a result no truer than the one already on disk —
+    and it is stated here rather than only lived with, because a reader who assumes determinism will
+    over-read a small energy difference between two deployments as a physical one. Nothing in this
+    class changes it.
     """
 
     def for_structure(self, structure: Structure) -> Self:

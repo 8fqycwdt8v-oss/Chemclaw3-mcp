@@ -39,8 +39,13 @@ class SolubilityInput(BaseModel):
 class SolubilityResult(Keyed):
     """Predicted aqueous solubility as log S (mol/L), with an uncertainty.
 
-    `uncertainty_log` is one standard deviation in log-S units. `estimate` repeats the number in the
-    uniform shape, adding the uncertainty's source and whether the molecule is in ESOL's domain.
+    `uncertainty_log` is one standard deviation in log-S units — report it so a consumer never
+    treats the point estimate as exact.
+
+    `estimate` carries the same number in a uniform shape, adding the two things this model could
+    not otherwise say: **where the uncertainty came from** and **whether this molecule is something
+    ESOL can speak about at all**. Kept beside the domain fields rather than replacing them, so a
+    chemist still reads `model` and a skill reads one shape across every calculator.
     """
 
     smiles: str

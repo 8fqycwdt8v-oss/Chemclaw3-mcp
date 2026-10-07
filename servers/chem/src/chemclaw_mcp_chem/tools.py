@@ -5,10 +5,9 @@ what the tool is not, which index to pass, the bound by name); the evidence live
 or in tests. Every tool is a pure function of its arguments plus a vendored table.
 
 The enumerations produce the set Chemclaw3's `rank_species` and `survey_bond_strengths` rank, so a
-model never invents one; each is priced by an input bound before it runs, except
-`enumerate_stereoisomers`. RDKit work holds the GIL, so each tool runs it in `asyncio.to_thread`:
-that keeps the event loop and `/healthz` answering, but buys no throughput — the server scales by
-replicas (`engine/admission.py`).
+model never invents one; each is priced by an input bound before it runs. RDKit work holds the
+GIL, so each tool runs it in `asyncio.to_thread`: that keeps the event loop and `/healthz`
+answering, but buys no throughput — the server scales by replicas (`engine/admission.py`).
 """
 
 from __future__ import annotations

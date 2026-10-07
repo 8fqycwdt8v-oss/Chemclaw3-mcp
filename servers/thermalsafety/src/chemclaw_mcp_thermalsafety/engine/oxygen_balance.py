@@ -241,9 +241,11 @@ def molar_mass(composition: dict[str, float]) -> float:
 def oxygen_balance(formula: str) -> OxygenBalance:
     """Oxygen balance to CO2, as a percentage by mass, with its band.
 
-    `OB% = -1600 · (2C + H/2 + 2S - O - <halogen correction>) / M`: carbon to CO2, hydrogen to H2O,
-    sulfur to SO2, and each halogen ties up one hydrogen as HX. Alkali and alkaline-earth metals
-    take one oxygen per equivalent, the convention for an oxidiser salt's counter-ion.
+    `OB% = -1600 · (2C + max(H - X, 0)/2 + 2S + Meq/2 - O) / M`, X the halogen count and Meq the
+    metal equivalents (Na, K ×1; Mg, Ca ×2; Al ×3): carbon to CO2, hydrogen to H2O, sulfur to SO2,
+    and each halogen ties up one hydrogen as HX, so it is subtracted from H inside the H/2 term.
+    Each metal equivalent is charged half an oxygen (Na2O, CaO, Al2O3), the convention for an
+    oxidiser salt's counter-ion.
 
     Raises:
         FormulaError: Whatever `parse_formula` refuses, or a formula whose molar mass is zero.

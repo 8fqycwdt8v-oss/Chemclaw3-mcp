@@ -266,7 +266,8 @@ def server_revision() -> str:
     """The build this process is, or `"unknown"`.
 
     Read from `MCP_SERVER_REVISION`, set by the Containerfile from a build argument;
-    `tests/test_fleet_*.py` asserts the Containerfile supplies it. Never raises: a server that
+    `tests/test_fleet_images.py::test_the_image_can_name_the_build_it_is` asserts the
+    Containerfile supplies it. Never raises: a server that
     cannot name its build still starts.
     """
     return os.environ.get("MCP_SERVER_REVISION", "") or "unknown"
@@ -276,7 +277,9 @@ def _stamp_revision(server: FastMCP) -> None:
     """Put this build's revision in the MCP handshake's `serverInfo.version`.
 
     Otherwise it reports the SDK's release. `FastMCP` takes no `version`, so this assigns through
-    the private `_mcp_server`; `tests/test_fleet_*.py` pins that coupling.
+    the private `_mcp_server`;
+    `tests/test_fleet_images.py::test_the_revision_reaches_the_handshake_and_the_probe` pins that
+    coupling.
     """
     server._mcp_server.version = server_revision()
 

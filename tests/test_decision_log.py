@@ -3,7 +3,7 @@
 About identity and reachability, not prose: whether a record argues well is a review matter. The
 checks are unique ids, filename equal to heading, the ledger listing exactly the records on disk,
 every `## What keeps it true` test name resolving against the suite, and an `## Options` section on
-every record dated on or after the cursor below.
+every record dated on or after the cursor below, and no unresolved merge-conflict marker.
 """
 
 from __future__ import annotations
@@ -29,7 +29,10 @@ _OPTIONS_CURSOR = "D-2026-10-07"
 
 # Tests a merged record cites that no longer exist, with what replaced them. A merged record is
 # never edited, so a retired citation is listed here rather than corrected in place.
-_PROSE_TESTS = "retired with the other prose-policing tests (Chemclaw3 programme, decision 5)"
+_PROSE_TESTS = (
+    "retired with the other prose-policing tests (D-2026-10-07-the-record-gets-lean, adopting "
+    "Chemclaw3's D-2026-10-07-the-architecture-programme decision 5)"
+)
 _RETIRED_CITATIONS: dict[str, str] = {
     "test_only_the_depiction_is_gated_and_it_is_gated": (
         "servers/chem/tests/test_admission.py::test_the_band_is_gated_and_nothing_else_is"
@@ -45,7 +48,9 @@ _RETIRED_CITATIONS: dict[str, str] = {
     "test_every_record_says_what_keeps_it_true": (
         "tests/test_decision_log.py::test_every_test_a_record_names_still_exists"
     ),
-    "test_the_required_file_set_is_declared_once": _PROSE_TESTS,
+    "test_the_required_file_set_is_declared_once": (
+        "tests/test_fleet_layout.py::test_the_checklist_lists_every_required_file"
+    ),
     "test_claude_md_holds_no_second_port_registry": _PROSE_TESTS,
     "test_no_prose_here_counts_this_fleet_s_servers_without_naming_them": _PROSE_TESTS,
     "test_claude_md_and_the_guard_name_the_same_channels_as_outside_it": _PROSE_TESTS,
@@ -154,3 +159,18 @@ def test_a_record_from_the_cursor_on_weighs_its_options() -> None:
         if path.stem >= _OPTIONS_CURSOR and "\n## Options" not in path.read_text(encoding="utf-8")
     ]
     assert not missing, f"records with no `## Options` section (see TEMPLATE.md): {missing}"
+
+
+def test_no_record_carries_an_unresolved_conflict_marker() -> None:
+    """A `<<<<<<<` left behind is invisible to every other check here, and once was in the sibling.
+
+    The checks above parse filenames, headings and `| D-… |` rows, so both sides of a conflict can
+    be kept, every id can be fine, and nothing looks at the lines between them.
+    """
+    for path in [_INDEX, *_records()]:
+        offenders = [
+            f"{path.name}:{number}"
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+            if line.startswith(("<<<<<<< ", ">>>>>>> ")) or line == "======="
+        ]
+        assert not offenders, f"unresolved merge conflict markers: {offenders}"

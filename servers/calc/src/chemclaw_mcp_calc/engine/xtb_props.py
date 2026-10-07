@@ -62,10 +62,24 @@ _MODE_FIELD: dict[FukuiMode, str] = {
 class PropertiesSpec(XtbSpec):
     """Settings of one electronic-properties calculation.
 
-    The bond-order threshold filters the payload, so it must be in the key: an argument outside the
-    key may permute the answer but never remove from it, and a bond dropped from a cached row would
-    be missing from Chemclaw3's published record permanently. A subclass field so a single point's
-    key does not carry it; keyed by construction via `model_dump()`.
+    One field, and it is here rather than in `settings` because it **filters the payload**.
+    `_bond_orders` read `settings.xtb_bond_order_threshold` inside this calculator, outside every
+    spec, so `params_hash` could not see it — measured on acetic acid with a real tblite SCF, 0.5
+    reported 7 bonds and 0.05 reported 9, under a byte-identical
+    `xtb.properties@…:e67f316106051ef5:74c818075e77fec2`. Two pods configured differently, or one
+    rolling change, therefore forked a single cache row, and `identity._site_reactivity` already
+    states the rule that forbids it: *an argument outside the key may permute the answer and may not
+    remove from it.* A threshold removes.
+
+    It is worth being exact about what that costs downstream, because it is not CPU: Chemclaw3
+    projects `bond_orders` into the `SiteFact(property="bond_order")` rows of its published
+    scientific record, and it never prunes `calculation_results` — so a bond dropped by the pod that
+    happened to compute first is missing from the record permanently, with nothing anywhere marking
+    the row as partial.
+
+    Declared as a subclass rather than as a field on `XtbSpec` for the reason that model states: a
+    single point's key has no business carrying a reporting threshold. Keyed by construction, since
+    `cache_key` derives from `model_dump()`.
     """
 
     task: Literal["properties"] = "properties"
@@ -109,8 +123,9 @@ class BondOrder(BaseModel):
 class ElectronicProperties(Keyed):
     """The electronic structure of one geometry, as read from a single GFN2-xTB SCF.
 
-    `homo_ev`/`lumo_ev`/`gap_ev` are orbital energies, not ionization potentials — useful for
-    comparing related molecules. `lumo_ev` and `gap_ev` are None with no virtual orbital.
+    `homo_ev`/`lumo_ev`/`gap_ev` are frontier orbital energies, not ionization potentials —
+    semiempirical orbital energies are useful for *comparing* related molecules and poor as absolute
+    quantities. `lumo_ev` and `gap_ev` are None for the rare system with no virtual orbital.
     """
 
     smiles: str | None
@@ -195,10 +210,14 @@ class FukuiSite(BaseModel):
 class SiteReactivityResult(Keyed):
     """Atoms ranked by susceptibility to the requested attack.
 
-    `sites` is ordered most-susceptible first by `ranked_by` and always holds one entry per atom, so
-    a cached row (keyed without `mode`) can answer every mode via `ranked_for`; shortlisting is the
-    caller's job. Valid within this molecule only, and electronic susceptibility alone (no sterics,
-    no specific reagent).
+    `sites` is ordered most-susceptible first by the index named in `ranked_by`, and holds **one
+    entry per atom** — `len(sites) == total_atoms`, always. That is what makes `ranked_for` sound
+    and what a caller's cache needs: `mode` is outside this calculation's key, so a stored row has
+    to answer every mode's ranking, and a row shortened to the interesting few cannot. Presenting a
+    shortlist is the caller's step. The ranking is valid *within* this molecule
+    only: Fukui indices are normalized per molecule, so comparing them between molecules is
+    meaningless, and they describe electronic susceptibility alone — sterics and the specific
+    reagent are not in the model.
     """
 
     smiles: str | None

@@ -519,10 +519,26 @@ class HessianPayload(Keyed):
     """Second derivatives at one geometry, with the arrays base64-encoded as `.npy`.
 
     `hessian_npy` is (3N, 3N) in Hartree/Angstrom^2. Exactly one of `dipole_derivatives_npy`
-    (3N, 3) in Debye/Angstrom (in-process) and `ir_intensities` (one per Cartesian mode, km/mol;
-    binary) is populated. `ir_wavenumbers_cm` lets a caller match intensities to its own modes
-    rather than count external ones. Normal-mode projection and RRHO stay in Chemclaw3. The optional
-    fields keep older rows complete.
+    (3N, 3) in Debye/Angstrom and `ir_intensities` (one per Cartesian mode, km/mol) is populated,
+    and which one says which backend ran: the in-process path collects dipole derivatives while it
+    displaces, the `xtb` binary computes intensities itself.
+
+    **Both are what a caller needs to derive an IR spectrum**, and neither is a spectrum: the
+    normal-mode projection and the RRHO arithmetic over them stayed in Chemclaw3, because they are
+    pure partition functions over what this returns.
+
+    **`ir_wavenumbers_cm` is what makes `ir_intensities` unambiguous, and it is there because the
+    pairing was positional and pinned by nothing.** The binary reports one intensity per *Cartesian*
+    mode, external modes included, so a caller lining them up against its own projected vibrations
+    has to know how many entries to drop — 6 for a bent molecule, 5 for a linear one, and xtb's
+    judgement of which is not the caller's. Getting that wrong shifts every band by one and passes
+    every check a bare list admits, because a right pairing and a shifted one both have 3N entries.
+    With the wavenumbers beside them a caller matches instead of counting. `None` exactly when
+    `ir_intensities` is.
+
+    `max_gradient_hartree_per_angstrom` is the evidence that the geometry was a stationary point —
+    see the field comment. Optional rather than required, so a row written before it existed is
+    still a complete row and `CALCULATION_EPOCH` does not have to move for it.
     """
 
     structure_id: str
@@ -544,9 +560,13 @@ class HessianPayload(Keyed):
 class EnsemblePayload(Keyed):
     """What one CREST search found, and nothing computed from it.
 
-    `members` is ordered lowest energy first, each with its **rotamer degeneracy** — a Boltzmann
-    population that ignores it is badly wrong. Populations and ensemble free energies are computed
-    by Chemclaw3's durable jobs.
+    `members` is ordered lowest energy first and carries each structure with the **rotamer
+    degeneracy** that collapsed onto it. The degeneracy is not bookkeeping: a Boltzmann population
+    that ignores it is wrong by a lot — measured on n-butane, degeneracy-weighted populations give
+    the anti conformer 59.2% against CREST's own 59.14%, and ignoring degeneracy gives 73%.
+
+    Populations, conformational entropy and the ensemble free-energy correction are arithmetic over
+    exactly these two numbers per member, and they stayed with the durable jobs that report them.
     """
 
     structure_id: str

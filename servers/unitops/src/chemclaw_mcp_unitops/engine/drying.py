@@ -7,8 +7,10 @@ runs at a constant rate `N_c`; below it the rate falls, here taken as linearly t
     falling rate:   t₂ = m_s·X_c/(A·N_c) · ln(X_c/X₂)
 
 `m_s` is the bone-dry solid mass, `A` the drying surface, and `X` moisture on a **dry basis** (kg
-moisture per kg dry solid: 20% wet basis is X = 0.25). Mixing up the basis errs by more than the 25%
-gap, because X_c is subtracted from it; every argument names its basis.
+moisture per kg dry solid: 20% wet basis is X = 0.25). Mixing up the basis errs by more than the
+25% gap between the two numbers, because X_c is subtracted from the moisture content: on the worked
+case in `tests/test_isolation_ops.py`, passing 0.20 for 0.25 reports the constant-rate period 33%
+low and the whole cycle 11% low. Every argument names its basis.
 
 Not a dryer model (`N_c` is measured on this material in this dryer), and assumes zero equilibrium
 moisture (otherwise pass free moisture `X - X_e`). Not a specification: LOD, residual solvent and

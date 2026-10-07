@@ -87,8 +87,11 @@ def optimizer_version() -> str:
 class OptSpec(XtbSpec):
     """Settings of one geometry optimization.
 
-    Every field moves the result, and `XtbSpec.cache_key` keys every `model_dump()` field, so
-    per-task settings live in subclasses rather than widening the base model.
+    Every field moves the result and therefore belongs in the key, which it reaches automatically —
+    `XtbSpec.cache_key` derives from `model_dump()`, so a subclass field is keyed by construction
+    exactly as a base field is. That is the whole reason the per-task settings live in subclasses
+    instead of widening the base model: a single point's key has no business carrying a gradient
+    tolerance.
     """
 
     task: Literal["opt"] = "opt"
@@ -149,10 +152,19 @@ class OptSpec(XtbSpec):
 class OptimizationResult(Keyed):
     """A converged GFN2-xTB minimum, with what it took to get there.
 
-    `structure` is the optimized geometry, carrying `origin` (the producing key) for lineage. A
-    non-converged optimization raises instead: a non-stationary geometry yields frequencies and
-    thermochemistry that look ordinary and mean nothing. `max_gradient` is `None` for GFN-FF only,
-    whose convergence is xtb's own (required, not assumed), since tblite has no force field.
+    `structure` is the optimized geometry and is the value downstream tasks consume; it carries
+    `origin`, the key of the calculation that produced it, so a thermochemistry result computed from
+    it has its lineage recorded rather than implied.
+
+    A *non*-converged optimization is never returned: it raises. A geometry that is not a stationary
+    point produces frequencies, thermochemistry and reaction energies that all look ordinary and
+    mean nothing, so the honest contract is that holding an `OptimizationResult` guarantees
+    convergence.
+
+    `max_gradient` is `None` for **GFN-FF only**, and that is the one case where the guarantee is
+    worded differently rather than weakened: a force field has no tblite equivalent, so this module
+    cannot re-evaluate its gradient, and convergence is xtb's own ANCopt convergence — required, not
+    assumed.
     """
 
     smiles: str | None
@@ -183,8 +195,9 @@ class OptimizationResult(Keyed):
 class OptimizationSummary(Keyed):
     """An optimization without its coordinates — what an agent can actually use.
 
-    3N Cartesians are unreadable and unbounded in context; `structure_id` and `calc_key` make the
-    geometry referable and addressable.
+    A model cannot read 3N Cartesians, and pasting them into a conversation is an unbounded-context
+    failure. `structure_id` is what makes the geometry referable from a transcript, and `calc_key`
+    is what makes it addressable in Chemclaw3's store.
     """
 
     smiles: str | None

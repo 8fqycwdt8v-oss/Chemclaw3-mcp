@@ -58,7 +58,7 @@ endpoint:
     - continuous_reactor_conversion
     - semibatch_accumulation_profile
   # The one integration this server gates, queued by Chemclaw3 rather than refused when the pod is
-  # full — exactly the gated set, which `tests/test_fleet_*.py` holds.
+  # full — exactly the gated set, which `tests/test_fleet_manifests.py` holds.
   queued:
     inline_wait_seconds: 45
     tools:

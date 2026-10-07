@@ -92,9 +92,13 @@ class PkaInput(BaseModel):
 class PkaResult(Keyed):
     """A predicted pKa with its uncertainty, and which calibration produced it.
 
-    `deprotonation_energy_kcal` is always deprotonated minus protonated (anion minus neutral for an
-    acid, neutral minus cation for a base). `smiles` is the canonical form actually computed, which
-    `calc_key`'s `input_hash` derives from.
+    `deprotonation_energy_kcal` is always the solvated GFN2-xTB energy of the **deprotonated**
+    species minus the protonated one — for an acid that is anion minus neutral, for a base neutral
+    minus cation. `site` says which, because the number a chemist needs is different: an acid's own
+    pKa, or a base's *conjugate acid* pKa.
+
+    `smiles` is the **canonical** form the computation actually ran on, not the caller's spelling —
+    which is also what `calc_key`'s `input_hash` was derived from.
     """
 
     smiles: str

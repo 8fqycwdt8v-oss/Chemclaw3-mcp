@@ -37,9 +37,15 @@ EnsembleSearch = Literal["conformers", "tautomers", "protomers", "deprotomers"]
 class EnsembleSpec(CrestSpec):
     """Settings of one ensemble search over a single molecule.
 
-    Every field is keyed, including `effort` and `temperature_k` (passed to `crest --temp`). There
-    is no `max_members`: truncation is the reader's presentation choice, not part of the
-    calculation.
+    Every field enters the key through `model_dump()` — including `effort`, because a quick pass and
+    an extensive one are different calculations that must not share an entry, and `temperature_k`,
+    because it is passed to `crest --temp` and changes what is sampled.
+
+    **`max_members` is not here**, and its absence is the point. In Chemclaw3 it is a field that
+    `unkeyed_fields` then has to exclude, because it truncates a finished ensemble rather than
+    searching. Truncation is a presentation choice made by whoever reads the result, and the reader
+    is on the other side of this seam — so the field does not exist here at all, and there is
+    nothing to remember to exclude.
     """
 
     task: Literal["conformers"] = "conformers"
@@ -51,8 +57,16 @@ class EnsembleSpec(CrestSpec):
 class ComplexSpec(CrestSpec):
     """Settings of one non-covalent complex search over an already-combined pair.
 
-    Unlike an ensemble search, `engine` is in the version string: the composite built on this search
-    relaxes on `engine`, and keeping it here makes the chain's provenance readable from any row.
+    `CrestSpec` because the search is crest's. `engine` is put *back* into the version string —
+    unlike a plain ensemble search — and the reason is specific rather than defensive: on the
+    Chemclaw3 side the numbers an interaction energy reports all come from the three
+    `relax_structure` calls around this search, which run on `engine`. A composite keyed without it
+    would let a tblite interaction energy be served to a deployment that has the xtb binary.
+
+    Here the composite is Chemclaw3's, so this spec keys only the search — but the search's own
+    result feeds those optimizations, and a caller composing them must be able to tell one
+    deployment's chain from another's. Keeping `engine` in this version is what makes the whole
+    chain's provenance readable from any one of its rows.
     """
 
     task: Literal["complex"] = "complex"

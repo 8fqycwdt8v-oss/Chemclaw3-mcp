@@ -37,8 +37,10 @@ class DescriptorInput(BaseModel):
 class DescriptorProfile(Keyed):
     """The developability descriptor panel for one molecule, plus rule-of-thumb flags.
 
-    `lipinski_violations` counts Rule-of-Five breaches (MW>500, LogP>5, HBD>5, HBA>10); `veber_pass`
-    is rotatable bonds <=10 and TPSA<=140 A^2. Triage flags, never a pass/fail verdict.
+    `lipinski_violations` counts the four Rule-of-Five criteria (MW>500, LogP>5, HBD>5, HBA>10) the
+    molecule breaks; `veber_pass` is Veber's oral-bioavailability heuristic (rotatable bonds <=10
+    and TPSA<=140 A^2). Both are widely used triage heuristics, not developability verdicts — report
+    them as flags a chemist weighs, never as a pass/fail gate on their own.
     """
 
     smiles: str

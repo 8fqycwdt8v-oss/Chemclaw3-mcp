@@ -239,9 +239,10 @@ def _task_count() -> int:
 def _neutralise_network() -> None:
     """Make the socket module unusable for outbound traffic, references included.
 
-    Patched on the module object so references libraries already hold are covered too. Outbound is
-    `connect`/`connect_ex`, datagram `sendto`/`sendmsg`, and the `getaddrinfo`/`gethostbyname`
-    lookups; serving (`bind`/`listen`/`accept`) is untouched. This duplicates
+    Patched on the module object so references libraries already hold are covered too. Refused:
+    `socket.connect`/`connect_ex`, datagram `sendto`/`sendmsg`, `create_connection`, and the
+    `getaddrinfo`/`gethostbyname`/`gethostbyname_ex` lookups; serving (`bind`/`listen`/`accept`)
+    is untouched. This duplicates
     `mcp_server_kit.egress` by hand because the isolated child cannot import it; it is a second
     layer behind the NetworkPolicy's `egress: []`.
     """

@@ -92,7 +92,8 @@ endpoint:
     # reason — what costs something is ranking the set, which is `calc`'s `rank_species`.
     - enumerate_substitutions
   # The seven calls this server gates behind its admission ceiling, queued by Chemclaw3 rather than
-  # refused when the pod is full — exactly the gated set, which `tests/test_fleet_*.py` holds.
+  # refused when the pod is full — exactly the gated set, which
+  # `tests/test_fleet_manifests.py` holds.
   queued:
     inline_wait_seconds: 45
     tools:

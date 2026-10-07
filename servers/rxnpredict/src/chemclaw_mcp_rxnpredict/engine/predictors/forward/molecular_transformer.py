@@ -1,8 +1,8 @@
 """Molecular Transformer forward predictor (Schwaller 2019).
 
 `pschwllr/MolecularTransformer`, an OpenNMT-py seq2seq model invoked through OpenNMT's `translate`
-pipeline. OpenNMT-py pins legacy torch, so it may be better run as a separate worker
-(`scripts/molecular_transformer_worker.py`); the in-process loader works when co-installed.
+pipeline. OpenNMT-py pins legacy torch, so it may be better run as a subprocess worker on its own
+venv; the in-process loader works when co-installed.
 """
 
 from __future__ import annotations

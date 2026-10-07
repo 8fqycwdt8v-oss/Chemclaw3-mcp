@@ -34,8 +34,8 @@ def manifest_of(server: Path) -> dict[str, object]:
 
 
 # The files a server is not deployable or reviewable without. `docs/adding-a-server.md` is the one
-# prose declaration of this set, and `test_the_required_file_set_is_declared_once` keeps them in
-# step.
+# prose declaration of this set, and `test_the_checklist_lists_every_required_file` keeps it
+# complete.
 REQUIRED_SERVER_FILES = (
     "connector.yaml",
     "pyproject.toml",
@@ -68,6 +68,24 @@ def test_a_server_ships_the_whole_set(server: Path) -> None:
     """A server is not just code: without any one of these it cannot be deployed or reviewed."""
     for required in REQUIRED_SERVER_FILES:
         assert (server / required).exists(), f"{server.name} is missing {required}"
+
+
+def test_the_checklist_lists_every_required_file() -> None:
+    """`docs/adding-a-server.md` lists every file `REQUIRED_SERVER_FILES` demands.
+
+    A contributor copies that tree; a file missing from it is a server that fails
+    `test_a_server_ships_the_whole_set` on its first `make check`. Matched on the basename because
+    the checklist is a nested tree (`hpa.yaml` under a `deploy/` line), and every required basename
+    is distinct, so the match is exact.
+    """
+    checklist = (ROOT / "docs/adding-a-server.md").read_text(encoding="utf-8")
+    names = [Path(required).name for required in REQUIRED_SERVER_FILES]
+    assert len(set(names)) == len(names), "two required files share a basename; match on the path"
+    missing = [name for name in names if name not in checklist]
+    assert not missing, (
+        f"docs/adding-a-server.md does not list {missing}, which `REQUIRED_SERVER_FILES` demands "
+        "of every server; a contributor copying that tree fails the suite on their first run"
+    )
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)

@@ -175,8 +175,9 @@ def run_isolated(
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         # The child leads a fresh group, so its pid is the pgid and this reaches every forked
-        # process. A process that exited in the meantime is not an error, and the kill counter and
-        # log live inside the block that reached `killpg`, so only real kills are counted.
+        # process. A process that exited in the meantime is not an error: the kill counter and
+        # `killed` are set only inside the block that reached `killpg`, so only real kills are
+        # counted, and the warning after it names a group only when one was killed.
         killed: int | None = None
         with suppress(ProcessLookupError):
             pgid = os.getpgid(process.pid)

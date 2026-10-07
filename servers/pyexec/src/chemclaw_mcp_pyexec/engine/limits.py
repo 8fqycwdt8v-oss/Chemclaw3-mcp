@@ -62,8 +62,8 @@ def default_memory_bytes(max_concurrent_runs: int) -> int:
     runs together under the kernel's limit — conservative in the safe direction.
 
     Args:
-        max_concurrent_runs: The admission ceiling, i.e. how many of these bounds may be held at
-        once.
+        max_concurrent_runs: The admission ceiling, i.e. how many of these bounds may be held
+            at once.
 
     Returns:
         The per-run `RLIMIT_AS` value in bytes.

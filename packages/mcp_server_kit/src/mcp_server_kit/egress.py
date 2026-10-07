@@ -51,7 +51,9 @@ _ALLOW_ENV = "MCP_EGRESS_ALLOW"
 _GUARD_ENV = "MCP_EGRESS_GUARD"
 
 # The `MCP_EGRESS_GUARD` values that mean "do not arm"; everything else arms, the empty string
-# included. Public because `tests/test_fleet_*.py` refuses any shipped value it cannot prove arms.
+# included. Public because `tests/test_fleet_deploy.py::
+# test_no_shipped_deployment_widens_the_egress_allowlist` refuses any shipped value it cannot prove
+# arms.
 GUARD_DISABLED_VALUES = frozenset({"off", "0", "false", "no"})
 
 _original_connect = socket.socket.connect

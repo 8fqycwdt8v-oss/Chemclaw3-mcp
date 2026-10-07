@@ -279,7 +279,7 @@ def test_the_reagent_corpus_is_byte_identical_to_the_one_chem_ships() -> None:
     """This server's reagent table is byte-identical to the one `chem` ships.
 
     Servers never import each other, so a shared table is carried twice, and identical bytes are
-    what make that safe. `tests/test_fleet_*.py` asserts the same from outside. A deliberate
+    what make that safe. `tests/test_fleet_data.py` asserts the same from outside. A deliberate
     divergence needs an argument written here.
     """
     here = reagents.DATA_DIR

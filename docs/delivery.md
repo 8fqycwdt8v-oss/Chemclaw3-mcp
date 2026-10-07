@@ -38,7 +38,7 @@ each build passes `--build-arg CHEMCLAW_REVISION=<full sha>`. The same build by 
 
 ## The two things only a running image can prove
 
-1. **`/healthz` reports this build's revision.** `tests/test_fleet_*.py` asserts the `ARG`/`ENV` pair
+1. **`/healthz` reports this build's revision.** `tests/test_fleet_images.py` asserts the `ARG`/`ENV` pair
    exists in each `Containerfile`; only a build shows the value arrived. Chemclaw3's own revision
    field read `unknown` in every image for eight months with its test green, because nothing ever
    passed the build argument.

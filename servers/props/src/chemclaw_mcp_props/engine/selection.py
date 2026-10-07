@@ -93,8 +93,7 @@ def swap_candidates(
         exclude_peroxide_formers: Reject ethers and other peroxide formers outright.
         require_water_miscibility: One of `miscible`, `partial`, `immiscible`.
         max_ich_class: `1`, `2` or `3`; rejects a worse ICH Q3C class. Unlisted solvents are
-        flagged,
-            never rejected.
+            flagged, never rejected.
 
     Returns:
         Up to `top_n` candidates, passing ones first and each ordered by Hansen distance.

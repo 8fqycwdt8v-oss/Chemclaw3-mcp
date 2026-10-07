@@ -62,8 +62,9 @@ class AtomicDescriptor(BaseModel):
 class AtomicDescriptorResult(Keyed):
     """The binary-only per-atom panel for one geometry.
 
-    Atom indices follow the structure (canonical heavy atoms, then hydrogens), so this joins onto
-    `ElectronicProperties` and `SiteReactivityResult` for the same structure by index.
+    Atom indices match `atoms`' order, which is the structure's, which is the canonical SMILES'
+    heavy atoms followed by their hydrogens — so this panel joins onto `ElectronicProperties` and
+    `SiteReactivityResult` for the same structure by index.
     """
 
     smiles: str | None
@@ -77,8 +78,14 @@ class AtomicDescriptorResult(Keyed):
 class SurfacePotentialResult(Keyed):
     """The electrostatic-potential extrema on a molecular surface, for one geometry.
 
-    A separate primitive with its own key, not a flag on the panel: an `--esp` run is a second SCF
-    that cannot also deliver the multipoles, and one cache row must stand for one payload.
+    **A separate calculation with its own key, not a flag on the panel above**, and the reason is
+    this repository's own primitive rule rather than tidiness. An `--esp` run is a *second* SCF: on
+    xtb 6.6.1 it writes the grid and then aborts during teardown before `xtbout.json` exists, so it
+    cannot also deliver the atomic multipoles. Folding it into `compute_atomic_descriptors` as an
+    argument therefore made one cache row stand for two different payloads — and since the argument
+    could not enter the key without recomputing the panel, a `surface=True` call would have been
+    served the earlier `surface=False` row and returned `surface: null` having run nothing. Two
+    primitives, two keys, and the caller composes.
     """
 
     smiles: str | None

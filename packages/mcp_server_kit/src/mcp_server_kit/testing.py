@@ -101,7 +101,7 @@ class QueuedDispatch(BaseModel):
     Chemclaw3's `chemclaw.connectors.manifest.QueuedDispatch`, mirrored for the reason this module
     mirrors anything: that model is `extra="forbid"`, so a key spelled differently here would abort
     the consumer's startup. Which tools belong in it is this fleet's to say — a server gates its
-    heavy calls behind an admission ceiling, and `tests/test_fleet_*.py` holds the queued set to the
+    heavy calls behind an admission ceiling, and `tests/test_fleet.py` holds the queued set to the
     gated set — because a full pod is then a wait in the queue instead of a refusal.
     """
 
@@ -177,7 +177,7 @@ class ConnectorManifest(BaseModel):
     """A whole `connector.yaml`: what it is, what it says it serves, and where it may be registered.
 
     `mount` is the key Chemclaw3 refuses (`extra="forbid"` over there), which is what makes
-    `manifests-internal/` mechanical rather than trusted — see `tests/test_fleet_*.py`. It is
+    `manifests-internal/` mechanical rather than trusted — see `tests/test_fleet.py`. It is
     modelled rather than ignored so that a typo in it is a refusal here instead of a backend
     silently declaring itself a connector.
 
@@ -197,7 +197,7 @@ class ConnectorManifest(BaseModel):
       `assert_manifest_matches` instead, against the tools a server **actually serves** rather than
       against the ones it declares — which is strictly the stronger question, and is the reason
       this model is allowed to be the weaker half of a pair rather than a hole. Every server in
-      this fleet owes that call (the `tests/test_fleet_*.py` suite), so nothing ships unchecked.
+      this fleet owes that call (`tests/test_fleet.py`), so nothing reaches a deployment unchecked.
 
     Everything else agreed by inspection and did not agree in fact. Measured at `6c6a0eb`:
     `{"name": "Calc_Server!", "description": "x" * 20_000}` validated here and aborts the

@@ -21,7 +21,7 @@ on:
     # lane and records the choice on the pull request rather than in a re-push.
     types: [opened, synchronize, reopened, labeled, unlabeled]
     # What the consumer's module reads of this tree, and what reads it. The manifests are the
-    # declared surface — `tests/test_fleet_*.py` already holds a server's served tools to its
+    # declared surface — `tests/test_fleet_auth.py` already holds a server's served tools to its
     # manifest, so a tool module that changes without its manifest fails there, not here.
     paths:
       - "servers/*/connector.yaml"

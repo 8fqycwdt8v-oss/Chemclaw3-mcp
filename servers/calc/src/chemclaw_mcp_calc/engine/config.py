@@ -23,9 +23,11 @@ _CALLER_MARGIN_SECONDS = 120
 
 
 class CalcSettings(BaseSettings):
-    """The calculators' settings: xTB, the pKa predictor, the solubility model, logD.
+    """The fast local calculators: xTB, the pKa predictor, the solubility model, logD.
 
-    Most enter `calc_version` or `params_hash`, so changing one is a deliberate recompute.
+    Grouped because these knobs define the calculators' *scientific* parameters, and most of them
+    enter `calc_version` or `params_hash` — changing one is a deliberate recompute on the
+    Chemclaw3 side, never a silent drift.
     """
 
     model_config = SettingsConfigDict(env_prefix="CHEMCLAW_", extra="ignore")

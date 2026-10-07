@@ -38,8 +38,12 @@ class LogdInput(BaseModel):
 class LogdResult(Keyed):
     """Predicted logD at a given pH, alongside the logP/pKa it was derived from.
 
-    `uncertainty` propagates only the pKa calibration's residual (Crippen LogP reports none).
-    `calc_key` is `None`; `pka_calc_key` carries the addressable key of the underlying pKa.
+    `uncertainty` propagates only the pKa calibration's residual (the dominant error term); Crippen
+    LogP itself carries no reported uncertainty in RDKit.
+
+    `calc_key` is `None` here and only here — see the module docstring. `pka_calc_key` carries the
+    key of the pKa calculation this was built on, which *is* addressable in Chemclaw3's store, so
+    the lineage is not lost by the absence of a key of its own.
     """
 
     smiles: str

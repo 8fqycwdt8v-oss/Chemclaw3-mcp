@@ -32,8 +32,10 @@ __all__ = ["Hessian", "HessianSpec", "compute_hessian", "pack_array", "unpack_ar
 class HessianSpec(XtbSpec):
     """Settings of one second-derivative calculation — everything that moves the matrix.
 
-    Temperature, pressure, symmetry number and RRHO cutoff are absent on purpose: `cache_key` keys
-    on `model_dump()`, so a field not here cannot force a recomputation.
+    Deliberately narrower than `ThermoSpec`: `temperature_k`, `pressure_pa`, `symmetry_number` and
+    `rrho_cutoff_cm` are absent because a Hessian does not depend on them. That absence *is* the
+    fix — `XtbSpec.cache_key` keys on `model_dump()`, so a field that is not here cannot force a
+    recomputation.
     """
 
     task: Literal["hess"] = "hess"

@@ -51,7 +51,7 @@ type: ## mypy --strict over every server, the shared kit and the test tree.
 	@# `Success`, because `.` is already the root the flag falls back to and `[tool.mypy] mypy_path`
 	@# names the twelve `src/` trees. Dropping the flag *does* break the run, so only the variable
 	@# was dead (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`). The flag
-	@# is asserted by `tests/test_fleet_*.py`, which is why removing the variable removes no control.
+	@# is asserted by `tests/test_fleet_layout.py`, which is why removing the variable removes no control.
 	@#
 	@# One invocation rather than two: mypy builds one graph, and the test tree imports the source
 	@# tree anyway, so splitting them would analyse the same modules twice.

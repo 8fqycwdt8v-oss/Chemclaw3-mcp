@@ -155,7 +155,7 @@ ln -s ../../servers/<name>/connector.yaml manifests-internal/<name>/connector.ya
 That key is refused by Chemclaw3's `extra="forbid"` manifest model, which is the point: a deployment
 that mounts the directory anyway gets a startup error naming the file rather than an agent whose
 tool surface quietly changed. A connector's manifest must carry no `mount:` key at all, for the same
-reason. `tests/test_fleet_*.py` checks both directions.
+reason. `tests/test_fleet_manifests.py` checks both directions.
 
 ## The dataset
 
@@ -264,7 +264,7 @@ What a *new server* still owes:
    exception", which is what a genuine bug looks like.
 4. **`deploy/service.yaml` and `deploy/servicemonitor.yaml`**, copied from any server and renamed.
    The NetworkPolicy already admits the monitoring namespace; these are what tell Prometheus to use
-   it. `tests/test_fleet_*.py` requires both files and `tests/test_deploy.py` holds their port against
+   it. `tests/test_fleet_layout.py` requires both files and `tests/test_deploy.py` holds their port against
    the Containerfile and the manifest.
 5. **`deploy/hpa.yaml` and `deploy/pdb.yaml`**, copied from a server whose cost shape resembles
    yours. Both are required and `tests/test_deploy_shape.py` checks them: without a PDB a rollout

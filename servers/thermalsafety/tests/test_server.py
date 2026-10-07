@@ -73,7 +73,7 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     assert body["status"] == "ok"
     assert body["server"] == "thermalsafety"
     # "unknown" is the correct answer for a test process, which is not built from a Containerfile;
-    # that the *image* supplies a real one is asserted in `tests/test_fleet_*.py`.
+    # that the *image* supplies a real one is asserted in `tests/test_fleet_images.py`.
     assert body["revision"] == "unknown"
 
 

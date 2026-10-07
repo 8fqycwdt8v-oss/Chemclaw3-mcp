@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,8 +65,11 @@ def test_the_lint_ban_names_its_exemptions_and_they_are_the_scan_s_own_boundary(
 #
 # `auth.py`'s body-cap guard discards the app's exception only when the guard itself already
 # refused the request; recording a degradation there would fire on every oversized body.
-BLIND_ANSWER_IS_ARGUED = {
-    "packages/mcp_server_kit/src/mcp_server_kit/auth.py::BodySizeLimit.__call__",
+#
+# Keyed by `path::Qualified.name` and valued by how many such handlers that function holds, so a
+# second blind handler added beside an argued one is an offence rather than an inherited exemption.
+BLIND_ANSWER_IS_ARGUED: dict[str, int] = {
+    "packages/mcp_server_kit/src/mcp_server_kit/auth.py::BodySizeLimit.__call__": 1,
 }
 
 
@@ -128,8 +132,11 @@ def test_every_blind_handler_that_answers_anyway_is_argued() -> None:
     """`BLE001` does not fire on the two shapes this fleet's own handlers are written in."""
     roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
     assert len(roots) > 1, "no source trees found; has the workspace layout changed?"
+    found = Counter(_blind_handlers_that_answer(roots))
     offences = [
-        one for one in _blind_handlers_that_answer(roots) if one not in BLIND_ANSWER_IS_ARGUED
+        f"{where} ({count} blind handler(s), {BLIND_ANSWER_IS_ARGUED.get(where, 0)} argued)"
+        for where, count in sorted(found.items())
+        if count != BLIND_ANSWER_IS_ARGUED.get(where, 0)
     ]
     assert not offences, (
         "these blind handlers answer without re-raising and neither classify through "
@@ -147,7 +154,7 @@ def test_the_argued_blind_handlers_are_still_there() -> None:
     """
     roots = sorted((ROOT / "packages").glob("*/src")) + sorted((ROOT / "servers").glob("*/src"))
     found = set(_blind_handlers_that_answer(roots))
-    stale = sorted(BLIND_ANSWER_IS_ARGUED - found)
+    stale = sorted(set(BLIND_ANSWER_IS_ARGUED) - found)
     assert not stale, (
         f"BLIND_ANSWER_IS_ARGUED names handlers that are no longer there: {stale}. Delete the "
         "entry and its argument in the commit that moved them."
