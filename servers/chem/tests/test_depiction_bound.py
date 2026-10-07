@@ -1,17 +1,9 @@
 """`render_structure` must refuse a large molecule promptly, not lay it out for minutes.
 
-`Compute2DCoords` is superlinear: a ~1500-atom molecule took 672 s of one worker thread, and the
-offload thread's cancellation does not stop it, so the caller's timeout frees nothing. Two bounds
-protect the pod — a per-call atom ceiling (`MAX_DEPICTION_ATOMS`) and a concurrency ceiling
-(`Admission`). These pin both, and that the refusal is *fast* rather than a hang.
-
-**A third bound exists that this server does not own**: the process's default `to_thread` pool,
-which `mcp_server_kit` sizes from the pod's cgroup. It used to be *narrower* than the admission
-ceiling (5 threads under a ceiling of 8), which `engine/admission.py` argued was harmless while
-only depictions were gated and stopped being once the species tools joined them. The ceiling is
-now derived from it — the pool less one — and the pool tests here are what stop the two drifting
-apart, by re-deriving the width from the Deployment through the kit's own arithmetic rather than
-trusting a comment that says they agree.
+`Compute2DCoords` is superlinear and cancellation does not stop it, so two bounds protect the pod:
+a per-call atom ceiling (`MAX_DEPICTION_ATOMS`) and a concurrency ceiling (`Admission`). The
+admission ceiling is derived from the kit's cgroup-sized `to_thread` pool (the pool less one), and
+the pool tests re-derive that width from the Deployment so the two cannot drift apart.
 """
 
 from __future__ import annotations
@@ -47,20 +39,9 @@ from rdkit.Chem.Draw import rdMolDraw2D
 #: The file the pod's thread pool is decided by, read rather than transcribed.
 DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
-#: The worst case for `Compute2DCoords` that is **legal under both bounds**: a 76-atom polypeptide.
-#: Shape rather than size is what costs — a 249-atom alkane draws in 22 ms and a 201-atom macrocycle
-#: in 19 ms — so the ceiling is derived against a peptide.
-#:
-#: **The atom ceiling is not what caps this, and that changed under a merge.** This was a 241-atom
-#: peptide, chosen as the worst case `MAX_DEPICTION_ATOMS` (250) admits. `MAX_DEPICTION_CHARS`
-#: (50,000) then landed beside it and refuses that molecule outright: it renders to 132,153
-#: characters. For this shape the character bound binds at ~76 atoms, a third of the atom bound, so
-#: the real worst legal depiction is this one — measured at **4.6 ms against the 97 ms the 241-atom
-#: peptide cost**.
-#:
-#: `WORST_RENDER_SECONDS` is deliberately left at 0.1 s rather than lowered to match. It no longer
-#: derives the admission ceiling — the pool does, see `engine/admission.py` — and is kept as the
-#: yardstick a depiction that got an order of magnitude slower is caught against.
+#: The worst case for `Compute2DCoords` that is legal under both bounds: a 76-atom polypeptide.
+#: Shape, not size, is what costs. For this shape the character bound binds well before the atom
+#: bound. `WORST_RENDER_SECONDS` is a regression yardstick, no longer the ceiling's basis.
 WORST_LEGAL_MOLECULE = "NC(C)C(=O)" + "NC(C)C(=O)" * 14 + "O"
 
 
@@ -118,19 +99,11 @@ def test_admission_rejects_a_ceiling_below_one() -> None:
 
 
 def test_a_depiction_holds_the_gil_so_threads_buy_no_throughput() -> None:
-    """The claim `engine/admission.py` used to make, checked instead of believed.
+    """A depiction holds the GIL, so threads buy no throughput.
 
-    It said "RDKit releases the GIL for the heavy passes, so the threads are real parallelism" —
-    and the ceiling of 8 was justified as protecting a four-core pod from eight parallel renders.
-    Measured, the eight run one at a time: 1 to 16 threads on a four-core box all sat at cpu_util
-    0.80-1.15x, wall clock scaled linearly, and throughput stayed flat at 16-23/s.
-
-    Asserted as "four threads take at least twice as long as one", which is a bound no machine's
-    speed can move and no scheduler noise can cross: real parallelism on any box with two or more
-    cores would put four renders at roughly the wall clock of one. It is the *direction* of the
-    claim that this test exists to hold, because the direction is what decides whether this server
-    is scaled with a bigger ceiling or with another pod — and the refusal message tells a caller
-    which.
+    Asserted as "four threads take at least twice as long as one", which no machine speed can move.
+    The direction decides whether the server scales by ceiling or by replicas, and the refusal
+    message tells the caller which.
     """
     render_svg(WORST_LEGAL_MOLECULE)  # warm RDKit; the first call pays for its lazy imports.
 
@@ -158,11 +131,9 @@ def test_a_depiction_holds_the_gil_so_threads_buy_no_throughput() -> None:
 
 
 def test_the_worst_legal_depiction_still_costs_what_the_ceiling_was_derived_from() -> None:
-    """`WORST_RENDER_SECONDS` is the yardstick a depiction regression is caught against.
+    """The worst legal depiction still costs about what `WORST_RENDER_SECONDS` says.
 
-    Checked with 4x headroom rather than tightly: this runs on whatever CI box it is given, and the
-    failure worth catching is an algorithmic one — a depiction that got an order of magnitude
-    slower — not a slower machine.
+    4x headroom: the regression worth catching is algorithmic, not a slower CI box.
     """
     render_svg(WORST_LEGAL_MOLECULE)  # warm.
     started = time.perf_counter()
@@ -192,11 +163,8 @@ def _pod_cpu_limit_cores() -> float:
 def _pod_thread_pool_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> int:
     """The `to_thread` pool width the shipped pod gets, computed by the kit's own arithmetic.
 
-    The cgroup this container runs under is written to a file and `mcp_server_kit.executor` is
-    pointed at it, so `thread_pool_size()` answers for *that* pod rather than for the box running
-    the test — and any `env:` the Deployment grows is applied on the way in, so a future
-    `MCP_THREAD_POOL_SIZE` is picked up here instead of silently overtaking the number
-    `engine/admission.py` argues against.
+    The Deployment's cgroup is written to a file for `mcp_server_kit.executor`, and its `env:`
+    applied, so the answer is for that pod, not the test box.
     """
     quota = tmp_path / "cpu.max"
     quota.write_text(f"{int(_pod_cpu_limit_cores() * 100_000)} 100000\n", encoding="utf-8")
@@ -218,13 +186,10 @@ def _pod_thread_pool_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> i
 def test_the_pod_pool_is_the_width_the_ceiling_was_argued_against(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`POD_THREAD_POOL_WIDTH` is a claim about a pod, so it is re-derived from that pod.
+    """`POD_THREAD_POOL_WIDTH` is re-derived from the pod it describes.
 
-    The ceiling is derived from this width, so the width is the one number the derivation rests on
-    and it is re-derived from the pod rather than trusted. The width comes
-    from the Deployment's `limits.cpu` through `mcp_server_kit`'s own `thread_pool_size()`, so a
-    change to the CPU limit, to the kit's headroom, or an `MCP_THREAD_POOL_SIZE` added to the pod
-    lands here rather than in a paragraph that goes on describing the old arrangement.
+    From the Deployment's `limits.cpu` through `thread_pool_size()`, so a CPU, headroom or
+    `MCP_THREAD_POOL_SIZE` change lands here.
     """
     width = _pod_thread_pool_width(tmp_path, monkeypatch)
     assert width == POD_THREAD_POOL_WIDTH, (
@@ -238,14 +203,10 @@ def test_the_pod_pool_is_the_width_the_ceiling_was_argued_against(
 def test_threads_are_never_scarcer_than_the_cpu_this_pod_may_spend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The invariant that keeps the *gate* the bound rather than the pool.
+    """Threads are never scarcer than the CPU this pod may spend.
 
-    An admission ceiling above the pool is sound only while the pool is not itself the scarce
-    resource — with `limits.cpu: "1"` and five threads, a render that waits waits for a core it
-    would have waited for anyway. Set `MCP_THREAD_POOL_SIZE` below the CPU allowance and that stops
-    being true: threads would run out before the core did, and the number that decided how long a
-    caller waited would be one nobody had derived. Written against the allowance rather than a
-    literal so it holds for whatever `limits.cpu` this pod is later given.
+    Only then is the gate, not the pool, the bound. Written against the CPU allowance rather than a
+    literal.
     """
     width = _pod_thread_pool_width(tmp_path, monkeypatch)
     allowance = math.ceil(_pod_cpu_limit_cores())
@@ -259,15 +220,11 @@ def test_threads_are_never_scarcer_than_the_cpu_this_pod_may_spend(
 def test_every_admitted_call_has_a_worker_and_the_ungated_tools_keep_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Admitted and running are the same set, which is what "refused rather than queued" means.
+    """Every admitted call has a worker, and the ungated tools keep one.
 
-    **This used to hold the opposite arrangement to a budget.** With 8 admitted renders over a
-    5-wide pool, three were admitted and then waited for a worker — queued — and the test argued the
-    wait was bounded by `8 x WORST_RENDER_SECONDS`. That bound assumed every admitted call was a
-    render. With the species tools in the band a waiting call can sit behind four that each hold the
-    interpreter for seconds (`engine/admission.py` has the measurement), so no budget covers it and
-    the ceiling moved under the pool instead. One thread is left over for the ungated tools, so a
-    compound lookup is not queued behind a full band either.
+    Admitted and running are the same set, which is what "refused rather than queued" means; a
+    waiting call could sit behind several seconds-long species calls. One thread is left for ungated
+    tools.
     """
     width = _pod_thread_pool_width(tmp_path, monkeypatch)
     assert width >= DEFAULT_MAX_CONCURRENT_HEAVY_CALLS + 1, (
@@ -280,11 +237,8 @@ def test_every_admitted_call_has_a_worker_and_the_ungated_tools_keep_one(
 
 # --- The output bound -------------------------------------------------------------------------
 #
-# The atom ceiling above bounds what a depiction costs *this pod*. It bounds nothing about what
-# comes back: measured on the installed RDKit at the shipped 320 px, `"C" * 250` renders to 126,348
-# characters and 244,522 with every atom highlighted, against a caller that cuts one tool result at
-# 60,000 characters divided by the width of the batch it was called in. A cut SVG is not a smaller
-# picture, it is a truncated XML fragment — no picture at all, and still paid for in tokens.
+# The atom ceiling bounds cost, not output size. A large SVG would exceed the caller's per-result
+# character cut, and a truncated SVG is no picture at all, still paid for in tokens.
 
 ERYTHROMYCIN = (
     "CC[C@H]1OC(=O)[C@H](C)[C@@H](O[C@H]2C[C@@](C)(OC)[C@@H](O)[C@H](C)O2)[C@H](C)"
@@ -323,19 +277,11 @@ def test_a_drug_sized_molecule_is_comfortably_inside_the_bound() -> None:
 
 
 def test_the_render_size_floor_is_the_size_below_which_a_depiction_says_nothing() -> None:
-    """Why this one bound floors above 1, driven against RDKit rather than asserted about it.
+    """The render-size floor is the size below which a depiction says nothing, driven against RDKit.
 
-    `MINIMUM_RENDER_SIZE_PX` is read off `MolDrawOptions().minFontSize` — the drawing library's own
-    number — and the two halves of the argument are checked here, because a floor whose reason
-    lives only in a comment is a floor somebody will "simplify" to 1.
-
-    **Below it the glyph stops shrinking**: RDKit clamps the font at `minFontSize`, so a canvas
-    narrower than one glyph cannot carry an atom label at any scale. Measured on ethanol, the font
-    is 40.0 at 320 px, 8.1 at 48 px, and a clamped 6.0 at every size of 32 px and below.
-
-    **And a zero canvas is not a small picture, it is a successful answer containing nothing**:
-    `MolDraw2DSVG(0, 0)` returns a well-formed document whose `viewBox` is `0 0 0 0`. That is the
-    failure the floor exists for — not a crash, which somebody would notice.
+    `MINIMUM_RENDER_SIZE_PX` is RDKit's `minFontSize`: below it the font is clamped, so no atom
+    label fits. A zero canvas returns a well-formed SVG with `viewBox` `0 0 0 0`, a successful
+    answer containing nothing.
     """
     molecule = Chem.MolFromSmiles("CCO")
     Chem.rdDepictor.Compute2DCoords(molecule)
@@ -361,12 +307,10 @@ def test_the_render_size_floor_is_the_size_below_which_a_depiction_says_nothing(
 def test_the_render_size_refuses_below_its_floor_and_accepts_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bound itself, at the floor and one below it, driven through the module's own import.
+    """The render size refuses at `minimum - 1` and accepts the floor, via the module's import.
 
-    `tests/test_fleet.py::test_every_environment_bound_refuses_at_import_and_names_its_own_variable`
-    drives every bound in the fleet at `0` and `-1`, which every floor of 1 or more rejects. This
-    is the one site where that would pass on a floor of 1 as well, so the interesting value is the
-    one *between* the two: `minimum - 1`.
+    The fleet test drives `0` and `-1`, which a floor of 1 would also reject; the interesting value
+    here is between.
     """
     monkeypatch.setenv("CHEMCLAW_CHEM_RENDER_SIZE_PX", str(MINIMUM_RENDER_SIZE_PX - 1))
     with pytest.raises(ValueError, match="CHEMCLAW_CHEM_RENDER_SIZE_PX"):

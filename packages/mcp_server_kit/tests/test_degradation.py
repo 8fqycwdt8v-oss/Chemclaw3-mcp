@@ -1,15 +1,11 @@
 """The degradation vocabulary, and the two properties the rest of the fleet rests on it having.
 
-`degradation.classify` is what decides whether a broken component takes a pod out of rotation
-(`rxnlabel`'s and `rxnpredict`'s readiness checks read `PERMANENT_CAUSES`) and what label reaches an
-unauthenticated `/metrics`. Both consequences are one function, so both are checked here rather than
-only where they are consumed.
+`degradation.classify` decides whether a broken component takes a pod out of rotation (readiness
+reads `PERMANENT_CAUSES`) and what label reaches an unauthenticated `/metrics`.
 
-The ordering test is the one that matters. `EgressForbidden` subclasses `OSError` deliberately —
-`egress.py` says so — which is exactly why a classifier written in the obvious order buries it: a
-refusal and a connection reset would both come back `failed`, and the fleet's most important
-degradation would be the one indistinguishable from a network blip. So the refusal here is a
-**real** one, raised by the armed guard from a real `getaddrinfo`, not a constructed object.
+The ordering test matters most: `EgressForbidden` subclasses `OSError`, so a classifier in the
+obvious order would file a refusal as `failed` beside a connection reset. The refusal here is a
+real one, raised by the armed guard from a real `getaddrinfo`.
 """
 
 from __future__ import annotations
@@ -28,15 +24,8 @@ from prometheus_client import REGISTRY
 
 ROOT = Path(__file__).resolve().parents[3]
 
-# How many `degradation.record` call sites this fleet has. A number rather than an emptiness check,
-# for the reason `test_every_call_site_derives_its_cause_rather_than_writing_one` gives. Four in
-# `rxnlabel` (`mapping.map_reaction`, `mapping._mapper`, `naming.name`, `naming._namer`), three in
-# `rxnpredict` (`predictors.mark_unavailable` at import, `tools._survivors` at request time, and
-# `cache._canonical_or_none` — added by
-# `D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key`, which found that path
-# swallowing `ImportError`, `EgressForbidden` and `MemoryError` alike and counting none of them),
-# and the readiness funnel in `mcp_server_kit.app` — the only site that counts a *probe* failure,
-# because `rxnlabel`'s probe re-raises and lets that funnel classify rather than classifying twice.
+# How many `degradation.record` call sites this fleet has; a count, so a deleted site fails. Four
+# in `rxnlabel`, three in `rxnpredict`, and the readiness funnel in `mcp_server_kit.app`.
 RECORD_CALL_SITES = 8
 
 
@@ -77,17 +66,11 @@ def test_an_out_of_memory_is_separated_from_a_broken_checkpoint() -> None:
 
 
 def test_torch_really_names_its_oom_the_way_this_matches_it() -> None:
-    """The half the double above cannot assert: that the name being matched is torch's real one.
+    """Torch's real OOM class name matches the string `_RESOURCE_TYPE_NAMES` looks for.
 
-    `_RESOURCE_TYPE_NAMES` is a *string* match, chosen over a message match because torch rewords
-    its OOM text across releases and over an `isinstance` because this package must not import
-    torch. The cost of that choice is that nothing anywhere checked the string against torch, and
-    the test that looked like it did defined its own `OutOfMemoryError`. A rename upstream would
-    move every CUDA OOM into the permanent bucket in silence.
-
-    Skipped with the reason where torch is absent, which is every developer checkout and this CI —
-    so this is a check that bites on an image carrying the `models` extras, and says what it did not
-    look at everywhere else.
+    The match is by type name because torch rewords its message and this package must not import
+    torch; an upstream rename would otherwise move every CUDA OOM into the permanent bucket. Skipped
+    where torch is absent.
     """
     torch = pytest.importorskip("torch", reason="torch is not installed in this checkout")
     names = {
@@ -107,13 +90,11 @@ def test_a_missing_distribution_is_not_a_fault() -> None:
 
 
 def test_an_installed_module_that_will_not_load_is_broken_not_absent() -> None:
-    """The row this closes: a missing shared library was counted as an extra nobody installed.
+    """An installed module that will not load is `broken`, not `not_installed`.
 
-    Every `ImportError` classified `not_installed`, so an installed distribution whose compiled half
-    would not load — the realistic broken image — read to every probe in the fleet as a deployment's
-    choice, and `not_installed` is the one cause that keeps a pod in service. The type separates
-    them without reading a message: `ModuleNotFoundError` is *no finder located it*, a plain
-    `ImportError` is *located and would not load*.
+    `not_installed` keeps a pod in service, so a missing shared library must not read as a
+    deployment's choice. `ModuleNotFoundError` means not located; a plain `ImportError` means
+    located and failed to load.
     """
     broken = ImportError("libcudart.so.11.0: cannot open shared object file: No such file")
     assert degradation.classify(broken) == degradation.CAUSE_FAILED
@@ -126,12 +107,10 @@ def test_an_installed_module_that_will_not_load_is_broken_not_absent() -> None:
 
 
 def test_a_missing_dependency_of_an_installed_extra_is_broken_not_absent() -> None:
-    """The same type, told apart by the one thing only the importing module knows.
+    """A missing dependency of an installed extra is broken, told apart by `exc.name`.
 
-    `import transformers` succeeding and then `transformers` failing to find `tokenizers` raises the
-    very `ModuleNotFoundError` an absent `transformers` does. `exc.name` is the difference — set by
-    the import system on every real one — and `optional` is the caller's declaration of which
-    names it tolerates the absence of.
+    It raises the same `ModuleNotFoundError` as an absent extra; `optional` declares which names the
+    caller tolerates the absence of.
     """
     absent = ModuleNotFoundError("No module named 'rxnmapper'", name="rxnmapper")
     submodule = ModuleNotFoundError("No module named 'rxn_insight.x'", name="rxn_insight.x")
@@ -152,15 +131,8 @@ def test_a_missing_dependency_of_an_installed_extra_is_broken_not_absent() -> No
 def test_a_resource_errno_is_not_a_broken_checkpoint() -> None:
     """The four errno values that mean the same thing `MemoryError` does.
 
-    `CAUSE_RESOURCE_EXHAUSTED`'s own comment said "memory, a device allocation" while
-    `OSError(ENOMEM, "Cannot allocate memory")` — the kernel saying exactly that — classified
-    `failed`, which is *permanent*, alongside a pod at its descriptor ceiling
-    (`EMFILE`/`ENFILE`) and
-    a pod at its thread ceiling (`EAGAIN`). Driven before the branch existed: all four permanent.
-
-    `ENOSPC` is the counterfactual and it stays permanent on purpose: a full volume is not something
-    the process gets back by waiting, and a probe that kept a pod in service over it would be
-    reporting on a disk nobody is freeing.
+    `ENOMEM`, `EMFILE`, `ENFILE` and `EAGAIN` are transient resource exhaustion, not permanent
+    failure. `ENOSPC` stays permanent on purpose: a full volume is not reclaimed by waiting.
     """
     for code in (errno.ENOMEM, errno.EMFILE, errno.ENFILE, errno.EAGAIN):
         exc = OSError(code, os.strerror(code))
@@ -186,17 +158,9 @@ def test_an_unclamped_cause_is_refused_rather_than_published(
 ) -> None:
     """The reporter must not become the error, and the clamp must still be a clamp.
 
-    **The name is the one the degradation record cites, and it is still accurate about what
-    matters**: what is refused is the unclamped *label*, which never reaches `/metrics`. What
-    changed is that the refusal is no longer a raise — see below. A merged record is never edited,
-    so the citation keeps resolving and the new record says what moved.
-
-    `record` used to raise `ValueError` for a cause outside `CAUSES`, from inside the `except` block
-    whose whole job is to degrade gracefully — and `connector_app` passes `ValueError` to the model
-    verbatim. Driven with `classify` patched to return a fifth cause: `map_reaction` raised instead
-    of degrading and a chemist's answer became a sentence about Prometheus labels. So it logs at
-    ERROR, books `failed`, and **mints no series for the unclamped string** — which is the half that
-    makes this a clamp rather than a shrug.
+    `record` runs inside `except` blocks that must answer, and a `ValueError` would reach the model
+    verbatim. So an unclamped cause logs at ERROR, books `failed`, and mints no series for the
+    unclamped string.
     """
     degradation.register_components("probe")
     labels = {"server": "kit", "component": "probe", "cause": degradation.CAUSE_FAILED}
@@ -217,13 +181,9 @@ def test_an_unclamped_cause_is_refused_rather_than_published(
 def test_an_unregistered_component_is_clamped_the_way_a_tool_name_is(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """`cause` was a closed set and `component` was a convention, on the same unauthenticated route.
+    """An unregistered component is clamped, as a caller-supplied tool name is.
 
-    Driven before `register_components` existed:
-    `record(component='hostile"}\n fake_metric 99', ...)` minted that series. No caller could reach
-    it — all four call sites pass a source constant — so this closes a gap rather than a breach, and
-    it closes it the way `app._served_tool_name` closes the same gap for a caller-supplied tool
-    name.
+    Otherwise a crafted component string could inject a series into the unauthenticated `/metrics`.
     """
     hostile = 'hostile"}\n fake_metric 99'
     assert hostile not in degradation.registered_components(), "the premise"
@@ -246,16 +206,10 @@ def test_an_unregistered_component_is_clamped_the_way_a_tool_name_is(
 
 
 def test_classify_cannot_answer_outside_the_clamped_set() -> None:
-    """The hard assertion `record` gave up, kept where a failure costs a red build.
+    """`classify` answers inside `CAUSES` for every exception shape.
 
-    `record` is lenient at runtime because its callers are `except` blocks that must answer anyway —
-    raising there made the error reporter the error. That leniency would be a hole if nothing
-    asserted the composition, so this is that assertion: every call site passes `classify(...)`, and
-    `classify` over a battery of exception shapes answers inside `CAUSES` and nothing else.
-
-    The battery spans the three branches and their edges — a refusal, both resource spellings, four
-    errno values, a broken `.so`, a `BaseException` that is not an `Exception` — because a fifth
-    branch added without a matching `CAUSES` member is what this is here to catch.
+    `record` is lenient at runtime, so the hard assertion lives here. The battery spans every branch
+    and its edges so a new branch without a `CAUSES` member is caught.
     """
     battery: list[BaseException] = [
         _refusal(),
@@ -280,19 +234,11 @@ def test_classify_cannot_answer_outside_the_clamped_set() -> None:
 
 
 def test_every_call_site_derives_its_cause_rather_than_writing_one() -> None:
-    """Read as source, because the sites that matter run at *import*.
+    """Every `record` call site passes `exc=` through `classify`, read as source.
 
-    `rxnpredict`'s eleven `mark_unavailable` calls and `rxnlabel`'s two constructors fire while the
-    module is being imported, in a checkout where every guarded import fails the same way, so no
-    behavioural test can drive one of them into a *different* failure. AST rather than grep, for the
-    reason `no_egress.py` gives: spellings differ as text and agree as a tree.
-
-    **The count is asserted, and that is not decoration.** The sibling test this file's ADR cited as
-    keeping the `exc=exc` invariant true asserted `not missing` over a collected list — which is
-    satisfied by *zero* matching call sites, so deleting the call it was written about left it
-    green.
-    A number fails when a site disappears, which is the case that matters: a degradation nobody
-    counts is the defect this whole vocabulary exists for.
+    The sites that matter run at import and cannot be driven into different failures. AST rather
+    than grep, since spellings differ as text and agree as a tree. The count is asserted because an
+    emptiness check over a collected list passes when the sites disappear.
     """
     roots = (
         ROOT / "packages" / "mcp_server_kit" / "src",
@@ -330,9 +276,7 @@ def test_every_call_site_derives_its_cause_rather_than_writing_one() -> None:
 def _imports_record(tree: ast.Module) -> bool:
     """Whether this module binds `degradation.record` — by import, or by the module alias.
 
-    Needed because `auth.py` has its own unrelated `record` callable, and a test that matched the
-    *name* counted it. One false positive is enough to make a reviewer widen the rule until it
-    asserts nothing.
+    `auth.py` has an unrelated `record`, so matching the bare name would count it.
     """
     for node in ast.walk(tree):
         if (

@@ -1,14 +1,8 @@
-"""`register_requested` — the operator-facing half of the deterministic doubles.
+"""`register_requested`: the operator-facing way to run the server on deterministic doubles.
 
-These tests exist because the feature they cover was documented and inert. `base_doubles.py` said
-an operator could set `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a` and get a working tool
-surface with no model weights, and `Chemclaw3`'s four-repo e2e harness set exactly that env var —
-but nothing in the package ever constructed a double. Only `tests/conftest.py` did, so every unit
-test passed while a real `uvicorn` came up with an empty registry.
-
-The assertion that matters most here is the negative one: the default configuration, and `"*"`,
-must register nothing. A fake predictor that can reach a production ensemble by accident is the
-failure this module's header forbids, and it would be a far worse bug than the one being fixed.
+Setting `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a` must give a working tool surface with
+no weights (the e2e harness relies on it). The negative assertion matters most: the default
+configuration and `"*"` register nothing, so a fake can never reach a production ensemble.
 """
 
 from __future__ import annotations

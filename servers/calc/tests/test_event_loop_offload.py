@@ -1,19 +1,9 @@
 """Synchronous numerical work must not run on the event loop that serves other requests.
 
-**This guard matters more here than on any other server in the fleet.** `chem`'s hop exists because
-RDKit's 2D-coordinate generation holds the GIL for tens of milliseconds. The work behind these nine
-tools is *seconds to minutes*: a GFN2 SCF is tens of milliseconds, a geometry optimization is dozens
-of SCFs, and a finite-difference Hessian is 6N of them — so a single `compute_thermochemistry` on
-the event loop would stop every other connected turn on this process for the duration.
-
-The assertion is the property directly — the blocking call happens on a **different thread** than
-the coroutine that awaited it — rather than a wall-clock measurement, which would be flaky and would
-not distinguish "fast" from "off the loop". Every one of the nine tools is covered, in one
-parametrised test, because a per-tool test is a per-tool opportunity to add a tenth tool and forget.
-
-The spies patch the *engine* function each tool calls, which is what makes the test fail if a hop is
-removed: without `asyncio.to_thread` the engine runs inline on the loop's own thread and the
-recorded identifier matches.
+The work behind these tools takes seconds to minutes, so any of it on the loop stalls every other
+connected turn. The assertion is that the blocking call runs on a different thread than the
+awaiting coroutine (not a wall clock), for every tool in one parametrised test. Spies patch the
+engine function each tool calls, so a removed hop records the loop's own thread.
 """
 
 from __future__ import annotations
@@ -41,10 +31,7 @@ CREST_TOOLS = {"search_conformer_ensemble", "search_binding_modes"}
 def _binary_exclusions() -> set[str]:
     """Which binary-only panels this run cannot exercise — a fact about the machine, not the image.
 
-    A function read at call time rather than a constant, for `_crest_exclusions`' reason in
-    `test_calc_version.py`: the shipped image carries `xtb` and a bare runner may not, so a constant
-    would have to pick one and be wrong on the other. With no binary these refuse before dispatching
-    anything, so there is no offload to observe.
+    With no binary they refuse before dispatching, so there is no offload to observe.
     """
     if xtb_cli.is_available():
         return set()
@@ -52,11 +39,8 @@ def _binary_exclusions() -> set[str]:
 
 
 # (tool name, the module attribute whose call must land off the loop, a zero-argument coroutine).
-#
-# Two of the nine — `compute_electronic_properties` and `predict_site_reactivity` — build their
-# structure and run their SCFs inside a local closure, so the spy goes on the engine module they
-# reach through rather than on a name bound in `tools`. That is the honest target: it is the call
-# that actually blocks.
+# Two tools run their SCFs inside a local closure, so the spy goes on the engine module they reach,
+# the call that actually blocks.
 CASES: list[tuple[str, Any, str, Callable[[], Awaitable[Any]]]] = [
     ("compute_xtb_energy", tools, "run_xtb", lambda: tools.compute_xtb_energy("CCO")),
     (
@@ -190,12 +174,7 @@ def test_the_calculation_runs_off_the_event_loop(
 
 
 def test_every_served_tool_is_covered() -> None:
-    """A tool added without a row here would ship its blocking call unguarded.
-
-    The list this checks against is the *served* surface rather than a hand-kept list, for the same
-    reason `test_calc_version.py` does it: the thing that must not be forgotten is exactly the thing
-    a forgetful change adds.
-    """
+    """Every served tool is covered, checked against the served surface rather than a kept list."""
     served = (
         {tool.name for tool in asyncio.run(tools.server.list_tools())}
         - CREST_TOOLS

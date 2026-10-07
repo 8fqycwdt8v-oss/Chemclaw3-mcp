@@ -1,25 +1,12 @@
 """`/healthz` on the path it exists for: the check that fails.
 
-Everything about readiness that is worth asserting is about the *failure* — the success path is a
-constant 200 with a dataset list, and every server's own suite already covers its corpora. The
-failing path is where three things went wrong at once and none of them is visible from the code:
+- The 503 body is served on an **unauthenticated** route, so the reason is redacted, in the
+  fresh answer and in the memoised one alike.
+- `lru_cache` does not cache exceptions, so a failing check is single-flighted and its failure
+  memoised, rather than re-run by every probe.
+- The check runs on its own thread, not the default executor that tool calls offload into.
 
-- the 503 body is served on an **unauthenticated** route (`/healthz` is in `auth.OPEN_PATHS`) and
-  carried `str(exc)` verbatim, so a loader failure published whatever the loader's message held.
-  #37 fixed that on `main` while this branch was in flight and its one-line change is the one that
-  shipped; what is asserted here is the half a single request cannot see — that the *memo* added
-  below holds the scrubbed string too, so a cached 503 and a fresh one cannot say different things.
-  `test_connector_app.py::test_readiness_failure_is_a_503_naming_the_reason` is #37's own test and
-  covers the same fix over a real socket; both are kept, and reverting the scrub fails both;
-- `lru_cache` does not cache exceptions, so the one path that re-runs work forever is the one a
-  failing pod is on, and every probe and every retry re-ran the whole check;
-- that work went to `asyncio.to_thread`'s **default** executor, which on `servers/calc` is the same
-  pool a tool call offloads a calculation into and which `engine/admission.py`'s ceiling does not
-  govern — so a pod proving it cannot answer competed with the calls it could still have answered.
-
-Driven over ASGI rather than a socket: the behaviour under test is entirely inside the route, and
-concurrency here has to be real event-loop concurrency, which `httpx.ASGITransport` plus
-`asyncio.gather` gives without a port.
+Driven over ASGI with `asyncio.gather`, which gives real event-loop concurrency without a port.
 """
 
 from __future__ import annotations
@@ -74,19 +61,9 @@ def _client(readiness: _Recorder, *, name: str) -> httpx.AsyncClient:
 async def test_the_503_body_is_redacted_because_the_route_is_unauthenticated() -> None:
     """`/healthz` is open by design, so its body is published to anything that reaches the pod.
 
-    Measured before the fix, with no `Authorization` header at all: the body carried
-    `PGPASSWORD=hunter2` while the log line for the very same exception was correctly scrubbed —
-    the two records of one fault disagreeing about what may be said, with the *unauthenticated* one
-    saying more. `redact_secrets` is exported from `logging.py` for exactly this. #37 reached the
-    same conclusion independently and its wording is on the branch in `connector_app`.
-
-    **Both the freshly computed 503 and the memoised one, because this route now has two.** The
-    memo that keeps a failing pod from re-hashing its corpus per probe is a second place the reason
-    string lives, so "scrub what you return" and "scrub what you cache" are two claims and only one
-    of them is the interesting one. Measured, with the return scrubbed and the memo holding
-    `str(exc)`: the first probe's body was clean and every probe for the next five seconds leaked —
-    which the single-request form of this test could not see, because a single request never
-    reaches the memo. The invariant is that the two bodies are the same string.
+    Asserted on both the freshly computed 503 and the memoised one: the memo is a second place the
+    reason string lives, and a single request never reaches it. The invariant is that both bodies
+    are the same redacted string.
     """
     from mcp_server_kit.logging import redact_secrets
 
@@ -112,12 +89,10 @@ async def test_the_503_body_is_redacted_because_the_route_is_unauthenticated() -
 
 
 async def test_a_herd_of_probes_runs_the_failing_check_once() -> None:
-    """The path `lru_cache` cannot help with is the path every probe is on when it matters.
+    """A herd of probes runs the failing check once.
 
-    Measured before: 41 requests produced 41 full readiness invocations and 40 concurrent probes
-    peaked at 47 threads against a baseline of 2. A pod that cannot answer must not spend its CPU
-    re-proving that; the check is single-flighted and its failure is believed for
-    `READINESS_FAILURE_TTL_SECONDS`.
+    A pod that cannot answer must not spend its CPU re-proving it; the check is single-flighted and
+    its failure believed for `READINESS_FAILURE_TTL_SECONDS`.
     """
     recorder = _Recorder()
     async with _client(recorder, name="readiness-herd") as client:
@@ -131,12 +106,10 @@ async def test_a_herd_of_probes_runs_the_failing_check_once() -> None:
 
 
 async def test_the_check_does_not_run_in_the_default_executor() -> None:
-    """The pool matters as much as the count, and this is the half a call count cannot show.
+    """The readiness check does not run in the default executor.
 
-    `asyncio.to_thread` uses the interpreter's default executor — on `servers/calc` the same pool
-    every tool offloads a minute-long calculation into, and one `engine/admission.py`'s ceiling
-    does not govern. A readiness check that blocks there takes a worker away from the calls the pod
-    could still be answering, so it gets a single thread of its own, named for the server.
+    That pool is where tools offload calculations, ungoverned by `calc`'s admission ceiling, so a
+    blocking check gets a single thread of its own, named for the server.
     """
     recorder = _Recorder()
     async with _client(recorder, name="readiness-pool") as client:
@@ -208,19 +181,10 @@ _VERDICT_CASES: dict[str, BaseException] = {
 
 @pytest.mark.parametrize("cause", sorted(_VERDICT_CASES), ids=str)
 async def test_only_a_permanent_cause_answers_unready(cause: str) -> None:
-    """The rule the fleet stated and two callables implemented for one branch each.
+    """Only a permanent cause answers unready; a transient one answers 200 with `degraded`.
 
-    `PERMANENT_CAUSES` was read in exactly **two** places in all of `src/` while all seven servers
-    passed a `readiness=` callable, so every other line of every callable raised straight into an
-    unconditional 503 — and at the time both probes shared this route, so that 503 was a kill.
-    Driven on `rxnlabel` before the funnel: a `MemoryError` out of `RXNMapper()` booked
-    `resource_exhausted` on `chemclaw_mcp_degraded_total`, `resource_exhausted in PERMANENT_CAUSES`
-    was False, and `/healthz` answered 503 anyway.
-
-    Parametrized over the four causes and asserted against `PERMANENT_CAUSES` membership rather than
-    against a transcribed list of status codes: a fifth cause added to `CAUSES` without a decision
-    about this route makes `test_every_cause_reaches_this_funnel` red, and moving a cause between
-    the two sets flips the expectation here without anybody editing it.
+    Parametrized over the causes and asserted against `PERMANENT_CAUSES` membership, so moving a
+    cause between sets flips the expectation and a new cause must reach this funnel.
     """
     exc = _VERDICT_CASES[cause]
     expected = 503 if cause in degradation.PERMANENT_CAUSES else 200
@@ -296,12 +260,10 @@ async def test_the_transient_verdict_is_counted_for_a_scrape() -> None:
 
 
 async def test_livez_answers_while_healthz_refuses() -> None:
-    """The decoupling, driven: the two routes disagree, which is the whole point of there being two.
+    """`/livez` answers 200 while `/healthz` refuses, and consults nothing readiness consults.
 
-    Before this, one 503 meant both "stop sending me traffic" and "replace me" — `periodSeconds: 30`
-    and `failureThreshold: 3`, so ~90 s. `/livez` must therefore be reachable, answer 200, and touch
-    nothing the readiness check touches: the recorder below counts its invocations, and a `/livez`
-    that consulted readiness would both raise and move that count.
+    A shared route would turn "stop sending traffic" into "replace me". The recorder counts
+    readiness invocations, which a `/livez` touching readiness would move.
     """
     recorder = _Recorder()
     async with _client(recorder, name="readiness-livez") as client:

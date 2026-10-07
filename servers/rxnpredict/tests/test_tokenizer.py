@@ -1,14 +1,9 @@
-"""The Molecular Transformer tokenizer's round-trip check — the arm that used to be an `assert`.
+"""The Molecular Transformer tokenizer's round-trip check, which must survive `python -O`.
 
-This predictor's tokenizer is a regular expression, and a character it does not cover is not
-reported: `re.findall` simply returns fewer tokens. The consequence is the worst shape a chemistry
-tool has — a confident answer about a *different molecule* — so the round trip that catches it is
-the whole safety of the function and has to survive a `python -O` process, which an `assert` does
-not.
-
-The module is imported directly rather than through the predictor registry: it registers itself
-only when `onmt` is installed, which is an optional extra no test environment here carries, and the
-tokenizer is a module-level function that needs none of it.
+The tokenizer is a regex, and an uncovered character silently yields fewer tokens: a confident
+answer about a different molecule. The round trip is the function's whole safety, so it is an
+explicit raise, not an `assert`. Imported directly, since the predictor registers only when the
+optional `onmt` extra is installed.
 """
 
 from __future__ import annotations
@@ -28,10 +23,8 @@ def test_a_covered_structure_round_trips_to_spaced_tokens() -> None:
     assert _tokenize_smiles("CC[Fe]C") == "C C [Fe] C"
 
 
-#: The two ways RDKit writes a stereodefined double bond. Built with `chr(92)` rather than written
-#: as an escape, because the defect this pins was a backslash that changed meaning when it was
-#: transcribed between a raw and a non-raw string, and a test that re-transcribes it is a test that
-#: can acquire the same bug.
+#: The two ways RDKit writes a stereodefined double bond, built with `chr(92)` so the backslash
+#: cannot change meaning between raw and non-raw string literals.
 BACKSLASH = chr(92)
 TRANS_ALKENE = "C/C=C/C"
 CIS_ALKENE = "C/C=C" + BACKSLASH + "C"
@@ -39,14 +32,11 @@ CIS_ALKENE = "C/C=C" + BACKSLASH + "C"
 
 @pytest.mark.parametrize("smiles", [TRANS_ALKENE, CIS_ALKENE])
 def test_both_halves_of_a_stereodefined_double_bond_are_covered(smiles: str) -> None:
-    """The `\\` branch of the pattern, which for a while matched two backslashes and so nothing.
+    """Both bond-direction characters of a stereodefined double bond round-trip.
 
-    Parametrised over *both* directions on purpose: the shipped pattern covered `/` and not
-    `\\`, so a test that used either one alone would have been green — and the `/` form is the
-    one anybody writing a doctest reaches for first. Measured against the shipped pattern,
-    `C/C=C/C` round-tripped and `C/C=C\\C` did not, which means half of the stereodefined alkenes
-    RDKit emits were refused by a predictor whose caller drops a raising model without telling
-    anyone (`tools._survivors`).
+    Parametrised over both directions: a pattern covering the forward slash but not the backslash
+    passes a test using only the common form, while half the alkenes RDKit emits would be refused
+    by a predictor whose caller drops a raising model silently.
     """
     assert "".join(TOKEN_PATTERN.findall(smiles)) == smiles
     assert _tokenize_smiles(smiles) == " ".join(smiles)
@@ -55,8 +45,8 @@ def test_both_halves_of_a_stereodefined_double_bond_are_covered(smiles: str) -> 
 @pytest.mark.parametrize(
     ("smiles", "dropped"),
     [
-        # Selenium written outside brackets: `Se` matches `S` and the `e` is lost, so a selenoether
-        # is handed to the model as a thioether. Measured against this pattern.
+        # Selenium written outside brackets: `Se` would match `S` and lose the `e`, handing a
+        # selenoether to the model as a thioether.
         ("CCSeC", "CCSC"),
         # The three-digit ring-closure form loses its `%`.
         ("C%(123)CC", "C(123)CC"),
@@ -80,14 +70,10 @@ def test_a_structure_the_pattern_does_not_cover_is_refused_not_silently_shortene
 
 
 def test_the_refusal_does_not_echo_a_megastring_whole() -> None:
-    """The message is bounded by `mcp_server_kit.limits.echo`, as every refusal in this fleet is.
+    """The refusal message is bounded by `mcp_server_kit.limits.echo`, as every refusal here is.
 
-    An `AssertionError`'s message is written as a debugging aid, so the version this replaced
-    interpolated the caller's SMILES raw. What this bounds is the **log line**: the one caller runs
-    inside `gather(..., return_exceptions=True)` and `tools._survivors` reports a failed predictor
-    by its exception *type*, never its message, so this text never reaches a model at all. The
-    bound is still worth having — a 50,000-character log line is a log line nobody reads — and the
-    reason is written down correctly here because it used to say "reaches both".
+    This message only reaches the log (`tools._survivors` reports a failed predictor by exception
+    type), and the bound keeps a megastring from making that log line unreadable.
     """
     payload = "K" * 50_000
     with pytest.raises(ValueError) as raised:

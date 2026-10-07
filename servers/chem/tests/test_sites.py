@@ -1,9 +1,8 @@
 """What `describe_atom_sites` must get right for a per-atom number to be reportable by name.
 
-Every expectation here is a *chemical* one written independently of the implementation — the
-symmetry classes of phenol, which chlorine of a dichloropyrimidine sits between two nitrogens, that
-naphthalene has three kinds of carbon. A test that restated the SMARTS table would pass whatever the
-table said.
+Expectations are chemical and written independently of the implementation (phenol's symmetry
+classes, the chlorine between two nitrogens, naphthalene's three carbon kinds); restating the
+SMARTS table would pass whatever it said.
 """
 
 from __future__ import annotations
@@ -76,10 +75,8 @@ def test_the_snar_discriminator_is_the_flanking_nitrogen_count() -> None:
 def test_resonance_equivalent_atoms_are_two_sites_and_are_distinguishable() -> None:
     """Symmetry here is topological, so a nitro group's two oxygens do not merge.
 
-    Stated as a test rather than left to be discovered: RDKit ranks the written structure, in which
-    one oxygen is `=O` and the other `[O-]`. What must hold is that the two are never shown under
-    one name — otherwise the skill's "report by label, never by index" instruction produces two
-    different answers spelled identically.
+    RDKit ranks the written structure (`=O` vs `[O-]`). What must hold is that the two never share a
+    name, or "report by label" gives two answers spelled identically.
     """
     oxygens = [
         site
@@ -93,9 +90,8 @@ def test_resonance_equivalent_atoms_are_two_sites_and_are_distinguishable() -> N
 def test_every_label_identifies_exactly_one_site() -> None:
     """The skill names sites by label and never by index, so a collision is two answers in one.
 
-    The molecules here are the measured collisions: a fused ring where two positions share a
-    relationship to the ring fusion, a substituted naphthalene, and an azine whose two halogens are
-    both ortho to a ring nitrogen.
+    The molecules are known collision shapes: a fused ring, a substituted naphthalene, and an azine
+    with two halogens ortho to a ring nitrogen.
     """
     for smiles in (
         "c1ccc2ncccc2c1",
@@ -120,10 +116,8 @@ def test_a_ring_fusion_is_not_a_substituent() -> None:
 def test_hydrogens_are_reported_on_their_carbon_with_a_calculators_numbering() -> None:
     """The join key for a C-H question, checked against RDKit's own explicit-H molecule."""
     smiles = "Cc1ccccc1"
-    # `rdkit-stubs` ships and annotates the compiled entry points — `MolFromSmiles` and `AddHs` on
-    # the next line need nothing — but declares `def CanonSmiles(smi, useChiral = 1):` with no
-    # types, so this is a gap in one stub rather than a check declined here. `warn_unused_ignores`
-    # turns it red the day rdkit annotates it, which is the only reason it is safe to write.
+    # `rdkit-stubs` leaves `CanonSmiles` unannotated; `warn_unused_ignores` turns this red when it
+    # is annotated.
     canonical_smiles = Chem.CanonSmiles(smiles)  # type: ignore[no-untyped-call]
     explicit = Chem.AddHs(Chem.MolFromSmiles(canonical_smiles))
     expected: dict[int, list[int]] = {}
@@ -197,8 +191,8 @@ def test_scopes_are_questions_not_a_partition() -> None:
 def test_scope_selection_finds_the_answer_top_n_buries() -> None:
     """Phenol's `ring_carbons` scope is six atoms in four classes — the comparison actually asked.
 
-    The measured failure this replaces: over all 13 atoms the para carbon ranks 6th and both meta
-    carbons rank below four hydrogens, so truncation returns the wrong rows however large it is.
+    Over all 13 atoms the para carbon ranks 6th and both meta carbons below four hydrogens, so a
+    truncation of the full list returns the wrong rows however large it is.
     """
     ring = [
         site for site in describe_atom_sites("Oc1ccccc1").sites if "ring_carbons" in site.scopes
@@ -209,13 +203,11 @@ def test_scope_selection_finds_the_answer_top_n_buries() -> None:
 
 
 def test_a_rewritten_smiles_gives_the_same_sites_and_the_same_indices() -> None:
-    """Both halves of the join, over three writings of acetanilide.
+    """A rewritten SMILES gives the same sites and the same indices, over three writings of
+    acetanilide.
 
-    The handle is stable because it hashes a symmetry class rather than an index. The *indices* are
-    stable because this module canonicalises first — which is the half that matters for joining a
-    per-atom number onto a site, since every calculator embeds through the canonical form too.
-    Measured before that fix: phenol written `c1ccccc1O` put the oxygen at index 6 here and index 0
-    in the calculator, so every joined number was attributed to the wrong atom.
+    The handle hashes a symmetry class; the indices are stable because this module canonicalises
+    first, as every calculator does, so per-atom numbers join onto the right atom.
     """
     writings = ("CC(=O)Nc1ccccc1", "O=C(C)Nc1ccccc1", "c1ccc(NC(C)=O)cc1")
     handles = [
@@ -281,14 +273,10 @@ def test_an_invalid_smiles_is_refused_rather_than_approximated() -> None:
 
 
 class TestTheIndicesSayWhichMoleculeTheyNumber:
-    """Numbering from the canonical form is right; not returning it made the numbers unusable.
+    """The indices say which molecule they number.
 
-    `describe_atom_sites` canonicalises first — the join with every calculator in this family — and
-    then handed back indices against a molecule the caller does not have and cannot derive from
-    this tool's output. Measured on 2,5-dichloropyridine written `c1cc(Cl)ncc1Cl`: the site named
-    "the ortho aromatic carbon bearing the leaving group" is atom 4, and atom 4 of the string the
-    chemist typed is the ring **nitrogen** — which is what `render_structure` highlights when the
-    model does what that tool's docstring teaches.
+    Indices are into the canonical form, so the tool must return that form; otherwise a caller
+    highlighting atom 4 of their own spelling can land on a different atom (e.g. a ring nitrogen).
     """
 
     @pytest.mark.parametrize("written", ["c1cc(Cl)ncc1Cl", "c1ccccc1O", "c1ccc(NC(C)=O)cc1", "OCC"])
@@ -316,13 +304,10 @@ class TestTheIndicesSayWhichMoleculeTheyNumber:
 
 
 class TestTheMoleculeIsCanonicalisedOncePerCallAndNotOncePerAtom:
-    """`site_handle` canonicalised the whole molecule twice on every call, once per atom.
+    """The molecule is canonicalised once per call, not once per atom.
 
-    Two whole-molecule passes — `CanonicalRankAtoms` and `MolToSmiles` — per atom is quadratic in a
-    server with no size bound anywhere: measured on a straight-chain alkane, 100 atoms was 0.18 s,
-    300 was 3.57 s, 600 was 18.46 s, and 1000 did not finish. Both were advertised to the model as
-    "Free: a graph operation, no calculation, no cache", and both run in an uncancellable worker
-    thread past the manifest's own 30 s budget.
+    Two whole-molecule passes per atom are quadratic and would run in an uncancellable worker past
+    the request budget on a large molecule.
     """
 
     def test_a_six_hundred_atom_molecule_is_still_a_graph_operation(self) -> None:
@@ -338,9 +323,8 @@ class TestTheMoleculeIsCanonicalisedOncePerCallAndNotOncePerAtom:
     def test_hoisting_the_canonical_view_leaves_the_handle_byte_identical(self) -> None:
         """The one-shot form and the form the enumeration uses must mint the same name.
 
-        A handle is content-addressed and is carried between turns, so a handle that changed with
-        *how it was computed* would silently stop resolving — which is the failure the RDKit
-        version in its payload exists to make loud.
+        A handle is content-addressed and carried between turns, so it must not depend on how it was
+        computed.
         """
         for smiles in ("Oc1ccccc1", "CC(=O)Nc1ccccc1", "Clc1ccc(Cl)nc1"):
             found = describe_atom_sites(smiles)
@@ -352,13 +336,11 @@ class TestTheMoleculeIsCanonicalisedOncePerCallAndNotOncePerAtom:
 
 
 class TestAnIsotopicHydrogenIsNotAHeteroatom:
-    """`MolFromSmiles` keeps an isotopically-labelled hydrogen as an explicit atom in the graph.
+    """An isotopic hydrogen is not a heteroatom.
 
-    So `[2H]` became a site of `kind="heteroatom"` labelled "the heteroatom" — in a module that
-    promises "every symmetry-distinct **heavy** atom" and "hydrogens are not sites of their own" —
-    and the carbon it hangs off reported `hydrogens=[]`, which is the field the docstring calls the
-    join key for a C-H question. On CD3OH, the substrate of a kinetic-isotope-effect study, the
-    site list names an element that is not there and the abstraction question has no join key.
+    `MolFromSmiles` keeps `[2H]` as an explicit atom; it must not become a site, and the carbon it
+    is on must still list it in `hydrogens`, the join key for a C-H question (e.g. a KIE study on
+    CD3OH).
     """
 
     @pytest.mark.parametrize("smiles", ["[2H]c1ccccc1", "C([2H])([2H])([2H])O", "[3H]CC"])

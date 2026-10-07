@@ -1,13 +1,8 @@
 """Every float argument of every served tool refuses a NaN and an infinity, derived from its schema.
 
-`mcp_server_kit/finite.py` holds the mechanism and its own tests; this file holds the claim that it
-reaches the whole fleet. Derived rather than listed, from the JSON schema each tool advertises: a
-number anywhere in it — a bare argument, an optional one, an element of a list, a field of a nested
-model — is a place a caller can put a NaN, so each one is driven. A server that registered a tool
-after `connector_app` had run, or built its app some other way, is what this would catch.
-
-Three servers carried their own engine guards before this and they stay: they are what a direct
-Python caller meets. This is about what a caller of the *served* surface meets.
+`mcp_server_kit/finite.py` holds the mechanism; this proves it reaches the whole served fleet.
+Every number in an advertised schema (bare, optional, list element, nested field) is driven, so a
+tool registered after `connector_app` ran, or an app built another way, is caught.
 """
 
 from __future__ import annotations
@@ -65,9 +60,8 @@ def _branches(schema: dict[str, Any], root: dict[str, Any]) -> list[dict[str, An
 def _filler(schema: dict[str, Any], root: dict[str, Any]) -> Any:
     """A value `schema` accepts, for the siblings of the number being driven inside a nested model.
 
-    A nested model is validated as a whole, so a missing sibling would refuse it before its float
-    was ever looked at and the test would pass for the wrong reason. Top-level siblings need no
-    filler: pydantic reports each argument separately.
+    A nested model is validated whole, so a missing sibling would refuse it before the float was
+    examined. Top-level siblings need no filler: pydantic reports each argument separately.
     """
     branch = _branches(schema, root)[0]
     if "enum" in branch:

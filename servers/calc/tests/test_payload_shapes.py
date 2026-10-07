@@ -1,45 +1,17 @@
 """The shape of every payload this server writes — the writer's half of a guard Chemclaw3 has.
 
-## The gap this closes
+`calc_version` tracks the programs; `CALCULATION_EPOCH` is hand-bumped for our own contribution.
+A field added to or removed from a result model moves neither, yet makes stored rows incomplete,
+and an incomplete row that validates is served as an answer. Chemclaw3 fingerprints its own copies
+and cannot see this side.
 
-`calc_version` answers one question: *would the program we shell out to produce a different number
-now?* `CALCULATION_EPOCH` answers the other one — *did our own contribution to a stored result
-change?* — and it is a hand-bumped constant, so nothing fails on the commit that should bump it.
+The digest is over each model's JSON schema with `title`/`description` stripped where a schema
+keyword is expected (field names are kept), so it moves for any added, removed, renamed or retyped
+field, nested models included, and not for reworded prose. A fixed arithmetic error does not
+change shape; that stays a judgement, which is why the epoch is a constant.
 
-That is a whole class of change this repository can make with no key moving and no test going red:
-a field added to `ElectronicProperties`, a field removed from `SiteReactivityResult`, `_valences`
-learning to report something new, the ESOL arithmetic returning one more number. The programs are
-unchanged, so `calc_version` is *correctly* unchanged; the payload's shape is not.
-
-Chemclaw3 has the reader's half of this (`tests/test_calc_payload_schemas.py`) and it cannot see
-this half: it fingerprints *its own* copies of these models, so a field added here moves nothing
-there. Neither side can see the other's schema, which is exactly why each needs its own.
-
-The measured precedent is on the record in `engine/key.py`: `CALCULATION_EPOCH` went to `"2"`
-because `SiteReactivityResult` gained the conceptual-DFT panel and `AtomCharge` gained its Wiberg
-and free valence. No number that was already stored moved — the same three SCFs, the same geometry —
-but every row written under epoch 1 became *incomplete*, and an incomplete row that still validates
-is served as an answer. That bump happened because a person noticed. This file is what notices.
-
-## What the digest covers, and what it deliberately does not
-
-It is taken over the model's JSON schema with `title`/`description` stripped, so it moves for a
-field added, removed, renamed or retyped — anywhere in the model, including inside a nested one such
-as `BondOrder` or `Estimate` — and does not move for a reworded docstring. Prose is stripped only
-where a JSON-Schema keyword is expected: the keys inside `properties`/`$defs` are the model's own
-field names, and a model with a field literally named `title` must not be fingerprinted as one
-without it.
-
-The one thing a digest cannot see is our arithmetic being wrong and then fixed — a corrected
-linear-rotor term changes every entropy in a payload without moving its shape. That half stays a
-judgement, which is why the epoch is a constant rather than a derived value.
-
-## The model list is derived, not typed
-
-`Keyed` is the base every compute result on this server carries, so `__subclasses__` over the
-imported package *is* the list — a new result model is guarded the day it is written rather than the
-day somebody remembers to add it here. The recorded digests are the data; the set of models they
-have to cover is measured.
+The model list is derived from `Keyed.__subclasses__`, so a new result model is guarded the day
+it is written.
 """
 
 from __future__ import annotations
@@ -80,10 +52,8 @@ def shape_digest(model: type[BaseModel]) -> str:
 def payload_models() -> list[type[Keyed]]:
     """Every result model this server hands back, found rather than listed.
 
-    Imports the whole package first: a model in a module nothing else imports would otherwise be
-    invisible to `__subclasses__`, which is the failure mode a hand-written list has by
-    construction. Filtered to this package so that a `Keyed` subclass defined inside another test
-    module cannot make this file's answer depend on import order.
+    Imports the whole package so no model is invisible to `__subclasses__`, and filters to this
+    package so test-defined subclasses cannot make the answer depend on import order.
     """
     from chemclaw_mcp_calc import engine, tools
 
@@ -108,12 +78,9 @@ RECORDED_SHAPES: dict[str, str] = {
     "DescriptorProfile": "8c6509010beceba0",
     "ElectronicProperties": "f49622cadc8cb1be",
     "EnsemblePayload": "296e072f46a1b8ac",
-    # 2026-09-09: gained `ir_wavenumbers_cm`. `CALCULATION_EPOCH` deliberately does *not* move
-    # for it — a stored row is still complete, by the same argument the field comment on
-    # `max_gradient_hartree_per_angstrom` records. The intensities in an old row are the
-    # same numbers in the same order, and the caller pairs them as it always has; the new
-    # field only lets it stop counting. Bumping would recompute every Hessian on this
-    # server — the most expensive rows it writes — to add nothing to any of them.
+    # `ir_wavenumbers_cm` was added without an epoch bump: an older row is still complete (the
+    # intensities are the same numbers in the same order), and bumping would recompute every
+    # Hessian.
     "HessianPayload": "b524b88cf6dfdde4",
     "LogdResult": "80cc4e8b9cd7c31d",
     "OptimizationResult": "68b7012d0fb3b3ad",
@@ -138,11 +105,9 @@ def test_every_result_model_is_recorded() -> None:
 def test_persisted_payload_shapes_have_not_changed() -> None:
     """A payload model changed shape: decide what that does to the rows already on disk.
 
-    This is not a request to keep the models still. It is the moment to answer one question — can a
-    row written before this change still be read as what it claims to be? An added *required* field
-    makes every stored row fail validation on the reader's side; an added optional one is worse,
-    because it validates back as `None`, which reads as "we do not know" when the truth is "we never
-    asked".
+    Can a row written before the change still be read as what it claims to be? A new required field
+    fails validation on read; a new optional one validates as `None`, reading as "unknown" when it
+    was never asked.
     """
     current = {model.__name__: shape_digest(model) for model in payload_models()}
     changed = {
@@ -160,12 +125,10 @@ def test_persisted_payload_shapes_have_not_changed() -> None:
 
 
 def test_the_digest_notices_an_added_optional_field() -> None:
-    """The control, and the exact shape of the change that slips through everything else.
+    """The control: the digest notices an added optional field.
 
-    An optional field appended to a result model moves no `calc_version` — the programs did not
-    change — and validates back as `None` on every row written before it existed. Without this
-    assertion the two tests above could be measuring a digest that never moves, and would pass
-    forever while guarding nothing.
+    That change moves no `calc_version` and validates as `None` on old rows; without this, the tests
+    above could be measuring a digest that never moves.
     """
 
     class Before(BaseModel):

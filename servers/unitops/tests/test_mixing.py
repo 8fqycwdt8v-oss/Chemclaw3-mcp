@@ -1,15 +1,9 @@
 """Agitation power, tip speed and Zwietering's `N_js`, against relations written independently.
 
-Two of the three are definitions, so they are checked against arithmetic done by hand. The third —
-Zwietering — has no closed form to check against, and the honest substitute is not a recorded
-fixture but the two things a published correlation must satisfy whatever its constants are: it has
-to be **dimensionally homogeneous**, and it has to respond to each input with the exponent that was
-published. Both are checked here, and neither can be satisfied by the module agreeing with itself.
-
-What could **not** be validated here, stated rather than implied: there is no worked Zwietering
-example in this repository to compare a number against, and the geometry constant `S` is supplied
-by the caller. So what is asserted is the correlation's structure and its scale-up consequence, not
-an absolute speed. `servers/unitops/README.md` says the same in the place a reader will look.
+Power and tip speed are definitions, checked by hand arithmetic. Zwietering has no closed form,
+so its structure is checked: dimensional homogeneity and the published exponent per input. There
+is no worked Zwietering example here and `S` is caller-supplied, so absolute speed is not
+validated; `servers/unitops/README.md` says the same.
 """
 
 from __future__ import annotations
@@ -99,12 +93,10 @@ def test_matching_power_per_volume_reduces_to_the_similarity_rule() -> None:
 
 
 def test_a_vessel_that_is_not_geometrically_similar_does_not_get_the_similarity_answer() -> None:
-    """The reason the module solves from the supplied volumes rather than from `(D₁/D₂)^(2/3)`.
+    """A non-similar vessel pair does not get the geometric-similarity answer.
 
-    A 1 L round-bottomed flask and a 250 L vessel are not similar, and assuming they were is a
-    silent error. Here the real volumes are 1 L and 250 L on impellers of 0.05 m and 0.45 m, which
-    is a P/V-matched speed the similarity rule misses by a factor this test pins as *different*
-    rather than as a number, because the point is that the two answers are not the same.
+    The module solves from the supplied volumes, not `(D₁/D₂)^(2/3)`; a 1 L flask and a 250 L vessel
+    are not similar, and the test pins the two answers as different.
     """
     scaled = mixing.agitation_scale_up(
         small_impeller_diameter_m=0.05,
@@ -148,12 +140,11 @@ def test_matching_tip_speed_is_exact_and_gives_away_power_per_volume() -> None:
 
 
 def test_zwieterings_exponents_are_dimensionally_homogeneous() -> None:
-    """The published set has to make a frequency, and that is arithmetic on the exponents alone.
+    """Zwietering's exponents are dimensionally homogeneous: the set yields a frequency.
 
-    The kinematic viscosity nu is m²/s, `d_p` is m, the buoyancy group
-    `g·(rho_s - rho_L)/rho_L` is m/s², `X` is dimensionless and `D` is m. So the metre
-    exponents must cancel and the second exponents must come to -1. A transposed pair — 0.45 and
-    0.2 swapped, say — returns a plausible speed and fails this.
+    With nu in m²/s, `d_p` in m, `g·(rho_s - rho_L)/rho_L` in m/s², `X` dimensionless and `D` in m,
+    metre exponents must cancel and seconds sum to -1; a transposed pair gives a plausible speed and
+    fails here.
     """
     exponents = mixing.ZWIETERING_EXPONENTS
     metres = (
@@ -212,12 +203,10 @@ def test_the_buoyancy_group_carries_its_own_exponent() -> None:
 
 
 def test_suspending_the_same_slurry_costs_less_power_per_volume_at_the_larger_scale() -> None:
-    """The literature consequence of `N_js ∝ D^-0.85`, and the reason equal P/V is conservative.
+    """Suspending the same slurry costs less power per volume at the larger scale.
 
-    At geometric similarity `P/V ∝ N³D²`, so at `N_js` it goes as `D^(-2.55+2) = D^-0.55`: the
-    bigger vessel needs *less* power per unit volume to keep the same solid suspended. That is a
-    standard scale-up statement, it is nowhere in this module, and a scale-up argued on equal P/V
-    is therefore conservative for suspension.
+    At similarity `P/V ∝ N³D²`, so with `N_js ∝ D^-0.85` it goes as `D^-0.55`; a scale-up on equal
+    P/V is conservative for suspension. This consequence is nowhere in the module.
     """
     small = dict(SLURRY)
     large = dict(SLURRY)
@@ -258,21 +247,11 @@ def test_a_missing_geometry_constant_cannot_be_defaulted() -> None:
 
 
 def test_a_loading_outside_zwieterings_fitted_band_is_flagged_rather_than_answered_bare() -> None:
-    """The half `turbulent` already had for the power number, and `N_js` did not have at all.
+    """A loading outside Zwietering's fitted band is flagged rather than answered bare.
 
-    **`X^0.13` is a weak exponent, so a loading wrong by a factor of 100 returns a plausible
-    number.** Driven on this file's own `SLURRY`, a 10 wt% loading entered as `0.10` — the
-    fraction/percentage confusion the argument's own description warns about in capitals — gives
-    `N_js` 49.36 rpm against 89.82, **45.05% low**, and the P/V that follows from it 54.2 W/m³
-    against 326.9, **83.40% low**. Both ratios are fixture-independent, because `X` enters the
-    correlation as a bare factor: on `engine/selftest.py`'s slurry the same mistake gives 130.14 rpm
-    against 236.81 and 267.4 W/m³ against 1611.5. That is an under-agitated vessel, and it is a
-    speed somebody sets a drive to.
-    Before this there was no refusal and no flag, and the docstring referred to "the loading range
-    it was fitted over" without naming it.
-
-    Reported rather than refused because the correlation is routinely used a little outside its
-    regression; `within_fitted_range` is the same shape as `turbulent` for the same reason.
+    `X^0.13` is a weak exponent, so a percentage entered as a fraction gives a plausible speed that
+    is far too low, an under-agitated vessel. Flagged rather than refused because the correlation is
+    routinely used a little outside its regression, as `turbulent` is for the power number.
     """
     inside = mixing.just_suspended_speed(**{**SLURRY, "solids_loading_percent": 10.0})
     mistaken = mixing.just_suspended_speed(**{**SLURRY, "solids_loading_percent": 0.10})
@@ -299,11 +278,10 @@ def test_a_loading_outside_zwieterings_fitted_band_is_flagged_rather_than_answer
 
 
 def test_a_particle_size_outside_the_fitted_band_is_flagged_on_its_own_axis() -> None:
-    """The second band, because a flag that only ever fires on one input is one input's flag.
+    """A particle size outside the fitted band is flagged on its own axis.
 
-    `d_p` is in **metres** and a 200 µm crystal is `2.0e-4`, so the realistic mistake is entering
-    `200` or `0.2`. Both land above the band. The in-band pair is checked at both ends as well, so a
-    band accidentally narrowed to nothing would fail here rather than flag every call.
+    `d_p` is in metres, so `200` or `0.2` for a 200 µm crystal land above the band; both in-band
+    ends are checked too, so a band narrowed to nothing fails.
     """
     low, high = mixing.ZWIETERING_FITTED_RANGES["particle_diameter_m"]
     for diameter in (low, high, math.sqrt(low * high)):

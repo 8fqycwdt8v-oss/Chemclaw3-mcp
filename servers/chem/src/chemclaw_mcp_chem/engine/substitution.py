@@ -1,48 +1,17 @@
 """The substitution series of a molecule — the regioisomers a "which position" question ranks over.
 
-**What this is for.** Chemclaw3's `rank_species` ranks a *set*, and the enumerators beside this one
-produce the set for five kinds of question: which tautomer, which microstate, which stereoisomer,
-which bond, which degradant. None produced one for the question a process chemist asks most often
-about an aromatic ring — *which position*: "which regioisomer does this nitration give", "what does
-moving the methyl do". Without an enumerator the candidate set is whatever compounds a model
-happened to write down, which is the thing *enumerate, then compute, and never the reverse* exists
-to stop. Chemclaw3's planning backlog row "No substitution-product enumerator" is the
-request; this module is the primitive, and the template that chains it into `rank_species` is
-Chemclaw3's.
+Produces the candidate set Chemclaw3's `rank_species` ranks, so a model never invents it. Two
+modes, both placing one group on one aromatic C-H:
 
-**Two questions, one graph operation.** Both put one group on one aromatic C-H and differ only in
-where the group comes from:
+- `move`: each substituent on an aromatic carbon, moved to every other aromatic C-H of its ring
+  system. Products are isomers of the input, so the input is a member, first.
+- `add`: a named group on each symmetry-distinct aromatic C-H. Products are not isomers of the
+  input, so the input is not a member.
 
-- `move` — every substituent already on an aromatic carbon, moved one at a time to every other
-  aromatic C-H of the same ring system. The products are **isomers of the input**, so the input is
-  a member of its own set, first, exactly as a tautomer set carries its parent: "the isomer you drew
-  is the most stable one" is the commonest answer and a universe without it cannot say so.
-- `add` — a group the caller names, put on each symmetry-distinct aromatic C-H of the input once.
-  The products are isomers of *each other* and not of the input (they have one more group), so the
-  input is **not** a member — the same rule `enumerate_degradants` follows for the same reason, and
-  a ranking that populated over the starting material and its products would be comparing different
-  formulas.
-
-**A candidate set, not a prediction, and emphatically not a regioselectivity.** Every entry says a
-position *exists*; nothing here says the reaction goes there. And the ranking a caller will chain
-this into is a **thermodynamic** one — the relative stability of the finished isomers — while the
-regiochemistry of an electrophilic substitution is usually decided **kinetically**, at the sigma
-complex, so the most stable isomer and the major product can differ. That caveat belongs in every
-answer built on this set, and the tool's docstring says so.
-
-**Aromatic rings only, single substitution only.** An aliphatic ring position creates a stereocentre
-per move and a C-H that is not a regiochemistry question in the same sense; a disubstitution is 2^n
-in the positions. Both are refused by construction rather than by a cap: the positions are aromatic
-carbons carrying a hydrogen, and each product moves or adds one group.
-
-**Priced before it runs.** Each candidate is one product, sanitised and canonicalised over the whole
-graph, so the work is `candidates x heavy atoms` — the degradant enumerator's shape, and bounded the
-same way: counted from the graph before any product is built, and refused past
-`MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT` — and, because two costs of a call grow with the size of
-the molecule rather than with the candidates, a molecule past `MAX_SUBSTITUTION_HEAVY_ATOMS` is
-refused before it is canonicalised. The output is capped at `MAX_SUBSTITUTIONS` and refused
-rather than truncated past it, for the reason `species.py` gives: a partial set is a fraction a
-downstream population would report as a whole.
+A candidate set, not a regioselectivity prediction: a thermodynamic ranking of products can differ
+from the kinetically controlled major product. Aromatic rings and single substitution only. Priced
+before it runs (`MAX_SUBSTITUTION_HEAVY_ATOMS`, `MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT`), and
+refused rather than truncated past `MAX_SUBSTITUTIONS`.
 """
 
 from __future__ import annotations
@@ -67,29 +36,14 @@ __all__ = [
 
 SubstitutionMode = Literal["move", "add"]
 
-#: The most regioisomers one call returns. The same number as the tautomer and stereoisomer caps,
-#: for their reason: the next step is a free-energy ranking per member, and 64 is already a ranking
-#: somebody should have to ask for deliberately.
+#: The most regioisomers one call returns; each member costs a free-energy ranking downstream.
 MAX_SUBSTITUTIONS = 64
 
 #: The largest molecule, in heavy atoms, whose substitution series this server enumerates.
 #:
-#: **The product bound below cannot price a large molecule on its own, and this is the half that
-#: does.** Two costs of a call do not scale with the candidate count at all: naming the parent's
-#: positions (`describe_sites`' whole-molecule pass) and canonicalising a product, both of which
-#: are super-linear in the size of the graph. Measured with one methyl on one benzene ring and the
-#: rest a chain — ten candidates whatever the size, CPU per call on a host at load average ~150
-#: over eight threads, best of two:
-#:
-#:     toluene + C243 chain      250 atoms   10 candidates    2,500     162 ms  (sites    82 ms)
-#:     toluene + C493 chain      500 atoms   10 candidates    5,000     538 ms  (sites   241 ms)
-#:     toluene + C993 chain    1,000 atoms   10 candidates   10,000   1,820 ms  (sites   655 ms)
-#:     toluene + C1985 chain   1,992 atoms   10 candidates   19,920   4,901 ms  (sites 1,639 ms)
-#:
-#: so the per-candidate-atom rate climbs from ~65 us to ~250 us across the parse bound's range, and
-#: a product bound set for a drug-sized molecule admits the last row. 250 is ~6x the largest drug
-#: measured (nilotinib, 39 heavy atoms) and keeps the fixed cost under a fifth of a second; a
-#: substitution question about a larger molecule is a question about one of its rings.
+#: Naming the parent's positions and canonicalising a product are super-linear in molecule size and
+#: independent of the candidate count, so the product bound below cannot price a large molecule
+#: alone. Set well above drug size; a larger molecule's question is about one of its rings.
 MAX_SUBSTITUTION_HEAVY_ATOMS = env_bound(
     "CHEMCLAW_CHEM_MAX_SUBSTITUTION_HEAVY_ATOMS",
     default=250,
@@ -103,26 +57,11 @@ MAX_SUBSTITUTION_HEAVY_ATOMS = env_bound(
 
 #: The most `candidates x heavy atoms` one substitution enumeration may spend.
 #:
-#: **Each candidate is one product built, sanitised and canonicalised over the whole graph**, so
-#: the work is the product of those two numbers and `MAX_SUBSTITUTIONS` is consulted only after all
-#: of it — the defect `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` fixed for the
-#: microstates. The candidates are counted from the ring perception before any product is built:
-#: in `move` mode, one per (substituent, aromatic C-H of its ring system) pair plus one per
-#: substituent, since each group is named over the graph; in `add` mode, one per aromatic C-H.
-#: The frontier, CPU per call on the same loaded host (so read the times as an upper estimate),
-#: best of two, with `MAX_SUBSTITUTIONS` lifted so every row builds its whole set:
-#:
-#:     nilotinib, move                39 atoms    38 candidates    1,482      77 ms
-#:     oligopyridine n=16, move       96 atoms   122 candidates   11,712     523 ms
-#:     polyphenylene n=16, move       96 atoms   152 candidates   14,592     621 ms
-#:     poly(benzyl) n=17, move       118 atoms   162 candidates   19,116     690 ms
-#:     oligopyridine n=32, add Br    193 atoms    98 candidates   18,914   1,206 ms (the worst)
-#:     oligopyridine n=40, add Br    241 atoms   122 candidates   29,402   1,762 ms refused
-#:
-#: The heteroaromatic `add` is the dearest shape per candidate-atom (~64 us, against ~36-45 us for
-#: the carbocycles), because each product re-perceives aromaticity over every pyridine ring and the
-#: fixed cost of naming 193 atoms' positions is a quarter of the call. 20,000 is ~13x the largest
-#: drug measured and prices that shape at about a second.
+#: Each candidate is a product built and canonicalised over the whole graph, so the work is the
+#: product, and `MAX_SUBSTITUTIONS` is consulted only after it. Candidates are counted from ring
+#: perception before any product is built: in `move` mode one per (substituent, aromatic C-H of its
+#: ring system) plus one per substituent; in `add` mode one per aromatic C-H. Prices the costliest
+#: shape (heteroaromatic `add`) at about a second.
 MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT = env_bound(
     "CHEMCLAW_CHEM_MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT",
     default=20_000,
@@ -180,8 +119,7 @@ def _refuse(message: str) -> None:
 def _ring_systems(mol: Chem.Mol) -> list[frozenset[int]]:
     """The fused aromatic ring systems: aromatic rings joined when they share an atom.
 
-    Built from the fully aromatic rings only, so a tetralin's saturated ring does not join its
-    benzene ring to anything and its CH2 positions are never targets.
+    Fully aromatic rings only, so saturated CH2 positions are never targets.
     """
     rings = [
         frozenset(ring)
@@ -210,12 +148,8 @@ def _aromatic_ch(mol: Chem.Mol, system: frozenset[int]) -> list[int]:
 def _movable(mol: Chem.Mol, systems: list[frozenset[int]]) -> list[tuple[int, int, frozenset[int]]]:
     """`(ring carbon, first group atom, ring system)` for every substituent that can be moved.
 
-    A substituent is what hangs off an aromatic **carbon** by a single, acyclic bond — a bridge, so
-    cutting it leaves the group on one side and the ring system on the other. A group on a ring
-    nitrogen is not moved: taking it off leaves an N-H, which is a tautomer question and not a
-    positional one, and the N-alkylation regiochemistry of an azole is answered by moving the
-    *carbon* substituents instead (1-methyl-3-phenylpyrazole's phenyl to C5). A biaryl bond counts
-    from both ends, since each ring is a substituent on the other.
+    A substituent hangs off an aromatic **carbon** by a single acyclic bond. Groups on ring nitrogen
+    are not moved (that is a tautomer question). A biaryl bond counts from both ends.
     """
     found: list[tuple[int, int, frozenset[int]]] = []
     for system in systems:
@@ -251,9 +185,8 @@ def _group_name(mol: Chem.Mol, ring_atom: int, first: int) -> str:
 def _group_from_spec(spec: str) -> tuple[Chem.Mol, str]:
     """The caller's group as a molecule with one `*` marking its attachment, and its canonical name.
 
-    Two spellings are accepted, because both are how chemists write a group: `*OC` marks the
-    attachment explicitly, and a bare `OC` bonds through its **first** atom (so `OC` is methoxy and
-    `CO` is hydroxymethyl — the two differ, and the name returned says which was read).
+    `*OC` marks the attachment explicitly; a bare `OC` bonds through its first atom (methoxy, while
+    `CO` is hydroxymethyl), and the returned name says which was read.
 
     Raises:
         InvalidSmilesError: `spec` is not a structure.
@@ -291,8 +224,7 @@ def _group_from_spec(spec: str) -> tuple[Chem.Mol, str]:
 def _sanitised(edited: Chem.RWMol) -> str | None:
     """Canonical SMILES of an edited molecule, or None when RDKit will not sanitise it.
 
-    None rather than raising, as `species._shift` does: a position that cannot carry the group (a
-    ring that would no longer kekulise) is that position not applying, not a failed call.
+    None means that position does not apply, not that the call failed.
     """
     product = edited.GetMol()
     try:
@@ -364,10 +296,10 @@ def enumerate_substitution_set(
     Raises:
         InvalidSmilesError: `smiles` or `substituent` is not a structure.
         ValueError: more heavy atoms than `MAX_SUBSTITUTION_HEAVY_ATOMS`; `add` without a
-            `substituent`; a `move` whose `substituent` is not on an
-            aromatic carbon of the input; an `add` onto a molecule with no aromatic C-H; more
-            `candidates x heavy atoms` than `MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT`; or more
-            regioisomers than `MAX_SUBSTITUTIONS`.
+            `substituent`; a `move` whose `substituent` is not on an aromatic carbon of the input;
+            an `add` onto a molecule with no aromatic C-H; more `candidates x heavy atoms` than
+            `MAX_SUBSTITUTION_CANDIDATE_ATOM_PRODUCT`; or more regioisomers than
+            `MAX_SUBSTITUTIONS`.
     """
     given = require_molecule(smiles)
     atoms = given.GetNumHeavyAtoms()

@@ -1,22 +1,12 @@
 """A caller-supplied SMILES must not be able to kill this pod, and must not flood the model.
 
-**RDKit's canonicaliser recurses over the molecular graph, and a long enough linear molecule
-overflows the C stack.** The process dies with `SIGSEGV` — an exit code, not an exception, so no
-`try`/`except` anywhere in this server can catch it and no amount of admission control can contain
-it. `mcp_server_kit.limits` exists for exactly this and four servers already apply it; this one is
-the heaviest and was the last without it, which made the failure *worse* here than anywhere else:
-a `calc` pod carries in-flight CREST searches that have been running for minutes, and one ~20 kB
-`tools/call` — far inside the 1 MB body cap — takes every one of them down with it.
+RDKit's canonicaliser recurses over the graph, and a long linear molecule overflows the C stack:
+a `SIGSEGV` no `except` can catch, taking every in-flight calculation with it.
+`mcp_server_kit.limits` bounds the input.
 
-**The test has to run in a child process**, because a regression is a segfault: an in-process
-assertion would take the test runner with it and report nothing. So each case is a `python -c`
-whose exit code is the assertion — `0` with a refusal on stdout is the fix, `-11` is the defect.
-
-Two of the entry points below (`calculation_key`, `embed_structure`) are `read_only` in the
-manifest, which is why the parametrisation names call sites rather than testing the one function
-they share: a `read_only` tool is reachable under an *unapproved* plan and sits outside
-`engine/admission.py`, so the guard has to be in the definition every one of them funnels through,
-not on the tools a plan gate happens to hold back.
+Each case runs in a child process, because a regression is a segfault: exit `0` with a refusal is
+the fix, `-11` the defect. Call sites are parametrised, including `read_only` tools that bypass
+admission, so the guard must sit in the shared definition.
 """
 
 from __future__ import annotations
@@ -89,8 +79,8 @@ def test_a_megastring_smiles_is_refused_rather_than_crashing_the_pod(tool: str) 
     )
     kind, length = finished.stdout.split()[-2:]
     assert kind == "InvalidSmilesError", f"{tool} answered {kind}, not a worded refusal"
-    # Finding 3, checked here too because this is the path that produces the biggest string: the
-    # refusal must not echo the caller's megastring back into the model's context.
+    # This path produces the biggest string, so the refusal must not echo the caller's megastring
+    # back into the model's context.
     assert int(length) < 500, f"{tool}'s refusal is {length} characters"
 
 
@@ -106,9 +96,8 @@ def test_the_refusal_names_the_limit_rather_than_quoting_the_string() -> None:
 def test_a_parseable_molecule_past_the_atom_ceiling_is_refused_before_canonicalisation() -> None:
     """The bound that actually stops the overflow is the atom count, not the string length.
 
-    A SMILES can be short and still parse to an enormous molecule — `MAX_SMILES_CHARS` alone would
-    let one through — so this drives the second half of the kit's pair with a string that is inside
-    the character bound and outside the atom bound.
+    A short SMILES can parse to an enormous molecule, so this uses one inside the character bound
+    and outside the atom bound.
     """
     # `[H]` costs three characters per atom, so this stays well inside `MAX_SMILES_CHARS` while
     # parsing to more than `MAX_MOLECULE_ATOMS` atoms.
@@ -137,11 +126,10 @@ def test_a_long_unparseable_smiles_is_echoed_bounded() -> None:
 
 
 def test_a_refusal_of_an_accepted_structure_is_echoed_bounded_too() -> None:
-    """The case the parse-failure bound above never covered, measured before it was fixed.
+    """A refusal of an accepted structure echoes the SMILES bounded too.
 
-    `"C" * 1500` parses, is inside `MAX_SMILES_CHARS` and `MAX_MOLECULE_ATOMS`, and has neither an
-    acidic site nor a basic nitrogen — so `predict_pka` refuses it on chemistry, not on shape. That
-    refusal interpolated `job.smiles` raw: 1,587 characters where the parse failure gives ~200.
+    A long alkane parses and is inside both bounds but has no ionisable site, so `predict_pka`
+    refuses on chemistry; that message must not interpolate the full string.
     """
     payload = "C" * 1500
     with pytest.raises(ValueError) as raised:

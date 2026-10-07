@@ -1,27 +1,13 @@
 """ICH Q3C / Q3D limit lookup: the number comes from a vendored table or not at all.
 
-Why this exists. In a Chemclaw3 live run a chemist asked for the palladium limit and the system
-recited a PDE from training as though it were the record. The value was correct, which makes it
-worse rather than better: a correct recalled limit trains a reader to trust the next one, and there
-is nothing behind either.
+Two transcribed tables (`data/ich_q3c/`, `data/ich_q3d/`): Q3C residual-solvent classes and limits
+and Q3D elemental-impurity PDEs. Every row carries the guideline, revision and source table so a
+reader can check it. A substance not carried returns a miss — never a nearby or recalled value. This
+is not a risk assessment; it supplies the number that judgement needs.
 
-What this is. Two transcribed reference tables (`data/ich_q3c/`, `data/ich_q3d/`) and one lookup
-over both. Q3C residual-solvent classes and limits, Q3D elemental-impurity permitted daily
-exposures. Every row carries the guideline, its revision, and the table it came from, so a reader
-can open the source document at the right page and check the figure. A substance the tables do not
-carry returns a **miss** that says so — never a nearby value, never a recalled one.
-
-What this is emphatically *not*: a risk assessment. Deciding whether a given process needs a given
-control, what specification an intermediate should carry, or how a PDE converts into a limit on an
-API is judgement about a process. This module's job is to supply the number that judgement needs.
-
-**Why these two tables are checksummed rather than configurable.** Nobody has their own Q3C: the
-values are fixed by a published guideline, and a deployment quietly substituting a different PDE
-table is the failure mode rather than a feature. Chemclaw3 resolved them against `__file__` for that
-reason; here they are vendored corpora with a `dataset.json` each, loaded through the same
-`read_table` the two SMARTS tables use — so a truncated or swapped file is caught by its checksum
-and reported as a named table fault, rather than becoming a *shorter guideline* that answers "this
-system does not carry the number" about a substance it does.
+The tables are checksummed corpora rather than configurable (the values are fixed by the guideline),
+loaded through `read_table` so a truncated or swapped file is a named fault rather than a shorter
+guideline.
 """
 
 from __future__ import annotations
@@ -177,9 +163,8 @@ class Q3dTable(BaseModel):
 def _fold(text: str) -> str:
     """Fold a written name to its lookup key: case, whitespace and separator punctuation.
 
-    Deliberately the same *idea* as `reagents.py`'s fold but not the same function: this one also
-    drops commas and periods, so `N,N-Dimethylformamide` and `NN dimethylformamide` land on one key.
-    Both the table's spellings and the query go through it, so the two agree by construction.
+    Unlike `reagents.py`'s fold, this also drops commas and periods (`N,N-Dimethylformamide`). Table
+    spellings and queries both go through it.
     """
     return "".join(character for character in text.lower() if character.isalnum())
 
@@ -187,9 +172,7 @@ def _fold(text: str) -> str:
 def _register(index: dict[str, ImpurityLimit], keys: list[str], limit: ImpurityLimit) -> None:
     """Index one row under every spelling it answers to, refusing a collision.
 
-    A collision means two rows claim one name, and whichever loaded second would silently win — the
-    reader would get a limit for a different substance with a real citation attached to it. That is
-    the one failure worse than a miss, so it stops the load instead.
+    A collision would silently give one substance another's cited limit, so it stops the load.
     """
     for key in keys:
         folded = _fold(key)
@@ -206,12 +189,8 @@ def _register(index: dict[str, ImpurityLimit], keys: list[str], limit: ImpurityL
 def index() -> dict[str, ImpurityLimit]:
     """Both tables flattened to one name→row index, built once per process.
 
-    One index over both guidelines because the caller's question is "what is the limit for X", and
-    knowing that solvents are Q3C and metals are Q3D is precisely the knowledge the agent lacked.
-
-    Public because `tests/test_dataset.py` validates the transcription against itself over the whole
-    index — the guideline's own ppm = PDE x 100 identity for Class 2 — and a corpus check that had
-    to import a private name is a corpus check nobody writes.
+    One index, because the caller should not need to know which guideline covers X. Public so
+    `tests/test_dataset.py` can validate the transcription (ppm = PDE x 100 for Class 2).
     """
     q3c = read_table(Q3C_DIR, Q3C_FILE, Q3cTable)
     q3d = read_table(Q3D_DIR, Q3D_FILE, Q3dTable)
@@ -276,12 +255,9 @@ def index() -> dict[str, ImpurityLimit]:
 def impurity_limit(substance: str) -> ImpurityLimitLookup:
     """Look up one substance in the transcribed ICH Q3C / Q3D tables.
 
-    Accepts the guideline's own spelling, an element symbol, an abbreviation a chemist writes, or a
-    SMILES: an unmatched query is resolved through the vendored reagent table first, so `THF`,
-    `2-MeTHF` and `C1CCOC1` all reach the tetrahydrofuran row without that table's synonyms having
-    to be copied into the guideline files.
-
-    A miss returns a lookup whose `limit` is `None`, never a nearby row.
+    Accepts the guideline's spelling, an element symbol, an abbreviation or a SMILES; an unmatched
+    query is resolved through the reagent table first (`THF`, `C1CCOC1` → tetrahydrofuran). A miss
+    returns `limit=None`, never a nearby row.
     """
     table = index()
     hit = table.get(_fold(substance))

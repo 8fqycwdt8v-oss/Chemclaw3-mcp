@@ -1,28 +1,9 @@
-"""The application metrics `/metrics` publishes — because until this file existed it published none.
+"""The application metrics `/metrics` publishes.
 
-Measured before this: **ten** series on a running server, all ten `prometheus_client`'s built-in
-`python_*` and `process_*` collectors. So an operator could see the interpreter's version and the
-pod's open file descriptors, and could not answer *which tool is slow*, *which tool is failing*, or
-*is anything being called at all* — on a fleet whose flagship server runs CREST searches with a
-14,400 s budget.
-
-**What may and may not be a label here is the whole design, because this endpoint is
-unauthenticated.** `CLAUDE.md`'s rule is that no actor, no session, no correlation id and no tool
-*argument* may ever be a label: those would publish per-caller behaviour to anything that can reach
-the pod. A tool *name* is none of the four, and it is bounded by the registered surface — the same
-judgement Chemclaw3 makes for `chemclaw_repeated_tool_calls_total{tool}`.
-
-**Bounded only if it is clamped, and it is not bounded by construction.** The name in a
-`tools/call` is caller-supplied: `ToolManager.call_tool` raises `Unknown tool: <whatever>` for
-anything it does not have, so an unclamped counter mints a series per string a confused model or a
-hostile caller sends. Measured in the audit's prototype: a probe calling `nope` minted
-`tool="nope"`. `app.py` therefore resolves every name against the manager's own registry and folds
-anything else into `UNKNOWN_TOOL`, and `packages/mcp_server_kit/tests/test_connector_app.py` drives
-a real unknown-tool call to prove it.
-
-The same rule is why `chemclaw_mcp_egress_refused_total` carries **no** label at all: the
-destination host of a refused connection is attacker-influenced and unbounded, and `rate(...) > 0`
-is the whole alert.
+`/metrics` is unauthenticated, so no actor, session, correlation id or tool argument may ever be a
+label. A tool name may, clamped by `app.py` to the served surface (anything else folds into
+`UNKNOWN_TOOL`), because the name in a `tools/call` is caller-supplied. A refused egress
+destination is unbounded, so `chemclaw_mcp_egress_refused_total` has no labels.
 """
 
 from __future__ import annotations
@@ -52,14 +33,8 @@ __all__ = [
 # sent, so the label set stays bounded by the served surface.
 UNKNOWN_TOOL = "<unknown>"
 
-# Spanning the fleet's real range in one bucket set: `props` answers a vapour pressure in
-# microseconds, and `crest_timeout_seconds` is 14,280 — the longest legal call on this fleet,
-# held 120 s under its caller's own budget so the actionable refusal is the one that wins.
-# The top bucket stays a round 14400 deliberately: a bucket edge is a reporting boundary
-# rather than a claim about a timeout, and moving it with every budget change would
-# discard the histogram's history for nothing. A shared histogram is right because the
-# question — "which tool is slow" — is asked across servers, and a per-server bucket set would make
-# two servers' p95 incomparable.
+# One bucket set spanning the fleet (microseconds to the longest CREST budget), so p95s compare
+# across servers. Edges are reporting boundaries, not timeouts, and stay fixed to keep history.
 DURATION_BUCKETS = (0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0)
 
 TOOL_CALLS = Counter(
@@ -99,11 +74,7 @@ READY = Gauge(
     ("server",),
 )
 
-# The three series that make a session ceiling checkable from a scrape rather than believed. All
-# three carry the server and nothing else: a session *count* is not a session *id*, and none of
-# them can name a caller, so the rule this module opens with is untouched. Together they answer the
-# only three questions an operator has about the bound — how full is the pod, what is it full
-# against, and is anything being turned away.
+# Session occupancy, ceiling and refusals, labelled by server only — a count names no caller.
 SESSIONS_LIVE = Gauge(
     "chemclaw_mcp_sessions_live",
     "MCP sessions this process is currently holding open.",
@@ -122,12 +93,8 @@ SESSIONS_REFUSED = Counter(
     ("server",),
 )
 
-# The admission gate's occupancy, which is the signal an autoscaler should read on this fleet and
-# CPU is not: a `calc` pod holding all four slots on in-process xTB draws 1.37 cores, so a CPU
-# target reads a *full* pod as a third busy. `in_flight / ceiling` is exactly "how full", in the
-# unit the gate refuses in — a slot is a core — and the refusal counter is the lagging half that
-# says callers are already being turned away. Labelled by server only, for the rule this module
-# opens with: a slot count names no caller.
+# Admission occupancy: the autoscaling signal, since a full pod need not look busy by CPU.
+# `in_flight / ceiling` is "how full" in the gate's own unit. Labelled by server only.
 ADMISSION_IN_FLIGHT = Gauge(
     "chemclaw_mcp_admission_in_flight",
     "Admission slots held right now by admitted work.",
@@ -156,11 +123,7 @@ EGRESS_GUARD_ARMED = Gauge(
     "1 when the in-process egress guard is installed, 0 when it is not.",
 )
 
-# The count, and never the hosts. `chemclaw_mcp_egress_guard_armed` made "the guard is installed"
-# checkable from a scrape and left "the guard was told to permit somewhere" — the more dangerous
-# configuration of the two — visible only in an environment variable. A destination host is not
-# clampable and so cannot be a label here for the same reason `EGRESS_REFUSED` carries none; the
-# number is enough, because the shipped value is 0 and `> 0` is the whole alert.
+# The number of allowed egress hosts, never the hosts themselves; shipped value is 0.
 EGRESS_ALLOWED_HOSTS = Gauge(
     "chemclaw_mcp_egress_allowed_hosts",
     "How many hosts beyond loopback the egress guard is configured to permit. 0 when shipped.",

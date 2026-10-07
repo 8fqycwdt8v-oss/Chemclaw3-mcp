@@ -1,27 +1,10 @@
-"""The two bounds this server had on *one* run and not on the pod: memory, and how many at once.
+"""The two pod-level bounds: memory per run, and how many runs at once.
 
-Every per-call bound here was already right — 20 s of wall clock enforced with `killpg`, 15 CPU
-seconds, 16 MB of writes, 128 descriptors, no fork headroom. What was missing is the pair of bounds
-that are about the pod rather than the call, and both failed in the same direction: they looked
-present and could not fire.
-
-- **`RLIMIT_AS` shipped at a flat 2 GiB inside a pod limited to 512Mi** — four times the container's
-  own ceiling. So the sandbox's memory guard was unreachable, and what enforced memory instead was
-  the container OOMKiller, which kills the *pod* and every other in-flight MCP session with it
-  rather than refusing the one offending call. Two independently written numbers cannot be kept
-  consistent by review, so `default_memory_bytes` derives one from the other.
-- **Nothing bounded concurrency at all.** The effective ceiling was CPython's default executor,
-  `min(32, os.cpu_count() + 4)` — and `os.cpu_count()` is not cgroup-aware, so a pod limited to two
-  cores on a 64-core node would still admit 32 child processes. That does not merely slow runs down;
-  it breaks the wall clock, because 15 CPU seconds on a thirty-second share of a core cannot finish
-  inside 20 s of wall clock, and every caller is then told their *program* timed out.
-
-These test the mechanism against a real cgroup file and a real gate, not a mock of either — and
-against the *shipped* Deployment rather than a transcription of it. Both numbers below used to be
-literals in this file, under a docstring claiming they were "the numbers `deploy/deployment.yaml`
-actually ships": lowering `limits.cpu` to `"1"` put two runs on one core — the breakage the gate
-exists to end — and this suite stayed green. They are now read from the file, following
-`servers/chem/tests/test_depiction_bound.py`.
+`RLIMIT_AS` must sit below the container's memory limit, or the OOMKiller takes the whole pod
+instead of refusing one call, so `default_memory_bytes` derives one from the other. Concurrency
+is gated to the pod's cores, because `os.cpu_count()` is not cgroup-aware and an oversubscribed
+core turns a CPU-bound run into a spurious wall-clock timeout. Tested against a real cgroup
+file, a real gate, and the shipped Deployment read from disk rather than transcribed.
 """
 
 from __future__ import annotations
@@ -85,9 +68,7 @@ def pod_cpu_limit_cores() -> float:
 def shipped_max_concurrent_runs() -> int:
     """The ceiling this pod actually runs with: the default, unless its `env:` overrides it.
 
-    `tools.py` reads the same environment variable with the same default, so a Deployment that
-    grows a `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` is picked up here instead of silently parting
-    company with the number these assertions are about.
+    Reads the same variable and default as `tools.py`, so a Deployment override is picked up here.
     """
     declared = _declared_env().get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS")
     return int(declared) if declared else DEFAULT_MAX_CONCURRENT_RUNS
@@ -110,13 +91,10 @@ def _with_cgroup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents: str)
 def test_the_shipped_pod_gives_each_run_more_than_a_heavy_program_needs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The whole arithmetic, run against the numbers `deploy/deployment.yaml` actually ships.
+    """The memory arithmetic, run against the numbers `deploy/deployment.yaml` actually ships.
 
-    This is the test that would have caught the original defect, and it is written against the pod
-    limit rather than against `Limits.memory_bytes` for that reason: the old value was correct in
-    isolation and wrong about the container it ran in, which no test of the constant alone can see.
-    The pod limit is *read* rather than transcribed, because a copy of a number is not a check on
-    it: this assertion passed unchanged while the Deployment's `limits.memory` said anything at all.
+    Written against the pod limit rather than `Limits.memory_bytes`, because a value correct in
+    isolation can be wrong about the container it runs in; the limit is read, not transcribed.
     """
     pod_memory = pod_memory_limit_bytes()
     ceiling = shipped_max_concurrent_runs()
@@ -136,17 +114,11 @@ def test_the_shipped_pod_gives_each_run_more_than_a_heavy_program_needs(
 
 
 def test_a_slot_is_a_core_the_shipped_pod_actually_has() -> None:
-    """The other half of the coupling `engine/admission.py` asserts, and nothing used to check.
+    """A slot is a core: the run ceiling equals the shipped pod's `limits.cpu`.
 
-    "A slot is a core, and `deploy/deployment.yaml` sets `limits.cpu` to the same number" is a claim
-    about a file this package cannot import, and it was made in a docstring beside a test that
-    transcribed the number instead of reading it. Measured on the transcribed version: setting
-    `limits.cpu: "1"` gave two runs one core — a 15-CPU-second program then cannot finish inside its
-    20 s wall clock, so every caller is told their *program* timed out — and the suite stayed green.
-
-    Equality rather than "at least", in both directions: a ceiling above the cores breaks the wall
-    clock, and a ceiling below them leaves a core idle while a caller is refused. Whichever moves
-    first, the other one and the paragraph arguing for it have to move with it.
+    Equality in both directions: a ceiling above the cores breaks the wall clock (a CPU-bound run
+    cannot finish and the caller is told their program timed out), one below leaves a core idle
+    while a caller is refused. Read from the Deployment, not transcribed.
     """
     cores = pod_cpu_limit_cores()
     ceiling = shipped_max_concurrent_runs()
@@ -160,12 +132,10 @@ def test_a_slot_is_a_core_the_shipped_pod_actually_has() -> None:
 def test_the_guard_is_always_below_the_limit_the_kernel_kills_over(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The invariant, across pod sizes: one run can never be allowed more than the container has.
+    """Across pod sizes, one run can never be allowed more than the container has.
 
-    `RLIMIT_AS` bounds address space and address space is at least resident set, so a bound under
-    the container's limit guarantees the guard fires first — a refusal of one call instead of an
-    OOMKill of the pod. Checked over a range because a deployment may size this pod differently and
-    the property must not depend on the shipped number.
+    `RLIMIT_AS` bounds address space, which is at least resident set, so a bound under the container
+    limit guarantees the guard fires first: one refused call instead of an OOMKilled pod.
     """
     for gigabytes in (1, 2, 4, 8):
         _with_cgroup(monkeypatch, tmp_path, str(gigabytes * 1024**3))
@@ -176,11 +146,10 @@ def test_the_guard_is_always_below_the_limit_the_kernel_kills_over(
 def test_an_undersized_pod_is_reported_rather_than_silently_clamped_back_up(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Clamping up would restore the original defect; the deployment is what has to change.
+    """An undersized pod is reported at WARNING, not clamped back up.
 
-    A pod too small for its run ceiling produces a bound below what a real analysis needs, and the
-    honest answer is to say so at WARNING and let legitimate work be refused — because raising the
-    bound back over the container's limit is precisely the state where nothing can fire.
+    Raising the bound above the container's limit is exactly the state where the guard cannot fire;
+    the deployment is what has to change.
     """
     _with_cgroup(monkeypatch, tmp_path, str(512 * 1024**2))
     with caplog.at_level("WARNING"):
@@ -203,11 +172,10 @@ def test_an_undersized_pod_is_reported_rather_than_silently_clamped_back_up(
 def test_an_unbounded_cgroup_falls_back_instead_of_deriving_nonsense(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents: str
 ) -> None:
-    """A dev box and a container started without `--memory` must behave as this file always did.
+    """An unbounded cgroup (dev box, container without `--memory`) falls back to the fixed default.
 
-    Both cgroup generations write "no limit" differently and neither writes a number a division
-    would survive: v1's sentinel is exabytes, so dividing it would hand one run more address space
-    than the machine has and call it a bound.
+    Neither cgroup generation writes "no limit" as a usable number; v1's sentinel is exabytes, and
+    dividing it would hand one run more address space than the machine has.
     """
     _with_cgroup(monkeypatch, tmp_path, contents)
     assert container_memory_limit() is None
@@ -239,12 +207,10 @@ def test_the_run_ceiling_refuses_rather_than_queues() -> None:
 
 
 def test_the_refusal_says_the_pod_is_full_rather_than_blaming_the_program() -> None:
-    """The whole point of admitting rather than queueing, expressed as the message.
+    """A full pod refuses with a message saying so, rather than blaming the program.
 
-    Without a gate a full pod produced a *timeout*, because a queued program spends its wall clock
-    waiting and is then killed for exceeding it — so the caller was told its analysis was too slow
-    when what happened is that the pod had no core to give it. `connector_app` passes `ValueError`
-    to the model verbatim, so this wording is what the agent reads and reasons from.
+    A queued run spends its wall clock waiting and is killed as "too slow". `connector_app` passes
+    `ValueError` to the model verbatim, so this wording is what the agent reasons from.
     """
     gate = Admission(limit=1)
     gate.acquire("run_python")

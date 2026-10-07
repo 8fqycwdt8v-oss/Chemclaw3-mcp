@@ -1,12 +1,8 @@
 """The cache is bounded, canonicalising, and cannot fail a prediction.
 
-Rewritten for the in-process LRU that replaced upstream's diskcache. Four properties matter: it
-bounds memory, two spellings of one reaction share a slot, an input it cannot canonicalise is
-declined rather than keyed by the caller's own text, and declining never raises.
-
-The last two are one decision and are tested as three separate facts, because the defect they
-replaced passed a test that asserted only the third
-(`D-2026-09-13-a-cache-key-derived-from-text-nobody-validated-is-not-a-key`).
+Properties: it bounds memory, two spellings of one reaction share a slot, an input it cannot
+canonicalise is declined rather than keyed by the caller's raw text, and declining never raises.
+The last two are asserted as separate facts, since "did not raise" alone hides a raw-text key.
 """
 
 from __future__ import annotations
@@ -112,12 +108,10 @@ def test_the_bound_evicts_least_recently_used() -> None:
 
 
 def test_an_unparseable_input_is_declined_rather_than_keyed_by_its_raw_text() -> None:
-    """The defect this replaced: unvalidated caller text became the cache's idea of an identity.
+    """An unparseable input is declined rather than keyed by its raw text.
 
-    Both halves are asserted, because only the first of them is the fix. The call must not raise —
-    a cache is never the thing that fails a prediction — *and* nothing may be stored, because a key
-    derived from a string RDKit refused is not a key. Asserting only "it did not raise" is what let
-    the raw-text fallback ship.
+    Both halves: the call must not raise (a cache never fails a prediction) and nothing may be
+    stored (a string RDKit refused is not an identity).
     """
     cache = PredictionCache(enabled=True, max_entries=4)
     cache.set(cache.key_forward("m", "not-a-smiles", 5), PAYLOAD)
@@ -126,11 +120,10 @@ def test_an_unparseable_input_is_declined_rather_than_keyed_by_its_raw_text() ->
 
 
 def test_one_molecule_set_spelled_two_ways_never_mints_two_entries() -> None:
-    """The measured defect, in the case that produced it.
+    """One molecule set spelled two ways never mints two entries.
 
-    `canonical_multi_smiles` sorts its components and raw text does not, so under the raw-text
-    fallback `CCO.<garbage>` and `<garbage>.CCO` — one set of molecules, two spellings — were two
-    rows. Declining both is what makes that impossible rather than merely unlikely.
+    Canonicalisation sorts components and raw text does not, so keying on raw text would store
+    `CCO.<garbage>` and `<garbage>.CCO` separately. Declining both makes that impossible.
     """
     cache = PredictionCache(enabled=True, max_entries=8)
     cache.set(cache.key_forward("m", "CCO.Xx9nope", 5), PAYLOAD)
@@ -139,11 +132,10 @@ def test_one_molecule_set_spelled_two_ways_never_mints_two_entries() -> None:
 
 
 def test_a_smiles_over_the_structural_limit_is_not_keyed_by_the_string_the_limit_rejects() -> None:
-    """`mcp_server_kit.limits` refuses before parsing; the cache must not undo that by keying it.
+    """A SMILES the structural limit rejects is not keyed by the rejected string.
 
-    The bound exists because `MolToSmiles` on a large enough molecule overflows the C stack and
-    kills the pod, so its refusal arrives as the same `ValueError` an ordinary typo does. Under the
-    old fallback the 5,000-character string the bound rejected became the cache key.
+    The limit refuses before parsing (a large enough molecule overflows the C stack in
+    `MolToSmiles`) with the same `ValueError` a typo raises; the cache must not undo that.
     """
     over_limit = "C" * 5000
     cache = PredictionCache(enabled=True, max_entries=4)
@@ -152,11 +144,10 @@ def test_a_smiles_over_the_structural_limit_is_not_keyed_by_the_string_the_limit
 
 
 def test_a_caller_typo_moves_no_degradation_counter() -> None:
-    """A bad argument is a fact about the caller, not a component of this pod going missing.
+    """A caller's typo moves no degradation counter.
 
-    `chemclaw_mcp_degraded_total` is what a scrape reads to say a predictor or a dataset has been
-    lost. Firing it on every unparseable SMILES would make that series useless for the thing it
-    exists for, so the `ValueError` arm is deliberately silent.
+    `chemclaw_mcp_degraded_total` reports a lost component; firing it per bad SMILES would make it
+    useless, so the `ValueError` arm is deliberately silent.
     """
     before = _degraded_total()
     cache = PredictionCache(enabled=True, max_entries=4)
@@ -178,20 +169,11 @@ def test_a_caller_typo_moves_no_degradation_counter() -> None:
 async def test_a_broken_canonicaliser_is_classified_and_counted(
     monkeypatch: pytest.MonkeyPatch, exc: Exception, cause: str
 ) -> None:
-    """One degraded answer is one increment — and this test shipped seeing half the path.
+    """A broken canonicaliser is classified and counted once per degraded answer.
 
-    All three of these were measured returning the caller's raw text and moving no counter:
-    `EgressForbidden` is an `OSError` and so reads as nothing in particular, `ImportError` is RDKit
-    absent from the image, `MemoryError` is the pod at its ceiling. That half is unchanged.
-
-    **What changed is what drives it.** This asserted `+1.0` after calling the cache's own
-    `set_forward` alone, while its docstring claimed to cover "the wiring as well as the branch" —
-    the wiring makes *two* calls, `get_*` on the way in and `set_*` on the way out, each of which
-    derived the key and so each of which counted. Driven on the real
-    `BaseForwardPredictor.predict`, one degraded answer moved `chemclaw_mcp_degraded_total` by
-    **2.0**; on `BaseConditionsPredictor.predict`, where both sides were canonicalised before either
-    was tested, by **4.0**. So this drives `predict()` itself, and asserts the count a scrape is
-    meant to read: one.
+    `EgressForbidden` (an `OSError`), `ImportError` (RDKit absent) and `MemoryError` each must be
+    classified rather than read as an ordinary miss. Driven through `predict()` itself, because the
+    cache is consulted on the way in and on the way out; the count a scrape reads must be one.
     """
     before = _degraded_total(cause)
 
@@ -223,12 +205,10 @@ async def test_a_broken_canonicaliser_is_classified_and_counted(
 async def test_a_conditions_prediction_counts_one_even_though_it_has_two_smiles(
     monkeypatch: pytest.MonkeyPatch, exc: Exception, cause: str
 ) -> None:
-    """Two SMILES, one answer, one increment — this was the 4x arm.
+    """A conditions prediction counts one degradation even though its key has two SMILES.
 
-    A conditions key names a reactant side and a product side, and both were canonicalised before
-    either was tested. One broken RDKit therefore fired twice per derivation and, over `get` and
-    `set`, four times per prediction. There is nothing to learn from the second failure that the
-    first has not already logged and classified, so the reactants short-circuit.
+    The reactant side short-circuits, so a broken RDKit is not counted again for the product side
+    or across `get` and `set`; a second failure adds nothing the first did not log.
     """
     before = _degraded_total(cause)
 

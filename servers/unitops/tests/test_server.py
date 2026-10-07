@@ -1,13 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will.
+Runs uvicorn on loopback and talks to it the way the agent will, so a session manager nobody
+ran, an unchecked bearer credential, or a manifest that disagrees with the served surface fails
+here.
 """
 
 from __future__ import annotations
@@ -43,9 +38,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because the server start is the expensive part. The bearer token is set in the
+    environment as a deployment sets it, so the auth path under test is the deployed one.
     """
     import os
 
@@ -86,17 +80,11 @@ def test_healthz_names_the_correlations_this_pod_verified(running_server: str) -
 
 
 def test_the_readiness_probe_refuses_when_zwieterings_exponents_are_transposed() -> None:
-    """Break a dependency and read the status — the proof D-2026-09-12 asks a new probe to give.
+    """Break a dependency: transposed Zwietering exponents make the readiness probe unready.
 
-    The dependency broken here is the only table this server holds: Zwietering's five published
-    exponents. Two of them are swapped — the particle-diameter and buoyancy exponents, which is
-    what a transcription error from a paper actually looks like — and the resulting `N_js` is a
-    perfectly plausible number in the right order of magnitude. Nothing about the *value* would
-    give it away.
-
-    What catches it is that the set no longer makes a frequency: the metre exponents stop
-    cancelling. A probe that checked the correlation was *callable*, or that its constants were
-    *present*, would pass this pod and let it serve a wrong speed to every caller.
+    Swapping the particle-diameter and buoyancy exponents (a realistic transcription error) gives a
+    plausible `N_js`, but the set no longer makes a frequency. A probe that only checked the
+    correlation was callable would pass this pod.
     """
     if selftest.verify() is None:  # pragma: no cover - verify returns a list or raises
         pytest.fail("the probe must pass on an unmodified build")
@@ -114,12 +102,10 @@ def test_the_readiness_probe_refuses_when_zwieterings_exponents_are_transposed()
 
 
 def test_the_readiness_probe_refuses_when_a_correlation_stops_matching_its_closed_form() -> None:
-    """The other arm, against a relation no module here contains.
+    """The probe refuses when a correlation stops matching a closed form written only in the probe.
 
-    Underwood's root is found by bisection; the binary closed form it is checked against is written
-    only in the probe. Narrowing the bisection to a single halving leaves a root that is still in
-    the right interval and a minimum reflux that is still a plausible number — and it no longer
-    reproduces the closed form, which is what the check is for.
+    Narrowing Underwood's bisection to one halving leaves a plausible root and reflux that no longer
+    reproduce the binary closed form.
     """
     original = distillation.UNDERWOOD_BISECTION_STEPS
     distillation.UNDERWOOD_BISECTION_STEPS = 1
@@ -135,9 +121,8 @@ def test_the_readiness_probe_refuses_when_a_correlation_stops_matching_its_close
 def test_a_failing_probe_is_a_permanent_cause_and_therefore_answers_503() -> None:
     """Only a permanent cause may take a pod out of its Service.
 
-    A correlation that has moved is permanent — it does not get better under less load — so
-    `SelfTestFailed` has to classify into `PERMANENT_CAUSES` for the 503 to happen at all.
-    Asserted against the kit's own classifier rather than restated.
+    A moved correlation does not improve under less load, so `SelfTestFailed` must classify into
+    `PERMANENT_CAUSES` for the 503 to happen; asserted against the kit's own classifier.
     """
     from mcp_server_kit.degradation import PERMANENT_CAUSES, classify
 
@@ -180,10 +165,8 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
 async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) -> None:
     """The handshake plus a tool call, and the manifest checked against the running surface.
 
-    The value asserted is the one hand-computed in `tests/test_distillation.py` — 6.4269 minimum
-    stages and a minimum reflux of 1.100 for a 95/5 split at alpha = 2.5 — carried through pydantic
-    validation and JSON serialisation. A unit error introduced by the *surface* rather than the
-    engine would show up here and nowhere else.
+    The value is the hand-computed one from `test_distillation.py` (6.4269 stages, R_min 1.100),
+    carried through pydantic and JSON, so a unit error introduced by the surface shows here.
     """
     async with _session(running_server) as session:
         listed = await session.list_tools()
@@ -208,11 +191,10 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 
 
 async def test_both_scale_up_criteria_reach_the_model_over_the_wire(running_server: str) -> None:
-    """A nested result model, which is where a surface most easily loses half an answer.
+    """Both scale-up criteria reach the model over the wire.
 
-    The two matched duties are the point of the tool — returning one would be this server choosing
-    a scale-up criterion — and a flattening or a dropped field would be invisible to every
-    in-process test in this directory.
+    A nested result model is where a surface most easily loses half an answer, and returning one
+    duty would be this server choosing a scale-up criterion.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(
@@ -273,9 +255,8 @@ async def test_the_optional_inversions_serialise_as_null_when_they_are_not_asked
 async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """A deliberately worded domain error passes through; an internal one would not.
 
-    `connector_app` decides by exception *type*, and the decision is invisible from a direct call.
-    `UnitOpsInputError` sorted into the sanitiser's other branch would reach a chemist as an opaque
-    `error_id` rather than as the sentence naming which number is wrong.
+    `connector_app` decides by exception type, invisible from a direct call; a misclassified
+    `UnitOpsInputError` would reach a chemist as an opaque `error_id`.
     """
     async with _session(running_server) as session:
         azeotrope = await session.call_tool(
@@ -306,18 +287,11 @@ async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server:
 
 
 def test_the_readiness_probe_refuses_when_fenskes_logarithm_base_is_wrong() -> None:
-    """The gap `_check_total_reflux_reduces_to_fenske` left, driven before it was closed.
+    """The probe refuses when Fenske's logarithm base is wrong.
 
-    That check computes `N_min` from `fenske_minimum_stages` and asserts `gilliland_stages` at ten
-    million times the minimum reflux gives it back — which Molokanov's form does for whatever number
-    it is handed, so it holds Molokanov and says nothing about Fenske. Driven with `ln alpha`
-    transcribed as `log10 alpha`, `N_min` on the worked column moved from 6.426866 to 14.798406
-    stages and `verify()` still returned its dataset, so `/healthz` answered 200 on a pod whose
-    minimum stage count was wrong by a factor of 2.303.
-
-    `log10` rather than a sign flip because that is what the mistake looks like: the published form
-    is usually written with `log`, which means base 10 in some texts and natural in others, and the
-    resulting stage count is a perfectly plausible number.
+    The total-reflux check holds Molokanov's form for whatever N_min it is given, so it says nothing
+    about Fenske itself. `log10` in place of `ln` is the realistic mistake (texts write `log` for
+    both) and gives a plausible stage count off by a factor of 2.303.
     """
     if selftest.verify() is None:  # pragma: no cover - verify returns a list or raises
         pytest.fail("the probe must pass on an unmodified build")

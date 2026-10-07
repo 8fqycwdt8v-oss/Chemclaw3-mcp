@@ -1,8 +1,7 @@
-"""What the tools answer, and — as much — what they refuse to answer.
+"""What the tools answer, and what they refuse to answer.
 
-The behaviours pinned here are the ones a wrong answer would be expensive for: a vapour pressure
-that silently used the weaker correlation, a boiling point under vacuum that came out above the
-atmospheric one, a swap shortlist that quietly promoted a worse hazard band.
+Pinned are the expensive wrong answers: a vapour pressure silently from the weaker correlation,
+a vacuum boiling point above the atmospheric one, a swap shortlist promoting a worse hazard band.
 """
 
 from __future__ import annotations
@@ -88,11 +87,10 @@ def test_swap_candidates_never_silently_worsen_the_hazard_band() -> None:
 
 
 def test_swap_candidates_report_what_a_constraint_cost() -> None:
-    """ "X is closest but it is reprotoxic" is usually the most useful sentence in the answer.
+    """Blocked swap candidates arrive after the passing ones, each naming the constraint it failed.
 
-    Asked of a `recommended` solvent and with `top_n` past the size of the recommended set, so the
-    list is guaranteed to run into blocked candidates — and they must arrive *after* the passing
-    ones, each carrying the constraint it failed rather than being silently dropped.
+    Asked of a `recommended` solvent with `top_n` past the recommended set, so the list must run
+    into blocked candidates rather than silently dropping them.
     """
     result = tools.solvent_swap_candidates("acetone", top_n=40)
     passing = [c for c in result.candidates if c.passes_constraints]
@@ -152,12 +150,10 @@ def test_hansen_ranking_matches_chemical_intuition() -> None:
 
 
 def test_acetic_acid_answers_the_vacuum_distillation_question_correctly() -> None:
-    """The defect that reaches a bench: a jacket temperature 32 °C low, and a false refusal.
+    """Acetic acid's vacuum boiling point matches the literature rather than reading low.
 
-    Acetic acid associates in the *vapour*, so its dHvap at the boiling point is far below the
-    ambient value and a single-slope Clausius-Clapeyron extrapolation from it reads several times
-    high. The literature anchors below are CRC vapour-pressure tables (10 mmHg at 17.1 °C, 20 at
-    29.9, 40 at 43.0, 60 at 51.7, 100 at 63.0), log-interpolated.
+    It associates in the vapour, so a single-slope Clausius-Clapeyron extrapolation reads several
+    times high. Anchors are CRC vapour-pressure tables, log-interpolated.
     """
     for pressure_mbar, literature_c in ((100.0, 56.6), (50.0, 41.8)):
         result = tools.boiling_point_at_pressure("AcOH", pressure_mbar)
@@ -194,11 +190,10 @@ def test_a_pressure_the_solvent_cannot_reach_is_refused_rather_than_bracketed() 
 
 
 def test_antoine_is_not_extrapolated_past_the_range_it_was_fitted_over() -> None:
-    """The module docstring promised this fallback; until it was written it did not exist.
+    """Antoine is not extrapolated past its fitted range.
 
-    Water's Stull constants are fitted to 255.9-373 K. At 200 °C they read 13.775 bar against the
-    steam-table 15.549 bar (-11.4%) while still calling themselves `antoine`, and the error grows
-    monotonically from there.
+    Water's Stull constants (255.9-373 K) read about 11% low at 200 °C while still labelled
+    `antoine`, and the error grows from there.
     """
     steam_table_bar = {150.0: 4.760, 200.0: 15.549, 300.0: 85.879}
     for temperature_c, truth in steam_table_bar.items():
@@ -217,12 +212,11 @@ def test_antoine_is_not_extrapolated_past_the_range_it_was_fitted_over() -> None
 
 
 def test_the_hansen_polar_term_of_dimethyl_carbonate_is_the_published_one() -> None:
-    """dP = 8.6 made DMC the 2nd-closest acetone replacement. The published value is 3.9, and 13th.
+    """Dimethyl carbonate carries the published Hansen dP (3.9), not a typo that ranked it near
+    acetone.
 
-    A wrong middle Hansen term is invisible to every other check in this corpus — the triple is
-    transcribed as a unit — and it reaches a chemist as a `recommended`-band, not-ICH-listed
-    solvent presented as the near-best match for acetone. `test_dataset` now screens the column
-    against Beerbower; this pins the consequence.
+    A wrong middle Hansen term is invisible to every other corpus check. `test_dataset` screens the
+    column against Beerbower; this pins the consequence for the swap ranking.
     """
     acetone, dmc = records.require("acetone"), records.require("DMC")
     assert dmc.hansen_p == 3.9
@@ -240,21 +234,12 @@ def test_the_hansen_polar_term_of_dimethyl_carbonate_is_the_published_one() -> N
 
 
 def test_the_compare_bound_is_the_size_of_the_table() -> None:
-    """`MAX_COMPARED_SOLVENTS` is declared, so this is what keeps it the number it claims to be.
+    """`MAX_COMPARED_SOLVENTS` equals the size of the table.
 
-    It used to be `len(records.all_solvents())`, computed at import, and the argument for that was
-    exactly the staleness this test now covers: a derived number cannot disagree with the corpus
-    when a row is added. What it cost was the server's readiness answer — loading the table at
-    import means *verifying* it at import, so a `records.csv` that failed its checksum raised
-    `DatasetError` out of `import chemclaw_mcp_props.tools` and the pod crash-looped where `chem`
-    and `safety` answer 503 naming the file and both hashes
-    (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
-
-    So the count is derived **here**, where reading the corpus costs a pod nothing, and the failure
-    mode of adding a row without bumping the constant is a red test rather than a silent bound.
-    Equality in both directions and not `<=`: a bound below the table forbids a legitimate
-    comparison, and a bound above it can only be satisfied by duplicates or unknown names, which is
-    the argument the constant exists on.
+    The constant is declared rather than derived at import, because loading the corpus at import
+    verifies it there and a bad checksum would crash the pod instead of answering 503. The count is
+    derived here instead. Equality, not `<=`: a lower bound forbids a legitimate comparison, a
+    higher one can only be met by duplicates or unknown names.
     """
     live = len(records.all_solvents())
     assert live == tools.MAX_COMPARED_SOLVENTS, (
@@ -265,12 +250,10 @@ def test_the_compare_bound_is_the_size_of_the_table() -> None:
 
 
 def test_the_compare_bound_is_the_one_the_tool_schema_advertises() -> None:
-    """The constant is only worth checking if it is the number Chemclaw3 is actually told.
+    """The compare bound is the `maxItems` the advertised tool schema carries.
 
-    `MAX_COMPARED_SOLVENTS` reaches the agent as `maxItems` on the advertised input schema, and a
-    constant that agreed with the corpus while the schema carried something else would be a check
-    about nothing. So it is read off the built tool rather than off the source — which is also what
-    makes the test above a statement about the *contract* and not about a module-level name.
+    Read off the built tool rather than the source, so the test above is about the contract the
+    agent is told and not about a module-level name.
     """
     advertised = asyncio.run(tools.server.list_tools())
     schema = next(

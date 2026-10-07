@@ -1,71 +1,18 @@
 """The `xtb` binary as a second calculation backend — and the source of half a `calc_version`.
 
-**Read the availability note first.** The shipped image **installs** `xtb` 6.7.1 and then pins
-`CHEMCLAW_XTB_ENGINE=tblite`, so the binary is available and inactive: nothing in this module runs
-until a deployment says so, and `calc_version` therefore does not move on the day the image gained
-it — adding a backend to an image must not silently re-key a cache and a calibration. Where the
-engine *is* switched, or on an image trimmed of the binary, `is_available()` is what decides:
-`XtbSpec.resolve_backend()` picks `tblite` without it, and the version string says which one ran.
-See `servers/calc/README.md` and the `Containerfile`.
+The image installs `xtb` and pins `CHEMCLAW_XTB_ENGINE=tblite`, so the binary is inactive until a
+deployment selects it; adding a backend must never silently re-key a cache. `is_available()` and
+`XtbSpec.resolve_backend()` decide, and the version string says which backend ran.
+`binary_version()` returns `"absent"` rather than raising, so `calc_version` is derived here and
+shipped in the result, never re-derived by a client.
 
-`binary_version()` is also the specific trap the port exists to close: it returns the literal string
-`"absent"` rather than raising when the binary is missing. A client deriving `calc_version` locally
-would therefore produce a well-formed string matching zero rows in Chemclaw3's calibration ledger,
-and `calculator_trust("pka")` would confidently report `UNCALIBRATED`. Silent, not loud.
+The binary is worth having for its machinery: a native Hessian (much faster than finite
+differences) and GFN-FF. Its own thermochemistry is ignored; the Hessian goes to `xtb_thermo`, so
+the symmetry number stays explicit and both backends' free energies stay comparable.
 
-Why a subprocess at all, when `tblite` gives the same Hamiltonians in-process: because the binary
-carries the *machinery* around them that tblite does not expose. Two pieces of that machinery decide
-this system's economics on real substrates.
-
-**ANCopt.** xtb optimizes in approximate normal coordinates, not Cartesians. Measured on the
-molecules this system is pointed at:
-
-| molecule                   | atoms | in-process | binary | speedup |
-|----------------------------|-------|------------|--------|---------|
-| atorvastatin core (MW 559) |    76 |  ~266 s    | 38.1 s |  ~7x    |
-| erythromycin (MW 734)      |   118 | ~1283 s    |  142 s |  ~9x    |
-
-(Optimization plus Hessian. The in-process figures are the measured Hessian time plus the measured
-optimization time *after* the ANC preconditioner halved the latter — so they are composed from
-measurements rather than re-timed end to end.) Most of the remaining gap is the **Hessian**, not the
-optimizer: preconditioning narrowed the optimization component to ~3x and left the second-derivative
-step untouched, because the in-process path takes it by finite differences and xtb does not.
-
-**The in-process optimizer in that table is gone**, and the table is kept as what it is: a dated
-measurement of the commit that made it. The record
-`D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not`
-replaced the ANC-preconditioned Cartesian L-BFGS-B with geomeTRIC over delocalised internal
-coordinates, which is a real internal-coordinate optimizer rather than a preconditioner, so the
-optimization component of both rows is a figure nobody has re-timed. The **Hessian** half — which
-the paragraph above says is most of the gap — is untouched by that change, and it is the half that
-decides whether the binary is worth having.
-
-**GFN-FF.** A force field with xTB's parameterization, which optimized the 118-atom substrate in
-**0.7 s**. It is not a quantum method and gives no orbitals, but it makes pre-optimization and
-large-system screening free.
-
-**What this module does not do: thermochemistry.** xtb prints its own, and this backend deliberately
-ignores it, taking the **Hessian matrix** instead and handing it to `xtb_thermo`. One RRHO
-implementation keeps the symmetry number an explicit input rather than xtb's silent guess, keeps the
-quasi-RRHO treatment identical across backends, and therefore keeps free energies from the two
-backends comparable. A backend supplies geometry, energy and second derivatives; it does not get to
-have opinions about thermodynamics.
-
-**Security.** Every invocation is an **argv list with `shell=False`**, built from a typed request;
-there is no control file, no shell string, and no path from model-authored text to a flag. Values
-that reach argv are checked for a leading `-` — the one way a data string can become an option — and
-the process runs in a fresh temporary directory with a scrubbed environment and a timeout.
-
-The timeout is enforced by `run_isolated`, not a bare `subprocess.run(timeout=...)`: xtb's own
-`--parallel` flag can leave more than one process running, and killing only the one PID
-`subprocess.run` tracks orphans the rest — still burning CPU, and still writing into the tempdir
-after `TemporaryDirectory.__exit__` has removed it. `run_isolated` starts the child in its own
-process group and kills the whole group on a timeout.
-
-**What was left behind in the port**: the D-124 artifact capture. Chemclaw3 read the run's
-`hessian`/`vibspectrum` files out of the tempdir and handed them to a content-addressed blob store.
-There is no store here, nothing would ever read them, and keeping the code would be a copy of a
-cache with none of the value — so `CliResult` has no `artifacts` field and `_capture` is gone.
+Security: every invocation is an argv list with `shell=False`, built from a typed request; every
+argv value is checked for a leading `-`; the run uses a fresh tempdir, a scrubbed environment, and
+`run_isolated`, which kills the whole process group on timeout so no forked worker survives.
 """
 
 from __future__ import annotations
@@ -99,15 +46,12 @@ from chemclaw_mcp_calc.engine.xtb_engine import ANGSTROM_TO_BOHR, HARTREE_TO_KCA
 
 logger = logging.getLogger(__name__)
 
-#: What `binary_version` answers where there is no binary. Named rather than spelled out at each
-#: site because `engine/identity.py` has to be able to recognise it: a `calc_version` containing it
-#: is a Chemclaw3 cache and ledger key naming a program that never ran, and that key must never be
-#: minted. See `ABSENT_XTB_VERSION` below for the form it takes inside a version string.
+#: What `binary_version` answers where there is no binary. `engine/identity.py` recognises it so a
+#: key naming a program that never ran is never minted.
 ABSENT = "absent"
 
-#: The exact substring a `calc_version` carries when the binary was selected and is not there —
-#: `backend_version("xtb")` builds `f"xtb-{binary_version()}"`. One definition, because the check in
-#: `engine/identity.py` and the string this module produces have to be the same string.
+#: The substring a `calc_version` carries when the binary was selected and is missing; one
+#: definition shared with the check in `engine/identity.py`.
 ABSENT_XTB_VERSION = f"xtb-{ABSENT}"
 
 __all__ = [
@@ -146,28 +90,19 @@ CliTask = Literal["sp", "opt", "hess", "ohess"]
 def _task_flags(task: CliTask, opt_level: str | None) -> list[str]:
     """The flags for `task`, with the optimization tightness this layer requires.
 
-    xtb's default level ("normal") converges to ~1e-3 Hartree/Bohr, which is looser than the
-    gradient tolerance `xtb_opt` promises — measured, ethanol stops at 6.3e-4 Hartree/Angstrom
-    against a 5e-4 target and is then correctly rejected. Asking for a tighter level is the fix;
-    loosening the promise would have been the other one, and the promise is what makes the
-    finite-difference Hessian on top of it meaningful.
-
-    `opt_level` comes from `OptSpec` rather than from `settings`, because it decides where the
-    relaxation stops and therefore belongs in the key; `None` falls back to the configured default
-    for the tasks that carry no spec of their own.
+    xtb's default "normal" level is looser than the gradient tolerance `xtb_opt` promises, and that
+    promise is what makes a finite-difference Hessian on top meaningful. `opt_level` comes from
+    `OptSpec` because it belongs in the key; `None` uses the configured default.
     """
     if task in ("opt", "ohess"):
-        # Config-supplied rather than model-supplied, but checked all the same: the module's stated
-        # rule is that *every* value reaching argv is checked, and a rule with a quiet exception is
-        # one nobody can rely on when adding the next flag.
+        # Config-supplied, but checked anyway: every value reaching argv is checked, no exceptions.
         level = opt_level if opt_level is not None else settings.xtb_cli_opt_level
         return [f"--{task}", _safe(level, "optimization level")]
     return {"sp": [], "hess": ["--hess"]}[task]
 
 
-# Environment passed to the child. An allowlist rather than the parent's environment: xtb reads
-# XTBPATH, XTBHOME and OMP_*, and inheriting a server's full environment into a subprocess is how a
-# bearer token leaks into a tool that writes files it does not own.
+# Environment passed to the child: an allowlist, so the server's bearer token never reaches a
+# subprocess.
 _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL")
 
 
@@ -175,13 +110,8 @@ _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL")
 def scratch_dir(prefix: str) -> Iterator[Path]:
     """A temporary directory for one run, whose *removal* is reported rather than raised.
 
-    `TemporaryDirectory` propagates a cleanup failure out of the `with`, which on this server means
-    a completed calculation is thrown away and reported to the model as an internal fault — the
-    answer is already in hand and the only thing that went wrong is a directory that would not
-    unlink. And the realistic cause is the exact failure `run_isolated` exists to prevent: an
-    orphaned worker still writing into the directory while it is being removed. That is worth a
-    WARNING an operator can count occurrences of, and is worth neither losing the result over nor
-    passing silently.
+    A cleanup failure (typically an orphan still writing) must not discard a completed result; it is
+    logged at WARNING instead.
 
     Args:
         prefix: The `mkdtemp` prefix, so a leaked directory names the run that leaked it.
@@ -201,9 +131,8 @@ def scratch_dir(prefix: str) -> Iterator[Path]:
             )
 
 
-# How long to wait for a killed group's pipes after the timeout. A killed process closes them at
-# once, so this is only ever reached in the branch where `killpg` was not: there the process may
-# still be alive, and the caller's budget is already spent.
+# How long to wait for a killed group's pipes. Only reached where `killpg` was not, so the process
+# may still be alive and the caller's budget is spent.
 _REAP_TIMEOUT_SECONDS = 5.0
 
 
@@ -212,34 +141,19 @@ def run_isolated(
 ) -> subprocess.CompletedProcess[str]:
     """Run `argv` in its own process group, and kill the whole group on timeout.
 
-    The naive `subprocess.run(argv, timeout=...)` this replaced was wrong: on a timeout it kills
-    only the one PID it is tracking, and a forked worker is not in that process's process group by
-    default, so it survives as an orphan — still burning CPU, and still writing into the tempdir
-    after the caller's `TemporaryDirectory.__exit__` has removed it.
-
-    `start_new_session=True` puts the child in a new session and process group of its own, so
-    `os.killpg` on a timeout reaches every process the run spawned. Everything else matches
-    `subprocess.run(..., timeout=..., capture_output=True, text=True, check=False)`.
-
-    **This function owns the whole of this server's cost control and was completely silent.** It
-    could SIGKILL a process group after burning an hour of CPU — up to four on a CREST search — and
-    emit not one line and not one counter, so the single most expensive event a `calc` pod can
-    produce left no trace anywhere: an operator asking "why is this pod pinned at 100% and
-    answering nothing" had the logs of a server that had said nothing since startup. The completion
-    line is INFO because a run finishing is ordinary; the kill is **WARNING** and names the pgid and
-    the elapsed seconds, because it means an undersized budget or an oversized molecule and both
-    need a decision.
+    `subprocess.run(timeout=...)` kills only the tracked PID and orphans forked workers.
+    `start_new_session=True` gives the child its own process group, so `os.killpg` reaches
+    everything it spawned; otherwise this matches `subprocess.run(..., capture_output=True,
+    text=True, check=False)`. Completion logs at INFO; a kill logs at WARNING with pgid and elapsed
+    seconds.
 
     Args:
         argv: The command, already built and checked by the caller.
         cwd: The scratch directory the run owns.
         env: The scrubbed environment (`_ENV_ALLOWLIST`), never the parent's.
         timeout: Wall-clock budget in seconds, after which the whole group is killed.
-        label: What this run is, for the log line — the calculation, not the molecule. Required
-            rather than derived from `argv[0]`, which is a filesystem path and says `xtb` for a
-            single point, an optimisation and a Hessian alike. It reaches no metric and must not:
-            the metrics here are labelled by *binary* only, which is bounded by what the image
-            installs (`engine/metrics.py`).
+        label: What this run is, for the log line only — never a metric label (metrics are labelled
+            by binary, bounded by the image).
 
     Raises:
         subprocess.TimeoutExpired: the budget was spent; the group has been killed by then.
@@ -260,15 +174,10 @@ def run_isolated(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        # The group leader's pgid is its own pid (start_new_session guarantees the child is the
-        # leader of a fresh group), so this reaches every process the run forked. A race where the
-        # process has already exited between the timeout and here is not an error — and it is the
-        # branch that made this accounting lie: `killed` was seeded to `-1` and the counter was
-        # incremented outside the `suppress`, so a run nothing killed booked a kill and logged
-        # "SIGKILLed process group -1". Measured with `os.getpgid` raising: exactly that line, and
-        # `chemclaw_mcp_calc_process_group_kills_total 1.0`. A counter an operator reads as "this
-        # pod is killing runs" must only count kills that happened, so both the count and the claim
-        # now live inside the block that reached `killpg`.
+        # The child leads a fresh group, so its pid is the pgid and this reaches every forked
+        # process. A process that exited in the meantime is not an error: the kill counter and
+        # `killed` are set only inside the block that reached `killpg`, so only real kills are
+        # counted, and the warning after it names a group only when one was killed.
         killed: int | None = None
         with suppress(ProcessLookupError):
             pgid = os.getpgid(process.pid)
@@ -288,11 +197,8 @@ def run_isolated(
             if killed is not None
             else "the process had already exited, so no process group was killed",
         )
-        # Collect whatever the run had written. Bounded, and that is not belt-and-braces: this
-        # returns immediately only when the group was actually killed. In the branch above where
-        # `killpg` was never reached the process may still be running, and an unbounded wait here
-        # would hold a caller whose budget is already spent — the comment that stood here claimed
-        # the prompt return unconditionally.
+        # Collect what the run wrote. Bounded, because if `killpg` was not reached the process may
+        # still be running.
         try:
             stdout, stderr = process.communicate(timeout=_REAP_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
@@ -314,31 +220,17 @@ def run_isolated(
 class CliError(RuntimeError):
     """An `xtb` invocation failed. Carries the tail of its output, which names the cause.
 
-    Deliberately **not** a `ValueError`: `mcp_server_kit.connector_app` passes a `ValueError` to the
-    model verbatim, and a subprocess's stderr tail is internal state rather than a caller-safe
-    explanation. It is logged and replaced with a generic notice, which is the correct handling for
-    an infrastructure fault.
-
-    **An absent binary is no longer one of these, and it used to be.** `run` and `run_esp` raised
-    `CliError("the 'xtb' binary is not installed")` for it, so a *deployment configuration* fault —
-    the image does not carry the program — reached the model as `an internal error occurred (error
-    id ...)`, with nothing in it the model or the chemist could act on. `engine/xtb_atomic.py`
-    raises a worded `ValueError` for the identical cause and argues why in
-    `xtb_atomic.require_binary`. `require_binary_path` below is that argument applied here; what is
-    left in this class is a run that started and failed, which is what a stderr tail describes.
+    Not a `ValueError`: a stderr tail is internal state, so `connector_app` logs it and returns a
+    generic notice. A missing binary is a configuration fault and raises a worded `ValueError` from
+    `require_binary_path` instead.
     """
 
 
 def require_binary_path() -> str:
     """The resolved `xtb` path, or a worded refusal naming the deployment fault.
 
-    A `ValueError` rather than a `CliError`, and the distinction is which of two different faults a
-    caller is being told about. A run that timed out or exited non-zero is infrastructure: it
-    carries a stderr tail, which is internal state, and `connector_app` is right to replace it with
-    an `error_id` an operator can grep. An image with no `xtb` on `PATH` is a *configuration* fault
-    that every call will hit until somebody changes the deployment, and the model can act on that —
-    it can say which tools still work, and it can stop asking. Driven: the `CliError` form reached
-    the model as `an internal error occurred (error id ...)` and nothing else.
+    A `ValueError` (reaches the model verbatim) rather than a `CliError`: a missing binary is a
+    configuration fault every call will hit, and the model can act on it.
 
     Returns:
         The absolute path to the binary.
@@ -424,8 +316,7 @@ class CliResult(BaseModel):
 def binary_path() -> str | None:
     """Absolute path to the configured `xtb` binary, or None when it is not installed.
 
-    Cached: this is asked on every spec construction to decide which backend to use, and the answer
-    cannot change within a process.
+    Cached: asked on every spec construction, and constant within a process.
     """
     return shutil.which(settings.xtb_binary)
 
@@ -439,26 +330,12 @@ def is_available() -> bool:
 def binary_version() -> str:
     """The installed xtb version, for `calc_version`.
 
-    An xtb upgrade changes energies and geometries, so it must be a cache miss on the Chemclaw3
-    side rather than a silent stale hit — the same rule `engine_version` applies to tblite.
+    An xtb upgrade changes results, so it must be a cache miss on the Chemclaw3 side. Returns
+    `"absent"` rather than raising; derived here and shipped in the result, never re-derived by a
+    client. With `CHEMCLAW_XTB_ENGINE=xtb` and no binary, `app._readiness` refuses traffic, so the
+    string never reaches a key.
 
-    **Returns `"absent"` rather than raising**, and that is the behaviour the whole port exists to
-    contain. Here it is honest: this process really did resolve the backend and found no binary. A
-    *client* calling an equivalent function would get the same word for a different reason — it
-    never had the binary to begin with — and would stamp a valid-looking version onto a prediction
-    the ledger cannot match. Hence: derived here, shipped in the result, never re-derived.
-
-    **This paragraph used to add "and `resolve_backend()` will therefore never select `xtb`, so the
-    string never reaches a key", which is true under `xtb_engine=auto` and false under the explicit
-    setting** — that branch returns `"xtb"` without asking whether a binary exists. Measured on an
-    image with none: `CHEMCLAW_XTB_ENGINE=xtb` produced a well-formed `calc_version` ending
-    `opt-GFN2-xTB+xtb+xtb-absent/...`, which is a Chemclaw3 ledger key naming a program that never
-    ran. What stops that reaching a key now is `app._readiness`, which refuses traffic for the
-    combination rather than this function refusing to answer — a readiness failure names the
-    configuration to fix, where a raise here would surface as a failed calculation.
-
-    The first call in a process shells out; `lru_cache` means it happens once. `app.py` warms it at
-    startup so no request pays the 30 s worst case on the event loop.
+    Cached; `app.py` warms it at startup so no request pays the subprocess on the event loop.
     """
     path = binary_path()
     if path is None:
@@ -483,9 +360,7 @@ def supports(method: str) -> bool:
 def _safe(value: str, what: str) -> str:
     """Reject an argv value that could be read as an option.
 
-    The only way a *data* string becomes a flag in an argv-based tool is by starting with a dash, so
-    that is the check. Everything else — spaces, quotes, semicolons — is inert without a shell, and
-    there is no shell here.
+    Without a shell, a leading dash is the only way a data string becomes a flag.
     """
     if value.startswith("-"):
         raise ValueError(f"{what} {value!r} may not start with '-'")
@@ -505,9 +380,7 @@ def _to_xyz(structure: Structure) -> str:
 def _from_xyz(text: str, template: Structure, origin: str | None) -> Structure:
     """Read an xtb-written XYZ back into a `Structure`, keeping the template's identity.
 
-    The elements come from the template rather than from the file: xtb echoes the same atoms in the
-    same order, and trusting the template makes an element mismatch a loud validation failure
-    instead of a silently different molecule.
+    Elements come from the template, so an element mismatch fails validation loudly.
     """
     rows = text.splitlines()[2 : 2 + len(template.elements)]
     positions = [[float(value) for value in row.split()[1:4]] for row in rows]
@@ -537,33 +410,18 @@ def _read_hessian(path: Path, size: int) -> np.ndarray:
 def _read_vibspectrum(path: Path) -> list[tuple[float, float]]:
     """Parse `vibspectrum` into (wavenumber cm^-1, IR intensity km/mol) pairs, in file order.
 
-    **File order is the external modes first, then every vibration ascending**, and that is a
-    measurement rather than a reading: `tests/data/vibspectrum/` holds files written by the
-    `xtb` 6.7.1 this `Containerfile` pins, and `tests/test_vibspectrum.py` pins them. It matters
-    because the pairing is positional all the way to a published spectrum — the caller drops the
-    leading entries and lines the rest up with its own projected modes by index — so an ordering
-    that put an imaginary mode first would shift every band by one while the count, the only check
-    either side makes, still passed. Measured on planar ammonia: the -871.17 cm^-1 saddle mode is
-    entry 7, after the six zeros, not entry 1.
-
-    The leading entries are the projected-out translations and rotations; they are kept here and
-    dropped by the caller, which knows how many modes its own projection found. Reconciling the two
-    counts is the point — a mismatch means the two projections disagree about the molecule, which
-    must fail loudly rather than shift every intensity by one mode. **How many there are is 5 for a
-    linear molecule and 6 otherwise**, and xtb decides that by its own criterion (unmassed inertia
-    moments against an absolute threshold) rather than the caller's, so the two agreeing is a fact
-    to assert and not a shared rule.
+    File order is the external modes first, then vibrations ascending (pinned by
+    `tests/test_vibspectrum.py` against real xtb output). The pairing is positional downstream, so
+    the order matters. External modes (5 linear, 6 otherwise, by xtb's own criterion) are kept here
+    and dropped by the caller, which asserts that its own projection agrees.
     """
     entries: list[tuple[float, float]] = []
     for line in path.read_text().splitlines():
         if line.startswith(("$", "#")):
             continue
         fields = line.split()
-        # "index [symmetry] wavenumber intensity [more columns...] [selection rules...]" — index
-        # from the *left* by float-parseability, because the symmetry label is absent on the
-        # external modes but the mode number never is, and because what follows is not fixed:
-        # `--raman` writes the Raman activity and cross-section there, so counting from the right
-        # returns those two instead. Both row shapes are in `tests/data/vibspectrum/`.
+        # Indexed from the left by float-parseability: the symmetry label is missing on external
+        # modes, and `--raman` appends extra numeric columns on the right.
         numeric = [value for value in fields if _is_float(value)]
         if len(numeric) >= 3:
             entries.append((float(numeric[1]), float(numeric[2])))
@@ -582,9 +440,7 @@ def _is_float(value: str) -> bool:
 def _energy_from_log(log: str) -> float | None:
     """The total energy printed in xtb's summary block.
 
-    The fallback for GFN-FF, which writes no `xtbout.json`: a force field has no SCC, no orbitals
-    and nothing else that file exists to carry, so the printed summary is the only place its energy
-    appears.
+    The fallback for GFN-FF, which writes no `xtbout.json`.
     """
     for line in reversed(log.splitlines()):
         if "TOTAL ENERGY" in line:
@@ -632,7 +488,7 @@ def run(
     Raises:
         TimeBudgetError: the run was killed at its timeout, opening with `TIME_BUDGET_MARKER`.
         CliError: the run exited non-zero.
-        ValueError: the binary is absent, or the method is not one this backend supports.
+        ValueError: the binary is missing, or the method is not one this backend supports.
     """
     path = require_binary_path()
     if not supports(method):
@@ -663,11 +519,9 @@ def run(
                 label=task,
             )
         except subprocess.TimeoutExpired as error:
-            # **A stop by the clock, named as one**, like `budget.Deadline`'s. As a `CliError` it
-            # reached the sanitiser as an internal fault, which Chemclaw3 reads as an outage and
-            # retries — re-running the same work against the same clock, which is what
-            # `TIME_BUDGET_MARKER` exists to prevent. `run_isolated` has already logged the kill at
-            # WARNING and counted it.
+            # A stop by the clock, named as one (`TIME_BUDGET_MARKER`), so Chemclaw3 does not retry
+            # the same work against the same clock. `run_isolated` has already logged and counted
+            # the kill.
             raise TimeBudgetError(
                 f"{TIME_BUDGET_MARKER} xtb {task} timed out after "
                 f"{settings.xtb_cli_timeout_seconds}s"
@@ -684,11 +538,8 @@ def run(
         return _collect(directory, structure, task, completed.stdout)
 
 
-# What each task must leave behind for its run to have succeeded. Checked because xtb's exit code is
-# not reliable on its own: measured, a Hessian on **linear CO2** computes correctly — the file holds
-# its textbook 655/1345/2446 cm^-1 — and then the process aborts during teardown with SIGABRT.
-# Discarding a complete calculation over a crash in its own cleanup would silently lose every linear
-# molecule.
+# What each task must leave behind to count as successful. The exit code alone is unreliable: xtb
+# can write a complete result (e.g. a linear molecule's Hessian) and then abort during teardown.
 _REQUIRED_OUTPUTS: dict[CliTask, tuple[str, ...]] = {
     "sp": ("xtbout.json",),
     "opt": ("xtbopt.xyz",),
@@ -700,14 +551,9 @@ _REQUIRED_OUTPUTS: dict[CliTask, tuple[str, ...]] = {
 def _read_atomic_table(log: str, atom_count: int) -> list[AtomicRow]:
     """Parse xtb's per-atom property table out of its stdout.
 
-    The table is printed under a header containing `covCN` and holds one row per atom, in the
-    input's order: `index  Z  symbol  covCN  q  C6AA  alpha(0)`. Read from the log rather than from
-    `xtbout.json` because the JSON carries none of these four — a fact established by running the
-    binary and reading both, not by reading the documentation.
-
-    Returns an empty list rather than raising when the table is absent or short. A caller that needs
-    these is the one positioned to say so in words a chemist can act on; failing here would turn a
-    missing optional block into a failed calculation.
+    Rows follow the input order: `index  Z  symbol  covCN  q  C6AA  alpha(0)`. Read from the log
+    because `xtbout.json` carries none of these. Returns an empty list when the table is missing or
+    short; the caller words the refusal.
     """
     lines = log.splitlines()
     header = next((index for index, line in enumerate(lines) if "covCN" in line), None)
@@ -739,22 +585,13 @@ def run_surface_potential(
 ) -> SurfacePotential:
     """Compute the molecular electrostatic potential on xtb's surface grid and return its extrema.
 
-    **A second invocation, and deliberately so.** Measured on xtb 6.6.1: a run carrying `--esp`
-    writes `xtb_esp.dat` and then aborts with SIGABRT during teardown, before `xtbout.json` is
-    written. So an `--esp` run cannot also deliver the atomic table's companion JSON, and combining
-    them would trade a reliable block for an unreliable one. The abort is tolerated for the same
-    reason the Hessian path tolerates it — the file is complete, the crash is in xtb's cleanup —
-    and the check is the file's existence rather than the exit code.
-
-    **`--acc` is passed here too**, and its absence was a real inconsistency rather than a
-    simplification: the two runs behind `compute_atomic_descriptors` and `compute_surface_potential`
-    are the same Hamiltonian on the same geometry, and only one of them honoured the accuracy knob —
-    so a deployment that tightened it got a tighter panel and an unchanged surface, under keys that
-    both named the setting.
+    A separate invocation: an `--esp` run writes `xtb_esp.dat` and may then abort in teardown before
+    `xtbout.json`, so success is judged by the grid file, not the exit code. `--acc` is passed so
+    both descriptor calculations honour the same accuracy setting their keys name.
 
     Raises:
         CliError: the run timed out or produced no grid.
-        ValueError: the binary is absent, or the method is not one this backend supports.
+        ValueError: the binary is missing, or the method is not one this backend supports.
     """
     path = require_binary_path()
     if not supports(method):
@@ -790,10 +627,7 @@ def run_surface_potential(
 def _read_surface(text: str) -> SurfacePotential:
     """The extrema of an `xtb_esp.dat` grid, converted to kcal/mol.
 
-    Each line is `x y z potential` — three coordinates in Bohr and the potential in Hartree per
-    electron. Only the fourth column is read: the coordinates locate a patch on a surface this layer
-    has no other use for, and carrying a grid of thousands of points to a model would be a payload
-    nobody can read.
+    Each line is `x y z potential` (Bohr, Hartree per electron); only the potential is read.
     """
     values = [
         float(fields[3])

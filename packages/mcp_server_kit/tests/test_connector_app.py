@@ -1,24 +1,14 @@
 """`connector_app` as a caller meets it: a real socket, a real MCP session, a real refusal.
 
-Every other test in this package drives a function or an in-process ASGI app. Three of the
-behaviours `connector_app` promises cannot be seen that way, and each shipped broken *because* the
-only tests were the in-process ones:
+Covers what an in-process call cannot see:
 
-- **The body cap's counting half.** Its one test sent `content=b"x" * 4096`, which httpx sends with
-  a `Content-Length` — so it exercised the declared pre-check and never the counter. Over a real
-  socket, with the two `BaseHTTPMiddleware` layers `connector_app` installs in between, the
-  counter's signal arrived at the cap as a nested `ExceptionGroup` and became a 500 with a
-  per-request traceback. The class's own docstring says it was fixed once for exactly this — "the
-  test for it passed for the wrong reason" — which is why the replacement drives a chunked upload
-  through the whole stack rather than the middleware alone.
-- **The error sanitiser's exemption.** It is written against `ToolError.__cause__`, a property of
-  the *upstream* tool manager, and the only way to know which of upstream's `ToolError`s carry a
-  cause is to make upstream raise them.
-- **What `/metrics` actually publishes.** The claim is about the exposition, not about the code
-  that generates it.
+- **The body cap's counting half**, driven by a chunked upload through the whole middleware
+  stack (a `Content-Length` request only exercises the declared pre-check).
+- **The error sanitiser's exemption**, which reads `ToolError.__cause__` as set by upstream's
+  tool manager, so upstream must raise the errors.
+- **What `/metrics` actually publishes**, asserted on the exposition.
 
-The probe capability is deliberately tiny: this file is about the shape every server shares, not
-about any server's chemistry.
+The probe capability is deliberately tiny.
 """
 
 from __future__ import annotations
@@ -99,9 +89,7 @@ def _probe_server() -> FastMCP:
 def running_server(serving: Callable[..., Any]) -> Iterator[str]:
     """The probe capability under uvicorn on loopback, wrapped by the real `connector_app`.
 
-    `require_ready` because every test using this fixture is about a *served* request: waiting for
-    the 200 means a failure here is a startup problem rather than the first assertion in whichever
-    test ran first.
+    Waits for the 200 so a startup failure shows here, not in whichever test ran first.
     """
     os.environ[TOKEN_ENV] = TOKEN
     app = connector_app(
@@ -112,15 +100,10 @@ def running_server(serving: Callable[..., Any]) -> Iterator[str]:
 
 
 def test_readiness_failure_is_a_503_naming_the_reason(serving: Callable[..., Any]) -> None:
-    """The failure mode `readiness` exists to catch, exercised over the real transport.
+    """A raising readiness callable makes a live `/healthz` answer 503 naming the reason.
 
-    Before `readiness` existed, `/healthz` was a constant 200 in every server — evidence the
-    session manager was running and nothing about whether the server could answer, which is
-    precisely how a `chem` pod with a corpus that failed its checksum passed the probe, took
-    traffic, and failed every tool call (see `mcp_server_kit.app.connector_app`'s docstring).
-    That mechanism shipped with no test anywhere in this fleet driving a failing callable through
-    a live `/healthz` — every server's own test only exercises the success path. This is that
-    test, once, at the one place every server's readiness check is the same code.
+    Without it a pod whose corpus failed its checksum passes the probe and fails every call; this is
+    the one place every server's readiness check is the same code.
     """
 
     def _broken() -> list[Dataset]:
@@ -134,10 +117,8 @@ def test_readiness_failure_is_a_503_naming_the_reason(serving: Callable[..., Any
         assert body["status"] == "unready"
         assert body["server"] == "probe-unready"
         assert "could not verify the solvent table" in body["reason"]
-        # `/healthz` carries no bearer check, so this reason reaches anything that can open a
-        # socket to the pod — unlike a tool fault, which `_sanitize_tool_errors` never lets carry
-        # its raw text past a `ValueError`. The secret this exception happens to name must never
-        # reach an unauthenticated caller here, whatever the readiness callable raised.
+        # `/healthz` is unauthenticated, so a secret named by the readiness exception must be
+        # redacted.
         assert "hunter2" not in response.text
         assert "PGPASSWORD=***" in body["reason"]
 
@@ -183,13 +164,9 @@ def test_healthz_reports_the_bounds_the_process_is_running_with(
 ) -> None:
     """An operator's override is read off the probe, not inferred from the image.
 
-    The deployment ratchets in `tests/test_fleet.py` read the files this repository ships, so a
-    bound moved by an overlay applied elsewhere, a Helm value or `kubectl set env` is invisible to
-    them and always will be (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`). This
-    drives the other half: a server bound read through `env_bound`, the kit's own session ceiling
-    and the thread-pool width, each moved by the environment the way an overlay would move it, and
-    each read back from a live `/healthz` at the value the process is using — on the unready answer
-    too, because a pod that cannot serve is the one whose configuration an operator is reading.
+    The deployment ratchets read shipped files and cannot see an overlay or `kubectl set env`. A
+    server bound, the session ceiling and the thread-pool width are each moved by the environment
+    and read back from a live `/healthz`, on the unready answer too.
     """
     monkeypatch.setenv("CHEMCLAW_PROBE_MAX_WIDGETS", "9")
     monkeypatch.setenv("MCP_MAX_SESSIONS", "7")
@@ -229,16 +206,11 @@ def test_a_declared_oversize_body_is_refused(running_server: str) -> None:
 
 
 def test_a_chunked_oversize_body_is_refused_with_413_and_not_a_500(running_server: str) -> None:
-    """The half that never worked, and the reason the cap has a counter at all.
+    """A chunked oversize body is refused with 413, never a 500.
 
-    A chunked upload declares no `content-length`, so the running total is the only thing that
-    bounds it. Measured before the fix, against this exact stack: **500 Internal Server Error**
-    plus a ~40-line nested `ExceptionGroup` traceback per request — so anything that could reach
-    the pod could turn a size refusal into unbounded log volume, and an operator's dashboard
-    showed unhandled server errors rather than rejected oversize requests.
-
-    Sent with a body iterator so httpx uses `Transfer-Encoding: chunked`; asserted as an absence
-    of 500 as well as a presence of 413, because "some error happened" is what it did before.
+    A chunked upload declares no `content-length`, so the running counter is its only bound; a 500
+    with a traceback per request would let any caller inflate log volume. Asserted as 413 and as
+    not-500.
     """
 
     def chunks() -> Iterator[bytes]:
@@ -279,14 +251,8 @@ async def test_an_unknown_tool_name_is_named_back_to_the_caller(
 ) -> None:
     """Upstream's `Unknown tool: x` is a caller-safe message and must survive the sanitiser.
 
-    `ToolManager.call_tool` raises it with no `from`, so it reached the sanitiser looking exactly
-    like an internal fault: the model was told "an internal error occurred" — which gives it
-    nothing to correct — and `logger.exception` fired at ERROR with a stack trace for what is a
-    client input error, diluting the signal the sanitiser exists to preserve.
-
-    This is the repository's own "refuse rather than approximate" rule applied to the transport:
-    an unknown solvent is an error naming the corpus, so an unknown tool is an error naming the
-    tool.
+    It is raised without a cause, so it must not be treated as an internal fault: the model needs
+    the name to correct itself, and a client error must not log a stack trace at ERROR.
     """
     async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("no_such_tool", {})
@@ -321,11 +287,9 @@ async def test_a_caller_safe_message_is_redacted_before_the_model_sees_it(
 ) -> None:
     """A `ValueError` passes through, but not with a secret in it.
 
-    The caller-safe branch used to re-raise verbatim, so a validation message quoting a connection
-    string reached the model unredacted — the 503 readiness path redacted, this one did not. The
-    redaction is the same `redact_secrets` both paths share, applied so the family of `ValueError`
-    subclasses that echo their input (pydantic `ValidationError`, `UnicodeDecodeError`,
-    `JSONDecodeError`) cannot leak a mounted secret. The surrounding worded text still passes.
+    `ValueError` subclasses that echo their input (pydantic, decode errors) could otherwise leak a
+    mounted secret; the same `redact_secrets` as the readiness path applies, and the worded text
+    survives.
     """
     async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("boom_domain_with_secret", {})
@@ -339,13 +303,10 @@ async def test_a_caller_safe_message_is_redacted_before_the_model_sees_it(
 
 
 def test_upstream_still_chains_a_tool_fault_and_still_does_not_chain_unknown_tool() -> None:
-    """The property the sanitiser's exemption reads, asserted against the installed `mcp`.
+    """Pins the upstream property the sanitiser's exemption reads.
 
-    `_sanitize_tool_errors` distinguishes a fault from a refusal by `ToolError.__cause__`: upstream
-    raises `ToolError(...) from e` when a tool body fails and raises a bare `ToolError` for a name
-    it does not have. Neither is documented as a promise, so this pins both — an upstream release
-    that starts chaining `Unknown tool` turns the exemption red here rather than letting a fault's
-    text reach the model.
+    Upstream raises `ToolError(...) from e` for a tool fault and a bare `ToolError` for an unknown
+    name; neither is promised, so a change upstream turns red here instead of leaking fault text.
     """
     import inspect
 
@@ -364,20 +325,9 @@ async def test_metrics_is_open_and_carries_no_identity(
 ) -> None:
     """`/metrics` is unauthenticated on purpose, so what it may carry is the whole control.
 
-    It is *not* "counts only" and never was: `generate_latest(REGISTRY)` on the default registry
-    publishes `python_info`, `process_start_time_seconds`, `process_open_fds` and the rest. That is
-    fine — an operator wants them, and the NetworkPolicy admits only the agent's pods and the
-    monitoring namespace — but the sentence a reviewer relies on when deciding this endpoint may
-    stay open has to be the true one, and the true one is: no request content, no caller identity,
-    no tool argument.
-
-    **The assertion is about the values, and it used to be about six words.** Scanning for `actor`,
-    `session_id` and `correlation` catches only a developer who names the new label the way the
-    docstring does — `principal="alice@example.com"` and `cid="4bf92f35..."` passed every one of
-    those assertions, and the bare word `session` and the dry-run header were not in the list at
-    all. So a real call carries real identity through the whole stack first, and what is asserted
-    absent is the strings that call sent: nothing a caller supplies may name a series, whatever the
-    label is called.
+    It publishes the default registry's process metrics, but no request content, caller identity or
+    tool argument. A real call carries real identity through the stack, and the strings it sent are
+    asserted absent as label values, whatever a label is called.
     """
     identity = {
         "X-Chemclaw-Actor": ACTOR,
@@ -397,10 +347,8 @@ async def test_metrics_is_open_and_carries_no_identity(
             "labelled metric on this endpoint must never take an actor, a session, a correlation "
             "id or a tool argument as a label, whatever that label is named"
         )
-    # The label *names*, parsed — never a substring of the whole exposition. The registry is the
-    # process's, so once another server's tests have run it holds that server's tool names as
-    # label values, and `tool="continuous_reactor_conversion"` contains "actor": a substring scan
-    # failed on the order the suite happened to run in, for a label that is allowed.
+    # Parse label *names* rather than substring-scan: the process registry holds other servers' tool
+    # names as values, and e.g. `continuous_reactor_conversion` contains "actor".
     label_names = {
         name.lower()
         for family in text_string_to_metric_families(exposition)
@@ -419,10 +367,7 @@ async def test_metrics_is_open_and_carries_no_identity(
 def test_the_egress_counter_is_unlabelled(running_server: str) -> None:
     """The destination host of a refused connection is attacker-influenced, so it is not a label.
 
-    `metrics.py` states it, `CLAUDE.md` says this file asserts it, and until now this file did not
-    — a bare word in a prose document is exactly the shape of claim this repository's own rules
-    say to check. A label here would be unbounded by construction: anything that can make the pod
-    try to resolve a name it chose would mint a series.
+    A label would mint a series per name anything could make the pod resolve.
     """
     exposition = httpx.get(f"{running_server}/metrics", timeout=5.0).text
     lines = [
@@ -442,18 +387,10 @@ def test_the_egress_counter_is_unlabelled(running_server: str) -> None:
 async def test_metrics_publishes_what_a_tool_call_did(
     running_server: str, mcp_session: Callable[..., Any]
 ) -> None:
-    """The other direction, and the one the absence test above cannot give: it is not empty.
+    """`/metrics` publishes per-tool calls for every outcome, so it is not merely free of identity.
 
-    Measured before this instrumentation existed: **ten** series on a running server, all ten
-    `prometheus_client` built-ins. An operator could read the interpreter version and the pod's
-    open file descriptors and could not answer "which tool is slow", "which tool is failing", or
-    "is anything being called". The absence assertion above was fully satisfied by that, which is
-    exactly why it needs a companion — a `/metrics` that publishes nothing passes every rule about
-    what it must not publish.
-
-    All three outcomes are driven through the real transport rather than asserted off the code,
-    because `outcome` is decided by `ToolError.__cause__` — a property of the *upstream* tool
-    manager, and the same one `_sanitize_tool_errors`'s exemption reads.
+    An empty exposition passes every absence rule. Outcomes are driven through the real transport
+    because `outcome` is decided by upstream's `ToolError.__cause__`.
     """
     async with mcp_session(running_server, token=TOKEN) as session:
         await session.call_tool("echo", {"text": "hello"})
@@ -476,16 +413,10 @@ async def test_metrics_publishes_what_a_tool_call_did(
 async def test_an_unknown_tool_name_cannot_mint_a_metric_series(
     running_server: str, mcp_session: Callable[..., Any]
 ) -> None:
-    """The trap that makes this metric safe, and it is not safe by construction.
+    """An unknown tool name is counted under `<unknown>`, never as its own series.
 
-    A tool name is not an actor, a session or an argument, so it is allowed as a label — but it is
-    **caller-supplied**: `ToolManager.call_tool` raises `Unknown tool: <whatever>` for anything it
-    does not have, so an unclamped counter mints one Prometheus series per string a confused model
-    or a hostile caller sends, in the pod's memory, unbounded. Measured in the audit's prototype: a
-    probe calling `nope` minted `tool="nope"`.
-
-    So the call is still counted — a caller guessing tool names is a real signal — and it is
-    counted under the fixed `<unknown>` sentinel.
+    The name is caller-supplied, so an unclamped label would mint one series per invented string.
+    The call is still counted, since guessing tool names is a signal.
     """
     async with mcp_session(running_server, token=TOKEN) as session:
         result = await session.call_tool("definitely_not_a_tool_here", {})
@@ -504,14 +435,8 @@ async def test_an_unknown_tool_name_cannot_mint_a_metric_series(
 def test_metrics_counts_the_requests_it_refused(running_server: str) -> None:
     """A counter whose help says "HTTP requests served" must see the ones nothing served.
 
-    `chemclaw_mcp_requests_total` was booked inside `CallerLogMiddleware`, and `connector_app` adds
-    the credential check and the body cap *after* it — so Starlette's add-order put both outside
-    the counter, and both short-circuit. Measured against this stack: three 401s and two 413s
-    produced **zero** series between them, which makes `rate(...{status=~"4.."})` permanently 0 —
-    the one expression an operator writes to see a fleet-wide credential or payload problem.
-
-    Both refusals are driven over a real socket, because both happen in ASGI layers a
-    `TestClient`-less in-process call never reaches.
+    The credential check and body cap short-circuit before the tool layer; without them in the count
+    `rate(...{status=~"4.."})` is always 0. Both refusals are driven over a real socket.
     """
     for _ in range(3):
         refused = httpx.post(f"{running_server}/mcp", content=b"{}", timeout=10.0)
@@ -538,9 +463,7 @@ def test_metrics_counts_the_requests_it_refused(running_server: str) -> None:
 def test_connector_app_refuses_to_wrap_one_capability_twice() -> None:
     """Wrapping is not idempotent, so a second call must be an error rather than a double count.
 
-    Each of those behaviours is a wrapper that captures the previous `call_tool`; a second call
-    stacks a second set. Measured on a twice-wrapped server: one `tools/call` booked
-    `chemclaw_mcp_tool_calls_total 2.0`, and nothing at the call site said so.
+    Each wrapper captures the previous `call_tool`, so wrapping twice would count every call twice.
     """
     server = _probe_server()
     connector_app(server, name="twice-probe")
@@ -568,18 +491,10 @@ class _Keeper(logging.Handler):
 async def test_the_request_log_measures_the_whole_call_and_not_the_sse_headers(
     running_server: str, mcp_session: Callable[..., Any]
 ) -> None:
-    """The request line's `duration_ms` is the request, and for a long time it was not.
+    """The request line's `duration_ms` covers the whole call, not just the SSE headers.
 
-    `CallerLogMiddleware` was a `BaseHTTPMiddleware`, whose `call_next` returns as soon as the
-    response *starts* — and every MCP tool call is an SSE stream whose body is written afterwards.
-    So the `finally` that logs ran before the tool had run. Measured against a running server, an
-    `optimize_geometry` the client waited **23.49 s** for logged
-    `path=/mcp status=200 duration_ms=1.1`, with the next line in the file 23 seconds later: every
-    duration in this fleet's logs was time-to-headers, on the one field an operator uses to answer
-    "which pod is slow".
-
-    That is invisible to an in-process assertion about the middleware and invisible to a test that
-    only calls fast tools, which is why this one is over a real socket with a tool that sleeps.
+    A tool call is an SSE stream whose body is written after the response starts, so logging at
+    response start reports time-to-headers. Driven over a real socket with a tool that sleeps.
     """
     keeper = _Keeper()
     root = logging.getLogger()
@@ -611,17 +526,9 @@ async def test_the_request_log_measures_the_whole_call_and_not_the_sse_headers(
 def test_a_probe_path_with_a_trailing_slash_answers(running_server: str) -> None:
     """`/healthz/` and `/metrics/` must *answer*, not merely escape the credential check.
 
-    `auth._is_open` normalises the trailing slash so a kubelet probe configured as
-    `path: /healthz/` is not refused — and that was only half of it. FastAPI matches routes
-    exactly, `connector_app` mounts the MCP transport at `/`, and a mount swallows the redirect
-    Starlette would otherwise issue: measured against every server in this fleet under real
-    uvicorn, `GET /healthz/` answered **404**. The middleware-level test for the same behaviour
-    asserted `status_code != 401`, which a 404 satisfies, so nothing could tell the fix working
-    from the fix doing nothing.
-
-    Redirects are not followed here deliberately. A 3xx is what kubelet counts as a *successful*
-    probe, so a redirect would be indistinguishable from a served answer at the one moment the
-    difference matters — see the unreadiness test below.
+    The MCP mount at `/` swallows Starlette's redirect, so without an alias these return 404.
+    Redirects are not followed: kubelet counts a 3xx as a passing probe, so a redirect is not an
+    answer.
     """
     healthz = httpx.get(f"{running_server}/healthz/", timeout=5.0, follow_redirects=False)
     assert healthz.status_code == 200, "a trailing-slash probe path must answer the probe itself"
@@ -638,20 +545,14 @@ def test_a_trailing_slash_probe_still_reports_unreadiness(
 ) -> None:
     """The alias serves the route rather than pointing at it, which is why a 503 survives.
 
-    This is the whole argument for an alias over a redirect: kubelet treats any 2xx **or 3xx** as
-    a passing probe, so a pod whose corpus failed its checksum would have been reported ready by
-    a `/healthz/` probe that got a 307 — the exact failure `readiness` exists to end, restored by
-    the fix for it.
+    Kubelet treats any 2xx or 3xx as passing, so a redirect would report an unready pod as ready.
     """
 
     def _broken() -> list[Dataset]:
         raise RuntimeError("could not verify the solvent table")
 
     app = connector_app(_probe_server(), name="probe-unready-slash", readiness=_broken)
-    # `require_ready=False`, which is what `_serving` meant before this helper moved to conftest:
-    # a readiness callable that raises never answers 200, so waiting for one would hang on the very
-    # condition this test exists to observe. Waiting for the port to accept is enough — uvicorn's
-    # lifespan has completed by then, whatever `/healthz` itself reports.
+    # A raising readiness callable never answers 200, so wait only for the port to accept.
     with serving(app, require_ready=False) as base:
         response = httpx.get(f"{base}/healthz/", timeout=5.0, follow_redirects=False)
         assert response.status_code == 503

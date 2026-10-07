@@ -1,15 +1,11 @@
 """The descriptor panel Tier 1 reads out of SCFs that already ran, and Tier 2 out of the binary.
 
-Two claims carry this feature and both are tested here rather than asserted in prose:
-
 - **The global and local descriptors are free.** They come from the three single points
-  `compute_fukui` already runs; the count is pinned, so a future edit that adds a fourth turns red.
-- **The binary-only panel refuses rather than approximates.** With no `xtb`, the answer is a named
-  refusal, never a payload of nulls a caller cannot distinguish from a chemical result.
+  `compute_fukui` already runs; the count is pinned.
+- **The binary-only panel refuses rather than approximates** when `xtb` is absent.
 
-The arithmetic identities are written out independently of the implementation — `f_zero` really is
-the mean, `dual` really is the difference — so a sign flip anywhere is caught by a relation rather
-than by a pinned number that would be updated alongside the bug.
+The arithmetic identities are written independently of the implementation (`f_zero` is the mean,
+`dual` the difference), so a sign flip is caught by a relation.
 """
 
 from __future__ import annotations
@@ -36,12 +32,7 @@ def phenol() -> xtb_props.SiteReactivityResult:
 
 
 def test_the_panel_costs_no_extra_single_point(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole Tier 1 claim: three SCFs before the descriptors existed, three after.
-
-    Pinned as a count rather than described in a docstring, because "free" is the property that
-    justifies computing these at all — and the cheap way to lose it is a fourth call added by
-    someone who did not know the energies were already in hand.
-    """
+    """The panel costs no extra single point: three SCFs, pinned as a count."""
     calls = 0
     original = run_singlepoint
 
@@ -92,9 +83,8 @@ def test_the_global_panel_is_internally_consistent(
 def test_the_physics_still_says_para(phenol: xtb_props.SiteReactivityResult) -> None:
     """Reading more of the result must not change what the result was.
 
-    Phenol's ring carbons, compared with each other: *para* above *ortho* above *meta*, the
-    classical pattern for an activating substituent. This is the number the whole feature is about,
-    so it is pinned against the descriptors being wired in.
+    Phenol's ring carbons rank para above ortho above meta, the classical pattern for an activating
+    substituent.
     """
     by_index = {site.index: site for site in phenol.sites}
     para, ortho, meta = by_index[4], by_index[2], by_index[3]
@@ -129,11 +119,10 @@ def test_carbon_uses_close_to_its_four_bonds() -> None:
 
 
 def test_the_two_binary_panels_are_keyed_apart() -> None:
-    """One key standing for both would serve a surface request the panel-only row it found.
+    """The two binary panels are keyed apart.
 
-    The defect this pins: `surface` was a *flag* on the atomic panel and deliberately kept out of
-    its key, so a `surface=True` call hit the row an earlier `surface=False` call wrote and came
-    back with no surface, having run nothing.
+    One key for both would let a surface request hit a panel-only row and come back without a
+    surface.
     """
     atomic = xtb_atomic.atomic_inputs("CCO")
     surface = xtb_atomic.surface_inputs("CCO")
@@ -147,9 +136,8 @@ def test_the_binary_panel_refuses_by_name_when_the_binary_is_absent(
 ) -> None:
     """The refusal names the missing program and says what still works without it.
 
-    A `ValueError`, which is the family `connector_app` lets reach the model verbatim — this message
-    is the difference between "this deployment cannot answer that" and "this molecule has no
-    answer", and only the first is true.
+    A `ValueError`, so it reaches the model verbatim as "this deployment cannot answer", not "this
+    molecule has no answer".
     """
     monkeypatch.setattr(xtb_cli, "is_available", lambda: False)
     # The *key* still derives — deriving an identity is not running a calculation, and
@@ -220,11 +208,9 @@ def test_the_surface_grid_parser_reduces_to_extrema() -> None:
 
 @_BINARY
 def test_the_binary_agrees_with_the_library_about_partial_charges() -> None:
-    """Two backends, one number: the strongest available check that the table is read correctly.
+    """The binary and the library agree on partial charges to three decimals.
 
-    Nothing forces these to agree — one is a Fortran binary's stdout table, the other a Python
-    library's array — so agreement to three decimals says the parser lines the rows up with the
-    right atoms. A transposed column or an off-by-one would show here and nowhere else.
+    Nothing forces agreement, so it proves the stdout parser lines rows up with the right atoms.
     """
     smiles = "Oc1ccccc1"
     binary = xtb_atomic.compute_atomic_descriptors(*xtb_atomic.atomic_inputs(smiles))
@@ -284,15 +270,8 @@ def test_the_in_process_calculators_name_tblite_even_where_a_binary_exists(
 ) -> None:
     """A `calc_version` may name only programs that actually ran, and these three run tblite.
 
-    **This is a regression test for a defect the shipped image cannot see.** `xtb_engine` defaults
-    to `"auto"`, so `resolve_backend()` answers `"xtb"` wherever the binary is installed — and
-    `compute_xtb_energy`, `compute_electronic_properties` and `predict_site_reactivity` then stamped
-    `+xtb+xtb-6.6.1` onto results computed entirely by tblite, because none of the three has a
-    binary code path at all. `xtb_opt` and `xtb_hessian` do dispatch and keep resolving.
-
-    Forced True rather than skipped when absent: the assertion is about what the code *would* do on
-    a deployment with a binary, and a test that only runs where one exists would never have caught
-    this.
+    Under `auto` with a binary installed, the resolved backend is `xtb`, yet these calculators have
+    no binary path. Forced present rather than skipped, so the assertion holds on any runner.
     """
     from chemclaw_mcp_calc.engine import xtb
     from chemclaw_mcp_calc.engine.xtb import XtbInput

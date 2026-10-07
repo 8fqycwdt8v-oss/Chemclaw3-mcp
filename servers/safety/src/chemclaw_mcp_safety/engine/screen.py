@@ -1,22 +1,10 @@
 """Deterministic structural hazard screening (Chemclaw3 D-080) — advisory flags, never a clearance.
 
-What this is: SMARTS matching against a committed, cited rule table (`data/rules/rules.yaml`), plus
-a pairwise incompatibility check across a reaction's components. Deterministic, offline, no model,
-no external database — a flag is reproducible and traceable to a literature source, which is what
-makes it usable in a review.
-
-**What this is not, and must never be presented as:** a hazard assessment. No rule matching means
-*no rule in the table matched* — it says nothing about toxicity, exposure, thermal stability of the
-specific compound, scale, or the process around it. `ScreenResult.verdict` deliberately renders that
-as "no rule matched" rather than any word resembling "safe": an over-trusted screen is more
-dangerous than no screen, because it converts an absence of knowledge into apparent assurance.
-
-**The rule table is baked into the image and is no longer a setting.** Chemclaw3 carried its path as
-`settings.safety_rules_path` so a site could point at its own table. Here it is a vendored corpus
-with a licence, a checksum and a `dataset.json` a reviewer signed off on, and the checksum is the
-point: a swapped-in table would be a different set of claims wearing the same citations. Extending
-the table is a pull request against this file, which is where a process-safety chemist's addition
-gets reviewed anyway.
+SMARTS matching against a cited rule table (`data/rules/rules.yaml`) plus a pairwise incompatibility
+check across a reaction's components: reproducible, offline, traceable to a source. No match means
+only that *no rule in the table matched*; `ScreenResult.verdict` never says "safe", because an
+over-trusted screen is worse than none. The table is a vendored, checksummed corpus rather than a
+setting; extending it is a reviewed pull request.
 """
 
 from __future__ import annotations
@@ -52,31 +40,20 @@ __all__ = [
     "screen_structure",
 ]
 
-# The vendored rule table. A directory rather than a file because `load_dataset` verifies the
-# corpus against the `dataset.json` beside it, and a rule table nobody can checksum is a rule table
-# nobody can show was the one that was reviewed.
+# The vendored rule table; a directory because `load_dataset` verifies it against the `dataset.json`
+# beside it.
 RULES_DIR = Path(__file__).resolve().parent.parent / "data" / "rules"
 RULES_FILE = "rules.yaml"
 
 # The most components one screen may carry.
 #
-# Both screens in this package check their pair rules as a *cross-product*, so the flags they can
-# produce grow with the square of the input while the request itself stays tiny: 13 KiB of SMILES
-# was measured in Chemclaw3 producing 251,000 hazard flags and blocking the serving connector's
-# event loop for 2.48 s, and the genotoxicity screen has the same shape (640 components, 102,400
-# alerts, 933 ms). A request-size cap is no bound on this, because the amplification is in the
-# response.
-#
-# 64 is far above any real reaction — the largest shipped ELN entry has well under a dozen species —
-# and bounds the worst case to ~1,000 pair flags and single-digit milliseconds. Chemclaw3 carried it
-# as `settings.safety_max_components`; here it is one environment variable at the same default,
-# because one integer does not earn a pydantic-settings dependency.
+# Pair rules are checked as a cross-product, so output grows with the square of a tiny request; a
+# body-size cap does not bound it. 64 is far above any real reaction and keeps the worst case to
+# about a thousand pair flags.
 MAX_COMPONENTS = env_bound(
     "CHEMCLAW_SAFETY_MAX_COMPONENTS",
     default=64,
-    # One component: a screen of nothing is not a screen, and the guard refuses anything *above*
-    # this, so `0` would answer every hazard question with a refusal — on a server whose whole job
-    # is to answer hazard questions, from a pod that started and reported itself ready.
+    # `0` would refuse every screen on a pod that reports itself ready.
     minimum=1,
     consequence="every hazard screen would be refused, on a pod that starts and passes readiness",
 )
@@ -90,15 +67,9 @@ _SEVERITY_ORDER: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 class SafetyRulesError(ValueError):
     """A screen cannot be performed: the input is unusable, or a rule table is missing/malformed.
 
-    Fatal rather than skip-and-continue: silently screening with half a rule table would report
-    "no rule matched" for a hazard the table covers — the one failure mode this package exists to
-    prevent.
-
-    A `ValueError` for the reason `InvalidSmilesError` is one: `mcp_server_kit.connector_app` lets a
-    `ValueError` reach the model verbatim and replaces every other exception with a generic notice.
-    Every message this type carries is written for the chemist — which structure was refused, which
-    component of the list it was, which table could not be read — and a refusal the model cannot
-    read is a refusal it will report as a result.
+    Fatal rather than skip-and-continue: half a rule table would report "no rule matched" for a
+    covered hazard. A `ValueError` so `connector_app` passes the chemist-facing message to the model
+    verbatim.
     """
 
 
@@ -145,16 +116,8 @@ class ScreenResult(BaseModel):
     def verdict(self) -> str:
         """A one-line summary for a human — never the word "safe" (see the module docstring).
 
-        `computed_field`, not a bare `property`, and the difference is the whole point of the
-        sentence. A plain property is not serialized: `model_dump()` on a clean screen returned
-        exactly `{"flags": []}`, so the disclaimer had **zero** production callers and never reached
-        the model that had to write the answer. A live run then showed a chemist saying they wanted
-        to sign a risk assessment being told "no hazards detected" six times — the precise phrasing
-        the safety-screening judgment forbids in bold.
-
-        The tool docstring already said all of this. A docstring is read once when the tool is
-        defined; the result payload is what is in the context window when the answer is written, and
-        only one of those two was carrying the caveat.
+        A `computed_field` so it is serialised: the caveat must be in the result payload, which is
+        what is in the context window when the answer is written.
         """
         if not self.flags:
             return "No rule in the hazard table matched. This is not a safety assessment."
@@ -174,18 +137,10 @@ class _StructuralRule(BaseModel):
     citation: str = Field(min_length=1)
     # How many *distinct* matches of `smarts` a molecule must contain before the rule fires.
     #
-    # A count is not expressible as a substructure boolean: "polynitro" means "two or more nitro
-    # groups", and SMARTS can only say "this arrangement is present", so a single pattern has to
-    # enumerate every relative arrangement — ortho, meta, para, then every ring size, then every
-    # fused system. `polynitro-aromatic` tried to inline the count into the pattern by spelling the
-    # ring out, and therefore matched *only* 1,2-dinitroarenes: TNT and picric acid screened clean.
-    # There is no pattern-only fix; the count has to live beside the pattern.
-    #
-    # Counted with `GetSubstructMatches` at its default `uniquify=True`, and deliberately *not* with
-    # RDKit's `maxMatches` short-circuit: `maxMatches` caps the raw embeddings collected before
-    # uniquification, so a symmetric pattern (`[OX2][OX2]` embeds into HOOH twice, once each way)
-    # could be truncated to fewer unique matches than the molecule really has. That would be a
-    # silent false negative, which is the one failure mode this module exists to prevent.
+    # Counts ("two or more nitro groups") cannot be expressed in one SMARTS without enumerating
+    # every arrangement, so the count lives beside the pattern. Counted with `GetSubstructMatches`
+    # (uniquified) and not the `maxMatches` short-circuit, which caps raw embeddings and could
+    # under-count a symmetric pattern into a false negative.
     min_matches: int = Field(default=1, ge=1)
 
 
@@ -218,26 +173,14 @@ _Table = TypeVar("_Table", bound=BaseModel)
 def read_table(directory: Path, records_file: str, model: type[_Table]) -> _Table:
     """Read one vendored YAML corpus, verify it against its `dataset.json`, and validate `model`.
 
-    The one loader for all four corpora this server answers from — the hazard rules, the
-    genotoxicity alerts and the two ICH tables — and generic over the model for that reason. They
-    share their failure modes and the required response to them: a table that cannot be read must
-    stop the answer rather than yield an empty one, because an empty rule set reports "nothing
-    matched" (indistinguishable from a clean molecule) and an empty ICH index reports "this system
-    does not carry the number" for a substance it does.
-
-    The checksum is why this goes through `load_dataset` rather than straight to `yaml.safe_load`:
-    a truncated COPY or a swapped file would otherwise be a *shorter rule table*, which is silent by
-    construction.
-
-    The message names the file rather than calling every table "hazard rules". This package works
-    hard to keep the process-safety screen and the genotoxicity screen distinct — they answer
-    different questions and one must never be reported as the other — and a malformed
-    `genotox_alerts.yaml` announcing itself as a hazard-rule fault sends the reader to the wrong
-    table.
+    The one loader for the hazard rules, genotoxicity alerts and both ICH tables. A table that
+    cannot be read stops the answer: an empty rule set would read as a clean molecule and an empty
+    ICH index as an honest miss. The checksum catches a truncated or swapped file. The message names
+    the file, so a genotox fault is not reported as a hazard-rule fault.
 
     Raises:
-        SafetyRulesError: the corpus is missing, is not the file its manifest approved, is not a
-            mapping, or does not validate into `model`.
+        SafetyRulesError: The corpus is missing, unapproved, not a mapping, or does not validate
+            into `model`.
     """
     path = directory / records_file
     try:
@@ -260,9 +203,7 @@ def read_table(directory: Path, records_file: str, model: type[_Table]) -> _Tabl
 def compile_smarts(smarts: str, rule_id: str) -> Chem.Mol:
     """Compile one rule's SMARTS, failing loudly with the rule id that owns it.
 
-    Public for the same reason `read_table` is: the genotoxicity alert table needs the
-    identical "name the rule that owns the broken pattern" behaviour, and two copies of it would
-    drift.
+    Public so the genotoxicity table shares the behaviour.
     """
     pattern = Chem.MolFromSmarts(smarts)
     if pattern is None:
@@ -274,9 +215,8 @@ def compile_smarts(smarts: str, rule_id: str) -> Chem.Mol:
 def _load_rules(directory: Path) -> tuple[RuleTable, dict[str, Chem.Mol]]:
     """Parse and compile the rule table in `directory` (cached — it is a vendored file).
 
-    Returns the table and a pattern map keyed by `<rule id>` for structural rules and
-    `<rule id>:left` / `:right` for pair rules, so every SMARTS is compiled exactly once per process
-    rather than on every screened molecule.
+    Patterns are keyed `<rule id>`, or `<rule id>:left` / `:right` for pair rules, and compiled once
+    per process.
     """
     table = read_table(directory, RULES_FILE, RuleTable)
     if not table.structural and not table.incompatible_pairs:
@@ -291,25 +231,11 @@ def _load_rules(directory: Path) -> tuple[RuleTable, dict[str, Chem.Mol]]:
 def parse_molecule(smiles: str, *, subject: str = "the structure given") -> Chem.Mol:
     """Parse a SMILES **in full**, raising this package's error type so a caller handles one.
 
-    Public because the genotoxicity alert screen must fail the same way on the same input; a second
-    parser there would be a second place for "unparseable" to mean "clean".
-
-    **In full is the word that was missing, and its absence was the defect.** A bare
-    `Chem.MolFromSmiles` accepts a valid *prefix* and drops whatever follows a space — so
-    `screen_hazards("CCO junk")` did not fail, it screened ethanol, reported "No rule in the hazard
-    table matched", and echoed `CCO` in `screened` as the structure it had looked at. A concatenated
-    or mistyped string therefore came back as a **clean screen of a different, smaller molecule**,
-    which is the single worst outcome available to a tool whose entire documented discipline is that
-    its empty result must never read as a clearance. Measured on the Chemclaw3 build:
-    `"CCO CN=[N+]=[N-]"` — an azide sitting in the ignored tail — screened with zero flags.
-
-    `InvalidSmilesError` is translated to `SafetyRulesError` so this package keeps its promise of
-    raising one exception type; both are `ValueError`s, so either way the refusal reaches the model
-    as a worded message rather than as an internal-error notice.
-
-    `subject` names *what* could not be read, and it exists for the reaction path: a chemist handed
-    "one of the nine components you gave me is unusable" cannot act on it, and `screen_reaction`
-    passes `"component 4 of 9"` (see `parse_components`).
+    A bare `Chem.MolFromSmiles` drops everything after a space, so `"CCO CN=[N+]=[N-]"` would screen
+    clean as ethanol; `chem.require_molecule` refuses it. `InvalidSmilesError` becomes
+    `SafetyRulesError` so the package raises one type (both are `ValueError`s). `subject` names what
+    could not be read, e.g. `"component 4 of 9"` from `parse_components`. Public so the genotoxicity
+    screen fails identically.
     """
     try:
         return require_molecule(smiles)
@@ -320,17 +246,9 @@ def parse_molecule(smiles: str, *, subject: str = "the structure given") -> Chem
 def parse_components(component_smiles: Sequence[str]) -> dict[str, Chem.Mol]:
     """Parse every component of a reaction or route, keyed by the caller's own spelling.
 
-    Shared by both screens for the reason `require_screenable_size` is: they must accept and refuse
-    identical input identically, and a refusal that does not say *which* component failed leaves a
-    chemist re-reading a list of nine SMILES to find the one with a stray space in it.
-
-    The position reported is the component's place in the list as the caller wrote it, counted from
-    1 — not its place in the deduplicated mapping, which is a different number the moment a reagent
-    is listed twice.
-
-    Keyed on the caller's spelling rather than the canonical form because `HazardFlag.matched` and
-    the pair rules both report the strings the caller used; `screened` is where the canonical form
-    is echoed, and it is derived from these molecules.
+    Shared by both screens so they refuse identically. A refusal names the component's 1-based
+    position in the caller's list (not in the deduplicated mapping). Keyed on the caller's spelling
+    because flags report those strings; `screened` echoes the canonical form.
     """
     molecules: dict[str, Chem.Mol] = {}
     for position, smiles in enumerate(component_smiles, start=1):
@@ -345,21 +263,12 @@ def parse_components(component_smiles: Sequence[str]) -> dict[str, Chem.Mol]:
 def require_screenable_size(component_smiles: list[str], *, what: str) -> None:
     """Refuse a component list this package cannot honestly screen — too large, or empty.
 
-    Public because both screens must refuse identically. Refused rather than truncated: a hazard
-    screen that silently dropped components would report "no rule matched" for chemistry it never
-    looked at, and every tool description in this package says an empty result means no rule
-    matched — never that something is safe. See `MAX_COMPONENTS` for the measured amplification the
-    upper bound exists to stop.
-
-    **The empty list is refused by that same sentence, one step further on.** `screen_hazards([])`
-    answered `{"flags": [], "screened": [], "verdict": "No rule in the hazard table matched…"}` — a
-    clean screen of *nothing*, the shape a model is most likely to paraphrase as "I screened it and
-    it came back clear". This module's whole discipline is that an empty result must never read as a
-    clearance, and an empty result that is not even about a molecule is the version of that with
-    nothing in the payload to catch it.
+    Refused, never truncated: a dropped component would yield "no rule matched" for chemistry never
+    looked at. An empty list is refused for the same reason — a clean screen of nothing reads as a
+    clearance. Public so both screens refuse identically.
 
     Raises:
-        SafetyRulesError: no components were given, or more than `MAX_COMPONENTS` were.
+        SafetyRulesError: No components were given, or more than `MAX_COMPONENTS` were.
     """
     if not component_smiles:
         raise SafetyRulesError(
@@ -384,8 +293,7 @@ def screen_structure(smiles: str) -> ScreenResult:
     """Flag hazardous structural motifs in one molecule (advisory — see the module docstring).
 
     Raises:
-        SafetyRulesError: the SMILES does not parse in full (see `parse_molecule` — a valid prefix
-            with trailing text is refused, not screened), or the rule table is missing/malformed.
+        SafetyRulesError: The SMILES does not parse in full, or the rule table is missing/malformed.
     """
     molecule = parse_molecule(smiles)
     table, patterns = _load_rules(RULES_DIR)
@@ -400,27 +308,22 @@ def screen_structure(smiles: str) -> ScreenResult:
         for rule in table.structural
         if len(molecule.GetSubstructMatches(patterns[rule.id])) >= rule.min_matches
     ]
-    # `Chem.MolToSmiles` on the molecule already in hand *is* what `require_canonical_smiles`
-    # returns for this input — canonicalizing through the string would parse the same SMILES a
-    # second time and raise a second exception type for an input `parse_molecule` has already
-    # accepted.
+    # Canonicalised from the molecule already parsed, rather than re-parsing the string.
     return ScreenResult(flags=_sorted(flags), screened=[str(Chem.MolToSmiles(molecule))])
 
 
 def screen_reaction(component_smiles: list[str]) -> ScreenResult:
     """Screen every component of a reaction, plus incompatibilities *between* components.
 
-    A reaction is more than its parts: an oxidizer and a reducing agent are each unremarkable alone
-    and dangerous together, which no per-molecule screen can see. Structural flags from the
-    components are deduplicated per (rule, molecule) so a reagent listed twice is reported once.
+    Pair rules catch combinations no per-molecule screen can see (an oxidiser with a reducing
+    agent). Structural flags are deduplicated per (rule, molecule).
 
     Args:
         component_smiles: Every species in the reaction (reactants, reagents, solvents, products).
 
     Raises:
-        SafetyRulesError: any component does not parse in full — the refusal names the component's
-            position in the list given — the rule table is missing/malformed, or the list is empty
-            or longer than `MAX_COMPONENTS`.
+        SafetyRulesError: A component does not parse in full (named by position), the rule table is
+            missing/malformed, or the list is empty or longer than `MAX_COMPONENTS`.
     """
     require_screenable_size(component_smiles, what="a hazard screen")
     table, patterns = _load_rules(RULES_DIR)
@@ -442,8 +345,6 @@ def screen_reaction(component_smiles: list[str]) -> ScreenResult:
             )
             for a, b in matches
         )
-    # Deduplicated *again* after canonicalizing, because `molecules` is keyed on the caller's
-    # spelling: a reaction listing `CCO` and `OCC` is one substance written twice, and a component
-    # list a surface treats as entities must not show it as two.
+    # Deduplicated again after canonicalising: `CCO` and `OCC` are one substance written twice.
     canonical = list(dict.fromkeys(str(Chem.MolToSmiles(m)) for m in molecules.values()))
     return ScreenResult(flags=_sorted(flags), screened=canonical)

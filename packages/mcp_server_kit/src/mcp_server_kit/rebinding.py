@@ -1,29 +1,12 @@
 """The DNS-rebinding guard on `/mcp`: kept on, and told which names this pod is addressed by.
 
-**What upstream does, and why every in-cluster call was refused.** `FastMCP(name)` (mcp 1.29)
-switches its DNS-rebinding protection on whenever its own `host` setting is loopback — which it
-always is for `FastMCP("x")`, the default, *however uvicorn is later bound* — and then admits only a
-`Host` header of `127.0.0.1:*`, `localhost:*` or `[::1]:*`. Every caller that dials a Service name
-(`chemclaw-mcp-safety` on 8859, the short-name address Chemclaw3's chart ships) sends
-`Host: chemclaw-mcp-safety:8859` and is answered `421 Misdirected Request` before the bearer check,
-the session manager or a tool ever sees it. Measured on a kind cluster: every server in this fleet,
-every tool, while `/healthz` — a plain route outside the MCP app — stayed green and so did every
-probe.
+Upstream's `FastMCP("x")` enables the guard admitting only loopback `Host` headers, so a caller
+dialling a Service name gets `421`. This keeps the guard on with the loopback defaults and adds
+`MCP_ALLOWED_HOSTS` — comma-separated `host:port` or `host:*` entries; every shipped Deployment
+sets its own Service's `name:port`. Unset means exactly upstream's loopback-only behaviour.
 
-**What this does instead.** The guard stays on, with the loopback defaults upstream would have
-used, and `MCP_ALLOWED_HOSTS` *adds* to them: a comma-separated list of `host:port` or `host:*`
-entries, each one a name this pod is legitimately addressed by. Unset (or empty), the settings are
-exactly the loopback-only ones upstream builds, so a dev server on `127.0.0.1` behaves as it did.
-Every shipped `deploy/deployment.yaml` sets it to its own Service's `name:port`.
-`D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name` has the alternative weighed
-(switching the guard off) and why it was not taken.
-
-**An entry is refused at import, naming the variable and the entry**, for the same reason
-`limits.env_bound` refuses a bound there: the realistic mistake is a URL pasted where a host was
-wanted, or a `*` written to make the 421 go away, and either one would otherwise start a pod that
-is either still refusing everything or no longer guarding anything — with `/healthz` green in both
-cases. A wildcard *host* is refused outright: admitting any `Host` is switching the guard off with
-extra steps, and that is a decision for a new record rather than an environment variable.
+An invalid entry (a URL, a wildcard host, no port) is refused at import, naming it: a wildcard host
+would switch the guard off.
 """
 
 from __future__ import annotations
@@ -37,10 +20,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 ALLOWED_HOSTS_ENV = "MCP_ALLOWED_HOSTS"
 
-#: What upstream's `FastMCP.__init__` admits for a loopback-configured server, transcribed so that
-#: "unset" means exactly that. `tests/test_rebinding.py` holds the transcription against a freshly
-#: constructed `FastMCP`, so an upstream change to its defaults turns a test red rather than
-#: silently widening or narrowing this fleet's.
+#: Upstream's loopback defaults, transcribed so "unset" means exactly that;
+#: `tests/test_rebinding.py` holds them against a fresh `FastMCP`.
 LOOPBACK_HOSTS: tuple[str, ...] = ("127.0.0.1:*", "localhost:*", "[::1]:*")
 LOOPBACK_ORIGINS: tuple[str, ...] = (
     "http://127.0.0.1:*",
@@ -48,9 +29,8 @@ LOOPBACK_ORIGINS: tuple[str, ...] = (
     "http://[::1]:*",
 )
 
-# A DNS name or a dotted IPv4 address, lower case. Upper case is refused rather than folded:
-# upstream compares the `Host` header byte for byte, so a folded entry would still not match the
-# header the operator was thinking of, and a refusal says so where folding would say nothing.
+# A DNS name or dotted IPv4 address, lower case. Upper case is refused, not folded: upstream
+# compares the `Host` header byte for byte.
 _HOSTNAME = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*")
 
 
@@ -107,10 +87,8 @@ def _validate(entry: str) -> str:
 def parse_allowed_hosts(raw: str | None) -> tuple[str, ...]:
     """The extra `Host` values `raw` admits, validated, in order, without duplicates.
 
-    `None`, an empty string and whitespace are all "unset", matching how a Kubernetes `env:` entry
-    with no value arrives. Inside a non-empty value, an empty entry (`a,,b`, a trailing comma) is
-    refused rather than skipped: it is a typo in a list somebody meant, and the entry it was meant
-    to be is missing.
+    `None`, empty and whitespace mean unset. An empty entry inside a list (`a,,b`) is a typo and is
+    refused.
 
     Raises:
         ValueError: An entry is empty, carries whitespace, is a URL, has a wildcard host, has no
@@ -132,10 +110,7 @@ def parse_allowed_hosts(raw: str | None) -> tuple[str, ...]:
 def transport_security(raw: str | None) -> TransportSecuritySettings:
     """The settings `/mcp` is guarded with: always on, loopback plus what `raw` adds.
 
-    The origins follow the hosts — `http://<entry>` for each — because upstream checks `Origin`
-    whenever a request carries one, and a page served from an admitted host is the same origin as
-    the server it is talking to. A server-to-server caller (Chemclaw3, `httpx`) sends no `Origin`
-    at all, which upstream admits.
+    Allowed origins are `http://<entry>` for each host; server-to-server callers send no `Origin`.
     """
     extra = parse_allowed_hosts(raw)
     return TransportSecuritySettings(
@@ -148,9 +123,7 @@ def transport_security(raw: str | None) -> TransportSecuritySettings:
 def apply_allowed_hosts(server: FastMCP) -> None:
     """Install the guard's settings on `server`, from `MCP_ALLOWED_HOSTS`, before its app is built.
 
-    Must run before `server.streamable_http_app()`, which is where upstream reads the setting.
-    It **replaces** whatever the `FastMCP` was constructed with rather than merging into it: a
-    `FastMCP(host="0.0.0.0")` would otherwise arrive here with the guard off, and one place deciding
-    the posture for every server is the reason this lives in the kit.
+    Must run before `server.streamable_http_app()`, which reads them. Replaces, not merges, so a
+    `FastMCP(host="0.0.0.0")` cannot arrive with the guard off.
     """
     server.settings.transport_security = transport_security(os.environ.get(ALLOWED_HOSTS_ENV))

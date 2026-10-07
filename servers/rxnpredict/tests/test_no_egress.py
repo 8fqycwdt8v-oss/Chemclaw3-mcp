@@ -1,8 +1,7 @@
-"""This server's own code holds no way to call out — the same three lines every server ships.
+"""This server's own code holds no way to call out.
 
-Worth more here than in `props`. This one carries model adapters whose upstream documentation is
-full of download URLs, and those were moved into the README precisely because this scan refuses a
-host literal in a module. The runtime guard covers what the adapters' *libraries* might do.
+Model adapters' download URLs live in the README because this scan refuses a host literal in a
+module; the runtime guard covers what the adapters' libraries might do.
 """
 
 from __future__ import annotations
@@ -24,12 +23,11 @@ PLUGIN_MAPS = frozenset({"_FORWARD_MODULES", "_CONDITIONS_MODULES"})
 
 
 def test_no_module_can_reach_the_network() -> None:
-    """No HTTP client imported, no remote host named — checked by AST, not by grep.
+    """No HTTP client imported, no remote host named, checked by AST.
 
-    One computed import is argued rather than exempted: `discover_predictors` loads each optional
-    predictor with `importlib.import_module(modname)`, and the scan cannot read `modname`. What it
-    can read is the map the name comes from, which the two tests below hold to first-party modules
-    this package ships (`D-2026-09-26-a-computed-import-is-argued-at-its-site`).
+    `discover_predictors` uses `importlib.import_module(modname)`, which the scan cannot read; it is
+    argued rather than exempted, by the two tests below holding the name's source map to
+    first-party modules this package ships.
     """
     assert_no_egress_sources(
         PACKAGE,
@@ -43,11 +41,10 @@ def test_no_module_can_reach_the_network() -> None:
 
 
 def test_the_plug_in_loader_imports_only_its_own_map() -> None:
-    """The justification's first half: the name `import_module` receives comes from the maps.
+    """The name `import_module` receives comes only from the module maps.
 
-    Read as a tree, so a loader that grew a second source of names — an environment variable, a
-    settings list, an entry point — fails here rather than inheriting an argument written about a
-    literal map.
+    Read as a tree, so a loader that gained another source of names (environment, settings, entry
+    points) fails here.
     """
     tree = ast.parse(LOADER.read_text(encoding="utf-8"))
     loader = next(

@@ -38,7 +38,7 @@ each build passes `--build-arg CHEMCLAW_REVISION=<full sha>`. The same build by 
 
 ## The two things only a running image can prove
 
-1. **`/healthz` reports this build's revision.** `tests/test_fleet.py` asserts the `ARG`/`ENV` pair
+1. **`/healthz` reports this build's revision.** `tests/test_fleet_images.py` asserts the `ARG`/`ENV` pair
    exists in each `Containerfile`; only a build shows the value arrived. Chemclaw3's own revision
    field read `unknown` in every image for eight months with its test green, because nothing ever
    passed the build argument.
@@ -61,7 +61,7 @@ for the local case and costs nothing; it must not be read as the cluster's probe
 **The Pod spec ships with each server.** Every server has `deploy/deployment.yaml`, `deploy/hpa.yaml`
 and `deploy/pdb.yaml` beside the `Service`, the `NetworkPolicy` and the `ServiceMonitor` —
 `docs/adding-a-server.md` lists them as required and
-`tests/test_fleet.py::test_a_server_ships_the_whole_set` is what requires them. Applying them is
+`tests/test_fleet_layout.py::test_a_server_ships_the_whole_set` is what requires them. Applying them is
 [`operations.md`](operations.md) §2.
 
 What the shipped Deployment wires, per server, and what an operator therefore does not:

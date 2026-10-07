@@ -1,16 +1,12 @@
 """The shared shape of every MCP server in this repository.
 
-Importing any part of a server imports this package, and this package **arms the egress guard**.
-That is the point: the guard has to be on before a dependency gets a chance to open a socket, and
-the only moment guaranteed to precede that is import. `MCP_EGRESS_GUARD=off` opts out, and is set
-in no shipped deployment (`tests/test_egress.py` pins the default).
+Importing this package **arms the egress guard**, because import is the only moment guaranteed to
+precede a dependency opening a socket. `MCP_EGRESS_GUARD=off` opts out and is set in no shipped
+deployment.
 """
 
-# Arm the guard FIRST, before any other import pulls in a dependency graph. A module that binds
-# `socket.getaddrinfo` (or `connect`) into its own namespace at import time keeps whatever function
-# was current then — so if FastAPI/Starlette/MCP/prometheus are imported before the guard is armed,
-# any such binding is of the *unguarded* call and outlives arming. Arming here means every import
-# below, and every dependency they pull, sees the patched socket.
+# Arm the guard FIRST: a module that binds `socket.getaddrinfo`/`connect` into its namespace at
+# import keeps the unguarded function, so every import below must see the patched socket.
 from mcp_server_kit import egress as egress
 
 egress.arm_from_env()

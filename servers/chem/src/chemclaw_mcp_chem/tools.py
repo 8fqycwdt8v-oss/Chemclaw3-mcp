@@ -1,41 +1,13 @@
 """The `chem` MCP tool surface: bench chemistry over RDKit.
 
-**These docstrings are the prompt, and every model call pays for them.** Argument names, defaults
-and this prose are what the agent reads before deciding whether to call a tool and what to pass
-it, and Chemclaw3 charges their whole token cost to every request it sends
-(`SERVED_ELSEWHERE_ALLOWANCE` there). So a docstring states the *rule* — the units, what the tool
-is not, which index to pass, the bound by name — and the measurement that earned the rule lives
-beside the code or in the test that holds it, not here. Several rules exist because a live run got
-something wrong; the rule stays, and the anecdote does not ride on every request.
+Tool docstrings are the prompt and every model call pays for them, so they state the rule (units,
+what the tool is not, which index to pass, the bound by name); the evidence lives beside the code
+or in tests. Every tool is a pure function of its arguments plus a vendored table.
 
-Every capability here is a pure function of its arguments plus a read of a vendored table: no
-store, no durable state, no network. A count is deliberately not written here — the sentence that
-used to say "five" outlived two additions.
-
-**The enumerations exist so that the expensive half never has to guess its own universe.**
-Chemclaw3's `rank_species` and `survey_bond_strengths` rank a *set*; these produce the set from the
-molecular graph, for a small fraction of what ranking it costs. Its skills state the rule as
-*enumerate, then compute, and never the reverse*, and the reason is that the alternative is a model
-inventing plausible SMILES. "Free" is what that used to say, and it is the wrong word twice over:
-these are milliseconds on a drug-sized molecule and **seconds** on a large one — `describe_topology`
-measures 2,793 ms on a 996-atom dendrimer — and every one but `enumerate_stereoisomers` is priced
-by an input bound before it runs.
-
-**"Cheap" is relative to a DFT job, not to an event loop.** RDKit parsing, `Descriptors.MolWt` and
-especially 2D-coordinate generation plus SVG rendering are CPU-bound C++ that holds the GIL for
-milliseconds to tens of milliseconds, and one process answers every connected chat turn on one
-loop — Chemclaw3 load-tested this connector and measured throughput flat from 10 to 50 concurrent
-users, the signature of exactly that. So each tool does its RDKit work in a worker thread
-(`asyncio.to_thread`) and the coroutine only awaits it.
-
-**What the offload buys is latency isolation, not throughput, and this docstring used to claim the
-opposite.** It said RDKit releases the GIL for the heavy passes "so the threads are real parallelism
-on a multi-CPU pod". Measured here, 1 to 16 concurrent depictions of a 241-atom molecule on a
-four-core box ran at cpu_util 0.80-1.15x with wall clock scaling linearly and throughput flat at
-16-23/s: they run one at a time. The offload is still right and still necessary — it is what keeps
-the event loop and `/healthz` answering while a render runs — but the way this server serves more
-depictions per second is more pods. `engine/admission.py` has the measurement and what follows from
-it; `deploy/hpa.yaml` is the remedy.
+The enumerations produce the set Chemclaw3's `rank_species` and `survey_bond_strengths` rank, so a
+model never invents one; each is priced by an input bound before it runs. RDKit work holds the
+GIL, so each tool runs it in `asyncio.to_thread`: that keeps the event loop and `/healthz`
+answering, but buys no throughput — the server scales by replicas (`engine/admission.py`).
 """
 
 from __future__ import annotations
@@ -86,16 +58,9 @@ from chemclaw_mcp_chem.engine.torsions import Torsion, enumerate_torsion_candida
 
 server = FastMCP("chem")
 
-# The pod's ceiling on concurrent heavy calls — the depiction and the species tools, one gate
-# because they spend one interpreter. Built at import; a test that needs a different ceiling
-# replaces this attribute, so the number a gate enforces is the number it was built from. The
-# default and its derivation live in `engine/admission.py`, beside the measurement they rest on.
-#
-# `env_bound` rather than a bare `int(os.environ.get(...))` because `Admission` refuses a ceiling
-# below 1 with a message naming the *ceiling* — which leaves an operator a CrashLoopBackOff and a
-# number whose source they have to guess. The variable's own name is the one thing they can act on.
-# It is written out rather than passed as `VARIABLE` because the fleet's bound scan reads the
-# literal; `tests/test_admission.py` holds the two spellings equal.
+# The pod's ceiling on concurrent heavy calls, built at import (a test replaces the attribute).
+# `env_bound` refuses a bad value naming the variable. Written as a literal rather than `VARIABLE`
+# because the fleet's bound scan reads the literal; `tests/test_admission.py` holds the two equal.
 if os.environ.get(RETIRED_VARIABLE, "").strip():
     raise ValueError(
         f"{RETIRED_VARIABLE} was renamed {VARIABLE} when the ceiling grew from depictions to every "
@@ -119,15 +84,9 @@ _T = TypeVar("_T")
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how many heavy calls run at once, refusing promptly when the pod is full.
 
-    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
-    `ADMISSION_MARKER` so a coverage test can check the gated set rather than a second hand-kept
-    list. `asyncio.shield` releases the slot when the work finishes rather than when the caller
-    stops waiting: cancelling the awaiting coroutine does not stop the worker thread, so releasing
-    on cancellation would hand a slot to a retry while the original call kept burning a core.
-
-    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
-    from `inspect.signature`, which follows `__wrapped__` back to the real signature. Without it the
-    tool would advertise `(*args, **kwargs)`.
+    Stamped with `ADMISSION_MARKER` for the coverage test. `asyncio.shield` releases the slot when
+    the work finishes, not when the caller stops waiting, since the worker thread keeps running.
+    `functools.wraps` lets FastMCP read the real signature for the argument schema.
     """
 
     @functools.wraps(work)
@@ -187,17 +146,8 @@ def _resolve_or_explain(name: str) -> ResolvedCompound | UnrecognisedCompound:
 def _as_tool_result(answer: ResolvedCompound | UnrecognisedCompound) -> CallToolResult:
     """Put an answer on the wire with the declared structured shape and a text the agent can read.
 
-    **Why `resolve_compound` builds its own result.** Its miss used to be a bare `None`, and
-    FastMCP turns `None` into *no content blocks*: the agent was handed an empty string for
-    "aniline" and the audit recorded `ok` with an empty result. The miss now has words, in the
-    text block every client renders.
-
-    **Why the structured half still says `null` for a miss.** `structuredContent` is validated
-    against the declared output schema — `{"result": ResolvedCompound | null}` — and that schema is
-    what Chemclaw3 was told this tool returns. Widening it to carry the miss would be a contract
-    change on the other side of the seam for no reader that needs it; a structured consumer already
-    reads `null` as "not recognised". A hit is byte-identical to what FastMCP wrote before: the same
-    JSON text, and the same `{"result": {...}}`.
+    FastMCP turns `None` into no content at all, so a miss gets words in the text block. The
+    structured half stays `null` for a miss, matching the output schema Chemclaw3 was given.
     """
     text = answer.model_dump_json(indent=2)
     structured = answer.model_dump(mode="json") if isinstance(answer, ResolvedCompound) else None

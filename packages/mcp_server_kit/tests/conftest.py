@@ -1,13 +1,8 @@
-"""Running one `connector_app` under a real uvicorn, for the tests that cannot be honest without it.
+"""Running one `connector_app` under a real uvicorn, for the tests that need the transport.
 
-Several of this kit's behaviours are properties of the *transport* rather than of a function: what
-a middleware stack costs, what a body cap does to a chunked upload, which thread a tool body runs
-on, and whether an idle session is still there ten seconds later. None of those can be seen through
-an in-process ASGI call, and each of them shipped broken at some point because the only tests were
-the in-process ones.
-
-So the harness is a fixture rather than a copy per file — it was three copies when this was
-written, differing only in what they waited for.
+Some kit behaviours are properties of the transport rather than of a function (middleware cost,
+body cap on a chunked upload, which thread a tool body runs on, idle session lifetime) and cannot
+be seen through an in-process ASGI call.
 """
 
 from __future__ import annotations
@@ -40,11 +35,8 @@ def free_port() -> int:
 def serving() -> Callable[..., Any]:
     """A factory: `with serving(app) as base_url:` runs `app` on loopback for the block.
 
-    `require_ready` decides what "started" means, and the distinction is load-bearing. The default
-    waits only for the port to answer *at all* — uvicorn's lifespan has then completed, whatever
-    `/healthz` reports — because a readiness probe answering 503 is a successful HTTP response and
-    not a startup failure. A test whose subject is the happy path passes `require_ready=True` and
-    waits for the 200.
+    By default it waits only for the port to answer, since a 503 readiness answer is a successful
+    startup. A happy-path test passes `require_ready=True` to wait for the 200.
     """
 
     @contextmanager
@@ -80,9 +72,8 @@ def serving() -> Callable[..., Any]:
 def mcp_session() -> Callable[..., Any]:
     """A factory: `async with mcp_session(base, token=...) as session:` — a real MCP handshake.
 
-    A factory rather than a session fixture because a test may want two of them, or may need to be
-    *inside* the session when it asserts. `headers` carries the `X-Chemclaw-*` identity a real call
-    from Chemclaw3 sends, so a test can ask what happened to those values.
+    A factory so a test can open two sessions or assert from inside one. `headers` carries the
+    `X-Chemclaw-*` identity a real Chemclaw3 call sends.
     """
 
     @asynccontextmanager

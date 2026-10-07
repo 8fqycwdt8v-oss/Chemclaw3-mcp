@@ -1,59 +1,16 @@
 """The prediction cache: bounded, in-process, and deliberately not on disk.
 
-Upstream backed this with `diskcache` under `~/.cache/chemclaw2_forward`. That cannot work here.
-The image is rootless with a read-only root filesystem, so the cache would need a writable volume —
-and a volume exists to hold something worth keeping across a restart, which a memo of a
-deterministic function is not.
+The image is rootless with a read-only root filesystem, and a memo of a deterministic function is
+not worth a volume. So it is an in-process LRU: a restart loses it (the win is repeated calls within
+a conversation), there is no TTL (a prediction goes stale only with a new image), and there is no
+clear tool, so the server has no state-changing surface.
 
-So it is an LRU in the process, and three things follow that are worth stating rather than
-discovering:
-
-- **A restart loses the cache.** Accepted: the win this exists for is a repeated call *inside a
-  conversation* — the agent asking for the same reaction twice while reasoning — and that is
-  entirely within one process lifetime.
-- **There is no TTL.** A model's prediction for a reaction does not go stale; only the model does,
-  and that changes with a new image.
-- **There is nothing to clear**, which is why this server exposes no `clear_prediction_cache` tool
-  and therefore has no state-changing surface at all. `clear()` stays for tests.
-
-The key is the same one upstream used — predictor, *canonical* reactants (and product), top_k — so
-two spellings of one reaction share a slot.
-
-**A prediction derives its key once, and the surface here is shaped to make that the only way to
-use it.** The convenience pairs this class used to expose — `get_forward`/`set_forward` and their
-conditions siblings — each canonicalised, so one cache *miss* canonicalised the same reaction twice:
-wasted RDKit work on the hot path, and, when canonicalisation is what is broken, two counts of one
-degraded answer. Measured on the shipped `BaseForwardPredictor.predict` with the guard refusing
-inside the canonicaliser: `chemclaw_mcp_degraded_total` moved **2.0** for one prediction, **4.0**
-for a conditions prediction, with a WARNING line each — and `rxnpredict`'s consensus tools fan out
-over every enabled predictor (`D-2026-09-12-one-tool-call-is-not-one-thread` measures six at once),
-so one tool call on an image without RDKit published 12 to 24. A series documented as "answers
-returned with a component's contribution missing" was not a count of answers. So the caller asks for
-a key (`key_forward`, `key_conditions`) and passes it to `get` and `set`, and there is no second way
-in that could re-derive it.
-
-**An input this server will not canonicalise is not cached, and it used to be keyed by the caller's
-raw text.** That fallback was `except Exception: return smiles`, and it was wrong three ways, each
-measured on the shipped code before it was replaced:
-
-- **It was not a key.** `canonical_multi_smiles` sorts the components, raw text does not, so
-  `CCO.<garbage>` and `<garbage>.CCO` — one set of molecules, two spellings — minted two entries.
-  A key derived from text nothing validated is not an identity, and this repository's rule for that
-  case is `CLAUDE.md`'s: refuse rather than approximate. So the key derivation returns `None` and
-  the entry is simply not cached; `get` misses, `set` is a no-op, and the prediction runs. A cache
-  still never fails a prediction — it declines to claim it recognised one.
-- **It swallowed two deliberate refusals.** `mcp_server_kit.limits` exists because `MolToSmiles`
-  on a large enough molecule overflows the C stack and takes the pod down; `canonical_smiles`
-  raises *before* parsing for that reason. Both bounds arrived here as a `ValueError` and became a
-  cache row keyed by the 5,000-character string the bound exists to reject.
-- **It hid a broken component.** The bare `except Exception` caught `ImportError` (RDKit absent
-  from the image), `EgressForbidden` (the guard refusing a library's outbound call, which is an
-  `OSError` and so looks like nothing in particular) and `MemoryError` alike — measured, all three
-  returned raw text and moved no counter. `CLAUDE.md` claims every path in this fleet that catches
-  an exception and answers anyway classifies it through `mcp_server_kit.degradation`; this one did
-  not. It does now, and only for that arm: a `ValueError` is the caller's input being outside what
-  this server canonicalises, which is not a degradation of this pod and must not fire the metric
-  that says one component of it has gone missing.
+The key is predictor, canonical reactants (and product), and `top_k`, so two spellings of one
+reaction share an entry. A caller derives the key once (`key_forward`, `key_conditions`) and passes
+it to `get` and `set`, so a miss canonicalises once and a broken canonicaliser is counted once. An
+input this server will not canonicalise gets a `None` key and is simply not cached: raw caller text
+is not an identity, and keying on it would also absorb the size-bound refusals and hide a broken
+component.
 """
 
 from __future__ import annotations
@@ -77,10 +34,9 @@ logger = logging.getLogger(__name__)
 
 Payload = list[dict[str, Any]]
 
-# What a degraded answer from here is labelled. One name for both canonicalisers, because what the
-# scrape needs to say is "this pod cannot derive a cache identity", not which of the two calls hit
-# it. Declared through `register_components` at import, since `degradation.record` clamps an
-# unregistered component onto `<unknown>` rather than minting a series for it.
+# The component a degraded answer from here is labelled with: "this pod cannot derive a cache
+# identity". Registered at import, since `degradation.record` clamps unregistered components to
+# `<unknown>`.
 COMPONENT = "prediction_cache"
 degradation.register_components(COMPONENT)
 
@@ -93,22 +49,10 @@ def _hash_key(parts: list[str]) -> str:
 def _canonical_or_none(canonicalise: Callable[[str], str], smiles: str) -> str | None:
     """The canonical form of `smiles`, or `None` when this server will not derive one.
 
-    `None` is the whole fallback: the caller turns it into "do not cache this", because the
-    alternative — keying on unvalidated caller text — is an identity nobody checked. See the module
-    docstring for the three defects that produced.
-
-    The two arms are different events and are answered differently:
-
-    - **`ValueError`** is what `preprocessing` raises for an input outside what this server
-      canonicalises — an unparseable SMILES, or one over `mcp_server_kit.limits`' character or atom
-      bound. That is a fact about the caller's argument, not about this pod, so it is logged at
-      DEBUG (with the string truncated, since an over-length one is exactly the case that reaches
-      here) and moves no metric. Counting it would make `chemclaw_mcp_degraded_total` — the series
-      that means a component of this server has gone missing — fire on every typo.
-    - **Anything else** is this pod: RDKit absent from the image (`ImportError`), the egress guard
-      refusing a library's outbound call (`EgressForbidden`, an `OSError` that any coarse handler
-      buries), an allocation failing. Those are classified and counted, which is what makes them
-      visible from a scrape rather than from a log line nobody tails.
+    - `ValueError` (unparseable, or over the `mcp_server_kit.limits` bounds) is the caller's input:
+      logged at DEBUG with the string truncated, and not counted.
+    - Anything else is this pod (RDKit absent, `EgressForbidden`, allocation failure): classified
+      and counted on `chemclaw_mcp_degraded_total`.
 
     Args:
         canonicalise: `canonical_multi_smiles` or `canonical_smiles`.
@@ -122,8 +66,7 @@ def _canonical_or_none(canonicalise: Callable[[str], str], smiles: str) -> str |
     except ValueError as exc:
         logger.debug("not caching %s: %s", echo(smiles), exc)
         return None
-    # BLE001: blind on purpose and classified on the next line - see this function's docstring for
-    # why the `ValueError` arm above is separated out rather than folded in here.
+    # BLE001: blind on purpose and classified on the next line; `ValueError` is handled above.
     except Exception as exc:  # noqa: BLE001
         cause = degradation.classify(exc)
         degradation.record(server=SERVER, component=COMPONENT, cause=cause)
@@ -178,11 +121,7 @@ class PredictionCache:
     ) -> str | None:
         """Key for a conditions prediction, or `None` if either side has no canonical form.
 
-        **The reactants short-circuit.** Both sides used to be canonicalised before either was
-        tested, so one broken RDKit produced *two* `chemclaw_mcp_degraded_total` increments from
-        one key — and the answer a caller receives is one answer, whichever half of it this pod
-        could not name. There is also nothing to learn from the second failure: `_canonical_or_none`
-        has already logged and classified the first.
+        Short-circuits on the reactants so one broken canonicaliser counts once per answer.
         """
         canon_reactants = _canonical_or_none(canonical_multi_smiles, reactants)
         if canon_reactants is None:

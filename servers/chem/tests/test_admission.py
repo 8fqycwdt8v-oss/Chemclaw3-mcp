@@ -1,29 +1,16 @@
 """How many heavy calls this pod accepts at once, and what it does with the call that arrives full.
 
-`test_depiction_bound.py` is about the *arithmetic*: where `DEFAULT_MAX_CONCURRENT_HEAVY_CALLS`
-comes from, and how it relates to the pod's thread pool. It covers the ceiling only
-indirectly — through the numbers, not through the gate — so the gate itself had no test at all in
-the one server where it shipped first.
+`test_depiction_bound.py` covers where the ceiling's number comes from; this drives the gate:
 
-This file drives it. Four properties, each with its own failure:
+- **The refusal is prompt.** A full pod refuses before laying anything out, rather than queueing.
+- **The slot outlives a caller that gave up.** Cancelling the coroutine does not stop the worker
+  thread, so the slot is held until the work finishes.
+- **Every ungated tool stays answerable.**
+- **The gate and the number it enforces are the same object**, read once at import from
+  `CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS`.
 
-- **The refusal is prompt.** A full pod turns a render away before laying out anything, rather than
-  queueing it behind depictions that hold the interpreter. That is admission control and not the
-  wall clock `CLAUDE.md` argues against: nothing is abandoned mid-burn, because nothing was started.
-- **The slot outlives a caller that gave up.** Cancelling the awaiting coroutine does not stop the
-  worker thread, so releasing on cancellation would hand the freed slot to a retry while the
-  original layout was still holding the GIL.
-- **Every ungated tool stays answerable.** The ceiling covers the heavy band, and refusing a
-  compound lookup because the pod is drawing would turn a CPU bound into an outage.
-- **The gate and the number it enforces are the same object.** The ceiling is read once, at import,
-  from `CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS`.
-
-The gated set is checked against the *served* surface rather than a list kept here, for the reason
-this repository keeps relearning: the thing that must not be forgotten is exactly the thing a
-forgetful change adds. Note that it is **not** checked against the manifest's `state_changing` list
-the way `servers/calc`'s is — `render_structure` is `read_only` there, correctly, because drawing a
-molecule changes nothing. Cost and mutability are different axes, and this server is the one that
-makes that obvious.
+The gated set is checked against the served surface, not the manifest's `state_changing` list:
+every tool here is `read_only`, and cost and mutability are different axes.
 """
 
 from __future__ import annotations
@@ -128,12 +115,11 @@ def test_a_double_release_cannot_open_the_gate() -> None:
 async def test_a_full_pod_refuses_the_next_render_before_starting_it(
     one_slot: Admission, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The driven saturation probe: one render in flight, the next refused promptly.
+    """A full pod refuses the next render before starting it.
 
-    "Promptly" is measured against the work it would have queued behind rather than against a bare
-    clock — the render in flight holds its slot until this test releases it, so a gate that queued
-    could not answer the second caller at all. The peak concurrency is asserted beside it, because
-    a refusal that still reached the worker thread would satisfy the timing and be the defect.
+    The render in flight holds its slot until the test releases it, so a queueing gate could not
+    answer the second caller at all. Peak concurrency is asserted too: a refusal that still reached
+    the worker would pass the timing.
     """
     blocking = _BlockingRender()
     monkeypatch.setattr(tools, "render_svg", blocking)
@@ -150,10 +136,8 @@ async def test_a_full_pod_refuses_the_next_render_before_starting_it(
         f"the refusal took {refusal * 1000:.1f} ms while a depiction held the only slot open "
         "indefinitely; a refusal that takes a measurable share of the work is a queue"
     )
-    # The refusal names a *replica* rather than the knob, which is this server's own deviation
-    # from `servers/calc`'s wording and is argued in `engine/admission.py`: RDKit holds the GIL
-    # through a depiction, so raising the ceiling admits more renders onto the same serialised
-    # interpreter and buys nothing. Advice a caller cannot act on is worse than none.
+    # The refusal points to replicas rather than the knob: RDKit holds the GIL through a depiction,
+    # so a higher ceiling buys nothing (see `engine/admission.py`).
     assert "this server scales by replicas" in _refusal_text(one_slot)
 
     blocking.finish.set()
@@ -176,11 +160,10 @@ def _refusal_text(gate: Admission) -> str:
 async def test_the_slot_is_held_until_the_render_finishes_not_until_the_caller_gives_up(
     one_slot: Admission, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The half that breaks the retry loop.
+    """The slot is held until the render finishes, not until the caller gives up.
 
-    `Compute2DCoords` is superlinear and uninterruptible: cancelling the awaiting coroutine leaves
-    the worker thread laying the molecule out, so releasing on cancellation would hand the freed
-    slot to a retry while the interpreter was still held by the first one.
+    `Compute2DCoords` is uninterruptible, so releasing on cancellation would admit a retry while the
+    interpreter is still held.
     """
     blocking = _BlockingRender()
     monkeypatch.setattr(tools, "render_svg", blocking)
@@ -227,17 +210,10 @@ async def test_every_other_tool_stays_answerable_while_the_pod_is_rendering(
 
 
 def test_the_band_is_gated_and_nothing_else_is() -> None:
-    """Derived from the served surface, so a heavy tool added next year is gated or this fails.
+    """Derived from the served surface, so a heavy tool added later is gated or this fails.
 
-    Deliberately *not* derived from the manifest's `state_changing` list, which is how
-    `servers/calc` checks the same thing: every tool here is `read_only`, correctly. Cost and
-    mutability are different axes.
-
-    **This asserted `{"render_structure"}` — the one tool whose worst legal call is 4.6 ms — while
-    five species tools that measure seconds, two of them holding the interpreter for all of it, went
-    ungated.** `engine/admission.py` has the measurement. The tools left out are argued there too:
-    a compound lookup, a charge table, green metrics, and three graph walks measured at most 0.55 s
-    on the worst 1,990-atom shapes.
+    Not from `state_changing`: every tool here is `read_only`. The band is the depiction plus the
+    species tools that cost seconds; the ungated tools are argued in `engine/admission.py`.
     """
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
@@ -280,13 +256,10 @@ async def test_a_species_enumeration_and_a_depiction_share_one_ceiling(
 def test_the_ceiling_is_an_environment_variable_and_not_a_constant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The default is settable from outside the image, which is what puts it in the fleet ratchet.
+    """The ceiling is an environment variable, read off the module under two environments.
 
-    Read off the module under two environments rather than re-typed into this file. The version
-    this replaces had a `_configured_ceiling()` helper *here* that restated `tools.py`'s own
-    expression, so it compared the test to itself and never touched `tools._admission` — the same
-    shape that left `servers/rxnlabel` able to hardcode its batch bound with 209 tests green.
-    `tests/test_fleet.py` is what then refuses a shipped file that moves the variable.
+    Re-typing `tools.py`'s expression here would compare the test to itself. The fleet tests then
+    refuse a shipped file that moves the variable.
     """
     monkeypatch.delenv(VARIABLE, raising=False)
     monkeypatch.delenv(RETIRED_VARIABLE, raising=False)
@@ -335,9 +308,7 @@ def test_the_shipped_gate_enforces_the_shipped_default() -> None:
 def test_a_gated_tool_still_advertises_its_real_signature() -> None:
     """`functools.wraps` is load-bearing: without it the tool's schema is `(*args, **kwargs)`.
 
-    FastMCP builds each tool's input schema from `inspect.signature`, which follows `__wrapped__`.
-    A gate that quietly replaced every argument name with `kwargs` would be invisible in this
-    server's own tests and fatal to the agent reading the schema.
+    FastMCP builds the input schema from `inspect.signature`, which follows `__wrapped__`.
     """
     schema = asyncio.run(tools.server.list_tools())
     rendered = next(tool for tool in schema if tool.name == "render_structure")

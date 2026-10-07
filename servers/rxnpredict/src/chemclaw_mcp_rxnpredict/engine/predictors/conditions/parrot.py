@@ -1,13 +1,8 @@
 """Parrot reaction condition predictor.
 
-Wang et al. 2023 — `wangxr0526/Parrot`. Transformer trained on Pistachio and
-USPTO condition datasets; predicts catalysts, solvents, reagents, and
-temperatures. +13.44% top-3 over the Coley 2018 baseline.
-
-The upstream repo is a research codebase, not a pip package — users clone it
-and install via the bundled `setup.py`/conda env. The wrapper below uses the
-public `parrot.inference` API once it's importable; until then the predictor
-is marked unavailable.
+Wang et al. 2023 — `wangxr0526/Parrot`. A transformer trained on Pistachio and USPTO condition data,
+predicting catalysts, solvents, reagents and temperature. Not a pip package; the wrapper uses
+`parrot.inference` once importable, and marks itself unavailable otherwise.
 """
 
 from __future__ import annotations
@@ -53,8 +48,7 @@ class ParrotConditions(BaseConditionsPredictor):
     def predict_sync(self, reactants: str, product: str, top_k: int) -> list[ConditionsPrediction]:
         rxn = build_reaction_smiles(reactants=reactants, product=product)
         raw = self._predictor.predict(rxn, top_n=top_k)
-        # Parrot returns a list of dicts: {"catalyst": [...], "solvent": [...],
-        # "reagent": [...], "temperature": float, "score": float}
+        # Parrot returns dicts with `catalyst`, `solvent`, `reagent`, `temperature` and `score`.
         preds: list[ConditionsPrediction] = []
         for i, item in enumerate(raw[:top_k]):
             preds.append(
@@ -92,10 +86,7 @@ try:
     import torch  # noqa: F401
 
     register_conditions(ParrotConditions())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         ParrotConditions.name,

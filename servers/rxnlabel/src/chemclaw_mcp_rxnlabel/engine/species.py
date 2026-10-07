@@ -1,17 +1,8 @@
 """What one molecule *is*: its canonical form, its scaffold, and the groups it carries.
 
-**The functional-group vocabulary is first-party and always used, even where Rxn-INSIGHT is
-installed.** That is deliberate and it is the one place this server refuses to delegate. The group
-names are stored in `reaction_species.functional_groups` and queried by *exact array containment* —
-"a product carrying an aryl halide" is `functional_groups @> ARRAY['aryl halide']` — so the
-vocabulary is a wire contract, not a convenience. Taking it from an optional dependency would mean
-a corpus labelled with the extra installed and one labelled without it answer the same query
-differently, which is precisely the silent-divergence failure this whole subsystem is built to
-avoid. Rxn-INSIGHT names the *reaction*; this names the molecules.
-
-The list is Ertl-flavoured — it covers what a process chemist filters on — and it is deliberately
-short. A hundred groups nobody queries is a hundred rows of array per species; the ones here are
-the ones that appear in the questions this index exists to answer.
+The functional-group vocabulary is first-party and always used, even where Rxn-INSIGHT is installed:
+group names are stored and queried by exact array containment, so they are a wire contract that must
+not depend on an optional extra. Deliberately short — the groups a process chemist filters on.
 """
 
 from __future__ import annotations
@@ -21,12 +12,8 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 
 from chemclaw_mcp_rxnlabel.engine.chem import read_molecule
 
-# `(name, SMARTS)`, matched independently — a molecule carries every group it matches, so an
-# N-aryl amide is both "amide" and "aniline". Order is presentation only.
-#
-# Each name is a wire contract: it is what a caller passes to `product_functional_group`. Renaming
-# one is a labeller-version bump, because every stored row carries the old spelling until it is
-# re-labelled.
+# `(name, SMARTS)`, matched independently, so a molecule carries every group it matches. Order is
+# presentation only. Each name is a wire contract; renaming one requires a `SERVER_VERSION` bump.
 FUNCTIONAL_GROUPS: tuple[tuple[str, str], ...] = (
     ("carboxylic acid", "[CX3](=O)[OX2H1]"),
     ("carboxylate", "[CX3](=O)[OX1-]"),
@@ -82,9 +69,8 @@ def canonical_smiles(smiles: str) -> str | None:
 def scaffold(smiles: str) -> str | None:
     """The Bemis-Murcko scaffold — the ring systems and the linkers between them.
 
-    `None` for an acyclic molecule, which is the honest answer rather than the empty string RDKit
-    returns: a solvent has no scaffold, and grouping every acyclic species under `""` would make a
-    "which scaffolds appear" roll-up mostly a count of ethanol.
+    `None` for an acyclic molecule rather than RDKit's `""`, so acyclic species do not group under
+    one empty scaffold.
     """
     mol = read_molecule(smiles)
     if mol is None:
@@ -97,13 +83,8 @@ def scaffold(smiles: str) -> str | None:
 def functional_groups(smiles: str) -> list[str] | None:
     """Every group in the vocabulary this molecule carries, or `None` if it could not be read.
 
-    Order is the declaration's, not the match's, so two identical structures always produce
-    byte-identical arrays — which matters because the array is stored and compared.
-
-    **`None` and `[]` are different answers and were the same one.** An empty list means the
-    molecule was read and carries no group in this vocabulary; a string that could not be read
-    returned the same empty list, and every later "which products carry an aryl halide" query
-    counted that row as a negative rather than as unlabelled.
+    Declaration order, so identical structures give byte-identical stored arrays. `[]` means read
+    and carrying none; `None` means unreadable, which a query must not count as a negative.
     """
     mol = read_molecule(smiles)
     if mol is None:

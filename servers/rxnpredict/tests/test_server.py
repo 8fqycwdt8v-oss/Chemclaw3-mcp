@@ -1,12 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-The test that matters most for a *fork*. Upstream mounted `fastapi-mcp` over its REST routes and
-applied its bearer check as a route `Depends(...)` — and a mount bypasses the enclosing app's
-dependencies, so the credential guarded the surface that did not matter. Here the check is ASGI
-middleware, and the assertion below is the difference between believing that and knowing it.
-
-Deterministic doubles are registered before the app starts, so the tool call exercises the whole
-path — session manager, auth, tool dispatch, the ensemble — without a checkpoint.
+Upstream applied its bearer check as a route dependency over a mounted MCP app, which a mount
+bypasses; here it is ASGI middleware, and this proves it. Deterministic doubles are registered
+first, so a tool call exercises session manager, auth, dispatch and the ensemble.
 """
 
 from __future__ import annotations
@@ -80,20 +76,14 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
 
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    # `revision` is part of the probe payload since the handshake started carrying the
-    # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
-    # for a test process, which is not built from a Containerfile — that the *image*
-    # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
-    # fills is a provenance record that quietly says nothing.
+    # "unknown" is the correct revision for a test process; that an image supplies a real one is
+    # asserted fleet-wide.
     body = response.json()
     assert body["status"] == "ok"
     assert body["server"] == "rxnpredict"
     assert body["revision"] == "unknown"
-    # `/healthz` used to be a constant 200 here — `app.py` carried no `readiness` callable, unlike
-    # every other server with a vendored corpus, even though `get_settings()` reads and checksums
-    # `trust_priors.json` lazily, inside the first tool call. A truncated or swapped priors file
-    # would have passed this probe, taken traffic, and failed every prediction. Naming the dataset
-    # here is what proves the readiness callable actually ran the load rather than merely existing.
+    # Naming the priors dataset proves the readiness callable ran the load and checksum, so a
+    # truncated or swapped `trust_priors.json` fails the probe instead of every prediction.
     dataset = priors_dataset(DATA_DIR)
     assert body["datasets"] == [f"{dataset.name}@{dataset.version}"]
 
@@ -101,10 +91,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    Not "counts only": the default registry publishes `python_info` and the `process_*`
-    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
-    correlation id or a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    The no-caller/session/argument rule is asserted over the live exposition for every server in
+    `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -113,14 +101,11 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """The assertion this fork exists for: upstream's credential did not cover the mount.
+    """The bearer credential is enforced on the mounted MCP surface, against the running server.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
-    the wrong scheme, the declared credential actually serving, and the declared variable unset —
-    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
-    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    `/mcp` is mounted, and a mount bypasses the enclosing app's dependencies, so this cannot be read
+    off the source. `assert_bearer_is_enforced` drives every arm (anonymous, wrong token, wrong
+    scheme, valid credential, variable unset) once for the whole fleet.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 

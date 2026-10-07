@@ -1,8 +1,7 @@
 """Reagents-via-Molecular-Transformer condition predictor.
 
-Andronov et al. — `Academich/reagents`. Fine-tuned Molecular Transformer that
-emits reagents/conditions given reactants + product. Same OpenNMT-py stack
-as the forward Molecular Transformer; share the dependency.
+Andronov et al. — `Academich/reagents`: a fine-tuned Molecular Transformer emitting reagents for
+reactants + product, sharing the forward predictor's OpenNMT-py dependency.
 """
 
 from __future__ import annotations
@@ -103,10 +102,7 @@ try:
     import onmt  # noqa: F401
 
     register_conditions(ReagentsMTConditions())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         ReagentsMTConditions.name,

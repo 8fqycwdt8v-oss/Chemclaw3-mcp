@@ -1,8 +1,6 @@
 """`calculation_key` returns the identity the compute tool will produce — the design rests on this.
 
-The whole point of the split is that Chemclaw3 keeps the calculation cache and this server does the
-computing. That only works if Chemclaw3 can answer "have I already computed this?" *before* paying
-for the calculation, and `cached_compute` needs a `CalculationKey` to do it:
+Chemclaw3 keeps the cache and needs the key before paying for the calculation:
 
 ```python
 hit = await store.get(key)          # <- the key is an argument, not a result
@@ -11,11 +9,9 @@ if hit is not None:
 result = await compute()
 ```
 
-If the key this tool returns and the key the compute tool stamps on its result ever disagreed, the
-consequence is not an error. It is a lookup that misses forever — every calculation recomputed,
-every minute of CPU paid twice — and, worse, a `predictions` row written under a version string
-nothing reconciles, which surfaces as `calculator_trust` reporting `UNCALIBRATED` rather than as a
-failure. So the parity is asserted directly, for every tool, against the real compute path.
+If the two keys disagreed, lookups would miss forever and ledger rows would be written under
+versions nothing reconciles, with no error. So parity is asserted for every tool against the
+real compute path.
 """
 
 from __future__ import annotations
@@ -36,9 +32,7 @@ HELPERS = {"embed_structure", "combine_structures", "calculation_key"}
 def sweep_arguments(tool: str, accepts: frozenset[str], geometry: dict[str, Any]) -> dict[str, Any]:
     """Minimal valid arguments for `tool`, for the tests that sweep the whole table.
 
-    One builder rather than a literal per tool, because these tests are about the *set* being
-    closed: a new tool must be exercised by them without anyone remembering to add a case, and a
-    builder keyed on the declared `accepts` set is what makes that automatic.
+    Built from the declared `accepts` set, so a new tool is exercised without anyone adding a case.
     """
     arguments: dict[str, Any] = (
         {"structure": geometry} if "structure" in accepts else {"smiles": "CC(=O)O"}
@@ -48,37 +42,17 @@ def sweep_arguments(tool: str, accepts: frozenset[str], geometry: dict[str, Any]
     return arguments
 
 
-# The tools whose key is not derivable from their arguments, and which therefore return `None` on
-# **both** sides of the parity check. A frozenset with one member rather than a bare constant, so a
-# second joining it is a deliberate statement that its answer cannot be looked up before it is
-# computed — a real loss, to be argued rather than absorbed.
-#
-# `predict_logd` never had a key: Chemclaw3 did not cache logD, because its expensive half is
-# already a cached pKa and Crippen LogP is sub-millisecond. Its result carries `calc_key: null` too,
-# so the two sides agree exactly.
-#
-# **It briefly had company, and how that resolved is the point of this file.**
-# `compute_thermochemistry`'s key named the geometry its refinement loop settled on — an output, not
-# a function of its arguments — so it could not be derived. Rather than ship a tool Chemclaw3 could
-# not cache, the *composite* was removed and its parts exposed instead: `relax_structure` +
-# `compute_hessian`, each keyed, with the RRHO arithmetic on the caller's side. The measurement that
-# forced it: repeating thermochemistry in Chemclaw3 costs 0.007 s against 0.816 s cold for ethanol
-# and 0.012 s against 3.273 s for ethyl acetate. Decomposed, every one of those hits still hits.
+# Tools whose key is not derivable from their arguments and return `None` on both sides of the
+# parity check. Joining this set is a real loss that must be argued. `predict_logd` was never
+# cached: its expensive half is a cached pKa. A composite whose key would name its own output is
+# decomposed into keyed primitives instead of being added here.
 WITHOUT_A_DERIVABLE_KEY = frozenset({"predict_logd"})
 
-# The tools whose *identity* refuses on an image without the program that would run them, so the
-# loops below have nothing to derive. Two CREST searches and the two binary-only xTB panels.
-#
-# **The second pair is the correction this constant exists for.** `xtb_spec._FIXED_BACKEND` pins
-# `atomic` and `surface` to the `xtb` binary regardless of configuration, while the readiness gate
-# tests `resolve_backend()` — which under the shipped `auto` default answers `tblite`. Measured
-# on an image with no binary: a **ready** pod answered `calculation_key` with
-# `xtb.atomic@GFN2-xTB+xtb+xtb-absent/...`, a well-formed Chemclaw3 ledger key naming a program it
-# does not have. They now refuse exactly where their compute path does, which is the rule
-# `engine/identity.py`'s docstring already stated for CREST.
-#
-# A skip that asserts why it skipped: `test_the_tools_that_need_a_binary_refuse_rather_than_key`
-# drives every member, and the tools *outside* the set, on this checkout.
+# Tools whose identity refuses on an image without the program that runs them: the two CREST
+# searches and the two binary-only xTB panels (`atomic`, `surface`), which `_FIXED_BACKEND` pins to
+# the `xtb` binary whatever the configured backend. They refuse exactly where their compute path
+# does. `test_the_tools_that_need_a_binary_refuse_rather_than_key` drives every member and every
+# non-member.
 NEEDS_A_BINARY = frozenset(
     {
         "search_conformer_ensemble",
@@ -88,14 +62,9 @@ NEEDS_A_BINARY = frozenset(
     }
 )
 
-# One argument set per tool, and the compute coroutine that must agree with it. Deliberately the
-# *same* arguments on both sides — that is the property, and passing different ones would make the
-# test pass for the wrong reason. Small molecules, because this file runs every calculation in it.
-#
-# `predict_site_reactivity` carries `mode` for a reason: it is the one argument here that is
-# accepted and deliberately *not* keyed, so this row is what proves an unkeyed argument still
-# reaches the same row. It carried `top_n` for the same reason until `top_n` turned out to shorten
-# the payload that row stores — see `tests/test_fukui_completeness.py`.
+# One argument set per tool, used identically on both sides, which is the property. Small
+# molecules, since every calculation runs. `predict_site_reactivity` carries `mode`, an accepted
+# but unkeyed argument, to prove it still reaches the same row.
 CASES: list[tuple[str, dict[str, Any], Any]] = [
     ("compute_xtb_energy", {"smiles": "CCO"}, tools.compute_xtb_energy),
     ("compute_xtb_energy", {"smiles": "CC(=O)[O-]", "charge": -1}, tools.compute_xtb_energy),
@@ -128,11 +97,10 @@ CASES: list[tuple[str, dict[str, Any], Any]] = [
 async def test_the_key_derived_up_front_is_the_key_the_result_carries(
     tool: str, arguments: dict[str, Any], compute: Any
 ) -> None:
-    """Derive, then compute, then compare. The one property the remote-cache design rests on.
+    """Derive, then compute, then compare: the one property the remote-cache design rests on.
 
-    Both halves matter. `calc_version` is what Chemclaw3's calibration ledger matches on — exactly,
-    with no version pooling — and `calc_key` is what its calculation cache is addressed by, so a
-    divergence in either is a silent cost rather than a failure.
+    `calc_version` is what the ledger matches exactly and `calc_key` addresses the cache, so a
+    divergence in either is a silent cost.
     """
     identity = await tools.calculation_key(tool, arguments)
     result = await compute(**arguments)
@@ -156,14 +124,10 @@ async def test_the_key_derived_up_front_is_the_key_the_result_carries(
 
 
 async def test_the_primitives_key_up_front_too() -> None:
-    """The same property for the structure-in primitives, which is where it actually pays.
+    """The structure-in primitives key up front too, which is where it pays.
 
-    These are what Chemclaw3's durable-job activities compose, so the identity has to be answerable
-    *before* the call for the composition to hit a cache at all — a scan point that could only be
-    keyed after it ran would make a 24-point profile 24 unavoidable optimisations.
-
-    Built as one chain rather than independent cases because that is how a caller uses them: embed,
-    relax, then differentiate at the relaxed geometry.
+    Chemclaw3's durable jobs compose them, so each must be keyable before the call. One chain, as a
+    caller uses them: embed, relax, then differentiate at the relaxed geometry.
     """
     water = await tools.embed_structure("O")
     ethanol = await tools.embed_structure("CCO")
@@ -198,10 +162,8 @@ async def test_the_primitives_key_up_front_too() -> None:
 async def test_a_scan_point_keys_as_the_constrained_optimisation_it_is() -> None:
     """A scan point is an `xtb.opt` row, not a namespace of its own.
 
-    Not a coincidence to preserve but the reason `scan_point` has no task of its own: driving the
-    coordinate is pure geometry, so what is actually computed is an optimisation with those atoms
-    frozen. Sharing the row is what stops a profile and a hand-written constrained relaxation of the
-    same geometry paying twice — and it is why `XtbTask` deliberately has no `scan` member.
+    Driving the coordinate is pure geometry; what runs is a constrained optimisation, and sharing
+    the row stops a profile and an equivalent hand-written relaxation paying twice.
     """
     ethanol = await tools.embed_structure("CCO")
     point = await tools.calculation_key(
@@ -219,14 +181,8 @@ async def test_a_scan_point_keys_as_the_constrained_optimisation_it_is() -> None
 async def test_a_crest_search_is_keyed_or_refused_exactly_where_the_search_is() -> None:
     """The probe and the search agree about whether this deployment can answer.
 
-    `CrestSpec.calc_version()` answers `crest-absent` rather than raising, so a key *is* derivable
-    with no binary — and it would be a well-formed identity naming a program that cannot run,
-    addressing a row nothing will ever write. That is the same shape as the `binary_version()` trap
-    this port exists to contain, so both paths refuse together where the binary is missing.
-
-    Where it is present, the key must name the build that would produce the answer: a caller checks
-    the cache with this before paying for minutes of sampling, so a probe that refused on a machine
-    that *can* search would send every caller down the compute path forever.
+    `CrestSpec.calc_version()` answers `crest-absent` rather than raising, so both paths must refuse
+    together where the binary is missing. Where present, the key names the build that would run.
     """
     water = await tools.embed_structure("O")
     for tool in ("search_conformer_ensemble", "search_binding_modes"):
@@ -247,11 +203,8 @@ async def test_the_four_parts_reconstruct_the_flat_key(
 ) -> None:
     """`key` is what `store.get` takes; `calc_key` is the same identity flattened.
 
-    Returned as an object rather than left to be parsed out of the string on purpose:
-    `calc_version` legitimately contains both `@` and `:` — `esol-delaney@2004/…` and
-    `cal-0.28733:-29.3116` — so a caller splitting the flat form is one delimiter away from a key
-    that misses forever. The compute tools return only the flat form because a caller reaching them
-    already called this tool to do the lookup.
+    Returned as an object because `calc_version` legitimately contains `@` and `:`, so parsing the
+    flat form is unsafe.
     """
     identity = await tools.calculation_key(tool, arguments)
     if identity.key is None:
@@ -263,17 +216,11 @@ async def test_the_four_parts_reconstruct_the_flat_key(
 
 
 async def test_deriving_a_key_runs_no_scf() -> None:
-    """ "Cheap" is asserted rather than claimed: every SCF path is made to raise.
+    """Deriving a key runs no SCF: every SCF path is made to raise.
 
-    `make_calculator` resolves `Calculator` in `xtb_engine`'s own globals and `run_singlepoint` goes
-    through it, so replacing that one name blocks every route to a single point — the in-process
-    optimizer, the finite-difference Hessian and the three Fukui points included. All nine
-    identities still come back, which is the property: this tool is a canonicalisation, an embedding
-    and two hashes.
-
-    Worth pinning because the obvious way to "fix" `compute_thermochemistry`'s missing key is to
-    relax the geometry first, and that would turn a cheap probe into a minutes-long call on the
-    exact tool a cache is most needed for.
+    Replacing `xtb_engine.Calculator` blocks every route to a single point, and every identity still
+    comes back. A key derivation that relaxed geometry first would turn a cheap probe into a
+    minutes-long call.
     """
 
     from chemclaw_mcp_calc.engine.structure import structure_from_smiles
@@ -286,11 +233,8 @@ async def test_deriving_a_key_runs_no_scf() -> None:
         raise AssertionError("deriving a key must not run an SCF")
 
     original = xtb_engine.Calculator
-    # Substituting a function for the class *is* the assertion — a key derivation that touched the
-    # SCF would call it and raise. mypy reports the one substitution under two codes, `misc`
-    # ("Cannot assign to a type") and `assignment` (a function is not a `type[Calculator]`), and
-    # both are the thing being done deliberately. The line carried `[misc]` alone while the test
-    # tree was outside the gate; `[assignment]` is what reading it for the first time added.
+    # Substituting a function for the class is the assertion: touching the SCF would raise. mypy
+    # reports it under both `misc` and `assignment`.
     xtb_engine.Calculator = _explode  # type: ignore[assignment, misc]
     try:
         for tool, (accepts, _) in sorted(COMPUTE_TOOLS.items()):
@@ -319,16 +263,10 @@ async def test_only_the_named_tool_lacks_a_derivable_key() -> None:
 
 
 def test_the_tools_that_need_a_binary_refuse_rather_than_key() -> None:
-    """The skip above, earning its place — in both directions.
+    """Tools needing a missing binary refuse rather than key, and every other tool answers.
 
-    A key naming a program this image does not carry is worse than no key at all: it is well-formed,
-    it addresses a row in Chemclaw3's cache and calibration ledger that nothing will ever write,
-    and the compute call it describes refuses. Measured under the shipped default, with
-    `CHEMCLAW_XTB_ENGINE` unset and no `xtb` on PATH, a ready pod answered
-    `xtb.atomic@GFN2-xTB+xtb+xtb-absent/...` for two of this server's seventeen tools.
-
-    The second half is what stops this set growing by accident: every tool *outside* it must answer,
-    so adding a tool to `NEEDS_A_BINARY` to silence a failure makes this test fail instead.
+    A key naming an absent program is well-formed and addresses a row nothing will write. The second
+    half stops `NEEDS_A_BINARY` from being grown to silence a failure.
     """
     from chemclaw_mcp_calc.engine.structure import structure_from_smiles
 
@@ -362,11 +300,9 @@ async def test_the_one_tool_without_a_key_says_why() -> None:
 
 
 async def test_an_argument_the_tool_does_not_take_is_refused_not_ignored() -> None:
-    """The quiet failure this refusal exists for: a misspelled `solvent` keying the gas phase.
+    """An argument the tool does not take is refused, not ignored.
 
-    Ignoring it would return a *valid* key — for the unsolvated calculation — the lookup would hit a
-    real row, and the caller would be handed a gas-phase answer to a solvated question with nothing
-    anywhere saying so.
+    A misspelled `solvent` would otherwise key the gas phase and hand back a valid but wrong row.
     """
     with pytest.raises(ValueError, match="does not take 'solvant'"):
         await tools.calculation_key(
@@ -401,12 +337,9 @@ async def test_the_derivation_table_matches_the_served_surface() -> None:
 
 
 async def test_each_derivation_accepts_exactly_its_tool_s_arguments() -> None:
-    """The `accepts` sets are checked against the served tools' own input schemas, not by eye.
+    """The `accepts` sets match the served tools' own input schemas.
 
-    This is what stops the refusal above becoming wrong the day an argument is added: a new
-    parameter on a compute tool that nobody added to `COMPUTE_TOOLS` would make `calculation_key`
-    reject a perfectly valid call, which is a loud failure — but the reverse, a parameter removed
-    from the tool and left in `accepts`, is silent, and this catches both.
+    A missing parameter makes valid calls refused (loud); a stale one is silent. This catches both.
     """
     schemas = {tool.name: tool.inputSchema for tool in await tools.server.list_tools()}
     for name, (accepts, _) in COMPUTE_TOOLS.items():
@@ -415,11 +348,10 @@ async def test_each_derivation_accepts_exactly_its_tool_s_arguments() -> None:
 
 
 async def test_two_spellings_of_one_molecule_derive_one_key() -> None:
-    """The canonicalisation happens on this path too, or a caller's spelling would fork the cache.
+    """Two spellings of one molecule derive one key on this path too.
 
-    It is the same `require_canonical_smiles` the compute path uses — asserted here because this
-    tool is the one that decides which row is looked up, so a lenient probe would miss a row the
-    compute path would then happily overwrite under the canonical key.
+    This tool decides which row is looked up, so a lenient probe would miss a row the compute path
+    then overwrites under the canonical key.
     """
     for tool in ("compute_xtb_energy", "predict_pka", "predict_solubility"):
         assert (await tools.calculation_key(tool, {"smiles": "CCO"})).calc_key == (
@@ -428,11 +360,9 @@ async def test_two_spellings_of_one_molecule_derive_one_key() -> None:
 
 
 async def test_a_bad_input_is_refused_here_exactly_as_the_compute_tool_refuses_it() -> None:
-    """A probe accepting what the calculation rejects would defer the error to the expensive call.
+    """A bad input is refused here exactly as the compute tool refuses it.
 
-    Both refusals come from the same code — `require_canonical_smiles` and `XtbSpec`'s solvent
-    validator — because the derivation reads the engine's own `*_inputs` pairing rather than
-    restating it.
+    Both refusals come from the same code, via the engine's own `*_inputs` pairing.
     """
     with pytest.raises(ValueError, match="invalid SMILES"):
         await tools.calculation_key("compute_xtb_energy", {"smiles": "CCO junk"})
@@ -443,23 +373,11 @@ async def test_a_bad_input_is_refused_here_exactly_as_the_compute_tool_refuses_i
 
 
 def test_no_tool_keys_a_program_this_image_lacks_under_an_explicit_engine_setting() -> None:
-    """The sweep above, run in the configuration that defeats it.
+    """No tool keys a program this image lacks, under an explicit `CHEMCLAW_XTB_ENGINE=xtb`.
 
-    `test_the_tools_that_need_a_binary_refuse_rather_than_key` already asserts `"absent" not in
-    calc_version` for every tool outside `NEEDS_A_BINARY` — under the **ambient** configuration,
-    where `xtb_engine` is `auto` and `resolve_backend()` therefore answers `tblite` on an image with
-    no binary. Under the explicit `CHEMCLAW_XTB_ENGINE=xtb` that branch is skipped:
-    `resolve_backend` honours the preference without asking `is_available()`.
-
-    Driven that way on this checkout, five tools minted a well-formed key naming a program that is
-    not here — `optimize_geometry`, `relax_structure` and `compute_hessian`, which
-    `xtb_spec._FIXED_BACKEND` does not pin, plus `predict_pka` and `predict_logd`, whose versions
-    fold the optimisation's in. The invariant `engine/identity.py` states held for 14 of 17.
-
-    Written as the invariant over the whole table rather than as a second `NEEDS_A_BINARY` list,
-    because a per-tool list is what already had three holes in it: every entry must either refuse in
-    words or answer a version naming only programs that are here, and a new tool owes the same proof
-    with nothing to add here.
+    The ambient sweep runs with `auto`, which falls back to `tblite`; an explicit preference skips
+    the availability check. Written as the invariant over the whole table: every tool either refuses
+    in words or answers a version naming only programs that are here.
     """
     if xtb_cli.is_available():
         pytest.skip("this image carries the xtb binary, so no version can name it as absent")
@@ -490,18 +408,11 @@ def test_no_tool_keys_a_program_this_image_lacks_under_an_explicit_engine_settin
 
 
 def test_a_missing_binary_reaches_the_model_as_words_rather_than_an_error_id() -> None:
-    """A deployment-configuration fault is not an infrastructure fault, and both were `CliError`.
+    """A missing binary reaches the model as words rather than an error id.
 
-    `CliError` is a `RuntimeError` on purpose — it carries a subprocess's stderr tail, which is
-    internal state — so `connector_app._sanitize_tool_errors` replaces it with `an internal error
-    occurred (error id ...)`. That is right for a run that started and failed. It was also what a
-    caller got for "this image has no xtb", which is a fault nothing about the molecule or the
-    request can change and which the model can act on: it can say which tools still answer and stop
-    asking for the ones that cannot.
-
-    `engine/xtb_atomic.require_binary` already raised a worded `ValueError` for the identical cause
-    and argues the case in its own docstring; this holds the same shape one layer down, where the
-    two `run` paths are.
+    `CliError` is a `RuntimeError` carrying internal stderr, so the sanitiser hides it; that is
+    right for a failed run but not for "this image has no xtb", a configuration fault the model can
+    act on.
     """
     if xtb_cli.is_available():
         pytest.skip("this image carries the xtb binary, so the refusal path is unreachable here")

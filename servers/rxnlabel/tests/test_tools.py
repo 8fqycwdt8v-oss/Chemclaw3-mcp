@@ -1,9 +1,8 @@
 """The tool surface: what a batch answers, and what it says when it cannot answer.
 
-The caller is a background drain over a corpus that may be millions of rows, so the properties that
-matter here are the ones that decide whether such a drain converges: a batch that partially fails
-must return what it has, an unlabellable reaction must be *absent* rather than wrong, and the
-version must name every component whose output survives into a label.
+The caller is a background drain over a large corpus, so what matters is convergence: a partial
+batch returns what it has, an unlabellable reaction is absent rather than wrong, and the version
+names every component whose output reaches a label.
 """
 
 from __future__ import annotations
@@ -50,11 +49,10 @@ async def test_omitting_the_species_list_classifies_everything_in_the_reaction()
 
 
 async def test_the_answer_is_positional_against_the_species_that_were_sent() -> None:
-    """The contract the caller's ordinals depend on.
+    """The answer is positional against the species that were sent.
 
-    A caller's species order comes from its own record; the reaction string groups the agents
-    together. If the answer were ordered by the reaction instead, every stored role on every
-    reaction with a solvent would be attached to the wrong structure.
+    The caller's ordinals come from its own record; ordering by the reaction string would attach
+    roles to the wrong structures.
     """
     sent = ["CC#N", "Brc1ccccc1", "CC(=O)O[Pd]OC(C)=O"]
     found = await tools.represent_reactions(
@@ -68,11 +66,10 @@ async def test_the_answer_is_positional_against_the_species_that_were_sent() -> 
 
 
 async def test_a_batch_returns_what_it_could_do_and_omits_what_it_could_not() -> None:
-    """A partial batch must not be a failed one: a drain records what it got and moves on.
+    """A partial batch is not a failed one: unreadable reactions are absent from `results`.
 
-    A reaction that cannot be read is *absent* from `results` rather than present with empty
-    fields, because the two mean different things to the caller — absent is "not this pass",
-    present-and-empty would be "we looked and there is nothing", which would stamp the row.
+    Absent means "not this pass"; present-and-empty would mean "looked and found nothing" and would
+    stamp the row.
     """
     found = await tools.represent_reactions(
         [
@@ -98,11 +95,10 @@ async def test_an_oversized_batch_is_refused_with_the_number_to_ask_for() -> Non
 
 
 async def test_the_version_names_every_component_and_marks_the_absent_ones() -> None:
-    """A caller stores this beside a label, and a row is stale when it differs.
+    """The version names every component and marks the absent ones.
 
-    The `absent` entries are what make optional dependencies safe here: a corpus labelled without
-    the mapper carries a different version from one labelled with it, so installing the extra
-    re-opens those rows instead of leaving two qualities of answer under one label forever.
+    A caller stores it beside a label and treats a difference as stale, so installing an optional
+    extra re-opens rows labelled without it.
     """
     reported = await tools.labeller_version()
     assert reported.version == version.labeller_version()
@@ -115,11 +111,10 @@ async def test_the_version_names_every_component_and_marks_the_absent_ones() -> 
 
 
 async def test_naming_reports_a_miss_rather_than_a_placeholder() -> None:
-    """`OtherReaction` is not a name, and neither is a null passed off as one.
+    """Naming reports a miss as null, never as a placeholder like `OtherReaction`.
 
-    Without the classifier installed every field is null, which is the same shape a genuine
-    no-match produces — the two are told apart by `labeller_version`, not by the payload, because
-    the payload is about the reaction and the version is about the deployment.
+    A missing classifier and a genuine no-match have the same payload; `labeller_version` tells them
+    apart, since it describes the deployment.
     """
     found = await tools.name_reaction(BUCHWALD)
     assert found.id == "1"
@@ -130,12 +125,10 @@ async def test_naming_reports_a_miss_rather_than_a_placeholder() -> None:
 
 
 class TestAReactionIsMappedOnce:
-    """The transformer pass is the cost the batch bound was set against, and it ran twice.
+    """A reaction is mapped once per representation.
 
-    `_represent` called `roles.assign` — one forward pass, inside `contributing_reactants` — and
-    then called `map_reaction` again for the `mapped_smiles` field, on the same string. At
-    `MAX_BATCH=500` that is 1000 passes for 500 reactions, so the bound is set against half the
-    real cost and Chemclaw3's 120 s client budget is spent on a result already computed.
+    The transformer pass is the cost the batch bound is set against; running it twice would halve
+    the real budget.
     """
 
     def test_ten_reactions_are_ten_mapper_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,13 +153,10 @@ class TestAReactionIsMappedOnce:
 
 
 class TestAPartialAnswerSaysSo:
-    """A species RDKit cannot read is dropped from the canonical reaction, and that must be said.
+    """A species RDKit cannot read is dropped from the canonical reaction, and the answer says so.
 
-    The skipping is argued and right — an OCR artefact should not lose the other forty-nine
-    species. What was wrong is that the loss was invisible: `reaction_smiles` came back as a
-    complete-looking two-reactant reaction, and a later "how many reactions used three components"
-    query over the stored form is quietly wrong forever, because the input was never recorded as
-    partial.
+    Skipping keeps the other species, but a complete-looking `reaction_smiles` would make later
+    component-count queries silently wrong; the partial input must be recorded.
     """
 
     def test_an_unreadable_component_is_named_rather_than_silently_dropped(self) -> None:
@@ -202,11 +192,10 @@ class TestAPartialAnswerSaysSo:
 
 
 class TestALabelCarriesTheLabellerThatMadeIt:
-    """Every tool that produces a label stamps it, because the stamp is what decides staleness.
+    """Every tool that produces a label stamps it, because the stamp decides staleness.
 
-    The batch tools carried `version` and the single-reaction ones did not, so a label kept from
-    `represent_reaction` went in unstamped — never re-labelled when the mapper arrives — or was
-    paired with a separate `labeller_version` round trip that raced it.
+    An unstamped single-reaction label would never be re-labelled, or would race a separate
+    `labeller_version` call.
     """
 
     async def test_the_single_reaction_tools_stamp_their_answers(self) -> None:
@@ -221,15 +210,11 @@ class TestALabelCarriesTheLabellerThatMadeIt:
 def test_a_string_that_is_not_a_reaction_is_refused_in_the_callers_terms(
     tool: str, bad: str
 ) -> None:
-    """The single-reaction tools index a batch that drops what it cannot read.
+    """A string that is not a reaction is refused with a `ValueError` the model can read.
 
-    `_represent` and `_name` are deliberately lenient — a drain wants the rows it could label and a
-    list of what it could not, rather than one bad row failing ten thousand good ones — so they
-    *skip* a string that is not `reactants>agents>products`. Taking `[0]` of that then raised
-    `IndexError: list index out of range`, which is not a `ValueError`, so `connector_app` replaced
-    it with an opaque `error_id` and the model was told a fault had occurred rather than that its
-    own input was malformed. The class is the assertion: `ValueError` is the family this fleet
-    reserves for a message the model may read and act on.
+    The batch helpers skip unreadable strings, so a single-reaction tool must not index the empty
+    result: an `IndexError` would reach the model as an opaque `error_id`. `ValueError` is the
+    family this fleet reserves for caller-actionable messages.
     """
     with pytest.raises(ValueError, match="not a reaction"):
         asyncio.run(getattr(tools, tool)(bad))

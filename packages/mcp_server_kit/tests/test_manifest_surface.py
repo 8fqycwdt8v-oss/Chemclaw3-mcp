@@ -1,19 +1,11 @@
-"""The argument surface is part of the contract, and until now nothing anywhere checked it.
+"""The argument surface is part of the contract.
 
-`assert_manifest_matches` checked tool *names* in both directions and the exactly-once
-`read_only`/`state_changing` classification, and never read an `inputSchema`. Across both
-repositories the only assertion about a served schema compared `calc`'s to `calc`'s own table. Yet
-`MODULES.md` rests a whole migration on the stronger claim — `chem` and `safety` are drop-in
-**replacements** for Chemclaw3's in-tree bundles because they have the "same manifest `name`, same
-tools, **same arguments**" — and the calling side takes the served `inputSchema` verbatim, so a
-renamed argument reaches the model as a silently different tool. It advertises, it validates, and
-every call written against the old name fails at call time.
+Chemclaw3 takes the served `inputSchema` verbatim, so a renamed argument reaches the model as a
+silently different tool that rejects calls written against the old name. `chem` and `safety` are
+drop-in replacements only if their arguments match.
 
-**A golden file rather than a manifest key**, and the reason is in the other repository:
-Chemclaw3's `HttpEndpoint` is `ConfigDict(extra="forbid")`, so an `arguments:` key added to
-`endpoint:` here would abort that repository's startup on the manifest it was meant to enrich —
-checked in `chemclaw/connectors/manifest.py`, not assumed. A file beside `connector.yaml` costs
-Chemclaw3 nothing, and it is reviewed in the same diff as the change that moves it.
+A golden file beside `connector.yaml` rather than a manifest key, because Chemclaw3's
+`HttpEndpoint` is `extra="forbid"` and would refuse an `arguments:` key.
 """
 
 from __future__ import annotations
@@ -128,9 +120,7 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
 async def _served(server: FastMCP, *, name: str) -> list[Tool]:
     """What a caller is actually advertised, over a real socket and a real handshake.
 
-    The schemas are the subject here, so they are read from the transport rather than from the
-    `FastMCP` object: this repository's rule for the manifest is "verify against a running server;
-    do not read it off the source", and an argument surface is the same kind of claim.
+    Read from the transport rather than the `FastMCP` object: verify against a running server.
     """
     with _serving(server, name=name) as base:
         async with _session(base) as session:
@@ -182,12 +172,9 @@ async def test_recording_the_surface_captures_names_types_and_requiredness(
 async def test_a_renamed_argument_fails_against_the_recorded_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one failure `MODULES.md`'s "same arguments" claim rests on, made loud.
+    """A renamed argument fails against the recorded surface.
 
-    Every name-level check passes here: the tool is still `render`, still declared, still
-    classified. Only the argument moved, which is exactly what makes it a silent break — Chemclaw3
-    takes the served `inputSchema` verbatim, so the model is advertised a tool that validates and
-    then rejects every call written against the old name.
+    Every name-level check still passes, which is what makes it a silent break otherwise.
     """
     monkeypatch.setenv(SURFACE_UPDATE_ENV, "1")
     manifest = _manifest(tmp_path)
@@ -205,12 +192,10 @@ async def test_a_renamed_argument_fails_against_the_recorded_surface(
 async def test_names_only_still_checks_the_manifest_and_says_nothing_about_arguments(
     tmp_path: Path,
 ) -> None:
-    """The legacy call is still the old check, on purpose — the surface is opt-in per server.
+    """The names-only call is still the old check; the surface check is opt-in per server.
 
-    Seven servers pass tool *names* today and are converted one at a time; a signature change that
-    broke them all at once would be a worse defect than the one being fixed. What must not happen
-    is the argument check appearing to run when it did not, which is why the golden's absence is an
-    error above rather than a skip.
+    What must not happen is the argument check appearing to run when it did not, so a missing golden
+    is an error rather than a skip.
     """
     tools = await _served(_probe_server(), name="surface-probe-legacy")
     assert_manifest_matches(_manifest(tmp_path), [tool.name for tool in tools])

@@ -1,12 +1,8 @@
 """The adiabatic arithmetic, checked against numbers written independently of the code.
 
-Every assertion here is either a hand-computed value, a textbook case, or an *invariant* that must
-hold whatever the formula — because a test that re-derives the expression it is testing agrees with
-itself forever. Where a literal appears it was computed on paper from the units in the docstring,
-which is the only way a unit error is catchable by a test at all.
-
-No transport is imported: `engine/` is pure computation, and this file proves it stays that way by
-being runnable with FastAPI uninstalled.
+Every assertion is a hand-computed value, a textbook case, or an invariant; literals were
+computed on paper from the docstring units, which is how a unit error becomes catchable. No
+transport is imported: `engine/` stays pure computation.
 """
 
 from __future__ import annotations
@@ -42,9 +38,8 @@ def test_the_adiabatic_rise_is_the_hand_computed_one() -> None:
 def test_the_enthalpy_sign_convention_does_not_change_the_rise() -> None:
     """A thermodynamic -150 and a calorimetric +150 are the same exotherm.
 
-    Both conventions reach this function from real reports, and silently disagreeing on them would
-    make one of the two return a negative adiabatic rise — which then propagates into an MTSR
-    *below* the process temperature and a criticality class of 1 for a dangerous process.
+    Both conventions arrive from real reports; disagreeing would give a negative rise, an MTSR below
+    the process temperature and criticality class 1 for a dangerous process.
     """
     negative = adiabatic_temperature_rise(
         heat_of_reaction_kj_per_mol=-150.0, moles=10.0, mass_kg=50.0, specific_heat_kj_per_kg_k=1.9
@@ -74,11 +69,9 @@ def test_a_zero_or_negative_mass_or_heat_capacity_is_refused_by_name() -> None:
 
 
 def test_mtsr_is_the_process_temperature_plus_the_accumulated_share() -> None:
-    """T_p + X_ac·ΔT_ad, and the two endpoints of the accumulation fraction.
+    """MTSR is T_p + X_ac·ΔT_ad, checked at both ends of the accumulation fraction.
 
-    The endpoints are the assertion that matters: at 0 the reagent is consumed as it arrives and a
-    cooling failure changes nothing, at 1 the whole exotherm is in front of you. A formula that got
-    the fraction the wrong way round passes a mid-range spot check and fails both of these.
+    A fraction applied the wrong way round passes a mid-range spot check and fails both endpoints.
     """
     assert mtsr(
         process_temperature_c=20.0, adiabatic_temperature_rise_k=100.0, accumulation_fraction=0.3
@@ -120,12 +113,10 @@ def test_tmr_falls_as_temperature_rises_and_is_the_hand_computed_value() -> None
 
 
 def test_the_temperature_for_a_target_tmr_inverts_the_forward_calculation() -> None:
-    """The one property a bisection must have: round-tripping through the forward formula.
+    """`temperature_for_tmr` round-trips through the forward calculation.
 
-    `temperature_for_tmr` extrapolates the rate along Arrhenius and solves; feeding its answer back
-    through `time_to_maximum_rate_hours` with the rate extrapolated the same way must return the
-    target. Asserted as a round trip rather than against a literal, because a literal would pin the
-    bisection's tolerance instead of its correctness.
+    Asserted as a round trip rather than a literal, which would pin the bisection's tolerance
+    instead of its correctness.
     """
     reference_c, reference_rate, energy, heat_capacity = 200.0, 50.0, 120.0, 1.9
     t_d24 = temperature_for_tmr(
@@ -149,11 +140,10 @@ def test_the_temperature_for_a_target_tmr_inverts_the_forward_calculation() -> N
 
 
 def test_a_target_no_temperature_reaches_is_reported_rather_than_clamped() -> None:
-    """The bracket's ends are a finding, not a failure, and the message says which end.
+    """A target no temperature reaches is reported, naming which end, rather than clamped.
 
-    A clamped -99 °C returned as a T_D24 would go straight into `stoessel_criticality_class` and
-    produce a class 5 for a reason that is not physical. Both directions are exercised because they
-    mean opposite things: a decomposition fast everywhere, and one too slow to reach the target.
+    A clamped value fed to `stoessel_criticality_class` would yield an unphysical class 5. Both ends
+    are exercised because they mean opposite things.
     """
     with pytest.raises(ThermalInputError, match="already below"):
         temperature_for_tmr(
@@ -174,11 +164,9 @@ def test_a_target_no_temperature_reaches_is_reported_rather_than_clamped() -> No
 
 
 def test_every_stoessel_ordering_produces_its_documented_class() -> None:
-    """All five classes, each from the ordering that defines it.
+    """Every Stoessel ordering produces its documented class.
 
-    Driven as a table because the classification *is* a table: the risk is an off-by-one in the
-    comparison chain, which any single case passes and the full set does not. Each row is the
-    canonical ordering from Stoessel's classification, written here as four temperatures.
+    Driven as the full table, since an off-by-one in the comparison chain passes any single case.
     """
     cases = (
         # (T_p, MTSR, MTT, T_D24) -> class
@@ -205,9 +193,7 @@ def test_every_stoessel_ordering_produces_its_documented_class() -> None:
 def test_the_ordering_returned_is_the_evidence_for_the_class() -> None:
     """The four temperatures come back sorted, so a reader can check the class rather than trust it.
 
-    This is the half that makes a classification auditable: a chemist who disagrees with the class
-    can see which comparison produced it. Asserted as *sortedness* and completeness rather than
-    against a literal tuple, so renaming a label does not fail a test about ordering.
+    Asserted as sortedness and completeness, not a literal tuple, so relabelling does not fail it.
     """
     result = stoessel_class(
         process_temperature_c=20.0,
@@ -281,10 +267,10 @@ def test_a_temperature_below_absolute_zero_is_refused_everywhere_it_is_taken() -
     ["heat_of_reaction_kj_per_mol", "moles", "mass_kg", "specific_heat_kj_per_kg_k"],
 )
 def test_a_non_finite_input_to_the_adiabatic_rise_is_refused(argument: str, bad: float) -> None:
-    """NaN and infinity used to come back as a NaN or infinite rise — `null` over JSON.
+    """A non-finite input to the adiabatic rise is refused.
 
-    Measured before the guard: `moles=NaN` answered NaN and `moles=Infinity` answered infinity,
-    because `value <= 0` is False for both. A safety number is a refusal or a number.
+    `value <= 0` is False for NaN and infinity, which would otherwise return a NaN or infinite rise
+    (`null` over JSON). A safety number is a refusal or a number.
     """
     arguments = {
         "heat_of_reaction_kj_per_mol": -150.0,

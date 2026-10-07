@@ -1,9 +1,7 @@
 """What the species enumerators must get right for the expensive half to mean anything.
 
-Every assertion here is either a cross-repository contract (Chemclaw3 reads these field names) or a
-defect that was **measured during implementation** rather than anticipated. The three in the second
-class are called out in their own docstrings, because a test whose reason is "it was wrong once" is
-worth more than one whose reason is "it seemed important".
+Each assertion is either a cross-repository contract (Chemclaw3 reads these field names) or a
+chemistry error an enumerator could make silently.
 """
 
 from __future__ import annotations
@@ -25,10 +23,8 @@ from chemclaw_mcp_chem.engine.species import (
 )
 from rdkit import Chem
 
-# A substrate per transform, and the product each must reach. Written as data because the whole
-# claim of `enumerate_degradants` is that its transforms produce real chemistry — an unmapped
-# reaction SMARTS silently drops atoms, which is exactly how the first version of this table
-# produced fragments instead of molecules and looked fine doing it.
+# A substrate per transform, and the product each must reach. An unmapped reaction SMARTS silently
+# drops atoms and returns a fragment, so the products are written out as data.
 _TRANSFORM_CASES: tuple[tuple[str, str, str], ...] = (
     ("CN(C)c1ccccc1", "N-oxidation", "C[N+](C)([O-])c1ccccc1"),
     ("CSc1ccccc1", "S-oxidation to sulfoxide", "CS(=O)c1ccccc1"),
@@ -48,11 +44,8 @@ def test_every_transform_reaches_the_product_a_chemist_would_name(
 ) -> None:
     """Each degradation transform, on a substrate it is meant for, gives the expected structure.
 
-    **This is the test the transform table cannot be trusted without.** A reaction SMARTS with
-    incomplete atom mapping parses, runs, and returns a *fragment* — RDKit drops what the product
-    template does not name. Four of the eleven transforms were written that way at first: the
-    secondary-alcohol oxidation carried no maps at all, and decarboxylation kept the carboxyl carbon
-    and dropped the R group. Every one produced a well-formed SMILES for the wrong molecule.
+    Incomplete atom mapping in a reaction SMARTS parses, runs, and returns a well-formed fragment of
+    the wrong molecule; only the named product catches it.
     """
     found = {
         candidate.smiles
@@ -65,11 +58,8 @@ def test_every_transform_reaches_the_product_a_chemist_would_name(
 def test_an_acid_deprotonates_at_the_hydroxyl_and_not_at_the_carbonyl() -> None:
     """The ionisable atom is the one carrying the proton, which is not the first hetero in a match.
 
-    **Measured, not reasoned about.** The site finder first took "the first N, O or S in the
-    match", and for `[CX3](=O)[OX2H1]` that is the *carbonyl* oxygen — which carries no hydrogen,
-    so every carboxylic acid was located and then silently failed to ionise. Beta-alanine came back
-    with its ammonium form and no carboxylate: two species where there should be three, with
-    nothing raised. Every acid pattern is now written to start on the ionisable atom.
+    For a carboxylic acid the first oxygen in the match is the carbonyl, which carries no proton, so
+    every acid pattern starts on the ionisable atom; otherwise acids silently fail to ionise.
     """
     states = enumerate_microstates("NCCC(=O)O")
 
@@ -82,10 +72,8 @@ def test_an_acid_deprotonates_at_the_hydroxyl_and_not_at_the_carbonyl() -> None:
 def test_an_unspecified_parent_is_not_one_of_its_own_stereoisomers() -> None:
     """A structure with open centres is the question, not a member of the answer.
 
-    **Measured**: prepending the parent unconditionally gave `CC(Cl)C(Br)C` five species for a
-    molecule with two centres. That matters beyond the count — `rank_species` populates over
-    exactly the list it is given, so the extra species would have been embedded, optimised and
-    assigned a Boltzmann population of its own.
+    `rank_species` populates exactly the list it is given, so including the unspecified parent would
+    embed and Boltzmann-weight a non-species.
     """
     isomers = enumerate_stereoisomer_set("CC(Cl)C(Br)C")
 
@@ -167,14 +155,10 @@ def test_a_string_that_is_not_a_molecule_is_refused_by_every_enumerator() -> Non
 
 
 class TestACapBoundsTheWorkAndNotOnlyTheAnswer:
-    """A refusal that costs 28 seconds of CPU is a refusal the caller has already given up on.
+    """A cap bounds the work, not only the answer.
 
-    `MAX_STEREOISOMERS` bounded the *output*: the enumerator ran unbounded (`maxIsomers=0`), the
-    whole 2^n set was materialised into a list, and only then was the cap checked. The module
-    docstring makes the 2^n argument itself — "a molecule with 10 unassigned centres is 1024
-    structures" — and then enumerated all of them anyway. Combined with `asyncio.to_thread`, which
-    this repository's `CLAUDE.md` records as uncancellable, and the manifest's own 30 s budget, the
-    caller times out while the pod keeps burning.
+    Enumerating all 2^n stereoisomers before checking `MAX_STEREOISOMERS` would run in an
+    uncancellable thread past the request budget, so the enumeration itself is bounded.
     """
 
     @staticmethod
@@ -212,16 +196,12 @@ class TestACapBoundsTheWorkAndNotOnlyTheAnswer:
 
 
 class TestATautomerSetDoesNotHoldOneCompoundTwice:
-    """RDKit's enumerator erases stereochemistry at a centre the transformation touches.
+    """A tautomer set does not hold one compound twice.
 
-    So `C[C@H](O)C(C)=O` comes back as both `CC(=O)[C@H](C)O` (the parent) and `CC(=O)C(C)O` (the
-    parent with the centre erased). Those are two strings and one compound-with-and-without-a-
-    specification, and the de-duplication compares strings. `rank_species` populates over exactly
-    the list it is given, so the keto form is embedded and Boltzmann-populated twice and its
-    reported population is split roughly in half against the genuinely different tautomers.
-
-    (That an alpha centre epimerises through the enol is real chemistry. Reporting the racemised
-    form as a separate *member of the tautomer set* is not.)
+    RDKit's enumerator erases stereochemistry at a centre the transformation touches, returning the
+    parent and its unspecified form as two strings. `rank_species` would then split that compound's
+    population in half. (Epimerisation via the enol is real chemistry; listing the racemised form as
+    a separate tautomer is not.)
     """
 
     @pytest.mark.parametrize("smiles", ["C[C@H](O)C(C)=O", "C[C@@H](N)C(=O)O"])
@@ -244,11 +224,9 @@ class TestATautomerSetDoesNotHoldOneCompoundTwice:
 
 
 class TestASaturatedCountIsNotAMeasurement:
-    """`tautomer_count` reported the cap as a count, which reads as an exact 64.
+    """A saturated `tautomer_count` is reported as a lower bound, not a measurement.
 
-    Keeping `describe_topology` total is the right call — it is the free tool everything else is
-    decided against — but a saturated value presented as a measurement lets a reader compare a real
-    number with a ceiling. Measured: a molecule with 195 tautomers was reported as having 64.
+    `describe_topology` stays total, but a capped value must not read as an exact count.
     """
 
     OLIGOKETONE = "O=C(C)CC(=O)CC(=O)CC(=O)CC(=O)CC(=O)C"

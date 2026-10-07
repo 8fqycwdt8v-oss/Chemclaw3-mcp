@@ -1,39 +1,17 @@
 """Bearer authentication on `/mcp`, and the request-size cap that sits outside it.
 
-Chemclaw3's manifest refuses `auth: {mode: none}` on a non-loopback URL, so every server here that
-is reachable across a network declares `auth: {mode: bearer, token_env: ...}` — and the *serving*
-side has to actually check it. Chemclaw3 shipped a version where it did not: `BearerAuth` existed
-only on the sending side, so a deployment mounted a secret, recorded the control as enabled, and
-served every tool to anything that could reach the pod.
+Every network-reachable server declares `auth: {mode: bearer, token_env: ...}`, and this is the
+serving side that checks it. Load-bearing rules:
 
-Three details are load-bearing, each because getting them wrong fails open or fails loudly in the
-wrong place:
+- **Middleware, not a route dependency**: `/mcp` is mounted, and a mount bypasses dependencies.
+- **Compared as bytes**: `compare_digest` on `str` raises on non-ASCII, turning a bad header into a
+  500.
+- **Fail closed**: a declared `token_env` that is unset or blank refuses every request.
+- **Whitespace is stripped from both sides**, so a secret provisioned with a trailing newline
+  still works; a secret and the same secret padded are therefore the same secret.
 
-- **Middleware, not a route dependency.** `/mcp` is mounted, and a mount bypasses the enclosing
-  app's dependencies entirely. `Depends(...)` would guard the two routes that need it least.
-- **Compared as bytes.** `compare_digest` on `str` raises `TypeError` on non-ASCII, and Starlette
-  decodes headers as latin-1 — so one non-ASCII byte in the header turns a security boundary into
-  a 500 with a traceback that any remote party can produce at will.
-- **Fail closed.** A declared `token_env` whose variable is missing or empty refuses every request.
-  A misconfigured deployment must serve nothing, not everything.
-- **Surrounding whitespace is stripped from *both* sides, deliberately.** It used to be stripped
-  from the offered header only, which is the asymmetry rather than the tolerance: driven with raw
-  sockets against a running `props`, `Bearer <tok> `, `Bearer  <tok>`, `Bearer \t<tok>` and
-  `Bearer <tok>\t  ` were all accepted, while a secret *provisioned* with a trailing newline — an
-  `echo`-written Kubernetes Secret, a `.env` line — refused every request including the one
-  carrying exactly those bytes. So the side where whitespace is an accident was the strict one and
-  the side where it is a caller's sloppiness was the lenient one. Both are stripped now, and the
-  cost is stated rather than discovered: **a secret and the same secret with surrounding
-  whitespace are the same secret**, so rotating between them rotates nothing. That is a property
-  worth having written down; it was true of the caller's half already and nothing said so.
-  `testing.assert_bearer_is_enforced` drives all three arms — padded offer, padded secret, and a
-  token differing by one non-whitespace byte, which is still refused.
-
-`/healthz` and `/metrics` stay open: a kubelet probe and a Prometheus scrape happen independently
-of any identity. The exposition is the default registry's — `python_info` and the `process_*`
-collectors, which an operator wants — and never anything about a *request*: no caller identity, no
-correlation id, no tool argument. That is the bound an unauthenticated endpoint has to keep, and it
-is asserted over the live exposition in `tests/test_connector_app.py` rather than only stated here.
+`OPEN_PATHS` stays unauthenticated for probes and scrapes, and must never expose anything about a
+request or caller.
 """
 
 from __future__ import annotations
@@ -60,34 +38,22 @@ from mcp_server_kit.metrics import REQUESTS, UNAUTHENTICATED_REQUESTS
 
 logger = logging.getLogger(__name__)
 
-# The three routes a kubelet probe or a Prometheus scrape reaches, none of which has an identity to
-# present. `/livez` joined them when liveness stopped sharing `/healthz` — a liveness probe refused
-# with 401 kills the container, which is the loudest possible way to get this wrong.
+# The routes a kubelet probe or a Prometheus scrape reaches, with no identity to present. A refused
+# liveness probe kills the container.
 OPEN_PATHS = frozenset({"/healthz", "/livez", "/metrics"})
 
-# What a request's path is allowed to become as a metric label. Three routes and a sentinel,
-# because a path is caller-supplied: counting it verbatim would let anything that can reach the pod
-# mint a series per URL it invents, which is the same unbounded-cardinality trap
-# `app._served_tool_name` closes for a tool name.
+# What a request path may become as a metric label: a fixed set plus a sentinel, because the path
+# is caller-supplied and would otherwise mint unbounded series.
 _MCP_PATH = "/mcp"
 _OTHER_PATH = "<other>"
 
 
 def _is_open(path: str) -> bool:
-    """Whether `path` is one of the two unauthenticated probe routes.
+    """Whether `path` is one of the unauthenticated probe routes.
 
-    A trailing slash is the only normalisation, and it is deliberately the only one: `OPEN_PATHS`
-    was an exact-match set, so a kubelet probe configured as `path: /healthz/` got 401 forever and
-    the pod never became ready — while the log said "refused an unauthenticated request", which
-    reads as a credential problem and is not. Everything else stays an exact match: `//metrics`,
-    `/HEALTHZ` and `/healthz/../mcp` are *not* these routes, and a prefix rule here would open the
-    MCP surface to anything that could write a path starting with `/healthz`.
-
-    **Not refusing a path is not the same as serving it, and for a while this exemption was the
-    only half that existed.** FastAPI matches routes exactly and `connector_app` mounts the MCP
-    transport at `/`, so `/healthz/` fell through to the mount and came back **404** — measured on
-    every server in this fleet under real uvicorn. `connector_app` now declares both spellings as
-    routes; this function is what keeps the credential check off them.
+    A trailing slash is the only normalisation: `//metrics`, `/HEALTHZ` or `/healthz/../mcp` are not
+    these routes, and a prefix rule would open the MCP surface. `connector_app` serves both
+    spellings.
     """
     return (path.rstrip("/") or "/") in OPEN_PATHS
 
@@ -101,12 +67,7 @@ def _labelled_path(path: str) -> str:
 
 
 def _status_capturing_send(send: Send, record: Callable[[int], None]) -> Send:
-    """`send`, with the status of the response start handed to `record` on the way past.
-
-    The status a client actually received is only visible on the ASGI message, and only a
-    middleware that wraps `send` sees it. Both middlewares here that report on a request need it,
-    so it is written once.
-    """
+    """`send`, with the status of the response start handed to `record` on the way past."""
 
     async def wrapped(message: Message) -> None:
         if message["type"] == "http.response.start":
@@ -119,33 +80,14 @@ def _status_capturing_send(send: Send, record: Callable[[int], None]) -> Send:
 class BearerAuthMiddleware:
     """Refuse anything outside `OPEN_PATHS` without the bearer token `token_env` names.
 
-    Pure ASGI rather than `BaseHTTPMiddleware`, for cost rather than for correctness — the
-    credential check itself is two byte comparisons. `BaseHTTPMiddleware` runs the downstream app
-    in an `anyio` task group behind a memory object stream, per request, and this fleet had two
-    such layers in every server. Measured with three arms in one process over real sockets — a bare
-    MCP app, this stack, and the same stack with both layers reinstated as `BaseHTTPMiddleware`,
-    median of 400 requests each:
-
-        ping             bare 2.94 ms | this 2.93 ms (-0.01) | BaseHTTPMiddleware 3.76 ms (+0.82)
-        tools/call echo  bare 3.32 ms | this 3.43 ms (+0.11) | BaseHTTPMiddleware 4.39 ms (+1.07)
-
-    So the whole `connector_app` stack — this check, the caller log, the body cap, the request
-    counter and the tool-call wrappers — now costs about a tenth of a millisecond on a tool call
-    and is indistinguishable from a bare MCP app on a ping. On a pod whose ceiling is one core's
-    worth of Python, the millisecond it used to cost was a tax on every tool call, every kubelet
-    probe and every scrape.
-
-    The conversion was not done for the millisecond, though: `CallerLogMiddleware` below had to
-    move for a correctness reason, and this one moved with it because leaving one behind would have
-    kept most of the cost while making the pair harder to read.
+    Pure ASGI rather than `BaseHTTPMiddleware`, which adds a task group and stream per request.
     """
 
     def __init__(self, app: ASGIApp, *, server: str, token_env: str | None) -> None:
         """Bind the server's name (for the log line) and the env var holding its expected token.
 
-        `token_env` is `None` for a loopback-only dev server (`auth: {mode: none}` in the
-        manifest), and every request passes through. It is read from the environment *per request*
-        rather than at construction, so a rotated secret is picked up without a restart.
+        `token_env` is `None` for a loopback-only dev server, and every request passes. The variable
+        is read per request, so a rotated secret is picked up without a restart.
         """
         self._app = app
         self._server = server
@@ -160,17 +102,13 @@ class BearerAuthMiddleware:
         if _is_open(path):
             await self._app(scope, receive, send)
             return
-        # Stripped here rather than at the comparison, so the `not expected` arm below sees
-        # the same value the comparison does: a variable holding only whitespace is an *unset*
-        # credential and must fail closed, not compare equal to an empty offered token.
+        # Stripped before the emptiness check: a whitespace-only variable is unset and must fail
+        # closed.
         expected = os.environ.get(self._token_env, "").strip()
         scheme, _, offered = Headers(scope=scope).get("authorization", "").partition(" ")
         if (
             not expected
             or scheme.lower() != "bearer"
-            # `expected` is already stripped above; stripping it a second time here would be a
-            # second place to change and a normalisation a mutation of the first could not reach —
-            # which is exactly what happened while both existed.
             or not compare_digest(
                 offered.strip().encode("utf-8", "surrogateescape"),
                 expected.encode("utf-8", "surrogateescape"),
@@ -190,46 +128,11 @@ class BearerAuthMiddleware:
 class CallerLogMiddleware:
     """Bind the `X-Chemclaw-*` caller for the request's duration, then log what happened to it.
 
-    Binding here covers the HTTP path; `app._bind_caller_per_tool_call` covers the tool bodies,
-    which run in a different task. Both are needed, and neither is an access decision.
-
-    **The line used to be written before `call_next` and that made it near-useless**, in three
-    separate ways an operator meets on the same bad day:
-
-    - A request that 500s, hangs, or is abandoned mid-stream logged *exactly* the same line as one
-      that succeeded. There was no record anywhere that a request had ever finished, so "the pod
-      stopped answering" and "the pod is answering fine" produced identical logs.
-    - The **correlation id** — the single field that joins this fleet's lines to Chemclaw3's audit
-      trail — was bound on every request and logged on none. Its only readers in the whole
-      repository were `identity.py` and its own test.
-    - Nothing said which build answered, so a log line could not be tied to an image.
-
-    So it moves into a `finally`, and carries the status, the duration and the revision. The
-    *counter* for the same event is not booked here — `RequestMetrics` does that from outside
-    every middleware that can refuse a request, for the reason that class gives. What this line
-    deliberately still cannot say is *which tool* was called — `path` is `/mcp` for every one of
-    them, because the tool name is inside a JSON-RPC body this middleware must not parse. That
-    question is answered by `chemclaw_mcp_tool_calls_total` instead, which is the right place for
-    it: a per-tool rate is an aggregate, not a line.
-
-    **`duration_ms` and `status` then said something else entirely for as long as this was a
-    `BaseHTTPMiddleware`, and the paragraph above was the claim they falsified.** `call_next`
-    returns as soon as the response *starts*, and every MCP tool call is an SSE stream whose body
-    is written afterwards — so the `finally` ran before the tool had run. Measured against a
-    running server: an `optimize_geometry` the client waited 23.49 s for logged
-    `status=200 duration_ms=1.1`, and the next line in the file was 23 seconds later. Every
-    duration in this fleet's logs was time-to-headers and every status was the 200 an SSE stream
-    opens with, which is exactly the "a hang looks identical to a success" failure the move into
-    the `finally` was made to end. Pure ASGI is what fixes it: the downstream app is awaited to
-    completion, so the `finally` here is after the last byte of the body, and the status is read
-    off the response-start message rather than from a `Response` object a layer above may replace.
-    `chemclaw_mcp_tool_duration_seconds` was always right about the tool body and stays the place
-    to ask how long a *tool* took; this line is how long the *request* took, and now it is.
-
-    `/healthz` and `/metrics` drop to DEBUG. At an ordinary 30 s probe interval and a 30 s scrape
-    that is on the order of 40,000 content-free lines a day across seven servers — plausibly the
-    bulk of this fleet's log volume, describing the two requests nobody has ever needed to see one
-    of. They are still emitted, at a level a deployment can turn back on with `MCP_LOG_LEVEL`.
+    Binding covers the HTTP path (`app._bind_caller_per_tool_call` covers tool bodies); neither is
+    an access decision. The line is written in a `finally` after the downstream app completes — pure
+    ASGI, so for an SSE tool call it is after the last body byte — and carries status, duration,
+    correlation id and revision. It cannot name the tool (that is `chemclaw_mcp_tool_calls_total`'s
+    job). Probe and scrape requests log at DEBUG.
     """
 
     def __init__(self, app: ASGIApp, *, server: str, revision: str) -> None:
@@ -250,9 +153,8 @@ class CallerLogMiddleware:
         path = str(scope.get("path", ""))
         tokens = bind_caller(actor, session, correlation)
         started = time.perf_counter()
-        # The default is what an unhandled exception produces: nothing below starts a response and
-        # uvicorn answers 500 itself. Logging that is the point — it is the request an operator
-        # most needs to find.
+        # Default for an unhandled exception: nothing below starts a response and uvicorn answers
+        # 500.
         status = 500
 
         def record(code: int) -> None:
@@ -263,11 +165,8 @@ class CallerLogMiddleware:
             await self._app(scope, receive, _status_capturing_send(send, record))
         finally:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            # Logged *before* the reset, deliberately. `ContextFilter` stamps every record from the
-            # ambient caller, so resetting first left this one line — the request line — carrying
-            # `[-/-]` where every line inside the request carried the ids. Measured against a
-            # running server: the correlation id appeared in the message and not in the field a log
-            # stack indexes, on the one record most worth joining on.
+            # Logged before the reset, so `ContextFilter` stamps this line with the caller's ids
+            # too.
             logger.log(
                 logging.DEBUG if _is_open(path) else logging.INFO,
                 "server %s request: path=%s status=%s duration_ms=%.1f actor=%s session=%s "
@@ -288,25 +187,9 @@ class CallerLogMiddleware:
 class RequestMetrics:
     """Count every HTTP request this process answers — from outside everything that can refuse one.
 
-    **A counter whose help says "HTTP requests served, by route and response status" has to be the
-    outermost thing in the stack, and this one was not.** It was booked in `CallerLogMiddleware`,
-    and `connector_app` adds `BearerAuthMiddleware` and `BodySizeLimit` *after* it — so Starlette's
-    add-order puts both outside the counter, and both short-circuit. Measured against a running
-    server: three 401s and two 413s produced **zero** `chemclaw_mcp_requests_total` series between
-    them, so `rate(chemclaw_mcp_requests_total{status=~"4.."})` — the expression an operator writes
-    to see a fleet-wide credential or payload problem — was permanently 0. The one 4xx series that
-    did appear was wrong: the chunked-oversize path books the *inner* app's 400, which the size cap
-    then discards in favour of its own 413.
-
-    Pure ASGI rather than `BaseHTTPMiddleware`, for the reason `BodySizeLimit` is: this has to sit
-    outside a middleware that answers by writing directly to `send`, and it must observe the status
-    that actually went out rather than a `Response` object some layer above may replace. Every
-    middleware in this file is pure ASGI now, and this one was the first for a correctness reason
-    the other two later needed too.
-
-    The label set is unchanged and still bounded — the server's name, the path folded onto the
-    fixed route set by `_labelled_path`, and the status. `/metrics` is unauthenticated, so nothing
-    about the *caller* may join them; see `mcp_server_kit.metrics`.
+    Must be the outermost middleware, or the 401s and 413s that auth and the size cap answer
+    directly are never counted. Pure ASGI so it reads the status actually sent. Labels: server, the
+    path folded by `_labelled_path`, and status — never anything about the caller.
     """
 
     def __init__(self, app: ASGIApp, *, server: str) -> None:
@@ -319,9 +202,8 @@ class RequestMetrics:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        # The default is what an unhandled exception produces: nothing below ever starts a
-        # response, and uvicorn answers 500 itself. Booking it is the point — a request that ended
-        # in a fault is the one an operator most needs counted.
+        # Default for an unhandled exception: nothing below starts a response and uvicorn answers
+        # 500.
         status = 500
 
         def record(code: int) -> None:
@@ -339,37 +221,11 @@ class RequestMetrics:
 class BodySizeLimit:
     """Refuse an oversized request body with 413 before any handler reads it.
 
-    Pure ASGI rather than `BaseHTTPMiddleware` because the point is to reject *while streaming*:
-    a declared `content-length` is a claim, and a chunked upload has none at all, so the running
-    total is what actually bounds memory. Every legitimate request to an MCP server is one
-    JSON-RPC call whose arguments are chemistry-sized — a SMILES string, a list of solvent names —
-    never a file, which is why the default here is far below a web front door's.
-
-    **Both halves are needed, and the first is not an optimisation.** Counting alone bounds only
-    what somebody *reads*: a route that ignores the body never pulls from the receive channel, so
-    an oversized request to it was served 200 with the cap installed and silent (measured — this
-    class shipped with the counter only, and the test for it passed for the wrong reason). The
-    declared `content-length` is therefore refused up front, and the running total still guards
-    the chunked case where no such declaration exists.
-
-    **The counter signals with a disconnect, not an exception, and that is the second correction
-    this class has needed.** It used to raise a private exception through the receive channel. Two
-    `BaseHTTPMiddleware` layers sat between this middleware and the app in every `connector_app` at
-    the time, each running the downstream app inside an `anyio` task group, so the signal arrived
-    here wrapped in a nested `ExceptionGroup` that `except _BodyTooLarge` did not match: a chunked
-    oversize body got **500 plus a per-request traceback**, and with no `BaseHTTPMiddleware` in
-    between FastAPI's body parsing swallowed it into a 400 instead — the counter produced a 413 in
-    no configuration at all, while its only test exercised the declared pre-check. Both of those
-    layers are pure ASGI now, so neither ExceptionGroup wrapping happens any more; the disconnect
-    stays, because it was never the right fix only for that stack. An exception has to survive
-    every `except` between here and the receive call, and FastAPI's body parsing is one of them.
-
-    An exception has to survive every `except` between here and the receive call, and there is no
-    version of that this middleware controls. A disconnect is the ASGI protocol's own way to say
-    "no more body is coming", every app already handles it, and it cannot be caught into something
-    else. What the app then says is dropped, because the request has already been refused, and
-    whatever it raises on the way out is a consequence of the refusal rather than a fault to
-    report.
+    Pure ASGI so it can reject while streaming. A declared `content-length` over the cap is refused
+    up front (a route that never reads its body would otherwise be served); the running total guards
+    the chunked case. Going over signals the app with an `http.disconnect`, not an exception,
+    because an exception can be caught into something else on the way; what the app says afterwards
+    is dropped.
     """
 
     def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
@@ -416,9 +272,8 @@ class BodySizeLimit:
         async def guarded_send(message: Message) -> None:
             """Drop whatever the app says about a request this middleware has already refused.
 
-            Only until the app has started a response: an app that answered *before* the body went
-            over the cap is mid-response, and cutting it off there would be a protocol error rather
-            than a refusal.
+            Only until the app has started a response; cutting one off mid-stream would be a
+            protocol error.
             """
             nonlocal answered
             if refused and not answered:

@@ -311,7 +311,7 @@ names it. So `MCP_SERVER_REVISION` rides the `initialize()` handshake: `connecto
 for a probe that has no session. No extra endpoint, no extra round trip, no field on every result.
 
 An image built without the build argument answers `"unknown"` rather than failing.
-`tests/test_fleet.py` asserts the `ARG`/`ENV` pair in each Containerfile, and the Jenkins pipeline's
+`tests/test_fleet_images.py` asserts the `ARG`/`ENV` pair in each Containerfile, and the Jenkins pipeline's
 verify stage refuses an image whose `/healthz` does not report the revision it was built from — so a
 hand-run build that drops the `--build-arg` is the remaining way to get `"unknown"`, and
 `curl .../healthz` shows it.

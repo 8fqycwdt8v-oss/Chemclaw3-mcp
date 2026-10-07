@@ -75,8 +75,8 @@ endpoint:
   read_only:
     - run_python
   # A run is a whole core for up to its wall clock and the pod admits two, so Chemclaw3 queues it
-  # rather than being refused by a full pod — exactly the gated set, which `tests/test_fleet.py`
-  # holds.
+  # rather than being refused by a full pod — exactly the gated set, which
+  # `tests/test_fleet_manifests.py` holds.
   queued:
     inline_wait_seconds: 45
     tools:

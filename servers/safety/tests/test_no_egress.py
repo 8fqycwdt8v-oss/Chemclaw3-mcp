@@ -1,9 +1,7 @@
-"""This server's own code holds no way to call out. Three lines, and every server ships them.
+"""This server's own code holds no way to call out.
 
-The scan covers the whole package — engine, tools and transport — because the rule is about the
-server, not about one layer of it. `app.py` names loopback in its docstring, which the scanner
-exempts on purpose: showing somebody how to reach the server they are running is documentation,
-while naming somebody else's host is the thing being forbidden.
+The scan covers the whole package. A loopback address in `app.py`'s docstring is exempt by
+design: naming the server you run is documentation, naming somebody else's host is forbidden.
 """
 
 from __future__ import annotations
@@ -22,17 +20,11 @@ def test_no_module_can_reach_the_network() -> None:
 
 
 def test_the_answers_come_from_the_vendored_corpora() -> None:
-    """The positive half: every table this server answers from is on disk and checksummed.
+    """Every table this server answers from is on disk and checksummed.
 
-    Worth stating for this server in particular. The obvious thing to reach for here is a live
-    source — an SDS service, a hazard database, ICH's own site for the current revision — and a
-    request-time call to any of them is what the no-egress rule forbids. That the four vendored
-    tables are *sufficient* is therefore a property that has to be provable rather than assumed, and
-    it is provable because the whole suite runs with the guard armed.
-
-    The failure it rules out is specific and quiet: a screen that fell back to a network lookup and
-    got a connection error would report "no rule matched" — this server's one forbidden answer — for
-    chemistry it never looked at.
+    The tempting alternative is a live SDS or hazard service, which no-egress forbids; the vendored
+    tables are proven sufficient because the suite runs with the guard armed. A fallback lookup that
+    failed would otherwise report "no rule matched" for chemistry it never looked at.
     """
     from chemclaw_mcp_safety.engine import genotox, ich, screen
 

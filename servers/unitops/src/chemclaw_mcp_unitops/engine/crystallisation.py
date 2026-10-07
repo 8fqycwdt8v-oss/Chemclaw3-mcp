@@ -1,30 +1,13 @@
 """Crystallisation yield from two points on a solubility curve, by mass balance.
 
-The whole of it is one balance. What crystallises is what the cold liquor cannot hold:
-
     solute in the liquor at the end = S_cold · (solvent charged - solvent evaporated)
     crystals = solute charged - solute in the liquor
 
-**This is arithmetic on solubilities the chemist supplies, and it is not a solubility model.** There
-is no solubility curve anywhere in this system, and the two numbers are the answer's entire content:
-a yield computed from a guessed solubility is a guess wearing a percentage sign. Chemclaw3's own
-aqueous predictor is not a substitute — a water solubility used for an isopropanol crystallisation
-is the near-miss its probe set names explicitly.
-
-**What the balance assumes, each of which moves a real yield away from this number.**
-
-- *Equilibrium at the final temperature.* A real cooling crystallisation stops somewhere inside the
-  metastable zone, so the liquor is supersaturated when it is filtered and the yield is **lower**
-  than this. How much lower is a kinetics question — cooling rate, seeding, agitation — that no
-  balance answers.
-- *An anhydrous solid of the same substance.* A hydrate or a solvate takes solvent out of the liquor
-  with it and adds its own mass to the cake, so both halves of the balance move.
-- *No oiling out, no inclusion, no losses to the vessel or the cake wash.*
-- *The solubility is unaffected by what else is in the liquor.* Impurities, a reaction by-product or
-  residual base routinely change it, in either direction.
-
-So this is the **maximum** yield the two solubilities permit, and the gap between it and a real
-batch is where crystallisation development happens.
+Arithmetic on solubilities the chemist supplies, not a solubility model: a yield from a guessed
+solubility is a guess. The balance assumes equilibrium at the final temperature (real liquors stay
+supersaturated, so real yields are lower), an anhydrous non-solvated solid, no oiling out, inclusion
+or losses, and solubility unaffected by impurities. So it is the **maximum** yield the two
+solubilities permit.
 """
 
 from __future__ import annotations
@@ -41,18 +24,16 @@ class CrystallisationYield:
     """What the balance permits, and what stays behind."""
 
     crystal_mass_kg: float
-    #: What is dissolved in the mother liquor when it is filtered — the loss this calculation
-    #: exists to quantify, since it is usually the largest single one in an isolation.
+    #: Solute still dissolved in the filtered mother liquor, kg; usually the largest single
+    #: isolation loss.
     mother_liquor_loss_kg: float
     #: Crystals divided by the solute charged, 0 to 1.
     yield_fraction: float
     yield_percent: float
     #: Solvent remaining at the end, in kg, after any evaporation.
     solvent_at_end_kg: float
-    #: How saturated the charge was at the hot end — the solute charged over what the hot solvent
-    #: could hold. At 1.0 the charge is exactly saturated, which is where a cooling crystallisation
-    #: is normally designed to start; well below it, the cooling curve is being run at a dilution
-    #: that throws the yield away before it starts.
+    #: Solute charged over what the hot solvent could hold. 1.0 is exactly saturated, the normal
+    #: design start; well below it, dilution throws yield away.
     saturation_at_start: float
 
 
@@ -67,27 +48,23 @@ def crystallisation_yield(
     """The maximum yield two solubilities permit, by mass balance.
 
     Args:
-        solute_charged_kg: Product dissolved at the hot temperature, in kg. The solute, not the
-            slurry and not the crude charge including impurities.
-        solvent_charged_kg: Solvent in the vessel at the hot temperature, in kg. **Mass, not
-            volume** — 5 L of isopropanol is 3.93 kg, and using the litres directly overstates the
-            liquor loss by a quarter.
-        solubility_hot_kg_per_kg_solvent: Solubility at the starting temperature, in kg of solute
-            per kg of solvent. A measured number, from this solvent system at this temperature.
-        solubility_cold_kg_per_kg_solvent: Solubility at the final temperature, same units. This is
-            the number the yield is almost entirely made of.
-        solvent_evaporated_kg: Solvent removed during the operation, in kg. Zero for a straight
-            cooling crystallisation; non-zero for a concentrate-and-cool or a distillative swap.
+        solute_charged_kg: Product dissolved at the hot temperature, kg (the solute, not the crude
+            charge).
+        solvent_charged_kg: Solvent at the hot temperature, kg. **Mass, not volume** (5 L of
+            isopropanol is 3.93 kg).
+        solubility_hot_kg_per_kg_solvent: Measured solubility at the starting temperature, kg solute
+            per kg solvent.
+        solubility_cold_kg_per_kg_solvent: Solubility at the final temperature, same units; the
+            yield is almost entirely this number.
+        solvent_evaporated_kg: Solvent removed during the operation, kg; zero for straight cooling.
 
     Returns:
         The crystal mass, the liquor loss, the yield and how saturated the charge was to begin with.
 
     Raises:
-        UnitOpsInputError: If a mass or solubility is not positive, if the evaporation removes all
-            the solvent, if the cold solubility is not below the hot one (there is no driving
-            force, so nothing crystallises and the answer is not a small yield but no operation),
-            or if the charge exceeds what the hot solvent can dissolve — because then part of it
-            never went into solution and this balance describes a different experiment.
+        UnitOpsInputError: A mass or solubility is not positive, evaporation removes all the
+            solvent, the cold solubility is not below the hot one (no driving force), or the charge
+            exceeds what the hot solvent dissolves.
     """
     positive(solute_charged_kg, "the solute charged")
     positive(solvent_charged_kg, "the solvent charged")
@@ -127,9 +104,8 @@ def crystallisation_yield(
     in_liquor = solubility_cold_kg_per_kg_solvent * solvent_at_end
     crystals = solute_charged_kg - in_liquor
     if crystals <= 0.0:
-        # Not an error: a charge well below saturation legitimately yields nothing on cooling, and
-        # that is the answer the chemist needs — the batch is too dilute, rather than the tool
-        # being unable to say so.
+        # Not an error: a charge well below saturation yields nothing on cooling, and that is the
+        # answer.
         return CrystallisationYield(
             crystal_mass_kg=0.0,
             mother_liquor_loss_kg=solute_charged_kg,

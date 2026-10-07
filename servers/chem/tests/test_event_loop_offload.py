@@ -1,20 +1,9 @@
 """Synchronous RDKit work must not run on the event loop that serves other requests.
 
-**This guard came with the capability, and it is the half that nearly did not.** In Chemclaw3 a
-50-user load test measured throughput flat at ~1.18 turns/s from 10 users to 50 — five times the
-load for 1.7% more work, which is the signature of a single serialization point rather than a
-resource limit. This server is one uvicorn process on one event loop and the RDKit calls behind
-these four tools are synchronous C++: while one request depicts a molecule, every other request on
-the process is stopped.
-
-The `asyncio.to_thread` hops survived the port from that repo. The *test* did not, and a hop with
-no test is a property nobody would notice losing — the exact shape this fleet's conventions exist
-to prevent. So it is written here, against this server's own tools, rather than left behind with
-the code it no longer guards.
-
-The assertion is the property directly — the blocking call happens on a **different thread** than
-the coroutine that awaited it — rather than a wall-clock measurement, which would be flaky and
-would not distinguish "fast" from "off the loop". Each test fails if its hop is removed.
+This server is one uvicorn process on one event loop, and the RDKit calls behind these tools are
+synchronous C++: on the loop, one depiction stops every other request. The assertion is that the
+blocking call happens on a different thread than the awaiting coroutine (not a wall clock), and
+each test fails if its `asyncio.to_thread` hop is removed.
 """
 
 from __future__ import annotations

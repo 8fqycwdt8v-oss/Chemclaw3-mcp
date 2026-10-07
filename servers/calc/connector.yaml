@@ -13,7 +13,7 @@
 #
 # The name is nonetheless `calc`, because this repository requires the directory, the package
 # suffix, the manifest `name` and the addressing key to be one string
-# (`tests/test_fleet.py::test_the_name_is_one_string_used_four_times`). So registering this
+# (`tests/test_fleet_layout.py::test_the_name_is_one_string_used_four_times`). So registering this
 # directory as a connector would let a *partial* port win a name collision — first directory wins,
 # with no error either way — and silently remove everything the in-tree bundle serves that is not
 # listed below:
@@ -30,8 +30,8 @@
 # names, and the key is the second layer under that: Chemclaw3's `ConnectorManifest` is
 # `extra="forbid"`, so a deployment that points a path here anyway gets a `ConnectorError` naming
 # this file at startup instead of a partial surface winning the name. It is read by
-# `tests/test_fleet.py` on this side and by nothing on Chemclaw3's, which is the point — a manifest
-# Chemclaw3 must refuse is one it cannot silently accept.
+# `tests/test_fleet_manifests.py` on this side and by nothing on Chemclaw3's, which is the point — a
+# manifest Chemclaw3 must refuse is one it cannot silently accept.
 #
 # **What this file is for**, then: it is this repository's own declaration of the served surface,
 # every tool classified exactly once, checked against the running server by `tests/test_server.py`.

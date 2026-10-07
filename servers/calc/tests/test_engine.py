@@ -1,12 +1,8 @@
 """The physics and the domain limits, at the layer where they live — no transport imported.
 
-Ported from Chemclaw3's own suite for these calculators and narrowed to what this server serves. The
-selection principle: every test here pins a behaviour whose loss would be **silent**. A wrong energy
-raises nothing, a pKa for an aliphatic amine looks exactly like a pKa for a pyridine, and an ESOL
-prediction for a salt is a number with an error bar drawn from a distribution it was never in.
-
-The molecules are small on purpose — water, ethanol, acetic acid, pyridine. The properties being
-asserted are structural rather than about size, and the suite runs on every pull request.
+Every test pins a behaviour whose loss would be silent: a wrong energy raises nothing, and a pKa
+or ESOL value outside its domain looks like any other number. Small molecules, since the
+properties are structural.
 """
 
 from __future__ import annotations
@@ -82,13 +78,8 @@ def test_a_string_rdkit_would_truncate_never_reaches_a_calculator() -> None:
 def test_the_backend_never_resolves_to_the_word_auto() -> None:
     """A version string containing "auto" would mean different things on two deployments.
 
-    Three separate claims, and the middle one used to be written as a property of *this run*:
-    `resolve_backend() == ("xtb" if is_available() else "tblite")`. That is `auto`'s rule, not the
-    function's, and it held only while nothing pinned the setting — so it failed the moment the
-    shipped image pinned `CHEMCLAW_XTB_ENGINE=tblite` beside an installed binary
-    (`D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual`: the backend is part of
-    `calc_version`, so letting `auto` find the new binary would re-key every cached row). The rule
-    is now exercised by asking for `auto` explicitly, which is true on any machine.
+    `auto`'s rule is exercised by asking for `auto` explicitly, so it holds on any machine whatever
+    the configured engine.
     """
     assert resolve_backend() in ("tblite", "xtb")
     assert resolve_backend("auto") == ("xtb" if xtb_cli.is_available() else "tblite")
@@ -100,9 +91,7 @@ def test_the_backend_never_resolves_to_the_word_auto() -> None:
 def test_an_unparameterised_solvent_is_refused_with_the_supported_list() -> None:
     """2-MeTHF is among the commonest process solvents and GFN2-xTB has no parameters for it.
 
-    Refused at spec construction so it cannot reach either backend — tblite would answer with
-    "String value for epsilon was not found among database of solvents", and the `xtb` binary would
-    fail minutes later inside a subprocess.
+    Refused at spec construction, before either backend can fail on it less clearly or later.
     """
     with pytest.raises(ValueError) as raised:
         XtbSpec(task="sp", solvent="2-methyltetrahydrofuran")
@@ -122,11 +111,10 @@ def test_gas_phase_is_not_a_solvent() -> None:
 
 
 def test_relaxing_before_the_single_point_gets_the_isomer_ordering_right() -> None:
-    """The measured reason `_sp_structure` sets `optimize=True`.
+    """Relaxing before the single point gets the isomer ordering right.
 
-    On a raw ETKDG embedding the residual strain is larger than the energy difference being asked
-    about, and ethanol vs. dimethyl ether comes out with the *wrong sign*. Ethanol is the more
-    stable of the two, and a single-point energy is only ever useful relatively.
+    On a raw ETKDG embedding the residual strain exceeds the energy difference, and ethanol vs.
+    dimethyl ether comes out with the wrong sign.
     """
     ethanol = run_xtb(XtbInput(smiles="CCO")).total_energy_hartree
     dimethyl_ether = run_xtb(XtbInput(smiles="COC")).total_energy_hartree
@@ -157,12 +145,10 @@ def test_the_properties_come_out_of_one_scf_with_a_sane_frontier_gap() -> None:
 
 
 def test_fukui_ranks_the_ring_carbons_of_toluene_para_over_meta() -> None:
-    """The textbook ordering, and the measurement that made `property_structure` relax first.
+    """Fukui ranks toluene's ring carbons para over meta.
 
-    On an unrelaxed embedding the residual distortion breaks the symmetry of chemically equivalent
-    ring positions and *ortho* and *meta* overlap. Read on the ring carbons only, because a
-    heteroatom or the methyl would otherwise dominate — which is precisely the caveat the tool's
-    docstring gives the model.
+    An unrelaxed embedding breaks the symmetry of equivalent positions. Read on ring carbons only,
+    since a heteroatom or the methyl would dominate, as the tool's docstring warns.
     """
     structure = xtb_props.property_structure("Cc1ccccc1")
     result = xtb_props.compute_fukui(XtbSpec(task="fukui"), structure, "electrophilic")
@@ -201,9 +187,8 @@ def test_fukui_refuses_an_open_shell_parent() -> None:
 def test_a_converged_structure_is_a_fixed_point() -> None:
     """Re-optimizing a minimum must return it unchanged, coordinates included.
 
-    Not cosmetic: `structure_id` is a hash of the coordinates, so an optimizer that always moves
-    something mints a new id on every pass — which forks the key of every task built on that
-    geometry, and quietly turns "compute once" into "compute every time".
+    `structure_id` hashes the coordinates, so an optimizer that always moves something would fork
+    every downstream key.
     """
     relaxed = optimize_structure(OptSpec(), structure_from_smiles("O", optimize=True)).structure
     again = optimize_structure(OptSpec(), relaxed)
@@ -244,16 +229,10 @@ def test_freezing_everything_is_an_error_rather_than_a_no_op() -> None:
 
 
 def test_the_hessian_is_symmetric_and_round_trips_through_its_wire_format() -> None:
-    """Both halves of what a caller receives: the physics, and the bytes.
+    """The Hessian is symmetric and round-trips exactly through its wire format.
 
-    Symmetry is the physics half — central differences of an exact gradient give a nearly symmetric
-    matrix and the code forces the symmetry, because the small asymmetry left otherwise puts a
-    spurious imaginary component into the eigenvalues.
-
-    The round trip is the transport half, and it is asserted as **exact** equality rather than
-    approximate: `.npy` was chosen over a JSON array of decimal literals precisely because float64
-    survives it unchanged, and a format that merely round-tripped to six decimals would put a
-    silent error into every frequency computed downstream.
+    Symmetry is forced because residual asymmetry adds spurious imaginary components. `.npy` keeps
+    float64 bit-exact, so equality is exact, not approximate.
     """
     relaxed = optimize_structure(OptSpec(), structure_from_smiles("O", optimize=True)).structure
     hessian = compute_hessian(HessianSpec(), relaxed)
@@ -266,11 +245,10 @@ def test_the_hessian_is_symmetric_and_round_trips_through_its_wire_format() -> N
 
 
 def test_the_hessian_payload_size_is_bounded_by_the_atom_cap() -> None:
-    """The ceiling a deployment needs to know, computed rather than asserted from memory.
+    """The Hessian payload size at the atom cap, computed.
 
-    At the default 150-atom cap the matrix is 450x450 float64 — 1.62 MB raw, ~2.16 MB base64. That
-    is above `mcp_server_kit.DEFAULT_MAX_REQUEST_BYTES`, which caps *requests* and so does not apply
-    to this response, but it is the number to check a proxy against.
+    It exceeds the request cap (which does not apply to responses); it is the number to check a
+    proxy against.
     """
     limit = settings.xtb_hessian_max_atoms
     encoded = pack_array(np.zeros((3 * limit, 3 * limit)))
@@ -281,18 +259,11 @@ def test_the_hessian_payload_size_is_bounded_by_the_atom_cap() -> None:
 
 
 def test_the_hessian_carries_the_gradient_that_says_whether_it_is_a_minimum() -> None:
-    """A Hessian differentiates whatever geometry it is handed, so it has to say which one.
+    """A Hessian differentiates whatever geometry it is handed, so it reports the gradient there.
 
-    `OptimizationResult` guarantees convergence and raises otherwise; the Hessian has no such
-    contract and must not pretend to one — a transition state and a scan point are legitimate
-    subjects. What it can do is hand back the evidence, and the evidence already exists: the
-    undisplaced `evaluate_point` computes the analytic gradient and used to discard it.
-
-    Why it matters that this travels: Chemclaw3's `thermo._vibrational` skips every mode with
-    `wavenumber <= 0`, so an MMFF geometry's spurious modes produce a ZPE, a thermal correction and
-    an entropy that all look entirely ordinary. A geometry displaced along a *soft, positively
-    curved* direction produces no imaginary mode at all and is invisible to the `is_minimum` check;
-    the gradient is what separates the two cases.
+    It does not require a minimum (transition states and scan points are legitimate), but
+    Chemclaw3's thermochemistry skips non-positive modes, so a non-stationary geometry can look
+    ordinary; the gradient is what reveals it.
     """
     embedded = structure_from_smiles("O", optimize=True)
     relaxed = optimize_structure(OptSpec(), embedded).structure
@@ -311,15 +282,8 @@ def test_the_hessian_carries_the_gradient_that_says_whether_it_is_a_minimum() ->
 def test_a_molecule_over_the_atom_limit_is_refused_without_naming_a_route_it_cannot_see() -> None:
     """The refusal states this server's own limit and stops.
 
-    It used to end "Submit it through Chemclaw3's durable QM job path instead", which the same
-    function's docstring simultaneously claimed it did *not* say — and the route had been deleted
-    outright (`D-2026-08-26-semiempirical-is-the-whole-tier` there). A tool docstring and a tool
-    error are both prompt: a refusal naming a route nobody can take sends the model, and then a
-    chemist, looking for it.
-
-    Where to go next is orchestration knowledge this server does not have. Chemclaw3 owns it and
-    now refuses first, in `science/calc/budget.py::require_hessian_affordable`, before the call
-    reaches the wire — so this bound is the backstop for a caller that is not Chemclaw3.
+    A tool error is prompt, and naming a route this server cannot see would send the model looking
+    for it. Chemclaw3 refuses first; this bound is the backstop for other callers.
     """
     # Two over the limit rather than one, because an odd number of hydrogens is an odd number of
     # electrons and `Structure` rejects that before the size check is ever reached.
@@ -387,15 +351,8 @@ def test_combining_two_molecules_starts_them_apart_and_sums_their_charges() -> N
 def test_combining_two_open_shell_monomers_is_refused_rather_than_coupled_high_spin() -> None:
     """Two doublets are a singlet or a triplet, and arithmetic does not get to choose.
 
-    `multiplicity = first + second - 1` is the high-spin coupling, applied silently: two methyl
-    radicals came back as a triplet, and every energy in the chain that follows —
-    `search_binding_modes`, then the three-`relax_structure` interaction-energy subtraction on the
-    Chemclaw3 side — was computed on that surface and reported as *the* interaction energy of the
-    pair. The low-spin state was never considered and nothing in the payload said so.
-
-    The comment beside it claimed `Structure` rejects an open-shell monomer. It does not: it
-    validates a declared multiplicity against the electron count, which is exactly what makes the
-    open-shell path work everywhere else here.
+    High-spin coupling applied silently would make every downstream interaction energy a triplet
+    energy with nothing saying so, so combining two open-shell monomers is refused.
     """
     methyl = structure_from_smiles("[CH3]", multiplicity=None)
     assert methyl.multiplicity == 2
@@ -409,16 +366,10 @@ def test_the_pair_is_ordered_so_a_with_b_and_b_with_a_are_one_calculation() -> N
 
 
 def test_a_crest_search_refuses_by_name_when_the_binary_is_absent() -> None:
-    """Both halves of the binary's presence, asserted against `is_available()` rather than assumed.
+    """A CREST search answers where the binary exists and refuses by name where it does not.
 
-    Written when this image shipped no `crest`, and deliberately written to **invert** the day one
-    did — which has now happened, so the first branch is the live one and the refusal is what a
-    trimmed deployment gets. That inversion is the reason this test survived the change instead of
-    being rewritten: a refusal asserted as permanent would have had to be deleted, and deleting a
-    test is how the assertion quietly stops being made.
-
-    The message names the binary and what is unavailable without it, because "internal error" would
-    send a chemist looking for a different substrate.
+    Branches on `is_available()`, so it holds on the shipped image and on a trimmed deployment. The
+    message names the binary, so a chemist does not go looking for a different substrate.
     """
     water = structure_from_smiles("O", optimize=True)
     if crest_cli.is_available():
@@ -433,9 +384,8 @@ def test_a_crest_search_refuses_by_name_when_the_binary_is_absent() -> None:
 def test_a_crest_key_names_crest_and_not_the_xtb_backend() -> None:
     """The rule `CrestSpec` exists for: name the program that runs.
 
-    An ensemble search's numbers all come from crest, so its version names crest's build and drops
-    `engine` — while a complex search's surrounding optimisations *do* run on `engine`, so that spec
-    puts it back. Two specs, one rule, and the difference is visible in the strings.
+    An ensemble search's version names crest and drops `engine`; a complex search also optimises on
+    `engine`, so it names that too.
     """
     water = structure_from_smiles("O", optimize=True)
     ensemble = EnsembleSpec().cache_key(water)
@@ -470,12 +420,10 @@ def test_a_base_reports_its_conjugate_acid_and_says_so() -> None:
 
 
 def test_an_aliphatic_amine_is_refused_with_the_measurement_behind_the_refusal() -> None:
-    """Spearman -0.17 over 13 references: no ranking ability at all, so a number would be a fiction.
+    """An aliphatic amine is refused, because the calibration shows no ranking ability.
 
-    The message is the capability here — a chemist told "internal error" would try another
-    substrate; one told the continuum solvent cannot represent the ammonium ion's hydrogen bonding
-    knows to measure it instead. `CalculationDomainError` is a `ValueError`, which is what lets
-    `connector_app` pass it through verbatim.
+    The message tells the chemist why (the continuum solvent cannot represent the ammonium ion's
+    hydrogen bonding). `CalculationDomainError` is a `ValueError`, so it reaches the model verbatim.
     """
     with pytest.raises(CalculationDomainError, match=re.escape("Spearman -0.17")):
         predict_pka(PkaInput(smiles="C1CCNCC1"))
@@ -499,11 +447,10 @@ def test_a_charged_input_is_outside_the_calibration_rather_than_computed() -> No
 
 
 def test_the_result_carries_the_canonical_smiles_it_computed_on() -> None:
-    """Canonicalization moved inside `predict_pka` when `run_cached_pka` was dropped in the port.
+    """The result carries the canonical SMILES it computed on.
 
-    Atom order steers the seeded embedding, so a value computed on the caller's spelling would
-    depend on which spelling arrived first — and would disagree with the key, which is built on the
-    canonical form.
+    Atom order steers the seeded embedding, so computing on the caller's spelling would disagree
+    with the canonical key.
     """
     assert predict_pka(PkaInput(smiles="OC(C)=O")).smiles == "CC(=O)O"
     assert predict_pka(PkaInput(smiles="OC(C)=O")).pka == pytest.approx(
@@ -523,11 +470,9 @@ def test_an_acid_below_its_pka_is_essentially_its_logp() -> None:
 
 
 def test_a_base_is_corrected_in_the_opposite_direction() -> None:
-    """The entire content of the module is the sign of one exponent, and it is silent when wrong.
+    """A base is corrected in the opposite direction from an acid, a sign that is silent when wrong.
 
-    Before the branch on `site` existed, pyridine took the acid form and came out two log units too
-    lipophobic while looking entirely ordinary. Above its pKaH a base is *neutral*, so logD
-    approaches logP from below rather than falling away from it.
+    Above its pKaH a base is neutral, so logD approaches logP from below.
     """
     low = predict_logd(LogdInput(smiles="c1ccncc1", ph=2.0))
     high = predict_logd(LogdInput(smiles="c1ccncc1", ph=10.0))
@@ -563,9 +508,8 @@ def test_a_polyprotic_acid_is_refused_where_the_second_site_is_not_a_spectator()
 def test_solubility_flags_a_salt_as_out_of_domain_rather_than_refusing() -> None:
     """ESOL returns a number for anything; `estimate.in_domain` is what says not to use it.
 
-    The convention differs from logD's deliberately: ESOL on a salt gives a value of *unknown*
-    validity, while a single-equilibrium logD on a diacid gives one known to be wrong by 2-5 log
-    units — a number no caller should be handed at all.
+    Unlike logD, which refuses a diacid because the number is known to be wrong, an ESOL value on a
+    salt is of unknown validity and is flagged.
     """
     salt = predict_solubility(SolubilityInput(smiles="CC(=O)[O-].[Na+]"))
     assert salt.estimate is not None

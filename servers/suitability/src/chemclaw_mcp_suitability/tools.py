@@ -1,38 +1,15 @@
 """The `suitability` MCP tool surface: USP <621> system-suitability arithmetic.
 
-**These docstrings are the prompt**, and the thing they have to get across on this server is a
-distinction the numbers themselves do not carry: *which convention a measurement was made under*.
-A plate count of 14,400 and a plate count of 14,387 are the same peak measured two ways, and a
-resolution of 2.00 and 2.01 likewise — but a plate count quoted without its convention cannot be
-compared with a limit quoted with one, and on a tailing peak the two diverge in the direction that
-makes a marginal method look acceptable. So `convention` is a required argument with no default on
-every tool where USP defines two forms, and every answer says which it used.
+The tool docstrings are the prompt. Where USP defines two forms, `convention` is required with no
+default and every answer names it, because the forms diverge on a tailing peak in the direction that
+flatters a marginal method. Every answer carries `basis`: its formula and assumptions.
 
-**Nothing here integrates a chromatogram.** Every input is a number a chemist or a data system
-already reported: a retention time, a width, an area. This server cannot find a peak, assign a
-baseline, resolve a shoulder or open an instrument file, and a retention time it is handed is taken
-as given. That is the boundary worth stating to a model, because "system suitability" sounds like
-something done *to* a chromatogram and this is the arithmetic done *after* one.
+Nothing here integrates a chromatogram: inputs are numbers already reported, taken as given. Passing
+suitability says the system performed at the moment of the run, not that the method is valid (ICH
+Q2) or the result accurate.
 
-**What it is not evidence of.** Passing system suitability says the instrument and column performed
-acceptably at the moment of the run. It says nothing about whether the method is fit for its
-purpose — that is an ICH Q2 validation exercise over separate preparations, deliberately not
-served here — and nothing about whether the result is accurate. A method can pass every suitability
-criterion in its monograph and still be measuring the wrong peak.
-
-Every answer carries `basis`: the formula it came out of and the convention or assumption behind
-it. A resolution from half-height widths rests on a Gaussian assumption that a tailing peak already
-violates; a result that does not say so cannot be put in a report.
-
-The tools are synchronous and closed-form. Measured rather than guessed, and the measurement
-corrected the guess that preceded it in this paragraph: the slowest is `system_suitability_report`
-at **29.8 µs** for a three-peak table with two six-injection replicate series, and the six
-primitives are **1.9 µs to 4.9 µs** — not the 10.6 µs and 0.3-1.4 µs first written here, which were
-recalled from the shape of the arithmetic rather than timed. Most of each figure is pydantic
-building the result model, not the chromatography. No corpus is loaded at call time, no subprocess
-is forked and no thread is pinned, so there is nothing here for an admission ceiling to bound —
-`servers/calc` has one because a single call there is minutes of CPU across forked workers. A tool
-added here that grows real work must revisit that.
+The tools are synchronous and closed-form (microseconds per call), with no corpus, subprocess or
+threads, so there is no admission ceiling; a tool that grows real work must revisit that.
 """
 
 from __future__ import annotations
@@ -46,15 +23,12 @@ from chemclaw_mcp_suitability.engine import adjustments, peaks, precision
 
 server = FastMCP("suitability")
 
-#: The most replicate injections `replicate_precision` will take in one call. A bound on the input
-#: so the cost cannot run away unpriced, which `docs/adding-a-server.md` asks of a slow tool and
-#: which applies to a fast one whose input length is unbounded. A suitability series is five or
-#: six injections and a long stability sequence is tens; 1,000 refuses a payload while refusing no
-#: real run.
+#: The most replicate injections `replicate_precision` takes in one call; bounds the input while
+#: refusing no real run.
 MAX_INJECTIONS = 1000
 
-#: The most peaks `system_suitability_report` will accept. A related-substances chromatogram may
-#: legitimately report dozens of peaks; beyond this it is not a suitability table.
+#: The most peaks `system_suitability_report` will accept; beyond this it is not a suitability
+#: table.
 MAX_PEAKS = 200
 
 
@@ -206,10 +180,7 @@ _RESOLUTION_BASIS = {
 def _precision_result(values: list[float], limit: float | None) -> ReplicatePrecisionResult:
     """Bound the series, compute it, and shape the answer.
 
-    Extracted because `system_suitability_report` needs the same result and `@server.tool()`
-    returns the *undecorated* function typed as `Any` — so a report that called the tool would be
-    building its own half of the answer untyped, which `mypy --strict` catches and which would
-    otherwise be the first place the two paths could drift apart.
+    Shared with `system_suitability_report`, since calling the decorated tool would be untyped.
     """
     _check_series(values, "injections")
     measured = precision.relative_standard_deviation(values, limit)
@@ -784,8 +755,7 @@ def _precision_arm(
 ) -> ReplicatePrecisionResult | None:
     """One precision half of the report, appending its failures to the shared list.
 
-    Returns `None` rather than raising when there are too few values: a report asked for peak
-    metrics alone should not fail because no replicate series was pasted with it.
+    Returns `None` when there are too few values, so a peak-only report does not fail.
     """
     if len(values) < precision.MINIMUM_INJECTIONS:
         return None

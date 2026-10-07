@@ -1,22 +1,10 @@
 """What this server has to have loaded before it can answer — and the corpora that proves.
 
-`/healthz` used to be a constant 200, and on this server that was the most dangerous version of
-that defect in the fleet. All **five** tables load *lazily*, on the first tool call that needs them
-— the structural rules, the genotoxic alerts, ICH Q3C, ICH Q3D and the reagent table — so a pod
-whose `rules.yaml` failed its checksum passed the kubelet probe, took traffic, and refused every
-screen, while `load_dataset`'s own docstring says a bad corpus "fails at startup with the two
-hashes in the message", which is true only of a server that touches its corpus at import. (This
-paragraph said "four" while the two below said five and the function returns five: exactly the
-class of defect `CLAUDE.md` calls out, in the file whose job is to know how many tables there are.)
-
-Written against the **public** screening entry points rather than the loaders behind them, because
-readiness here means "this server can answer", not "these five files hash correctly": the alert and
-hazard tables are compiled SMARTS, and a rule whose pattern does not parse is a table that passes
-its checksum and cannot screen anything. Ethanol is the probe molecule for the obvious reason —
-it is in the corpus, it is not hazardous, and what is being checked is the *path*, not the answer.
-
-Cached, because this is a startup property: the loaders underneath are all `lru_cache`d, so a
-30-second probe interval must not re-hash five files forever.
+All five tables (structural rules, genotoxic alerts, ICH Q3C, ICH Q3D, reagents) load lazily, so
+without this a pod with a corrupt table would pass its probe and refuse or mis-answer every screen.
+The check runs the public screening entry points on ethanol, because a table can pass its checksum
+and still hold a SMARTS that will not compile; the path is checked, not the answer. Cached: the
+loaders are cached too, and this is a startup property.
 """
 
 from __future__ import annotations
@@ -40,10 +28,8 @@ def verified_corpora() -> tuple[Dataset, ...]:
     """Load and exercise every table this server answers from; return what was verified.
 
     Raises:
-        SafetyRulesError: a table is missing, is not the file its manifest approved, does not
-            validate, or carries a pattern that will not compile. `connector_app` turns that into
-            a 503 naming the reason, which is the whole point: an unready pod must not take
-            traffic and then report "nothing matched" for every molecule.
+        SafetyRulesError: A table is missing, unapproved, invalid, or holds an uncompilable pattern;
+            `connector_app` answers 503 with the reason.
     """
     screen_structure(_PROBE)
     screen_genotoxic_alerts([_PROBE])

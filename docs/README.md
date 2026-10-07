@@ -13,9 +13,11 @@
   HPA to KEDA on admission occupancy.
 - [`decisions/`](decisions/) — why the fleet is the way it is, one file per decision, with the
   ledger and the naming convention in its own README.
+- [`architecture-baseline.json`](architecture-baseline.json) — the W0.2 baseline: per-server
+  import and handshake latency, and source prose share at the pre-programme commit and in the
+  working tree (`make architecture-baseline`).
 - [`BACKLOG.md`](BACKLOG.md) — what is still open, each row naming an anchor in the tree. A queue,
   not a log: a closed row is deleted in the commit that closes it.
 
-The conventions themselves live in [`CLAUDE.md`](../CLAUDE.md), not here. One home per rule — with
-one exception that is the point of `decisions/`: a rule's *argument* and the measurement behind it
-belong to the record, and `CLAUDE.md` states the rule.
+The conventions themselves live in [`CLAUDE.md`](../CLAUDE.md); the argument behind each lives in
+`decisions/`.

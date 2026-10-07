@@ -1,16 +1,8 @@
-"""This server's answer is an ensemble, and `/healthz` did not look at it.
+"""`/healthz` looks at the ensemble this server answers with.
 
-Every predictor is optional, imported at startup, and a module that raises is recorded in the
-registry's unavailable map and logged. That is the right handling and it was the whole handling:
-measured before this file, with `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=reaction_t5_v2` against
-a build that does not carry it, `/healthz` answered **200** and `predict_forward_reaction` raised
-"no forward predictors are available in this deployment" on the first call — a pod in service that
-could not serve.
-
-The hard half is the *other* direction, and it is why this is not simply "unready when the registry
-is thin": a developer's checkout carries none of the ML extras and reports eleven predictors
-unavailable, which is the design working. So the tests below drive both arms, and the one that
-keeps the fleet honest is the first.
+Every predictor is optional, so a thin registry is normal (a developer checkout has none). A pod
+is unready only when a whole kind of prediction is gone and something broke to take it, as when
+an enabled model fails to load and every call would raise. Both arms are driven.
 """
 
 from __future__ import annotations
@@ -53,12 +45,10 @@ def test_a_checkout_with_no_extras_installed_is_ready(clean_registry: None) -> N
 
 
 def test_a_predictor_this_image_carries_and_broke_is_unready(clean_registry: None) -> None:
-    """A module that raised outside its own guard, where nothing of its kind is left to serve.
+    """A broken predictor that leaves its kind with nothing to serve makes the pod unready.
 
-    This checkout registers no conditions predictor, so the broken entry below takes the last one —
-    which is the threshold now: a *kind* this pod cannot serve at all, rather than any broken
-    predictor. `test_a_broken_predictor_beside_a_working_one_is_ready` is the counterfactual, and it
-    is the case this arm used to get wrong.
+    This checkout registers no conditions predictor, so the broken entry is the last one. The
+    counterfactual is `test_a_broken_predictor_beside_a_working_one_is_ready`.
     """
     registry._UNAVAILABLE.clear()
     registry.mark_unavailable(
@@ -118,29 +108,13 @@ def test_losing_a_predictor_moves_a_series_an_operator_scrapes(clean_registry: N
 
 
 def test_every_predictor_module_hands_its_exception_to_the_registry() -> None:
-    """The eleven call sites, read as source, because behaviour cannot reach them here.
+    """Every predictor module hands its exception object to the registry, read as source.
 
-    Each predictor module guards its own optional import and calls `mark_unavailable` from the
-    `except`. The *cause* — and therefore what this pod reports about itself — is derived from the
-    exception object, and a module that passes only its reason string classifies as `not_installed`
-    whatever actually happened. Those `except` blocks run at import, in a checkout where the imports
-    they guard all fail the same way, so no test can drive one of them into a *different* failure.
-    AST rather than grep, for the reason `mcp_server_kit/no_egress.py` gives: spellings differ as
-    text and agree as a tree.
-
-    **This test was vacuous in two ways and this docstring claimed otherwise**, which is worse than
-    the test being absent. It asserted `not missing` over a list of calls lacking an `exc` keyword:
-
-    - `exc=exc` -> `exc=None` in one module left **295 passed**, and `None` takes
-      `mark_unavailable`'s documented `CAUSE_NOT_INSTALLED` default, so a corrupt checkpoint read as
-      an extra nobody installed;
-    - deleting the `mark_unavailable(...)` call outright left **295 passed**, because `assert not
-      missing` is satisfied by *zero* matching call sites — a predictor dropping out of
-      `list_available_models`, out of the degraded counter and out of readiness, silently.
-
-    So the count is asserted, and the keyword's **value** is checked against the name the enclosing
-    `except ... as <name>` binds — which is the thing that actually has to be true, and which
-    `exc=None` does not satisfy.
+    The reported cause is derived from the exception, so a guard passing only a reason string (or
+    `exc=None`) classifies as `not_installed` whatever happened. The guards run at import, where
+    every optional import fails the same way, so no test can drive them; the AST is read instead.
+    The count of call sites is asserted (a missing call is silent), and each `exc=` value must be
+    the name its enclosing `except ... as <name>` binds.
     """
     import ast
     from pathlib import Path
@@ -183,13 +157,11 @@ def test_every_predictor_module_hands_its_exception_to_the_registry() -> None:
 def test_an_installed_extra_that_will_not_load_is_broken_rather_than_absent(
     clean_registry: None,
 ) -> None:
-    """The row this closes, on the registry: every `ImportError` was "an extra nobody installed".
+    """An installed extra that will not load is broken rather than absent.
 
-    Every predictor guard hands its exception to `mark_unavailable`, which classified any
-    `ImportError` as `not_installed` — so a torch whose CUDA library would not load, or a
-    `transformers` missing one of its own dependencies, read as a deployment's choice and could
-    never make `verify_predictors` refuse. The guard now declares which modules it imports, and
-    only a `ModuleNotFoundError` naming one of *those* is absent.
+    Each guard declares which modules it imports, and only a `ModuleNotFoundError` naming one of
+    those is absent; a torch whose CUDA library fails, or a missing transitive dependency, is a
+    broken image that `verify_predictors` must be able to refuse.
     """
     registry._UNAVAILABLE.clear()
     registry.mark_unavailable(
@@ -227,12 +199,10 @@ def test_an_installed_extra_that_will_not_load_is_broken_rather_than_absent(
 
 
 def test_every_guard_declares_the_modules_it_imports() -> None:
-    """`optional=` is a second statement of the guard's own `import` lines, so it is held to them.
+    """Each guard's `optional=` declaration matches its own `import` lines, read as source.
 
-    Read as source for the reason the test above this file's AST tests gives: the guards run at
-    import, in a checkout where every one fails the same way. A declaration naming a module the
-    guard does not import would sort that guard's real absence as a broken image; one missing a
-    module it does import would sort a broken image as absent.
+    Naming a module it does not import would sort a real absence as broken; omitting one it does
+    import would sort a broken image as absent.
     """
     import ast
     from pathlib import Path
@@ -274,14 +244,12 @@ def test_every_guard_declares_the_modules_it_imports() -> None:
 
 
 def test_the_module_map_agrees_with_the_registry_names() -> None:
-    """`_FORWARD_MODULES`/`_CONDITIONS_MODULES` name each predictor, and must name it correctly.
+    """`_FORWARD_MODULES`/`_CONDITIONS_MODULES` name each predictor by its registry name.
 
-    The map exists because `discover_predictors`'s catch-all needs a registry name for a module it
-    could not import, and because `degradation.record` clamps its `component` label to a declared
-    set. Both make the map a second statement of names the predictor classes already carry, so the
-    two are compared here rather than trusted: on a checkout with no extras every predictor records
-    itself unavailable *under its class's own `name`*, so the union of the registered and the
-    unavailable names is exactly what those classes say.
+    The map gives `discover_predictors`'s catch-all a name for a module it could not import and
+    bounds `degradation.record`'s component label. On a checkout with no extras every predictor
+    records itself under its class's own `name`, so registered plus unavailable names must equal
+    what the map says.
     """
     declared = set(registry._FORWARD_MODULES.values()) | set(registry._CONDITIONS_MODULES.values())
     registry.discover_predictors()
@@ -301,18 +269,11 @@ def test_the_module_map_agrees_with_the_registry_names() -> None:
 def test_a_broken_predictor_beside_a_working_one_is_ready(
     clean_registry: None, fake_predictors: None
 ) -> None:
-    """A pod serving ten of eleven predictors is serving, and taking it out is the larger harm.
+    """A pod serving ten of eleven predictors is serving; taking it out is the larger harm.
 
-    This is the arm that was wrong. `verify_predictors` refused for *any* entry whose cause was
-    permanent, and a missing checkpoint file raises `FileNotFoundError`, which is an `OSError`,
-    which
-    classifies `failed`, which is permanent. Driven on the real app: a pod answering with ten of its
-    eleven optional predictors — the normal case by design — answered 503 for one broken one, and
-    since a restart cannot recreate a missing file the result was `CrashLoopBackOff` on a capability
-    that had been working.
-
-    The counterfactual is the test below: with *no* forward predictor left, the same broken entry is
-    a refusal, because then every forward call fails rather than answering with less.
+    A missing checkpoint is an `OSError`, classified permanent, and a restart cannot recreate the
+    file, so refusing on any permanent cause would crash-loop a working capability. The test below
+    is the counterfactual: with no forward predictor left, the same broken entry is a refusal.
     """
     registry._UNAVAILABLE.clear()
     registry.mark_unavailable(
@@ -327,12 +288,11 @@ def test_a_broken_predictor_beside_a_working_one_is_ready(
 
 
 def test_a_kind_with_nothing_left_and_something_broken_is_unready(clean_registry: None) -> None:
-    """The measured defect the probe exists for: a pod in service that cannot serve a whole tool.
+    """A kind with nothing left and something broken is unready.
 
-    With `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=reaction_t5_v2` against a build without it,
-    `/healthz` was 200 and `predict_forward_reaction` raised "no forward predictors are available in
-    this deployment" on the first call. The distinction from a developer checkout — which also has
-    none — is the *cause*: absent is a decision, broken is an image.
+    An enabled model that failed to load leaves `predict_forward_reaction` raising on every call. A
+    developer checkout also has none; the difference is the cause: absent is a decision, broken is
+    an image.
     """
     registry._UNAVAILABLE.clear()
     registry.mark_unavailable(
@@ -347,19 +307,11 @@ def test_a_kind_with_nothing_left_and_something_broken_is_unready(clean_registry
 def test_the_catch_all_files_a_broken_module_under_its_registry_name(
     clean_registry: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`discover_predictors`'s catch-all, driven — the one path the module map exists for.
+    """The catch-all files a broken module under its registry name, not its module name.
 
-    Ten of eleven modules have a short name equal to their predictor's registry name, so the
-    disagreement is visible on exactly one: `forward/reaction_t5` registers `reaction_t5_v2`. The
-    catch-all used the short name, so a module that blew up *outside* its own guard landed in
-    `_UNAVAILABLE`, in the degraded counter and in this probe under a key that
-    `list_available_models` and `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS` do not use — so an
-    operator grepping `/metrics` for the advertised id found nothing.
-
-    `test_the_module_map_agrees_with_the_registry_names` cannot see this: in a checkout where every
-    module imports (the guards are *inside* them) the catch-all never fires, so the defect was green
-    there too. Driven: reverting the name to `modname.rsplit(".", 1)[-1]` left the whole
-    `rxnpredict` suite passing until this test existed.
+    `forward/reaction_t5` registers `reaction_t5_v2`, so a short-name key would hide the failure
+    from an operator searching `/metrics` for the advertised id. The map-agreement test cannot see
+    this, because in a normal checkout the catch-all never fires.
     """
     import importlib
     from types import ModuleType

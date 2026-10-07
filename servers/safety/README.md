@@ -162,8 +162,8 @@ way.
 
 One server never imports another — that rule is what keeps a dependency closure a dependency
 closure — so a table two servers need is carried by both. What makes it safe rather than merely
-accepted is that it is *provably* the same file: `tests/test_dataset.py` and `tests/test_fleet.py`
-both assert byte-identity, from inside and outside. If the two ever have to diverge, that is a
+accepted is that it is *provably* the same file: `tests/test_dataset.py` and
+`tests/test_fleet_data.py` both assert byte-identity, from inside and outside. If the two ever have to diverge, that is a
 decision with an argument behind it, and those tests are where the argument gets written down.
 
 The same applies to `engine/chem.py`, which is a third copy of Chemclaw3's canonical-SMILES

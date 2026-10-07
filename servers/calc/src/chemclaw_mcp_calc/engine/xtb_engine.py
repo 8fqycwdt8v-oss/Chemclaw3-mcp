@@ -1,16 +1,11 @@
 """Shared GFN2-xTB engine primitives: RDKit geometry + the tblite single point.
 
-Used by every xTB-based calculator here (`xtb`, `pka`, `xtb_props`, `xtb_opt`, `xtb_hessian`) so
-the embed/SCF plumbing exists once. Geometry generation is deterministic via a caller-supplied
-seed; single points optionally use ALPB implicit solvation.
+Used by every xTB-based calculator here, so the embed/SCF plumbing exists once. Geometry is
+deterministic via a caller-supplied seed; single points optionally use ALPB implicit solvation.
 
-This module is the **unit boundary**: everything above it works in Angstrom (the interchange unit
-of RDKit, XYZ files, and `structure.Structure`), and the conversion to the atomic units tblite
-wants happens here and nowhere else.
-
-`engine_version()` is also the first half of every `calc_version` this server emits, which is the
-reason the whole calc bundle was ported rather than left behind: the distributions it reads are
-installed *here*.
+This module is the **unit boundary**: everything above it works in Angstrom, and conversion to
+tblite's atomic units happens here and nowhere else. `engine_version()` is the first half of every
+`calc_version` this server emits.
 """
 
 from __future__ import annotations
@@ -47,44 +42,23 @@ __all__ = [
     "run_singlepoint",
 ]
 
-# ---------------------------------------------------------------------------------------------
-# Unit conversions, **derived** from `scipy.constants` rather than transcribed.
-#
-# The four literals these replace carried the comment "CODATA 2018, to full double precision", and
-# that was false of the first of them: CODATA-2018's Bohr radius gives 1.8897261246257702 and the
-# literal stopped at 1.8897261246 — eleven significant digits where a float64 holds about
-# seventeen, 1.4e-11 relative. Deriving removes the transcription step entirely; scipy is a
-# declared dependency of this server for exactly this table, `scipy.constants`, and nothing else.
-#
-# **What deriving costs is that the numbers now track the installed CODATA table, and that is why
-# `engine_version()` names scipy.** Measured at the commit that made the change: scipy 1.17.1 ships
-# CODATA **2022**, not 2018 — a0 = 5.29177210544e-11 against 2018's 5.29177210903e-11 — so the
-# derived values differ from the literals by 6.9e-10 relative on the length conversion, 6.0e-10 on
-# the dipole one, and 3e-13 / 2.6e-13 on the two energy ones. Those are far below anything an SCF
-# resolves, and they are still a *change*: a geometry in bohr moves in its ninth decimal. A future
-# scipy that ships CODATA 2026 would move them again, silently, which is exactly the failure
-# `engine/key.py` exists to prevent — so the scipy distribution version is part of
-# `engine_version()` and therefore part of every `calc_version` this server emits.
-# ---------------------------------------------------------------------------------------------
+# Unit conversions, derived from `scipy.constants` rather than transcribed. They track the
+# installed CODATA table, so the scipy version is part of `engine_version()` and a new table is a
+# cache miss rather than a silent shift in far decimals.
 
 # tblite works in atomic units; everything above this module is in Angstrom. One value, no copies.
 ANGSTROM_TO_BOHR = 1e-10 / constants.value("Bohr radius")
 
-# Hartree to kcal/mol. Every calculator here that reports a relative or interaction energy in
-# kcal/mol converts through this single value, so a truncated copy cannot drift from the rest.
-# `4184` is the thermochemical calorie's definition, which is exact rather than measured.
+# Hartree to kcal/mol, the single value every calculator converts through. `4184` J is the
+# thermochemical calorie by definition.
 HARTREE_TO_KCAL = constants.value("Hartree energy") * constants.Avogadro / 4184.0
 
-# Atomic units to Debye, for the same reason and by the same rule as the line above: every module
-# that reports a dipole or a dipole derivative in Debye converts through this one value. It was
-# three literals in three modules in Chemclaw3, one of which sat inside the module that does the
-# unit arithmetic and waited to be applied a second time to numbers already converted. The debye
-# itself is exactly 1e-21/c coulomb-metres, so only the numerator is measured.
+# Atomic units to Debye, the single value every dipole conversion goes through. The debye is
+# exactly 1e-21/c coulomb-metres.
 AU_TO_DEBYE = constants.value("atomic unit of electric dipole mom.") * constants.c / 1e-21
 
-# The tblite result properties any calculator here reads. Named explicitly rather than taking the
-# whole result: it also carries the density matrix and orbital coefficients, which nothing consumes
-# and which scale as the square of the basis size.
+# The tblite result properties any calculator reads; the density matrix and orbital coefficients
+# are skipped because nothing uses them and they scale with the basis size squared.
 _CONSUMED_PROPERTIES = (
     "energy",
     "charges",
@@ -95,51 +69,22 @@ _CONSUMED_PROPERTIES = (
 )
 
 
-# Revision of the *Hamiltonian settings* this engine applies, independent of the tblite build.
-# Bumped when a change to how a calculation is set up moves numbers — the spin-polarization
-# contribution added for open-shell systems is revision 2. Without a tag like this, such a change is
-# invisible to the cache key and old entries would be served for a physics the current code would
-# not reproduce.
-#
-# **This constant is half of a shared contract with Chemclaw3's cache and its calibration ledger.**
-# It appears verbatim in every `calc_version` string this server emits; the rows keyed by those
-# strings live over there. Bumping it here is a deliberate invalidation of that history, exactly as
-# it was when the two lived in one repository.
-# h3: the four unit conversions stopped being transcribed literals and are derived from
-# `scipy.constants`, which ships CODATA 2022 where the literals claimed 2018 — every energy and
-# every geometry this engine produces moves in its far decimals, which is small and is not nothing.
+# Revision of the Hamiltonian *settings* this engine applies, independent of the tblite build.
+# Bump it when a set-up change moves numbers, or old cache entries are served for physics the code
+# no longer reproduces. It appears verbatim in every `calc_version`, a contract with Chemclaw3's
+# cache and calibration ledger, so bumping it deliberately invalidates that history.
+# h2: spin polarization for open shells. h3: unit conversions derived from `scipy.constants`.
 _HAMILTONIAN_REVISION = "h3"
 
 
 def engine_version() -> str:
     """The installed tblite, RDKit and scipy builds, for embedding in calculation versions.
 
-    Every `calc_version` of a calculator that runs this engine (xTB energy, properties, Fukui,
-    optimization, Hessian, pKa) must include all three so an upgrade of any one — tblite shifts
-    energies, RDKit shifts the seeded ETKDG embedding and MMFF geometries, **scipy ships the CODATA
-    table this module's unit conversions are derived from** — is a cache miss on the Chemclaw3
-    side, not a silent stale hit. Widening the version string invalidates existing entries; that is
-    correct, as those did not record the stack that produced them.
-
-    **scipy is the newest of the three and the least obvious.** It was a dependency long before it
-    was in this string, and it became part of the *answer* the moment `ANGSTROM_TO_BOHR` and its
-    three siblings stopped being literals: scipy 1.17.1 ships CODATA 2022 where the literals said
-    2018, and a later release shipping CODATA 2026 would move every geometry again with nothing to
-    show for it in a version string. That is the failure `engine/key.py` is written against, so the
-    fix is the one this function already implements for the other two.
-
-    **It names the engine, and an optimizer is not the engine.** geomeTRIC is deliberately absent:
-    this string keys `xtb.sp`, `xtb.properties`, `xtb.fukui` and `xtb.hess` as well, and none of
-    those runs an optimizer — they are evaluated at a geometry somebody hands them. The distribution
-    that decides *which* geometry belongs to `OptSpec.calc_version()`, which is the only spec whose
-    payload it produces
-    (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
-
-    **This is the value a Chemclaw3 pod cannot compute.** Neither distribution is installed there
-    after the split, so `version('tblite')` raises `PackageNotFoundError` rather than returning
-    something wrong — which is the *good* failure. The bad one is `xtb_cli.binary_version()`, which
-    returns `"absent"` instead of raising. Either way, the derivation belongs where the programs
-    are.
+    An upgrade of any one moves results (tblite energies, RDKit embeddings, scipy's CODATA table
+    behind the unit conversions), so each must be a cache miss on the Chemclaw3 side. The optimizer
+    (geomeTRIC) is deliberately absent: this string also keys calculations that run no optimizer,
+    and `OptSpec.calc_version()` names it. Derived here, where the packages are installed; a
+    Chemclaw3 pod cannot compute it.
     """
     return (
         f"tblite-{version('tblite')}/rdkit-{version('rdkit')}"
@@ -158,20 +103,11 @@ def parse_molecule(smiles: str) -> Chem.Mol:
 def require_closed_shell(mol: Chem.Mol, charge: int) -> None:
     """Reject odd-electron (open-shell) species with a `ValueError`.
 
-    tblite converges odd-electron systems via fractional occupation without any error, returning an
-    energy for an ill-defined electronic state, and a SMILES does not encode the true spin
-    multiplicity — so a caller who has only a SMILES has nothing honest to pass as `uhf` and failing
-    fast is the right contract. Expects explicit hydrogens (`parse_molecule` output) so the electron
-    count is complete.
-
-    Kept for `pka`, whose calibration is defined over neutral closed-shell acids. Callers that *can*
-    state a multiplicity use `structure.Structure` instead, which validates the electron count
-    against it rather than refusing every open shell — that is what makes the Fukui ions computable.
-
-    Documented limit: this catches *odd*-electron species only. An **even**-electron open shell —
-    triplet dioxygen is the canonical case — is undetectable from a SMILES, which carries no spin
-    multiplicity, so it passes here and is treated as a singlet. That is a property of the input
-    format, not of this check.
+    tblite converges an odd-electron system silently to an ill-defined state, and a SMILES carries
+    no multiplicity, so failing fast is the honest contract. Expects explicit hydrogens. Kept for
+    `pka` (calibrated on closed-shell acids); callers that can state a multiplicity use
+    `structure.Structure`. Catches *odd*-electron species only: an even-electron open shell (triplet
+    O2) is undetectable from a SMILES and is treated as a singlet.
     """
     electrons = sum(atom.GetAtomicNum() for atom in mol.GetAtoms()) - charge
     if electrons % 2:
@@ -184,9 +120,7 @@ def require_closed_shell(mol: Chem.Mol, charge: int) -> None:
 def conformer_positions(mol: Chem.Mol, conf_id: int = -1) -> tuple[np.ndarray, np.ndarray]:
     """Extract (atomic numbers, positions in **Angstrom**) from an embedded conformer on `mol`.
 
-    Reads one conformer of an already-embedded molecule by id, so a caller that embedded several up
-    front gets each without re-embedding. The name states the unit deliberately: two functions here
-    disagreeing about their unit is precisely the bug this boundary exists to prevent.
+    Reads one conformer by id, so several embedded up front need no re-embedding.
     """
     conformer = mol.GetConformer(conf_id)
     numbers = np.array([atom.GetAtomicNum() for atom in mol.GetAtoms()])
@@ -197,12 +131,9 @@ def conformer_positions(mol: Chem.Mol, conf_id: int = -1) -> tuple[np.ndarray, n
 def atom_ceiling_error(atom_count: int, *, subject: str) -> str | None:
     """Why `atom_count` atoms is over `xtb_max_atoms`, or `None` — one wording for every check.
 
-    Lives here, at the unit boundary, because the two places the cost is actually paid are here:
-    `geometry()` (ETKDG + MMFF) and `make_calculator()` (every SCF). Both call it, so no caller —
-    present or future — can embed or run xTB on a system the ceiling refuses, whether or not it
-    ever builds a `Structure`. `Structure`'s validator and `structure_from_smiles`'s pre-check call
-    it too (re-exported from `structure`) for their better-worded, SMILES-echoing refusals, and all
-    of them share one message so they cannot drift apart. `atom_count` is hydrogen-inclusive.
+    Called by `geometry()` and `make_calculator()`, where the cost is paid, so nothing can embed or
+    run xTB past the ceiling; `structure` re-exports it for its SMILES-echoing refusals.
+    `atom_count` is hydrogen-inclusive.
     """
     if atom_count <= settings.xtb_max_atoms:
         return None
@@ -219,9 +150,7 @@ def atom_ceiling_error(atom_count: int, *, subject: str) -> str | None:
 def _atoms_with_hydrogens(mol: Chem.Mol) -> int:
     """`mol`'s atom count with every hydrogen counted, whether explicit atoms or implicit.
 
-    `geometry()`'s callers pass `AddHs` output, where each hydrogen is an atom and the heavy atoms'
-    `GetTotalNumHs()` is 0; a caller that forgot `AddHs` would otherwise be under-counted by every
-    hydrogen, which on an alkane is two thirds of the system.
+    So a caller that forgot `AddHs` is not under-counted.
     """
     return mol.GetNumAtoms() + sum(atom.GetTotalNumHs() for atom in mol.GetAtoms())
 
@@ -229,22 +158,16 @@ def _atoms_with_hydrogens(mol: Chem.Mol) -> int:
 def geometry(mol: Chem.Mol, seed: int, optimize: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """Embed a deterministic 3D geometry and return (atomic numbers, positions in Angstrom).
 
-    Falls back to random-coordinate embedding if the default fails, then raises if that also fails.
-    Optional MMFF pre-optimization is skipped when the force field lacks parameters for the molecule
-    (a valid, common case) rather than erroring.
-
-    **Refuses a molecule over `xtb_max_atoms` before embedding it** — this is the choke point every
-    3D embedding in this server goes through, so the ceiling is enforced *here* rather than trusted
-    to each caller. Before it was, `pka`'s acid branch embedded and ran two or more GFN2 single
-    points on raw `geometry()` output without ever building a `Structure`, so no ceiling applied.
+    Falls back to random-coordinate embedding, then raises. MMFF pre-optimization is skipped when
+    the force field lacks parameters. Refuses a molecule over `xtb_max_atoms` before embedding:
+    every 3D embedding goes through here, so the ceiling holds even for callers that never build a
+    `Structure`.
     """
     if reason := atom_ceiling_error(_atoms_with_hydrogens(mol), subject="a molecule"):
         raise ValueError(reason)
     work = Chem.Mol(mol)  # copy so the caller's molecule gets no conformer
-    # `type: ignore` on each `AllChem` call below is `rdkit-stubs`' doing rather than a claim
-    # about the calls: `AllChem` re-exports its C++ symbols dynamically, so the stub package
-    # declares almost none of them. Same convention as
-    # `servers/chem/src/chemclaw_mcp_chem/engine/chem.py`.
+    # The `type: ignore`s on `AllChem` calls are `rdkit-stubs` gaps (dynamic re-exports), not claims
+    # about the calls.
     if (
         AllChem.EmbedMolecule(work, randomSeed=seed) != 0  # type: ignore[attr-defined]
         and AllChem.EmbedMolecule(  # type: ignore[attr-defined]
@@ -268,14 +191,9 @@ def run_singlepoint(
 ) -> dict[str, Any]:
     """Run one GFN single point and return every property the SCF produced.
 
-    The same SCF that yields the total energy also yields Mulliken charges, Wiberg bond orders, the
-    dipole, and the orbital energies — reading them out costs nothing, so this is the one entry
-    point every xTB task uses and the energy-only `gfn2_energy` is a thin wrapper over it.
-
-    `positions` is in **Angstrom** (see the module docstring); the conversion to atomic units
-    happens here. `uhf` is the number of unpaired electrons, which the caller must state explicitly
-    — tblite converges an odd-electron system silently at `uhf=0`, so an honest open-shell
-    calculation depends on it being set.
+    Charges, bond orders, dipole and orbital energies come free with the energy, so every xTB task
+    uses this. `positions` is in Angstrom. `uhf` must be stated explicitly: tblite converges an
+    odd-electron system silently at `uhf=0`.
 
     Args:
         method: GFN parametrization name, e.g. "GFN2-xTB".
@@ -286,9 +204,7 @@ def run_singlepoint(
         solvent: ALPB implicit solvent name, or None for gas phase.
 
     Returns:
-        The consumed subset of the tblite result, as numpy arrays and scalars, in atomic units.
-        Deliberately a subset: the full result also carries the density matrix and orbital
-        coefficients, which nothing here reads and which are large.
+        The consumed subset of the tblite result (`_CONSUMED_PROPERTIES`), in atomic units.
     """
     calc = make_calculator(method, numbers, positions, charge=charge, uhf=uhf, solvent=solvent)
     result = calc.singlepoint()
@@ -305,13 +221,9 @@ def make_calculator(
 ) -> Calculator:
     """Build a configured tblite calculator for one system; `positions` in Angstrom.
 
-    Exists so the tasks that evaluate the *same* system at many geometries — geometry optimization,
-    the finite-difference Hessian — set the Hamiltonian up once and then call `energy_and_gradient`
-    per step, instead of reconstructing a calculator per single point. `run_singlepoint` goes
-    through it too, so the verbosity and solvation setup exist once.
-
-    It is also the one place every SCF starts, so it refuses a system over `xtb_max_atoms` — the
-    backstop for a caller that reaches tblite with coordinates that never passed `Structure`.
+    Lets optimization and the finite-difference Hessian set the Hamiltonian up once and call
+    `energy_and_gradient` per step. Every SCF starts here, so it refuses a system over
+    `xtb_max_atoms` as the backstop.
     """
     if reason := atom_ceiling_error(len(numbers), subject="a system"):
         raise ValueError(reason)
@@ -320,22 +232,15 @@ def make_calculator(
     # every request log and test run. It affects no numbers.
     calc.set("verbosity", 0)
     if uhf:
-        # Without this, `uhf` only changes the *occupation*: the energy expression has no
-        # spin-dependent term, so an open-shell state is not stabilized at all. Measured, and the
-        # measurement is decisive — triplet O2 comes out 1.7 kcal/mol *above* singlet O2 without it
-        # (qualitatively wrong; the triplet is the ground state) and 15.8 kcal/mol below it with
-        # (experimental gap ~22). Enabled wherever there are unpaired electrons, with no scaling,
-        # which is what `xtb --spinpol` does.
+        # Without spin polarization `uhf` changes only the occupation and the triplet/singlet
+        # ordering of O2 comes out wrong. Unscaled, as `xtb --spinpol` does.
         calc.add("spin-polarization", 1.0)
     if solvent is not None:
         try:
             calc.add("alpb-solvation", solvent)
         except RuntimeError as error:
-            # tblite's own message ("String value for epsilon was not found among database of
-            # solvents") names an implementation detail rather than the mistake. This is the
-            # *second* line of defence rather than the only one: `XtbSpec` refuses an unsupported
-            # name at construction, so one reaching here came through a direct engine call. The two
-            # share one shortlist so they cannot disagree about what the method supports.
+            # Second line of defence (`XtbSpec` refuses first); replaces tblite's
+            # implementation-detail message. Both share one shortlist.
             raise ValueError(
                 f"unknown ALPB solvent {echo(solvent)!r}; common valid names are "
                 f"{', '.join(SUGGESTED_SOLVENTS)}"
@@ -346,17 +251,9 @@ def make_calculator(
 def evaluate_point(calc: Calculator, positions: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
     """Move `calc`'s system to `positions` (Angstrom) and evaluate it there.
 
-    Returns `(energy, gradient, dipole)`: the energy in Hartree, the **analytic** gradient in
-    Hartree/Angstrom, and the dipole in atomic units. tblite returns the gradient in Hartree/Bohr;
-    the chain-rule factor for the conversion is the same constant that converts the coordinates,
-    applied in the opposite direction.
-
-    The dipole rides along because the SCF produced it anyway. Optimization discards it; the Hessian
-    loop, which displaces every Cartesian and would otherwise need a second pass for dipole
-    derivatives, gets IR intensities for free.
-
-    An analytic gradient is what makes optimization cheap and puts the finite-difference Hessian at
-    6N single points rather than 6N^2.
+    Returns `(energy, gradient, dipole)`: Hartree, the **analytic** gradient in Hartree/Angstrom
+    (converted from Hartree/Bohr), and the dipole in atomic units. The dipole is free and gives the
+    Hessian loop IR intensities; the analytic gradient makes the Hessian 6N single points, not 6N^2.
     """
     calc.update(positions=positions * ANGSTROM_TO_BOHR)
     result = calc.singlepoint()
@@ -373,10 +270,6 @@ def gfn2_energy(
     charge: int = 0,
     solvent: str | None = None,
 ) -> float:
-    """Return the GFN2-xTB total energy (Hartree) for a closed-shell system.
-
-    Positions are in Angstrom. Closed-shell only by signature: callers needing an open-shell energy
-    go through `run_singlepoint` and state `uhf` themselves.
-    """
+    """GFN2-xTB total energy (Hartree) of a closed-shell system; positions in Angstrom."""
     result = run_singlepoint(method, numbers, positions, charge=charge, solvent=solvent)
     return float(result["energy"])

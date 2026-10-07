@@ -1,17 +1,9 @@
 """Fetch the model checkpoints into the image, at build time, in a stage that is thrown away.
 
-This is the one script in the fleet that is *meant* to reach a network, and it is worth being
-precise about why that is not a hole in the no-egress rule. It runs in a builder stage, under
-`MCP_EGRESS_ALLOW` naming the model hosts explicitly, and its output is a directory of files that
-gets copied into a runtime image which sets `HF_HUB_OFFLINE=1` and arms the guard. No serving
-process ever runs this, and nothing that runs it ever serves.
-
-Deliberately *not* a lazy download on first use, which is what the predictor libraries do by
-default. A model fetched at request time is a model nobody reviewed, arriving over a network the
-production deployment does not have, at the moment a chemist is waiting for an answer.
-
-Run by the Containerfile. To refresh a checkpoint, change the pinned revision below and rebuild —
-the diff is then a reviewable line rather than a silent change in what the server predicts.
+The one script in the fleet meant to reach a network. It runs only in a builder stage, under an
+`MCP_EGRESS_ALLOW` naming the model hosts; its output is copied into a runtime image that sets
+`HF_HUB_OFFLINE=1` and arms the guard. No serving process runs it, and no model is ever fetched at
+request time. To refresh a checkpoint, change its pinned revision below and rebuild.
 """
 
 from __future__ import annotations
@@ -19,14 +11,9 @@ from __future__ import annotations
 import os
 import sys
 
-# Pinned by **commit SHA**, not by a branch or tag. `"main"` is a moving branch, so every rebuild
-# fetched whatever it pointed at that day — the exact "the model changed under us, invisibly"
-# failure this comment claimed to prevent, and worse because `snapshot_download` loads the T5
-# checkpoint through `torch.load`, i.e. an unpickle of whoever last pushed to the branch. A 40-hex
-# commit SHA is immutable: a rebuild fetches the reviewed bytes or fails. Update deliberately, in a
-# pull request, alongside the trust priors that were calibrated against it.
-#
-# The SHA below is the HEAD of `sagawa/ReactionT5v2-forward`'s `main` observed on 2026-08-28.
+# Pinned by 40-hex commit SHA, never a branch or tag: a rebuild fetches the reviewed bytes or fails.
+# This matters doubly because the T5 checkpoint is loaded through `torch.load` (an unpickle). Update
+# in a pull request, together with the trust priors calibrated against it.
 MODELS: tuple[tuple[str, str], ...] = (
     ("sagawa/ReactionT5v2-forward", "933114058cb2604dc1bf536dbebdfcefbe83d4fc"),
 )

@@ -1,19 +1,11 @@
 """An abandoned MCP session is reaped; one with a call still running is not.
 
-The first half is the leak: `FastMCP` never passes upstream's `session_idle_timeout`, so before
-`sessions.py` a session was removed only by an explicit `DELETE`, and a client that vanished left
-149 kB and a live anyio task behind for the life of the pod.
+`FastMCP` never passes upstream's `session_idle_timeout`, so `sessions.py` sets one. Upstream
+pushes the deadline only when a request arrives, so a tool call outliving the timeout would be
+cancelled mid-flight; the hold-open wrapper prevents that, and the counterfactual test drives the
+same slow tool without it.
 
-The second half is what stops the fix being a worse bug than the leak. Upstream pushes a session's
-deadline forward when an HTTP *request* arrives, and a tool call is one request whose SSE body is
-written when the work finishes — so on upstream's arithmetic alone a call that outlives the timeout
-is cancelled from underneath the caller. `servers/calc` runs CREST searches with a 14,400 s budget
-against a timeout this module defaults to 1800 s, so that is not a hypothetical. The counterfactual
-test at the bottom drives exactly that: the same slow tool on a server with the timeout set and the
-hold-open wrapper absent, which is what upstream's own recommendation would have given this fleet.
-
-Timings are short (1 s timeout, a 2.5 s tool) because the thing under test is a deadline, not a
-duration; nothing here sleeps longer than a few seconds.
+Timings are short (1 s timeout, a 2.5 s tool) because the subject is a deadline, not a duration.
 """
 
 from __future__ import annotations
@@ -133,12 +125,9 @@ def _ping(base: str, session_id: str) -> httpx.Response:
 
 
 def test_a_session_whose_client_vanished_is_reaped(serving: Callable[..., Any]) -> None:
-    """The leak, and the fix, over a real socket with no client library to tidy up.
+    """A session whose client vanished is reaped, over a real socket with no client library.
 
-    Measured before this: a session id whose client had exited and whose TCP connection was gone
-    still answered HTTP 200 ten seconds later, and 500 such sessions on `chem` cost 72.8 MB that
-    never came back. The session is alive immediately after the handshake and gone once the idle
-    timeout has passed, with nothing in between doing anything at all.
+    Alive after the handshake, gone once the idle timeout has passed, with nothing in between.
     """
     app = connector_app(_probe_server("reaped"), name="reaped", token_env=TOKEN_ENV)
     with serving(app) as base:
@@ -155,11 +144,10 @@ def test_a_session_whose_client_vanished_is_reaped(serving: Callable[..., Any]) 
 async def test_a_session_with_a_call_in_flight_is_not_reaped(
     serving: Callable[..., Any], mcp_session: Callable[..., Any]
 ) -> None:
-    """The half that keeps the fix from cancelling a four-hour calculation as "idle".
+    """A session with a call in flight is not reaped as idle.
 
-    The tool takes 2.5 s against a 1 s idle timeout, so upstream's deadline — armed when the
-    `tools/call` request arrived and pushed by nothing afterwards — would have expired 1.5 s before
-    the answer existed. It returns, and the session it returned on is still usable.
+    The 2.5 s tool outlives the 1 s timeout armed when `tools/call` arrived; it still returns, and
+    the session remains usable.
     """
     app = connector_app(_probe_server("held-open"), name="held-open", token_env=TOKEN_ENV)
     with serving(app) as base:
@@ -175,11 +163,9 @@ async def test_a_session_with_a_call_in_flight_is_not_reaped(
 
 @asynccontextmanager
 async def _unheld_app(name: str) -> AsyncIterator[FastAPI]:
-    """The counterfactual: the idle timeout upstream recommends, with nothing holding it open.
+    """The counterfactual: upstream's idle timeout with nothing holding it open.
 
-    Assembled by hand rather than through `connector_app`, because `connector_app` is the thing
-    that installs the hold-open wrapper — this is what following upstream's own recommendation
-    would have given a fleet whose flagship tool runs for hours.
+    Assembled by hand, because `connector_app` is what installs the hold-open wrapper.
     """
     server = _probe_server(name)
     mcp_app = server.streamable_http_app()
@@ -203,19 +189,11 @@ async def _unheld_app(name: str) -> AsyncIterator[FastAPI]:
 async def test_without_the_hold_open_the_caller_never_gets_an_answer(
     serving: Callable[..., Any], mcp_session: Callable[..., Any]
 ) -> None:
-    """What makes the test above mean something, and it is worse than an error.
+    """Without the hold-open, the caller never gets an answer.
 
-    A test that a slow call succeeds proves nothing on its own — it would pass with no idle timeout
-    at all. This is the arm that shows the timeout is armed and that the hold-open is what survives
-    it: same tool, same 1 s timeout, no wrapper.
-
-    **Measured, the failure is a hang rather than a refusal.** Expiring the session cancels
-    `Server.run` and terminates the transport, so the SSE stream the `tools/call` is being answered
-    on simply stops; no JSON-RPC error is ever written, and the caller waits until *its* timeout.
-    On `servers/calc` that would have been a CREST search dropped at 30 minutes with the chemist
-    still holding an open request and nothing in the log but "idle timeout" — which is why the
-    hold-open is part of this fix rather than a refinement of it. The `wait_for` here is what keeps
-    that hang out of the test suite; without it this test does not fail, it never finishes.
+    This arm shows the timeout is armed and that the hold-open is what survives it. The failure is a
+    hang, not an error: expiring the session stops the SSE stream with no JSON-RPC error written, so
+    `wait_for` bounds the test.
     """
     async with _unheld_app("unheld") as app:
         with serving(app) as base:
@@ -230,22 +208,12 @@ async def test_without_the_hold_open_the_caller_never_gets_an_answer(
 async def test_a_second_request_does_not_reap_the_call_in_flight(
     serving: Callable[..., Any], mcp_session: Callable[..., Any], interfering: str
 ) -> None:
-    """The arm the first hold-open test could not see: a session carrying *other* traffic.
+    """A second request on the session does not reap the call in flight.
 
-    Holding the deadline off from inside the tool call is only half of it, because upstream pushes
-    the same deadline forward on **every** request for an existing session — a ping and a
-    `tools/list` included — which overwrites `math.inf` with `now + timeout` and hands the
-    calculation the very cancellation the hold-open exists to prevent. Measured before the
-    re-assert, with a 1 s timeout and a 2.5 s tool interfered with at 0.5 s: the call answers in
-    **2.51 s** alone, and is cut at **1.51 s** with zero bytes written the moment anything else
-    speaks on the session — which is the arithmetic exactly, 0.5 s of interference plus the 1 s
-    deadline it re-armed. This docstring shipped saying 5.12 s and ~1.8 s, neither reproducible,
-    while `sessions.py` said 1.5 s three lines away: two contradicting figures for one cut, inside
-    the commit that fixes the thing they describe.
-
-    The trigger is not hypothetical. Chemclaw3's `core/mcp_session.py` sends a `PingRequest` as a
-    cancellation flush when one call of a fan-out times out, so a `calc` session doing exactly what
-    it is designed to do destroys the *other* CREST search running beside it.
+    Upstream re-arms the deadline on every request for an existing session, including a ping or
+    `tools/list`, which would overwrite the hold-open's `math.inf`; the hold-open must re-assert.
+    Chemclaw3 sends a ping as a cancellation flush when one call of a fan-out times out, so this is
+    a real trigger.
     """
     app = connector_app(_probe_server("interfered"), name="interfered", token_env=TOKEN_ENV)
     with serving(app) as base:
@@ -264,25 +232,12 @@ async def test_a_second_request_does_not_reap_the_call_in_flight(
 async def test_a_politely_deleted_session_is_reclaimed(
     serving: Callable[..., Any], mcp_session: Callable[..., Any]
 ) -> None:
-    """The half the idle reaper does not cover: a client that says goodbye properly.
+    """A politely deleted session is reclaimed.
 
-    Upstream's only unconditional removal from `_server_instances` is in `run_server`'s `finally`,
-    guarded by `and not http_transport.is_terminated` — and `terminate()` sets that flag as its
-    first statement, so a `DELETE` takes exactly the branch that skips the `del`. The entry and its
-    transport then stay for the life of the process, and no idle deadline can reach them because
-    the scope's task is already gone.
-
-    **This is the fleet's happy path**, which is why it hid: Chemclaw3 sends its `DELETE` from a
-    `finally`, and the module's docstring reasoned only about the case where that `finally` is not
-    reached. Measured over 300 sessions (`initialize`, `tools/call`, `DELETE`): 300 of 300 stayed
-    in the map, every one `is_terminated`, while an abandoned session in the same run was reaped
-    correctly. With the sweep, RSS goes flat after the allocator warms — 76 kB/session on the first
-    batch of 300 and 81, 40 and 13 bytes on the next three, against a count that climbed by exactly
-    300 per batch without it.
-
-    Two sessions rather than one, and one of them never calls a tool: the per-transport wrappers
-    are installed from inside `call_tool`, so a session that only initializes and leaves is the
-    case a hook on those wrappers would miss.
+    `terminate()` sets `is_terminated` first, and upstream's `run_server` `finally` skips the `del`
+    for a terminated transport, so every `DELETE`d session would stay in `_server_instances` for the
+    life of the process. This is the fleet's happy path. Two sessions, one never calling a tool,
+    because the per-transport wrappers are installed from inside `call_tool`.
     """
     server = _probe_server("reclaimed")
     app = connector_app(server, name="reclaimed", token_env=TOKEN_ENV)
@@ -298,13 +253,9 @@ async def test_a_politely_deleted_session_is_reclaimed(
             "upstream skips its own cleanup for a terminated transport, so nothing else reclaims "
             "these and the idle deadline cannot reach them"
         )
-        # The map the sweep does *not* touch. Upstream pops `_session_owners` alongside
-        # `_server_instances` on its own removal paths — including the one a `DELETE` skips — and
-        # `_drop_terminated_sessions` covers only the first of the two. That is sound because this
-        # fleet's `BearerAuthMiddleware` never puts an `AuthenticatedUser` in `scope["user"]`, so
-        # upstream records no owner at all; `test_upstream_surface.py` pins the condition, and this
-        # is the behaviour. Adopting upstream's bearer middleware would make every polite goodbye
-        # leak here instead, silently.
+        # The sweep does not touch `_session_owners`. Sound only because `BearerAuthMiddleware`
+        # never sets an `AuthenticatedUser` in `scope["user"]`, so upstream records no owner;
+        # `test_upstream_surface.py` pins that condition.
         assert server.session_manager._session_owners == {}, (
             "sessions are being recorded in `_session_owners`, which nothing in this kit sweeps"
         )
@@ -319,11 +270,10 @@ FULL_LEASE_SECONDS = 30.0
 def test_the_first_lease_is_its_own_knob_and_is_never_longer_than_the_idle_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The knob, read off the module rather than re-typed, and the clamp that makes it a floor.
+    """The first-lease knob is read off the module and clamped to the idle timeout.
 
-    A "first lease" longer than the ordinary one is not a shorter lease, so it is clamped rather
-    than trusted: a deployment that wants the old behaviour asks for it by setting the two equal,
-    and `0` is that same request spelled as an escape hatch.
+    A first lease longer than the ordinary one is not shorter, so it is clamped; setting the two
+    equal, or `0`, asks for the single-lease behaviour.
     """
     monkeypatch.delenv("MCP_SESSION_UNUSED_TIMEOUT_SECONDS", raising=False)
     assert session_unused_timeout(1800.0) == DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS
@@ -340,20 +290,11 @@ def test_the_first_lease_is_its_own_knob_and_is_never_longer_than_the_idle_timeo
 def test_a_handshake_nobody_came_back_for_is_reaped_long_before_a_session_in_use(
     monkeypatch: pytest.MonkeyPatch, serving: Callable[..., Any]
 ) -> None:
-    """A handshake is not a conversation, and the two do not deserve the same lease.
+    """A handshake nobody came back for is reaped long before a session in use.
 
-    This is what turns the session ceiling from a thirty-minute denial of service into a
-    minute-long one. Measured on the shipped defaults: one authenticated caller opens handshakes at
-    261/s, so it fills the 1,024-session ceiling in about four seconds, and every slot is refunded
-    no earlier than `MCP_SESSION_IDLE_TIMEOUT_SECONDS` — 1,800 s — during which every other caller
-    is refused and `/healthz` still answers 200. Nothing else the pod has can see it: nothing has
-    been idle long enough for the ordinary reaper, and the sessions are real.
-
-    The differential is the assertion: **both** sessions are opened the same way and one of them is
-    spoken to once. The used one must survive, because a lease that reaped a session a client is
-    between calls on would be an outage rather than a bound — and it survives without anything here
-    doing the promoting, since upstream pushes the deadline to the full timeout on every request
-    for an existing session.
+    Without a short first lease, one caller can fill the session ceiling with handshakes and hold it
+    for the full idle timeout. Both sessions open the same way and one is spoken to once; that one
+    must survive, since upstream extends the deadline on every request.
     """
     monkeypatch.setenv("MCP_SESSION_IDLE_TIMEOUT_SECONDS", str(FULL_LEASE_SECONDS))
     monkeypatch.setenv("MCP_SESSION_UNUSED_TIMEOUT_SECONDS", str(FIRST_LEASE_SECONDS))
@@ -394,17 +335,11 @@ def _no_session_id(base: str, method: str, **kwargs: Any) -> httpx.Response:
 def test_a_request_the_server_refused_leaves_no_session_behind(
     serving: Callable[..., Any],
 ) -> None:
-    """Upstream mints on the absence of a header, so its own 400s each leak a whole session.
+    """Upstream mints on the absence of a header, so its own 400s must not leak a session.
 
-    Measured against this app before the fix, `live 0 -> 1` for every one of these four: a bare
-    `DELETE /mcp`, a bare `GET /mcp`, a `ping` with no session id, and a malformed body. Each
-    answers **400 Bad Request** and each registers a session that nobody can ever use — the caller
-    was told its request was bad and never learned it owned anything. A bare `DELETE` runs at 476
-    requests/s from one client, which is the cheapest way anybody can fill the session ceiling: two
-    seconds of the simplest request there is.
-
-    Asserted on the instance map rather than on the status codes, because the status codes were
-    always right. What was wrong was invisible from outside the pod.
+    A bare `DELETE`/`GET`, a ping without session id and a malformed body each answer 400 and would
+    register an unusable session. Asserted on the instance map, since the status codes were always
+    right.
     """
     server = _probe_server("refused")
     app = connector_app(server, name="refused", token_env=TOKEN_ENV)
@@ -427,19 +362,11 @@ def test_a_request_the_server_refused_leaves_no_session_behind(
 
 
 async def test_the_short_lease_is_never_applied_over_a_session_that_is_already_working() -> None:
-    """The two guards on the stomp, driven directly, because the window they close is a race.
+    """The short lease is never applied over a session that is already working.
 
-    The short lease is applied *after* the minting response has been written, which is the only
-    point at which the session exists and its id is known. A client reads its session id off that
-    same response, so in principle it can have a request — a tool call — in flight before this code
-    runs, and overwriting the hold-open deadline (`math.inf`) with 60 s would cancel that call from
-    inside the transport with no JSON-RPC error written anywhere. That is the exact failure
-    `_hold_open_during_tool_calls` exists to prevent, and it must not be reintroduced by its
-    neighbour.
-
-    Driven against the helper rather than over a socket, deliberately: the window is microseconds
-    wide and a test that tried to hit it over loopback would pass for timing reasons on a good day
-    and prove nothing on a bad one. What is asserted is the decision, not the schedule.
+    It is applied after the minting response is written, so a client may already have a tool call
+    in flight; overwriting the hold-open deadline would cancel it silently. Driven against the
+    helper because the window is microseconds wide: the decision is asserted, not the schedule.
     """
     server = _probe_server("guards")
     server.streamable_http_app()  # what builds the session manager these helpers read
@@ -451,10 +378,8 @@ async def test_the_short_lease_is_never_applied_over_a_session_that_is_already_w
     promoted.idle_scope.deadline = far
     fresh = SimpleNamespace(idle_scope=anyio.CancelScope())
     fresh.idle_scope.deadline = far
-    # Stand-ins rather than real transports: `_start_the_short_lease` reads `idle_scope` and the
-    # used-marker off each value and nothing else, and a real `StreamableHTTPServerTransport`
-    # cannot be built without a live session. The ignore names what upstream's mapping declares;
-    # were that type ever widened it would go unused and this line would go red with it.
+    # Stand-ins: `_start_the_short_lease` reads only `idle_scope` and the used-marker, and a real
+    # transport needs a live session. The ignore goes red if upstream's mapping type ever widens.
     instances.update({"working": working, "promoted": promoted, "fresh": fresh})  # type: ignore[dict-item]
     for session_id in ("working", "promoted", "fresh"):
         _start_the_short_lease(server, session_id, unused=FIRST_LEASE_SECONDS)

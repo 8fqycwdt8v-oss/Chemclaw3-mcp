@@ -1,30 +1,14 @@
 """The kit's own code holds no way to call out — the scan every server runs, run on the kit.
 
-**This package was the one place the static half of the rule did not look**, and it is the package
-installed into every server image. The exemption was documented and its stated reason is real —
-`egress.py` must import `socket` to patch it — but it was granted to the *package* rather than to
-the file, which is the shape `no_egress.py`'s own docstring rejects for a server: "a server may name
-files whose network import is the disabling one, and owes a test proving that is all it is."
+Three file-level exemptions, each with the test it owes:
 
-So: three exemptions, each with the test it owes.
+- `egress.py` imports `socket` to replace its calls with a refusal; asserted here that `socket`
+  is the only forbidden module it names.
+- `no_egress.py` names every forbidden module as data.
+- `testing.py` imports `httpx` to drive a server in tests; declared under the `testing` extra.
 
-- `egress.py` imports `socket` in order to replace `connect`, `sendto`, `getaddrinfo` and their
-  siblings with a refusal. Proven by `test_egress.py` in full; asserted here as *shape* — that the
-  only forbidden module it names is `socket`.
-- `no_egress.py` names every forbidden module as data: it is the list being scanned for.
-- `testing.py` imports `httpx` to drive a running server over ASGI in a *test*. That one is the
-  finding worth carrying: `httpx` and `pyyaml` were not dependencies of this package at all, and
-  the workspace only worked because they are root dev dependencies — so a server installed from its
-  own wheel could not run its `test_server.py`. They are declared now, under a `testing` extra —
-  which is where the requirement is, since a serving image never imports `testing.py`.
-
-**And one thing this scan cannot buy, measured rather than assumed.** "No HTTP client in the
-serving process" is not achievable and never was: `import mcp_server_kit` pulls in `httpx` through
-`mcp.shared.session`, which is a *runtime* dependency of every server here. So the static scan's
-value is about what **we** write, exactly as `no_egress.py` says — what makes an outbound call
-impossible is `egress.py`'s runtime guard and the NetworkPolicy, neither of which cares which
-clients are importable. Asserted below so the stronger claim cannot be reintroduced as an
-assumption.
+The scan is about what we write: `import mcp_server_kit` pulls in `httpx` through the MCP SDK, so
+the runtime guard and the NetworkPolicy are what make an outbound call impossible.
 """
 
 from __future__ import annotations
@@ -69,10 +53,8 @@ def test_the_scanner_names_forbidden_modules_as_data_and_imports_none() -> None:
 def test_the_private_c_socket_type_is_flagged(tmp_path: Path) -> None:
     """`import _socket` is the runtime guard's blind spot, so the static scan must catch it.
 
-    `socket.socket` subclasses `_socket.socket`; `egress.arm()` rebinds only the Python subclass,
-    so `_socket.socket().connect(...)` reaches the network with the guard armed (measured: a real
-    TCP connection completed). The C type cannot be monkeypatched, which makes this scan the only
-    in-repo layer that can see the import — so it must.
+    `egress.arm()` rebinds only the Python `socket.socket` subclass; the C type cannot be patched,
+    so this scan is the only in-repo layer that sees it.
     """
     offender = tmp_path / "sneaky.py"
     offender.write_text("import _socket\n", encoding="utf-8")
@@ -88,17 +70,11 @@ def test_the_helper_s_only_network_import_is_httpx() -> None:
 
 
 def test_an_http_client_is_importable_in_every_server_and_that_is_not_the_control() -> None:
-    """Measured: `import mcp_server_kit` reaches `httpx` through `mcp.shared.session`.
+    """`import mcp_server_kit` reaches `httpx` through `mcp.shared.session`.
 
-    Written as an assertion rather than a comment because the tempting conclusion from the scan
-    above is the wrong one — that keeping `httpx` out of this package's runtime dependencies keeps
-    an HTTP client out of the image. It does not: the MCP SDK is a runtime dependency of every
-    server and imports one at module scope. What makes an outbound call impossible is `egress.py`,
-    armed on this very import, and the NetworkPolicy behind it. If a future SDK stops importing
-    `httpx`, this test goes red and the paragraph it defends gets rewritten deliberately.
-
-    A subprocess rather than an in-process check, because this module has already imported `httpx`
-    through pytest's own plugins — `sys.modules` here would describe the test runner.
+    An assertion so the scan is not mistaken for keeping an HTTP client out of the image; the
+    runtime guard and NetworkPolicy are the control. A subprocess, because this process already
+    imported `httpx` through pytest plugins.
     """
     probe = subprocess.run(
         [sys.executable, "-c", "import sys, mcp_server_kit; print('httpx' in sys.modules)"],
@@ -113,13 +89,10 @@ def test_an_http_client_is_importable_in_every_server_and_that_is_not_the_contro
 
 
 def test_the_helper_s_dependencies_are_declared_where_they_are_used() -> None:
-    """`httpx` and `pyyaml` are `testing.py`'s, and were declared by nobody.
+    """`httpx` and `pyyaml` are declared where `testing.py` uses them.
 
-    The whole workspace resolved anyway because both are root *dev* dependencies, so nothing was
-    red — and `uv run --package chemclaw-mcp-props pytest` could not work, because every server's
-    `test_server.py` imports `mcp_server_kit.testing`. An extra rather than a runtime dependency,
-    because that is where the requirement actually is: a serving image never imports `testing.py`.
-    (It is not a claim about what the image *contains* — see the test above.)
+    Every server's `test_server.py` imports `mcp_server_kit.testing`, so a per-package run needs
+    them. An extra, because a serving image never imports `testing.py`.
     """
     import tomllib
 
@@ -137,14 +110,9 @@ def test_the_helper_s_dependencies_are_declared_where_they_are_used() -> None:
 
 
 def test_a_dynamic_import_with_a_literal_name_is_flagged(tmp_path: Path) -> None:
-    """`__import__("httpx")` is an `ast.Call`, and the scan walked only `Import`/`ImportFrom`.
+    """`__import__("httpx")` and `importlib.import_module("socket")` are flagged.
 
-    This module's own docstring named `__import__("urllib")` as one of the three spellings AST
-    catches and text does not — while `network_imports` could not see it at all. Measured before
-    the fix: `assert_no_egress_sources` returned **clean** on a file whose whole body was
-    `h = __import__("httpx"); h.get(...)`, and on `importlib.import_module("socket")`. `socket` is
-    on the forbidden list precisely because "a module that imports it can also un-patch the
-    guard", and that is the spelling that reaches it.
+    They are `ast.Call` nodes, not `Import`/`ImportFrom`, and must be scanned too.
     """
     builtin = tmp_path / "builtin_import.py"
     builtin.write_text('def go():\n    return __import__("httpx")\n', encoding="utf-8")
@@ -169,13 +137,8 @@ def test_a_dynamic_import_with_a_literal_name_is_flagged(tmp_path: Path) -> None
 def test_a_dynamic_import_of_a_computed_name_must_be_justified_at_its_site(tmp_path: Path) -> None:
     """A name the scan cannot read is an offence until the server argues it, by function.
 
-    This used to be the opposite test — `..._is_deliberately_not_flagged` — on the ground that
-    `servers/rxnpredict` loads its optional predictor plug-ins with
-    `importlib.import_module(modname)` and flagging the shape "would fail correct code and teach
-    the next reader to reach for `exempt`". `exempt` skips a whole file, though, and what a
-    computed import needs is narrower: a justification naming the one scope it sits in
-    (`D-2026-09-26-a-computed-import-is-argued-at-its-site`). So a clean scan now says something
-    about computed imports too — there are none, or each one was argued.
+    `exempt` skips a whole file; a computed import needs a justification naming the one scope it
+    sits in, so a clean scan means there are none or each was argued.
     """
     plugins = tmp_path / "plugins.py"
     plugins.write_text(
@@ -230,10 +193,8 @@ def test_a_justification_that_outlived_its_computed_import_is_refused(tmp_path: 
 def test_a_host_split_across_string_literals_is_still_a_host(tmp_path: Path) -> None:
     """`"http://" + "example" + ".com"` is one address written in three pieces.
 
-    `host_literals` is a regex over the file's text, so a concatenation — and Python's implicit
-    adjacency, which is the same thing without the operator — read as three harmless fragments.
-    The literals are folded through the AST now, which covers exactly the constant case: a name
-    assembled at runtime is not visible to any static reader, and is the runtime guard's business.
+    Constant concatenation and implicit adjacency are folded through the AST. A name assembled at
+    runtime is the runtime guard's business.
     """
     split = tmp_path / "split.py"
     split.write_text('URL = "http://" + "example" + ".com"\n', encoding="utf-8")
@@ -249,14 +210,10 @@ def test_a_host_split_across_string_literals_is_still_a_host(tmp_path: Path) -> 
 
 
 def test_a_grpc_channel_is_flagged_however_it_is_spelled(tmp_path: Path) -> None:
-    """`grpcio` opens its sockets from C, so the runtime guard never sees them.
+    """`grpc` is flagged however it is spelled.
 
-    Measured against a listener on a non-loopback address with `arm()` in force: a Python
-    `socket.create_connection` raised `EgressForbidden` and incremented
-    `chemclaw_mcp_egress_refused_total`, while `grpc.insecure_channel` to the same address completed
-    a real TCP connection and incremented nothing. That makes this scan the only in-repo layer that
-    can see it arriving — the same position `_socket` is in — and `grpcio` is not hypothetical here:
-    it is in `uv.lock`, pulled under `servers/rxnpredict`'s ML extras by `tensorboard`.
+    `grpcio` opens its sockets from C, outside the runtime guard, so this scan is the only in-repo
+    layer that can see it arrive.
     """
     plain = tmp_path / "channel.py"
     plain.write_text("import grpc\n", encoding="utf-8")
@@ -279,34 +236,14 @@ def test_a_grpc_channel_is_flagged_however_it_is_spelled(tmp_path: Path) -> None
 
 
 def test_ctypes_is_outside_both_in_repo_layers_and_has_exactly_one_caller() -> None:
-    """The `ctypes` case is argued rather than covered, and this is what keeps the argument honest.
+    """`ctypes` stays off the forbidden list, and its importers stay at the one argued file.
 
-    `ctypes.CDLL("libc.so.6").connect(...)` walks past the armed guard for grpc's reason, and it is
-    *not* in `FORBIDDEN_MODULES` — because the one place in this fleet that imports it is
-    `servers/pyexec/src/chemclaw_mcp_pyexec/engine/sandbox.py`, calling `prctl(PR_SET_DUMPABLE, 0)`.
-    Banning the module
-    would mean exempting that file, and `exempt` is reserved for a file whose network import is the
-    disabling one; `no_egress.py`'s docstring says why a wider exemption is worse than no check.
+    `ctypes` can reach libc's `connect` past the guard, but the one first-party importer is
+    `servers/pyexec/.../engine/sandbox.py` (`prctl(PR_SET_DUMPABLE, 0)`), and exempting that file
+    would be wider than this check. A second importer fails here, which is the moment to decide.
 
-    So the decision is pinned from both ends: the module stays off the list, and the list of files
-    that import it stays at the one whose use was argued. A second importer fails here, which is the
-    moment to decide whether `ctypes` has become a network surface in this tree.
-
-    **"Pinned at both ends" was true of `ctypes` and false of `ctypes.util`**, which is the same
-    module with a submodule after it. This compared `alias.name == "ctypes"` exactly, so three
-    spellings walked past it — measured 2026-09-12, each importing cleanly and each binding a name
-    with full access to `CDLL`:
-
-        import ctypes.util                       # binds `ctypes`; `ctypes.CDLL` is right there
-        from ctypes.util import find_library     # the library resolver, which is the first step
-        importlib.import_module("ctypes")        # the spelling `network_imports` already covers
-
-    The comparison is on the **root package** now, and the dynamic form goes through the scanner's
-    own `_dynamic_import_target` rather than a second copy of it.
-
-    The set of importers is the first-party `src/` roots, which is what this scan reads. It is not
-    the tree: `servers/pyexec/tests/test_sandbox.py` imports `ctypes` to drive the sandbox, and a
-    test is not a server module. The module docstring says it that way too.
+    Compared on the root package so `ctypes.util` and `importlib.import_module("ctypes")` count too.
+    Only first-party `src/` roots are read; tests may import it.
     """
     assert "ctypes" not in FORBIDDEN_MODULES
 
@@ -324,7 +261,7 @@ def test_ctypes_is_outside_both_in_repo_layers_and_has_exactly_one_caller() -> N
         "one file needed it for `prctl`, and a second caller has to argue that again"
     )
 
-    # The three spellings that used to walk past this check, and the one that never did.
+    # Spellings of a `ctypes` import that must all count, beside the plain one.
     for source in (
         "import ctypes.util",
         "from ctypes.util import find_library",

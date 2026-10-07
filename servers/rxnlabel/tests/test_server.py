@@ -1,13 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will.
+Runs uvicorn on loopback and talks to it the way the agent will, so a session manager nobody
+ran, an unchecked bearer credential, or a manifest that disagrees with the served surface fails
+here.
 """
 
 from __future__ import annotations
@@ -47,9 +42,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because the server start is the expensive part. The bearer token is set in the
+    environment as a deployment sets it, so the auth path under test is the deployed one.
     """
     import os
 
@@ -80,20 +74,12 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     """Uvicorn accepts connections only after the lifespan ran, so a 200 here means it did."""
     response = httpx.get(f"{running_server}/healthz", timeout=5.0)
     assert response.status_code == 200
-    # `revision` is part of the probe payload since the handshake started carrying the
-    # build (see `mcp_server_kit.app.server_revision`). "unknown" is the correct answer
-    # for a test process, which is not built from a Containerfile — that the *image*
-    # supplies a real one is asserted in `tests/test_fleet.py`, because a value nothing
-    # fills is a provenance record that quietly says nothing.
-    # `datasets` is present and empty because this server vendors no corpus. Its presence is the
-    # assertion: `connector_app` adds the field only when a `readiness` callable actually ran, and
-    # this server passed none — so a pod whose atom-mapper checkpoint failed to load answered a
-    # constant 200 and wrote coarse labels indistinguishable from a deployment that never installed
-    # one. See `engine/readiness.py`.
+    # "unknown" is the correct revision for a test process; that an image supplies a real one is
+    # asserted fleet-wide. `datasets` is present and empty (no corpus); its presence shows a
+    # `readiness` callable ran. See `engine/readiness.py`.
     body = response.json()
-    # The bounds this pod is running with, so an overlay that moved the batch bound or the
-    # admission ceiling is readable from the probe
-    # (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    # The bounds this pod runs with, so an overlay that moved the batch bound or admission ceiling
+    # is readable from the probe.
     bounds = body.pop("bounds")
     assert bounds["CHEMCLAW_RXNLABEL_MAX_BATCH"] >= 1
     assert bounds["CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES"] >= 1
@@ -108,10 +94,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
 def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
     """A Prometheus scrape has no identity, and the exposition carries nothing about a request.
 
-    Not "counts only": the default registry publishes `python_info` and the `process_*`
-    collectors. What an unauthenticated endpoint must never publish is a caller, a session, a
-    correlation id or a tool argument — asserted over the live exposition in
-    `packages/mcp_server_kit/tests/test_connector_app.py`, for every server at once.
+    The no-caller/session/argument rule is asserted over the live exposition for every server in
+    `packages/mcp_server_kit/tests/test_connector_app.py`.
     """
     response = httpx.get(f"{running_server}/metrics", timeout=5.0)
     assert response.status_code == 200
@@ -120,15 +104,11 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """The refusal Chemclaw3's connector fleet did not have until an unauthenticated
-    handshake completed against it — and the further arms that one 401 never covered.
+    """The bearer credential is enforced on the mounted MCP surface, against the running server.
 
-    Driven against the running server rather than read off the source, because the defect this
-    guards against is invisible there: `/mcp` is *mounted*, and a mount bypasses the enclosing
-    app's dependencies. The arms — the anonymous caller, a wrong token, the right secret under
-    the wrong scheme, the declared credential actually serving, and the declared variable unset —
-    each fail on their own. `mcp_server_kit.testing.assert_bearer_is_enforced` holds all of
-    them, and holds them once so the seven servers cannot drift into seven different proofs.
+    `/mcp` is mounted, and a mount bypasses the enclosing app's dependencies, so this cannot be read
+    off the source. `assert_bearer_is_enforced` drives every arm (anonymous, wrong token, wrong
+    scheme, valid credential, variable unset) once for the whole fleet.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -137,9 +117,8 @@ async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
 async def _session(base: str) -> AsyncIterator[ClientSession]:
     """An initialised MCP session against the running server, carrying the bearer token.
 
-    The token rides on a caller-supplied httpx client because that is how this version of the MCP
-    client takes headers — which also means the credential is exercised on the real path rather
-    than injected past it.
+    The token rides on a caller-supplied httpx client, so the credential is exercised on the real
+    path rather than injected past it.
     """
     async with (
         httpx.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as http_client,

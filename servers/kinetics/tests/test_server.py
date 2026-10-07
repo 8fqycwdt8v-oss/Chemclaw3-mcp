@@ -1,13 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will.
+Runs uvicorn on loopback and talks to it the way the agent will, so a session manager nobody
+ran, an unchecked bearer credential, or a manifest that disagrees with the served surface fails
+here.
 """
 
 from __future__ import annotations
@@ -42,9 +37,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because the server start is the expensive part. The bearer token is set in the
+    environment as a deployment sets it, so the auth path under test is the deployed one.
     """
     import os
 
@@ -85,17 +79,11 @@ def test_healthz_names_the_constants_this_pod_verified(running_server: str) -> N
 
 
 def test_the_readiness_probe_refuses_when_the_integrator_loses_its_convergence_order() -> None:
-    """Break a dependency and read the status — the proof D-2026-09-12 asks a new probe to give.
+    """Break a dependency and read the status: a first-order integrator makes the probe unready.
 
-    The dependency broken here is the real defect this server already had. `semibatch_accumulation`
-    guarded its feed term with `time < dose_time_seconds`, so the final RK4 step's k4 stage alone
-    saw the feed switched off: one step of O(h) error inside an O(h^4) scheme. It dropped the
-    integrator to first-order convergence while leaving the answer right to three significant
-    figures — which is why the probe checks the convergence *rate* rather than a tolerance. A
-    tolerance loose enough to pass the correct code would have passed the defect too.
-
-    Driven by patching the module's step-order floor above what the shipped integrator achieves,
-    which is the same signal a real first-order regression produces.
+    A feed term switched off for one RK4 stage drops the scheme to O(h) while leaving answers right
+    to three figures, so the probe checks the convergence *rate*, not a tolerance. Driven by raising
+    the step-order floor above what the integrator achieves.
     """
     assert selftest.verify(), "the probe must pass on an unmodified build"
 
@@ -131,9 +119,8 @@ def test_the_probe_refuses_when_a_reactor_model_stops_matching_the_textbook_rati
 def test_a_failing_probe_is_a_permanent_cause_and_therefore_answers_503() -> None:
     """Only a permanent cause may take a pod out of its Service.
 
-    A formula that has moved is permanent — it does not get better under less load — so
-    `SelfTestFailed` has to classify into `PERMANENT_CAUSES` for the 503 to happen at all.
-    Asserted against the kit's own classifier rather than restated.
+    A self-test failure does not improve under less load, so `SelfTestFailed` must classify into
+    `PERMANENT_CAUSES` for the 503 to happen; asserted against the kit's own classifier.
     """
     from mcp_server_kit.degradation import PERMANENT_CAUSES, classify
 
@@ -176,9 +163,8 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
 async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) -> None:
     """The handshake plus a tool call, and the manifest checked against the running surface.
 
-    The value asserted is the rule of thumb every chemist carries — the rate doubles per 10 degrees
-    at about 53 kJ/mol — carried through pydantic validation and JSON serialisation. A unit error
-    introduced by the *surface* rather than the engine would show up here and nowhere else.
+    The asserted value (rate doubles per 10 degrees at about 53 kJ/mol) passes through pydantic and
+    JSON, so a unit error introduced by the surface rather than the engine shows here.
     """
     async with _session(running_server) as session:
         listed = await session.list_tools()
@@ -225,9 +211,8 @@ async def test_the_plug_flow_advantage_reaches_the_model_over_the_wire(
 async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """A deliberately worded domain error passes through; an internal one would not.
 
-    `connector_app` decides by exception *type*, and the decision is invisible from a direct call.
-    `KineticsInputError` sorted into the sanitiser's other branch would reach a chemist as an
-    opaque `error_id` rather than as the sentence naming which number is wrong.
+    `connector_app` decides by exception type, invisible from a direct call: a misclassified
+    `KineticsInputError` would reach a chemist as an opaque `error_id`.
     """
     async with _session(running_server) as session:
         falling = await session.call_tool(
@@ -283,11 +268,10 @@ async def test_the_accumulation_profile_is_bounded_on_the_wire(running_server: s
 async def test_a_stiff_dose_is_answered_on_the_wire_with_its_method_and_caveat(
     running_server: str,
 ) -> None:
-    """The dose the server used to refuse as mixing-limited now answers, and still says so.
+    """A stiff dose answers on the wire, naming the stable scheme and carrying its caveat.
 
-    The warning the refusal carried is not lost with it: the answer names the stable scheme and
-    carries a caveat that the perfectly-mixed number is a floor in this regime, naming the server
-    the heat-removal question belongs to.
+    The caveat says the perfectly-mixed number is a floor in this regime and names the server the
+    heat-removal question belongs to.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(

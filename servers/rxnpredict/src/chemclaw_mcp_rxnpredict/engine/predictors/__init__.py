@@ -1,24 +1,10 @@
 """Predictor registry, and the one place this server records that it lost a predictor.
 
-Each predictor module registers itself by importing this module's `register_forward` /
-`register_conditions` decorators. Modules that fail to import are caught and logged; the
-corresponding predictor is marked unavailable rather than crashing server startup.
-
-**"Marked unavailable" was a log line and a dictionary, and neither is a signal.** Every one of
-those losses makes the ensemble smaller, and `tools.py`'s own docstring calls that out — "an answer
-computed from one predictor when the deployment expected five is a silent degradation otherwise" —
-while resting the whole claim on `list_available_models`, a tool somebody has to think to call. From
-a scrape there was nothing: a pod that lost four of its five predictors and one that was asked easy
-questions published identical metrics.
-
-So `mark_unavailable` is now the funnel for both halves of what was missing. It counts on
-`chemclaw_mcp_degraded_total`, and it records **why** as one of `mcp_server_kit.degradation`'s
-clamped causes rather than only as prose. The cause is what `engine/readiness.py` reads, and the
-distinction it needs is the one this fleet already makes for `rxnlabel`'s optional models: a
-predictor whose extra is simply not installed is a deployment's decision and this pod is ready; a
-predictor whose module is present and blew up is a broken image and it is not. Both arrive here as
-`Exception`, and the reason strings every module writes say "missing optional deps" for either —
-which is why the exception itself is passed in and classified rather than its text being read.
+Each predictor module registers itself via `register_forward` / `register_conditions`. A module that
+fails to import is marked unavailable rather than crashing startup. `mark_unavailable` counts the
+loss on `chemclaw_mcp_degraded_total` and records a classified cause from the exception itself (not
+its text), which `engine/readiness.py` reads: an extra that is not installed is a deployment's
+decision; a module present but broken is a broken image.
 """
 
 from __future__ import annotations
@@ -42,9 +28,8 @@ class Unavailable(NamedTuple):
 
     Attributes:
         kind: `forward` or `conditions`.
-        reason: The module's own sentence, naming the extra to install. What a person reads.
-        cause: A `mcp_server_kit.degradation` cause. What `engine/readiness.py` acts on, and the
-            only half of this that separates "not installed here" from "broken here".
+        reason: The module's own sentence, naming the extra to install.
+        cause: A `mcp_server_kit.degradation` cause; what separates "not installed" from "broken".
     """
 
     kind: str
@@ -82,22 +67,16 @@ def mark_unavailable(
     """Record — and count — that this deployment will answer without `name`.
 
     Args:
-        name: The predictor's registry name, or the module's short name where the module blew up
-            before its class existed. Either way a constant in this package's source, which is what
-            keeps the metric label bounded; nothing a request can influence reaches it.
+        name: The predictor's registry name; always a source constant, so the metric label is
+            bounded.
         kind: `forward` or `conditions`.
         reason: The sentence a person reads, naming the extra to install.
-        exc: What actually went wrong, so the cause is classified rather than guessed from the
-            reason text. Omitted only where there is no exception — a predictor excluded by an
-            `ENABLED_*_MODELS` allow-list is a deployment's decision and is `not_installed`.
-        optional: The top-level modules the module's guard imports — the extra itself. **This is
-            the third declaration the extra's *name* could not supply**: `extras_install` names a
-            `pyproject` extra, which is not a module anything raises about, and without this a
-            `ModuleNotFoundError` for a dependency *of* an installed extra (a broken image) and one
-            for the extra itself (a deployment's choice) were one cause. A module-level guard
-            passes the modules its own `import` lines name, and
-            `tests/test_readiness.py::test_every_guard_declares_the_modules_it_imports` holds the
-            two equal. `None` — the catch-all's case — takes a `ModuleNotFoundError` at its word.
+        exc: What went wrong, classified rather than guessed from `reason`. Omitted only when there
+            is no exception (an `ENABLED_*_MODELS` exclusion, recorded as `not_installed`).
+        optional: The top-level modules the guard imports (the extra itself), so a missing
+            dependency *of* an installed extra classifies as broken. `tests/test_readiness.py` holds
+            each guard's list equal to its imports. `None` takes a `ModuleNotFoundError` at its
+            word.
     """
     cause = (
         degradation.classify(exc, optional=optional)
@@ -132,22 +111,10 @@ def unavailable() -> dict[str, Unavailable]:
 
 _DISCOVERY_DONE = False
 
-# Module path -> the **registry name** the predictor in it answers to. A mapping rather than two
-# lists, for two reasons that are the same reason.
-#
-# The first is a real defect: `discover_predictors`'s catch-all recorded a module that blew up
-# *outside* its own guard under the module's short name, while the module's own guard records the
-# registry name. For ten of eleven those strings are equal; for `reaction_t5` they are
-# `reaction_t5` and `reaction_t5_v2`, so one predictor was counted under two component names and an
-# operator grepping `/metrics` for the id `list_available_models` advertises found nothing under the
-# catch-all path. Driven: `sorted(unavailable())` carried `reaction_t5_v2` on the guarded path and
-# `reaction_t5` on the other.
-#
-# The second is that `degradation.record` now clamps its `component` label to a declared set, and
-# this is the only place in this package where the whole set of names is stated once. The values are
-# checked against each predictor class's own `name` by
-# `tests/test_readiness.py::test_the_module_map_agrees_with_the_registry_names`, so the duplication
-# is held rather than trusted.
+# Module path -> the registry name its predictor answers to (they differ for `reaction_t5`), so the
+# catch-all files a failure under the same name as the module's own guard. It is also the complete
+# component set for `degradation.register_components`. `tests/test_readiness.py` checks the values
+# against each class's `name`.
 _FORWARD_MODULES = {
     "chemclaw_mcp_rxnpredict.engine.predictors.forward.reaction_t5": "reaction_t5_v2",
     "chemclaw_mcp_rxnpredict.engine.predictors.forward.t5chem": "t5chem",
@@ -168,9 +135,7 @@ _CONDITIONS_MODULES = {
 }
 
 # Every component name this server may publish on `chemclaw_mcp_degraded_total`, declared before the
-# first `mark_unavailable` can fire. `cause` was clamped to a closed set and `component` was clamped
-# by the habit of spelling it as a source constant — which is not a mechanism, and is the half
-# `register_components` turns into one.
+# first `mark_unavailable` can fire.
 degradation.register_components(*_FORWARD_MODULES.values(), *_CONDITIONS_MODULES.values())
 
 
@@ -182,18 +147,12 @@ def discover_predictors() -> None:
     for modname, name in (*_FORWARD_MODULES.items(), *_CONDITIONS_MODULES.items()):
         try:
             importlib.import_module(modname)
-        # BLE001: the catch-all for a predictor module that blew up outside its own guard. Blind is
-        # the point - `mark_unavailable` classifies `exc` rather than reading its text.
+        # BLE001: catch-all for a module that raised outside its own guard; `mark_unavailable`
+        # classifies `exc`.
         except Exception as exc:  # noqa: BLE001
-            # Predictor modules call mark_unavailable themselves when their hard deps fail;
-            # this is the catch-all for truly broken modules. It is the one that most needs the
-            # exception passed through: a module that raised *outside* its own guard did not fail
-            # on an optional import, so it classifies as `failed` rather than as an absent extra.
-            #
-            # **The registry name, not the module's short name.** Those differ for `reaction_t5`,
-            # whose predictor answers to `reaction_t5_v2`, so this branch used to file one predictor
-            # under a component name that `list_available_models` and
-            # `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS` do not use.
+            # A module that raised outside its own guard did not fail an optional import, so it
+            # classifies as `failed`. Filed under the registry name, which `list_available_models`
+            # uses.
             kind = "forward" if modname in _FORWARD_MODULES else "conditions"
             mark_unavailable(name, kind, f"import failed: {exc!r}", exc=exc)
     _DISCOVERY_DONE = True

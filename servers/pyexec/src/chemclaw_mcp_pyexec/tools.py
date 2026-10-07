@@ -1,15 +1,8 @@
 """The `pyexec` MCP tool surface: one tool, because the capability is one thing.
 
-**This docstring and the one below it are the prompt.** They are what the agent reads before
-deciding whether to reach for this tool and what to send it, so they say what the sandbox offers,
-what it refuses, and — the part a tool docstring usually omits and this one must not — what a
-program cannot do, so a model does not spend three attempts discovering it.
-
-The tool is `async` and hands the work to a thread. A run is up to `wall_seconds` of another
-process's CPU time, and `subprocess.communicate` blocks: leaving it on the event loop would stall
-every other MCP session this process is serving. That is the same reasoning the `chem` server
-applies to RDKit's coordinate generation, reached from the other direction — there the work is in
-this process and here it is in a child, and either way it must not sit on the loop.
+The tool docstring is the prompt: it states what the sandbox offers, refuses and cannot do. The tool
+is `async` and runs the child in a worker thread so a run never blocks the event loop other sessions
+share.
 """
 
 from __future__ import annotations
@@ -35,17 +28,10 @@ from chemclaw_mcp_pyexec.engine.runner import ALLOWED_IMPORTS
 
 server = FastMCP("pyexec")
 
-# **The pod's ceiling on concurrent runs, and the divisor of its memory limit — one number, used
-# twice.** A run is a single-threaded child, so a slot is a core; `deploy/deployment.yaml` sets
-# `limits.cpu` to this and `default_memory_bytes` divides the pod's own cgroup memory limit by it,
-# which is what makes the sandbox's `RLIMIT_AS` a bound that can actually fire. Built at import so
-# the number a gate enforces is the number the limits were derived from; `engine/admission.py` has
-# the measurement and the argument for refusing rather than queueing.
-#
-# `env_bound` rather than a bare `int(os.environ.get(...))` for a reason this knob makes sharper
-# than most: it is a *divisor* as well as a ceiling, so `0` reaches `default_memory_bytes` too, and
-# `Admission` happens to refuse it first with a message naming the ceiling rather than the variable
-# that set it. Which of the two fires first is not something an operator should have to know.
+# The pod's ceiling on concurrent runs and the divisor of its memory limit. A run is a
+# single-threaded child, so a slot is a core: `deploy/deployment.yaml` sets `limits.cpu` to this and
+# `default_memory_bytes` divides the cgroup memory limit by it, so `RLIMIT_AS` can actually fire.
+# `env_bound` validates it because `0` would reach the division too.
 _MAX_CONCURRENT_RUNS = env_bound(
     "CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS",
     default=DEFAULT_MAX_CONCURRENT_RUNS,
@@ -65,16 +51,10 @@ _T = TypeVar("_T")
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how many programs run at once, refusing promptly when the pod is full.
 
-    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
-    `ADMISSION_MARKER` so a test can check the gated set rather than a second hand-kept list.
-    `asyncio.shield` releases the slot when the run finishes rather than when the caller stops
-    waiting: cancelling the awaiting coroutine does not stop `sandbox.run`'s worker thread or the
-    child process under it, so releasing on cancellation would hand a slot to a retry while the
-    original program kept burning a core.
-
-    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
-    from `inspect.signature`, which follows `__wrapped__` back to the real signature. Without it the
-    tool would advertise `(*args, **kwargs)`.
+    Stamped with `ADMISSION_MARKER` so a test can find the gated set. `asyncio.shield` releases the
+    slot when the run finishes, not when the caller stops waiting, because cancellation does not
+    stop the worker thread or the child. `functools.wraps` is required: FastMCP builds the argument
+    schema from the wrapped signature.
     """
 
     @functools.wraps(work)

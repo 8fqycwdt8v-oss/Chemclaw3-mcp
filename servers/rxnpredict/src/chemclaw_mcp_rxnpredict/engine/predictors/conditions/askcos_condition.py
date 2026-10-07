@@ -1,12 +1,7 @@
 """ASKCOS reaction condition recommender (Gao, Struble, Coley 2018).
 
-The original neural-network condition recommender from MIT, trained on ~10M
-Reaxys reactions. It lives inside the ASKCOS suite
-(MIT ASKCOS, open-source release). 69.6% top-10 close-match on
-catalyst/solvent/reagent.
-
-The recommender ships as part of `askcos-core`; this wrapper imports the
-specific module if it's on PYTHONPATH and otherwise marks itself unavailable.
+A neural-network recommender trained on ~10M Reaxys reactions, part of `askcos-core`. Imported if
+installed; otherwise the predictor is marked unavailable.
 """
 
 from __future__ import annotations
@@ -91,10 +86,7 @@ try:
     import askcos  # type: ignore  # noqa: F401
 
     register_conditions(ASKCOSConditionRecommender())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         ASKCOSConditionRecommender.name,

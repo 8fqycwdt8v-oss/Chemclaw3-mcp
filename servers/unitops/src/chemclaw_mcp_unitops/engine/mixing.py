@@ -1,37 +1,20 @@
 """Agitation scale-up: power per volume, tip speed, and Zwietering's just-suspended speed.
 
-Two operations that a chemist asks for in one breath and that this module keeps apart, because one
-is arithmetic and the other is a fitted correlation.
+**Power and tip speed are definitions.** In turbulent flow the ungassed power is `P = N_p·rho·N³·D⁵`
+(`N` in rev/s) and tip speed `π·N·D`. `N_p` is the impeller's published figure and is never guessed.
+`N_p` is constant only above Re ≈ 10⁴, so every answer carries the impeller Reynolds number
+`rho·N·D²/µ` and says which side it is on.
 
-**Power and tip speed are definitions.** In fully turbulent flow the ungassed power drawn by an
-impeller is
-
-    P = N_p·rho·N³·D⁵
-
-with `N` in revolutions per second, and the tip speed is `π·N·D`. Nothing is fitted; the only
-judgement is the power number `N_p`, which is the impeller's own published figure and which this
-module refuses to guess. **The turbulent qualifier is load-bearing**: `N_p` is constant only above
-Re ≈ 10⁴, so every answer carries the impeller Reynolds number `rho·N·D²/µ` and says which side of
-that line it is on. Below it the same arithmetic returns a number that is simply wrong, and there
-is no way to see that from the number.
-
-**Zwietering's `N_js` is a correlation with a fitted exponent set**, from 1958, over sand and salt
-in flat-bottomed vessels:
+**Zwietering's `N_js` is a fitted correlation** (1958, sand and salt in flat-bottomed vessels):
 
     N_js = S·nu^0.1·d_p^0.2·(g·(rho_s - rho_L)/rho_L)^0.45·X^0.13/D^0.85
 
-`S` is a dimensionless geometry constant — impeller type, `T/D`, off-bottom clearance — and it is
-an *input* here for the same reason `N_p` is: it is a number read from the impeller's own table,
-and a default would be this module inventing the answer. The correlation predicts the speed at
-which no particle rests on the base for more than one to two seconds. That is a visual criterion,
-not a mass-transfer or a uniformity criterion, and the distinction is what makes "the solids are
-suspended" and "the slurry is homogeneous" two different questions.
+`S` is a geometry constant read from the impeller's table and is a required input. The criterion is
+visual (no particle resting on the base for more than 1-2 s): suspension, not homogeneity.
 
-**Scale-up matches a criterion, and the criteria disagree.** Equal `P/V` and equal tip speed cannot
-both be held at a new diameter, and which one to hold depends on what is limiting — dispersion and
-heat transfer follow `P/V`, shear-sensitive particles and gas-liquid surfaces follow tip speed. So
-this module computes both and reports the disagreement rather than choosing. What it never does is
-pick one silently.
+**Scale-up criteria disagree.** Equal `P/V` and equal tip speed cannot both hold at a new diameter,
+and which matters depends on what limits; both are computed and the disagreement reported, never one
+chosen silently.
 """
 
 from __future__ import annotations
@@ -51,19 +34,13 @@ __all__ = [
     "just_suspended_speed",
 ]
 
-#: Above this impeller Reynolds number the power number is effectively constant and the power
-#: law above holds. The transitional band below it runs down to Re ≈ 10, where `N_p` rises
-#: steeply and a
-#: single published figure stops describing the impeller at all. Reported rather than refused: a
-#: viscous slurry is a real thing to ask about, and what the caller needs is to be told the power
-#: number they supplied is no longer a constant.
+#: Above this impeller Reynolds number the power number is effectively constant. Below it the answer
+#: is flagged rather than refused, since viscous slurries are real questions.
 TURBULENT_REYNOLDS = 1.0e4
 
-#: Zwietering's exponents, as published: kinematic viscosity, particle diameter, the buoyancy
-#: group, solids loading and impeller diameter. Held as a mapping rather than inlined so
-#: `engine/selftest.py` can check the *dimensional* consequence of the set — the length exponents
-#: must sum to zero and the time exponents to -1 — which is a relation no line below contains and
-#: which a transposed pair breaks.
+#: Zwietering's exponents: kinematic viscosity, particle diameter, buoyancy group, solids loading,
+#: impeller diameter. A mapping so `engine/selftest.py` can check dimensional homogeneity (length
+#: exponents sum to zero, time to -1), which a transposed pair breaks.
 ZWIETERING_EXPONENTS = {
     "kinematic_viscosity": 0.1,
     "particle_diameter": 0.2,
@@ -72,24 +49,11 @@ ZWIETERING_EXPONENTS = {
     "impeller_diameter": -0.85,
 }
 
-#: The bands Zwietering's own experiments covered, as `(low, high)` in this module's own units.
-#:
-#: **The docstring below referred to "the loading range it was fitted over" without naming it, and
-#: nothing checked an input against it.** Driven on the slurry `engine/selftest.py` uses — 200 µm of
-#: a 2500 kg/m³ solid in water on a 1/3 m impeller — a 10 wt% loading entered as `0.10` instead of
-#: `10` returns `N_js` **45.05% low** (236.81 → 130.14 rpm) and the P/V that follows from it
-#: **83.40% low** (1611.5 → 267.4 W/m³). That is an under-agitated vessel, which is the unsafe
-#: direction: the answer is a speed somebody sets a drive to. `X^0.13` is a weak exponent, so the
-#: number stays plausible — there is nothing in it to see.
-#:
-#: These are literature bands rather than measurements made here: nothing in this repository holds
-#: the 1958 dataset, the same footing the ±10% accuracy figure in `just_suspended_speed` is on. They
-#: are as commonly quoted for Zwietering's sand and sodium-chloride runs — 0.2 to 20 percent solids
-#: on a liquid mass basis, and 125 to 850 µm particles. What is *not* a literature judgement is what
-#: this module does with them: an input outside a band is reported rather than refused, because the
-#: correlation is routinely used a little outside its regression and a refusal would be this module
-#: deciding a chemist's question for them. `turbulent` is the precedent — a flag beside the number,
-#: not an error instead of it.
+#: The bands Zwietering's experiments covered, `(low, high)` in this module's units, as commonly
+#: quoted from the literature: 0.2-20% solids on a liquid mass basis, 125-850 µm particles. An input
+#: outside is reported, not refused (the correlation is routinely stretched). The check matters
+#: because `X^0.13` is weak: a 10% loading entered as `0.10` gives an `N_js` about 45% low that
+#: still looks plausible, an under-agitated vessel.
 ZWIETERING_FITTED_RANGES: dict[str, tuple[float, float]] = {
     "solids_loading_percent": (0.2, 20.0),
     "particle_diameter_m": (1.25e-4, 8.5e-4),
@@ -117,8 +81,7 @@ class AgitationScaleUp:
     matched_power_per_volume: AgitationDuty
     #: The large vessel run at the speed that reproduces the small vessel's tip speed.
     matched_tip_speed: AgitationDuty
-    #: How far apart the two criteria are, as the ratio of the two large-scale speeds. 1.0 would
-    #: mean they agree, which happens only if the diameters are equal.
+    #: The ratio of the two large-scale speeds; 1.0 only if the diameters are equal.
     criteria_disagree_by: float
 
 
@@ -163,37 +126,31 @@ def agitation_scale_up(
 ) -> AgitationScaleUp:
     """Carry an agitation duty to another vessel, under both of the usual matching criteria.
 
-    The speed that reproduces the small vessel's `P/V` is solved from the two vessels' **supplied**
-    volumes rather than from an assumed geometric similarity:
+    Matching `P/V` uses the two **supplied** volumes rather than assumed geometric similarity:
 
         N₂ = [ (P/V)₁ · V₂ / (N_p · rho · D₂⁵) ]^(1/3)
 
-    Under geometric similarity (`V ∝ D³`) that reduces to the familiar `N₂ = N₁·(D₁/D₂)^(2/3)`, and
-    `engine/selftest.py` checks that it does — but a 1 L round-bottomed flask and a 250 L vessel are
-    not geometrically similar, and the reduced form would quietly assume they were.
-
-    Matching tip speed is exact and needs no volume at all: `N₂ = N₁·D₁/D₂`.
+    which reduces to `N₂ = N₁·(D₁/D₂)^(2/3)` when `V ∝ D³` (checked by `engine/selftest.py`); a
+    round-bottomed flask and a plant vessel are not similar. Matching tip speed is `N₂ = N₁·D₁/D₂`.
 
     Args:
-        small_impeller_diameter_m: Impeller diameter at the small scale, in metres. The *impeller*,
-            not the vessel — the two are confused often enough that the answer changes by `(T/D)⁵`.
-        small_speed_rpm: Agitator speed at the small scale, in revolutions per minute.
-        small_liquid_volume_m3: Liquid volume at the small scale, in m³ (1 L = 0.001 m³).
-        large_impeller_diameter_m: Impeller diameter at the large scale, in metres.
-        large_liquid_volume_m3: Liquid volume at the large scale, in m³.
-        power_number: The impeller's turbulent power number `N_p`, dimensionless and from the
-            impeller's own data. No default: a wrong `N_p` scales the whole power answer linearly.
-        liquid_density_kg_per_m3: Liquid density, in kg/m³.
-        liquid_viscosity_pa_s: Liquid dynamic viscosity, in Pa·s (1 cP = 0.001 Pa·s). Needed for
-            the Reynolds number that says whether the power number is a constant at all.
+        small_impeller_diameter_m: Impeller (not vessel) diameter at the small scale, m.
+        small_speed_rpm: Agitator speed at the small scale, rpm.
+        small_liquid_volume_m3: Liquid volume at the small scale, m³ (1 L = 0.001 m³).
+        large_impeller_diameter_m: Impeller diameter at the large scale, m.
+        large_liquid_volume_m3: Liquid volume at the large scale, m³.
+        power_number: The impeller's turbulent power number `N_p`, from its own data. No default.
+        liquid_density_kg_per_m3: Liquid density, kg/m³.
+        liquid_viscosity_pa_s: Liquid dynamic viscosity, Pa·s (1 cP = 0.001 Pa·s), for the Reynolds
+            number.
 
     Returns:
         The small vessel's duty and the large vessel's under each criterion, with the ratio between
-        the two large-scale speeds.
+            the two large-scale speeds.
 
     Raises:
-        UnitOpsInputError: If any dimension, speed, volume, density, viscosity or power number is
-            not positive.
+        UnitOpsInputError: Any dimension, speed, volume, density, viscosity or power number is not
+            positive.
     """
     for value, name in (
         (small_impeller_diameter_m, "the small-scale impeller diameter"),
@@ -253,19 +210,15 @@ class JustSuspended:
     speed_rpm: float
     speed_rev_per_s: float
     tip_speed_m_per_s: float
-    #: Ungassed power at `N_js`, from `P = N_p·rho·N³·D⁵`. Reported because the number a scale-up
-    #: argument actually turns on is the P/V this implies, not the speed.
+    #: Ungassed power at `N_js`, `P = N_p·rho·N³·D⁵`; the implied P/V is what scale-up turns on.
     power_w: float
     power_per_volume_w_per_m3: float
     reynolds_number: float
     turbulent: bool
-    #: Whether every input this module has a fitted band for sits inside it. False does not make the
-    #: number useless — the correlation is routinely used a little outside its regression — but it
-    #: is the difference between a prediction and an extrapolation, and a reader cannot see it in
-    #: `N_js`.
+    #: Whether every banded input sits inside its fitted band: prediction versus extrapolation,
+    #: invisible in `N_js` itself.
     within_fitted_range: bool
-    #: One sentence per input outside its band, naming the input, its value and the band. Empty when
-    #: `within_fitted_range` is true, so the two cannot disagree.
+    #: One sentence per out-of-band input; empty exactly when `within_fitted_range` is true.
     outside_fitted_range: tuple[str, ...]
 
 
@@ -274,17 +227,15 @@ def _outside_the_fitted_bands(
 ) -> tuple[str, ...]:
     """Which inputs sit outside the band Zwietering regressed them over, named one per sentence.
 
-    Separate from `just_suspended_speed` because the correlation and the statement about its domain
-    are two things, and because this is what a test can drive at a boundary without also driving the
-    arithmetic.
+    Separate from the correlation so a test can drive the boundaries alone.
 
     Args:
         solids_loading_percent: `X`, 100 x (mass solids / mass liquid).
         particle_diameter_m: `d_p`, in metres.
 
     Returns:
-        One sentence per out-of-band input, in the order `ZWIETERING_FITTED_RANGES` declares them;
-        empty when every input is inside its band.
+        One sentence per out-of-band input, in `ZWIETERING_FITTED_RANGES` order; empty when all are
+            inside.
     """
     values = {
         "solids_loading_percent": (
@@ -328,41 +279,23 @@ def just_suspended_speed(
 ) -> JustSuspended:
     """Zwietering's `N_js`: the speed at which no particle rests on the vessel base.
 
-    A **correlation with a fitted exponent set**, not a measurement and not a first-principles
-    result. It was regressed over sand and sodium chloride in flat-bottomed, baffled vessels, and
-    its criterion is visual: no particle stationary on the base for longer than one to two seconds.
-    **The accuracy figure usually quoted for it is of the order of ±10% on its own data.**
-    That is a figure taken from the literature rather than one measured here — nothing in this
-    repository holds the original dataset — and it is the *best* case: a dished base, a cohesive
-    or a needle-shaped solid, or a slurry outside the loading range it was fitted over can put
-    a real vessel well outside it.
-
-    **That loading range is now named and checked rather than alluded to.**
-    `ZWIETERING_FITTED_RANGES` holds it, and the result carries `within_fitted_range` plus one
-    sentence per out-of-band input — the same shape as `turbulent`, and for the same reason:
-    `X^0.13` is a
-    weak exponent, so an input off by a factor of 100 returns a plausible number. Measured on
-    `engine/selftest.py`'s slurry, a 10 wt% loading entered as `0.10` gives an `N_js` **45.05% low**
-    and a P/V **83.40% low**, which is an under-agitated vessel. Reported and not refused, because
-    the correlation is routinely used a little outside its regression.
+    A fitted correlation over sand and salt in flat-bottomed baffled vessels, with a visual
+    criterion. The usually quoted accuracy is about ±10% on its own data (a literature figure); a
+    dished base, cohesive or needle-shaped solids, or out-of-range inputs can be well outside it.
+    Out-of-band inputs are flagged in `within_fitted_range` / `outside_fitted_range`, not refused.
 
     Args:
         impeller_diameter_m: Impeller diameter `D`, in metres.
-        particle_diameter_m: Particle diameter `d_p`, in metres. A 200 µm crystal is 2.0e-4. The
-            correlation takes a single size; a distribution is usually entered at its mass-median
-            diameter, and a wide distribution is one of the ways that quoted accuracy stops holding.
-        particle_density_kg_per_m3: Solid density, in kg/m³. The *crystal* density, not the bulk or
-            tapped density of a powder.
-        liquid_density_kg_per_m3: Liquid density, in kg/m³.
-        liquid_viscosity_pa_s: Liquid dynamic viscosity, in Pa·s (1 cP = 0.001 Pa·s). Converted to
-            the kinematic viscosity the correlation takes.
-        solids_loading_percent: `X`, 100 x (mass of solids / mass of liquid). **A percentage, and
-            on a liquid basis rather than a slurry basis** — 10 kg of solid in 100 kg of solvent is
-            10, not 9.09.
-        zwietering_constant: `S`, the dimensionless geometry constant for this impeller type,
-            `T/D` ratio and off-bottom clearance, from Zwietering's own table or the impeller
-            vendor's. No default: `S` spans roughly 2 to 15 across ordinary geometries, and
-            assuming one would be this correlation's entire answer.
+        particle_diameter_m: Particle diameter `d_p`, m (200 µm is 2.0e-4); for a distribution,
+            usually the mass-median.
+        particle_density_kg_per_m3: The *crystal* density, kg/m³, not bulk or tapped.
+        liquid_density_kg_per_m3: Liquid density, kg/m³.
+        liquid_viscosity_pa_s: Liquid dynamic viscosity, Pa·s (1 cP = 0.001 Pa·s), converted to
+            kinematic.
+        solids_loading_percent: `X`, 100 x (mass solids / mass liquid). **A percentage, on a liquid
+            basis**: 10 kg in 100 kg solvent is 10.
+        zwietering_constant: `S` for this impeller type, `T/D` and clearance, from Zwietering's or
+            the vendor's table (roughly 2-15). No default.
         power_number: The impeller's turbulent power number, for the power at `N_js`.
         liquid_volume_m3: Liquid volume, in m³, for the P/V at `N_js`.
 
@@ -370,9 +303,8 @@ def just_suspended_speed(
         The just-suspended speed and what running there costs in power and tip speed.
 
     Raises:
-        UnitOpsInputError: If any input is not positive. A zero density difference is refused by
-            name, because a neutrally buoyant solid has no just-suspended speed — it does not
-            settle — and the correlation would return zero, which reads as "no agitation needed".
+        UnitOpsInputError: Any input is not positive, including a zero density difference (a
+            neutrally buoyant solid does not settle, and zero would read as "no agitation needed").
     """
     for value, name in (
         (impeller_diameter_m, "the impeller diameter"),

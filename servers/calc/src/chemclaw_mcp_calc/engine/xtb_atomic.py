@@ -1,32 +1,15 @@
-"""Per-atom descriptors only the `xtb` binary can produce, and an honest refusal when it is absent.
+"""Per-atom descriptors only the `xtb` binary can produce, and a refusal by name when it is absent.
 
-**Why this is a separate module rather than more of `xtb_props`.** Everything in `xtb_props` runs
-in-process through tblite. Everything here needs the *binary*, because the four quantities it
-returns are not on `tblite.Result` at all — measured against tblite 0.7.0, which exposes `energy`,
-`charges`, `bond-orders`, `dipole`, `quadrupole`, the orbital energies and occupations, the orbital
-coefficients and the density matrix, and nothing else. There is no overlap matrix and there are no
-atomic multipoles, so a Mulliken-condensed frontier density cannot be formed either.
+`tblite.Result` exposes no coordination numbers, C6 coefficients, polarisabilities, atomic
+multipoles or overlap matrix, so these need the binary:
 
-What the binary adds, all of it read off a real 6.6.1 run rather than off the documentation:
+- coordination number, C6 and isotropic polarisability per atom, from xtb's property table;
+- atomic dipole and quadrupole moments, from `xtbout.json`;
+- surface electrostatic-potential extrema, from a separate `--esp` run (where a sigma-hole shows).
 
-- **The covalent coordination number, the C6 dispersion coefficient and the static isotropic
-  polarisability**, per atom, from the property table xtb prints on every run.
-- **Atomic dipole and quadrupole moments**, from `xtbout.json` — GFN2's anisotropic electrostatics,
-  which is the part of the Hamiltonian a plain partial charge throws away.
-- **The electrostatic potential on a molecular surface**, from a second `--esp` run, reduced to its
-  extrema. That is where a sigma-hole shows up, and a partial charge cannot show one at all.
-
-**Fukui indices are deliberately not taken from here**, although the binary computes them with
-`--vfukui`. `xtb_props.compute_fukui` already answers that question, and a second implementation
-would be a second answer to it — the failure `connectors/README.md` records as two live definitions
-of `predict_pka`. The two are not even the same quantity: measured, xtb's `--vfukui` reports all
-three indices as *negative* for phenol where the finite-difference definition here reports them
-positive, because it differentiates charge where this differentiates population.
-
-**When the binary is absent this refuses by name.** It does not fall back, and it does not return a
-partial payload with nulls where the descriptors would be: a caller cannot tell "this deployment has
-no xtb" from "this atom has no polarisability" by looking at a null, and the first is an operator
-fact while the second is a chemical claim.
+Fukui indices are not taken from `--vfukui`: `xtb_props.compute_fukui` already answers that, and
+xtb's quantity differentiates charge rather than population. No fallback and no partial payload
+of nulls: "this deployment has no xtb" is an operator fact, not a chemical claim.
 """
 
 from __future__ import annotations
@@ -115,16 +98,9 @@ class SurfacePotentialResult(Keyed):
 def require_binary() -> None:
     """Refuse, by name, when the `xtb` binary this module is entirely built on is not installed.
 
-    **The message names both of this module's calculations**, because it is raised for both and used
-    to name only one: `compute_surface_potential` answered a chemist a sentence about atomic
-    multipoles, which is not what they asked for. That was invisible while the refusal only reached
-    the compute path; `engine/identity.py` now raises it for `calculation_key` too, on a tool whose
-    caller is asking what a grid would be stored under.
-
-    A `ValueError` on purpose: `mcp_server_kit.connector_app` lets that family reach the model
-    verbatim and replaces everything else with a generic notice, and this message has to reach the
-    chemist — it is the difference between "this deployment cannot answer that" and "this molecule
-    has no answer".
+    Names both calculations, since it is raised for both and by `calculation_key` too. A
+    `ValueError` so `connector_app` passes it to the model verbatim: "this deployment cannot answer"
+    is not "this molecule has no answer".
     """
     if not xtb_cli.is_available():
         raise ValueError(
@@ -139,29 +115,11 @@ def require_binary() -> None:
 def atomic_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:
     """The settings and the geometry `compute_atomic_descriptors` runs on.
 
-    `engine="xtb"` is stated rather than resolved, because this calculation has exactly one possible
-    backend. That also keeps `calc_version` honest: it names the binary that really produced the
-    numbers, so a deployment without one gets the refusal above instead of a key that claims a
-    program it does not have.
-
-    The geometry is `property_structure`'s, the same MMFF-relaxed embedding the other two per-atom
-    calculators use, so a caller may join a polarisability onto a Fukui index for the same atom of
-    the same structure without a second embedding.
-
-    **This does not derive a key where no binary is installed, and the paragraph that used to stand
-    here said the opposite and cited a precedent that says the opposite too.** It claimed deriving
-    `xtb-absent` was "the same thing the two CREST searches do" — but `identity._conformer_ensemble`
-    and `identity._binding_modes` call `crest_search.require_crest()`, and `identity.py`'s own
-    docstring states the rule as "the probe refuses precisely where the calculation would". Measured
-    under the shipped default (`CHEMCLAW_XTB_ENGINE` unset, no binary on PATH): `/healthz` **200**
-    and `calculation_key` answering
-    `xtb.atomic@GFN2-xTB+xtb+xtb-absent/tblite-0.7.0/rdkit-2026.3.5/h2:...` — a well-formed
-    Chemclaw3 ledger key naming a program the pod does not have, for 2 of this server's 17 tools,
-    because `_FIXED_BACKEND` pins these two tasks to the binary *regardless of configuration* and
-    the readiness gate tests `resolve_backend()`, which under `auto` answers `tblite`.
-
-    The spec is still built here; what refuses is `identity.py`, through
-    `require_binary_backend` — the same call the compute path makes.
+    `engine="xtb"` is stated, not resolved: there is one possible backend, and `calc_version` must
+    name the program that really produced the numbers. The geometry is `property_structure`'s,
+    shared with the other per-atom calculators so results join by atom. No key is derived where no
+    binary is installed: `identity.py` refuses through `require_binary_backend`, exactly where
+    computing would.
     """
     return XtbSpec(task="atomic", engine="xtb", solvent=solvent), property_structure(smiles)
 
@@ -169,9 +127,8 @@ def atomic_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Str
 def surface_inputs(smiles: str, solvent: str | None = None) -> tuple[XtbSpec, Structure]:
     """The settings and the geometry `compute_surface_potential` runs on.
 
-    The same geometry `atomic_inputs` and the two tblite per-atom calculators use, so a caller may
-    put a surface extremum beside a polarisability for the same structure without a second
-    embedding — and a different `task`, so the two calculations are two cache rows.
+    The same geometry as `atomic_inputs`, with a different `task`, so the two are separate cache
+    rows.
     """
     return XtbSpec(task="surface", engine="xtb", solvent=solvent), property_structure(smiles)
 
@@ -203,12 +160,9 @@ def compute_surface_potential(spec: XtbSpec, structure: Structure) -> SurfacePot
 def require_binary_backend(spec: XtbSpec, structure: Structure) -> XtbSpec:
     """Resolve `spec` and refuse unless the binary really is what will run it.
 
-    Public because `engine/identity.py` calls it too, and that is the whole of the fix for a key
-    naming a program this image does not carry: `calculation_key` has to refuse precisely where the
-    calculation would, which is the sentence that module's own docstring already makes about CREST.
-    One function rather than a second spelling of the same two refusals — the binary's absence and
-    the open-shell fallback — because a probe that refused on a *different* condition from the
-    compute path is a probe that answers a key nothing will ever write.
+    Public because `engine/identity.py` calls it too: `calculation_key` must refuse on exactly the
+    conditions the compute path does (binary absent, open-shell fallback), or it would answer a key
+    nothing will ever write.
     """
     require_binary()
     resolved = spec.for_structure(structure)
@@ -271,11 +225,7 @@ def compute_atomic_descriptors(spec: XtbSpec, structure: Structure) -> AtomicDes
 
 
 def _norm(vectors: list[list[float]], index: int) -> float | None:
-    """The Euclidean magnitude of one atom's multipole, or None when the run did not report it.
-
-    Not `numpy.linalg.norm`: this is a three- or six-component list off a JSON document, and
-    reaching for an array library to add six squares would be the more complicated way to do it.
-    """
+    """The Euclidean magnitude of one atom's multipole, or None when the run did not report it."""
     if index >= len(vectors):
         return None
     total = sum(float(component) * float(component) for component in vectors[index])

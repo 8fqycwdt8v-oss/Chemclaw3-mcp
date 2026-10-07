@@ -1,10 +1,8 @@
 """The forward model is pinned to an immutable commit, and loaded offline from exactly that commit.
 
-`"main"` is a moving branch: every rebuild fetched whatever it pointed at, and the checkpoint is
-loaded through `torch.load` (an unpickle), so a branch push was an unreviewed code-execution change
-in what the server predicts. These pin the fix — a 40-hex SHA in the fetch script, the same SHA in
-the predictor, `local_files_only=True` so load makes no hub call — without importing torch or
-transformers (a `[reaction_t5]` extra a plain checkout does not carry).
+The checkpoint is loaded through `torch.load` (an unpickle), so a moving branch would be an
+unreviewed code change. Pinned: a 40-hex SHA in the fetch script, the same SHA in the predictor,
+and `local_files_only=True`; checked without importing torch or transformers.
 """
 
 from __future__ import annotations
@@ -67,9 +65,8 @@ def test_every_fetched_model_is_pinned_to_a_commit_sha() -> None:
 def test_the_predictor_loads_the_same_pinned_commit_offline() -> None:
     """The predictor's revision matches the fetched SHA and it loads with `local_files_only=True`.
 
-    Read as source, not imported: the predictor imports torch/transformers, which the plain test
-    environment does not carry. A drift between the two SHAs would fetch one commit and load a
-    different one.
+    Read as source, since the predictor imports torch/transformers. Two different SHAs would fetch
+    one commit and load another.
     """
     fetch = _load_fetch_module()
     fetched = {repo: rev for repo, rev in fetch.MODELS}  # type: ignore[attr-defined]

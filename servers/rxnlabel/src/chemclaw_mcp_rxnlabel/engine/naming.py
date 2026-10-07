@@ -1,28 +1,10 @@
 """Which named reaction this is: Rxn-INSIGHT's 527 curated SMIRKS, where it is installed.
 
-Rxn-INSIGHT (Dobbelaere et al., *J. Cheminform.* 2024; MIT) classifies a reaction into one of ten
-classes and names it from 527 hand-curated SMIRKS, working from bond-electron matrices rather than
-from a learned embedding. Reported >91% class and >95% name accuracy on 50,000 benchmark reactions,
-at 40-100 ms each. It is the only open tool that does this at a granularity a chemist recognises —
-"Heck terminal vinyl", not "class 3".
-
-**Why a rule engine rather than a classifier.** The alternatives — rxnfp's BERT, SynCat's GNN — are
-more accurate on benchmark splits and produce a class *index* that has to be mapped back to a name
-through the label set they were trained on, which for the best available models is Pistachio's
-NameRxn taxonomy. That mapping is the thing this system most needs to be able to argue about: a
-name is quoted to a chemist and counted in a frequency table. A SMIRKS match can be shown; a
-softmax cannot.
-
-**Absence is reported, not hidden.** Without the extra, `name` returns nothing and
-`engine/version.py` records that in `labeller_version` — so a corpus labelled without it re-labels
-when a deployment installs it, rather than sitting there permanently unnamed under a version that
-claims to have looked.
-
-**No RXNO id is emitted.** Rxn-INSIGHT names reactions in its own vocabulary and does not carry the
-ontology id, and mapping one to the other is a lookup table nobody here has audited — a wrong
-`rxno_id` is worse than none, because the id is what a caller uses to escape the
-three-vocabularies problem in the first place. A corpus that ships its own `rxno_id` (Pistachio
-does) keeps it; a derived name does not invent one.
+Rxn-INSIGHT (Dobbelaere et al., *J. Cheminform.* 2024; MIT) names reactions at a granularity a
+chemist recognises ("Heck terminal vinyl"). A rule engine rather than a learned classifier, because
+a SMIRKS match can be shown to the chemist who reads the name. Without the extra, `name` returns
+nothing and `engine/version.py` records that in `labeller_version`, so the corpus re-labels once it
+is installed. No RXNO id is emitted: no audited mapping exists and a wrong id is worse than none.
 """
 
 from __future__ import annotations
@@ -46,31 +28,18 @@ SERVER = "rxnlabel"
 COMPONENT = "reaction_namer"
 degradation.register_components(COMPONENT)
 
-#: How long a transient construction failure waits before it is tried again. Aliased from
-#: `engine/construction.py` rather than written here, so the two optional components cannot drift to
-#: two windows; kept as a module attribute because that is what a test shortens.
+#: How long a transient construction failure waits before it is tried again; aliased from
+#: `engine/construction.py` so both components share one window.
 CONSTRUCTION_RETRY_SECONDS = construction.RETRY_SECONDS
 
 _LOCK = threading.Lock()
 _NAMER: Any | None = None
 _TRIED = False
-#: When the last construction attempt ran. **This is the half of the symmetry with `mapping` that
-#: was claimed and not implemented.** `_TRIED` latched unconditionally, so a `MemoryError` or an
-#: `EMFILE` while importing `rxn_insight` — which the shipped image installs — took the namer out
-#: for the life of the process: driven, a transient failure on the first `_namer()` call left the
-#: second
-#: making no second import attempt at all, `_FAILURE` pinned to `resource_exhausted`, and
-#: `available()` false with nothing able to change its mind. A *permanent* cause still latches, and
-#: an absent extra is not a failure at all, so neither is retried.
+#: When the last construction attempt ran. A transient failure is retried; a permanent cause
+#: latches; an absent extra is not a failure.
 _ATTEMPTED_AT: float | None = None
-# The cause the last construction attempt failed with, read by `readiness._probe`. **Symmetric with
-# `mapping` deliberately**: this module caught only `ImportError` around the import, so a
-# distribution that is present and whose import raises anything else — a broken shared library, say
-# — propagated out of `available()` into whatever happened to call it, counted nowhere, while the
-# same failure one module over was classified and counted. Two components behind one probe cannot
-# report differently about the same kind of fault. **The classification was made symmetric and the
-# recovery was not** — see `_ATTEMPTED_AT` above and `engine/construction.py`, which is where the
-# retry predicate now lives so the symmetry is structural rather than asserted.
+# The cause the last construction attempt failed with, read by `readiness._probe`. Classified the
+# same way as `mapping`'s so both components behind one probe report a fault alike.
 _FAILURE: str | None = None
 # The exception behind `_FAILURE`, bounded for quoting — see `mapping._FAILURE_DETAIL`.
 _FAILURE_DETAIL: str | None = None
@@ -78,9 +47,8 @@ _FAILURE_DETAIL: str | None = None
 # The top-level module whose absence is a deployment's decision; see `mapping._OPTIONAL_MODULES`.
 _OPTIONAL_MODULES = ("rxn_insight",)
 
-# What Rxn-INSIGHT answers when no SMIRKS matched. Mapped to `None` rather than stored, because a
-# frequency table with "OtherReaction" at the top is a table whose largest row means "we do not
-# know" — which the coverage sentence already says, properly.
+# What Rxn-INSIGHT answers when no SMIRKS matched; mapped to `None` so "unknown" never tops a
+# frequency table.
 _UNNAMED = {"otherreaction", "other", "unknown", ""}
 
 
@@ -88,10 +56,8 @@ _UNNAMED = {"otherreaction", "other", "unknown", ""}
 class Naming:
     """One reaction's classification. Every field optional, because a miss is a real answer.
 
-    `failure` is what separates the two answers that used to be the same object. A namer that runs
-    and matches nothing returns all-`None`, and so did a namer that raised — so "most of a patent
-    corpus has no name", which is true, covered for a pod whose rule table would not load, which is
-    a fault. A cause here means the classification is *missing*, not that nothing matched.
+    `failure` separates a namer that matched nothing (all `None`) from one that raised; a cause
+    means the classification is missing.
     """
 
     named_reaction: str | None = None
@@ -118,31 +84,23 @@ def construction_detail() -> str | None:
 def name(reaction_smiles: str) -> Naming:
     """Classify one reaction, or answer that nothing matched — or that the namer broke.
 
-    A raise from the namer is still caught, and for the reason it always was: Rxn-INSIGHT parses
-    the reaction itself and throws on inputs it cannot read, and the correct response is one
-    unnamed reaction rather than a failed batch of two hundred. **What was wrong is that the
-    answer was `Naming()` — byte-identical to the commonest correct answer this server gives.** A
-    pod whose SMIRKS table had gone therefore reported "nothing matched" for every reaction in a
-    corpus, stamped with the namer's own version, and nothing moved.
-
-    So the cause is classified, counted on `chemclaw_mcp_degraded_total`, and carried back in
-    `failure`. The log line names the cause and the exception, which the unconditional one-line
-    warning it replaces did not.
+    A raise is caught so one unreadable reaction does not fail a batch, but its cause is classified,
+    counted on `chemclaw_mcp_degraded_total`, logged and returned in `failure`, so a broken rule
+    table is not mistaken for "nothing matched".
 
     Args:
         reaction_smiles: `reactants>agents>products`.
 
     Returns:
-        A `Naming`. `failure` is `None` on both normal paths — no namer installed, or a namer that
-        matched nothing — and a degradation cause when it raised.
+        A `Naming`. `failure` is `None` when no namer is installed or nothing matched, and a
+            degradation cause when it raised.
     """
     namer = _namer()
     if namer is None:
         return Naming()
     try:
         info = namer(reaction_smiles)
-    # BLE001: blind on purpose and classified in the next line - the second of `degradation.py`'s
-    # three named call sites.
+    # BLE001: blind on purpose and classified on the next line.
     except Exception as exc:  # noqa: BLE001
         cause = degradation.classify(exc)
         degradation.record(server=SERVER, component=COMPONENT, cause=cause)
@@ -157,9 +115,8 @@ def name(reaction_smiles: str) -> Naming:
     return Naming(
         named_reaction=named,
         reaction_class=_clean(info.get("CLASS")),
-        # Only where something actually matched: `method` is what a chemist reads to tell "our
-        # SMIRKS matched Buchwald-Hartwig" from "the corpus said so", and a method on a row with no
-        # name would claim a derivation that did not happen.
+        # Only where something matched: a method on an unnamed row would claim a derivation that did
+        # not happen.
         method="smirks" if named else None,
     )
 
@@ -175,10 +132,7 @@ def _clean(value: Any) -> str | None:
 def _namer() -> Any | None:
     """A callable `reaction_smiles -> dict`, built once, or `None` where the extra is absent.
 
-    Wrapped in a closure rather than exposed as the library's own class because Rxn-INSIGHT's
-    surface has moved between releases (`rxnpredict`'s adapter carries the same note): what is
-    stable is that a `Reaction` exposes a dictionary of what it worked out. Pinning that one call
-    here keeps the version drift in one function instead of in every caller.
+    A closure confines Rxn-INSIGHT's release-to-release API drift to this one function.
     """
     global _NAMER, _TRIED, _ATTEMPTED_AT, _FAILURE, _FAILURE_DETAIL
     with _LOCK:
@@ -194,17 +148,11 @@ def _namer() -> Any | None:
                     "rxn-insight is not installed; reactions will be labelled without a name, and "
                     "`labeller_version` records that so the rows re-label when it arrives"
                 )
-                # Deliberately not a retry: `_FAILURE` stays `None`, which `_retry_due` reads as
-                # nothing-to-improve. Re-importing an absent distribution every minute learns
-                # nothing.
+                # Not a retry: `_FAILURE` stays `None`, so an absent distribution is never
+                # re-imported.
                 return None
-            # Not an absent extra but a distribution that *is* installed and whose import raises:
-            # a broken shared library, a dependency of it that is missing, a version of one it
-            # cannot use. **This used to start one arm later**, below an `except ImportError` that
-            # took the first two of those for an extra nobody installed. `readiness` treats
-            # installed-and-unbuilt as a pod to take out of rotation, and it can only do that if
-            # this is recorded rather than propagated out of `available()` into whichever caller
-            # happened to ask first.
+            # An installed distribution whose import raises (broken shared library, missing
+            # dependency) is recorded, so readiness can take the pod out of rotation.
             _FAILURE = degradation.classify(exc, optional=_OPTIONAL_MODULES)
             _FAILURE_DETAIL = echo(repr(exc))
             degradation.record(server=SERVER, component=COMPONENT, cause=_FAILURE)
@@ -227,12 +175,7 @@ def _namer() -> Any | None:
 
 
 def _retry_due() -> bool:
-    """Whether a failed construction may be attempted again. Called under `_LOCK`.
-
-    The same wrapper `mapping` carries, over the same predicate, for the reason
-    `engine/construction.py` opens with: the rule was stated in one module and asserted in the
-    other.
-    """
+    """Whether a failed construction may be attempted again. Called under `_LOCK`."""
     return construction.retry_due(
         failure=_FAILURE, attempted_at=_ATTEMPTED_AT, window_seconds=CONSTRUCTION_RETRY_SECONDS
     )

@@ -1,23 +1,12 @@
 """Ionisable-site perception: the partition `pka.calc_version()`'s calibration was fitted over.
 
-`engine/pka.py`'s site rules were fifty lines of `GetBonds()` walking and are now a SMARTS table.
-**That was a transcription, not a redesign**, and this file is what holds it to that: the
-calibration ledger on Chemclaw3's side matches `calc_version` exactly with no version pooling, so a
-site rule that perceives one extra nitrogen picks a different most-stable protomer on some molecule
-and silently invalidates every residual recorded against that version. It is also why
-`dimorphite-dl` was declined — a broader site set is exactly what must not happen here.
+The calibration ledger matches `calc_version` exactly, so a site rule that perceives one extra
+nitrogen silently invalidates every residual recorded against it; this is also why a broader
+site set (e.g. `dimorphite-dl`) is declined. The partition is pinned on a curated set where each
+row names the arm it exercises.
 
-**How the transcription was proven, and why that proof is not this file.** Both implementations were
-run side by side over a 231-molecule probe corpus — the `props` solvent table, the `chem` reagent
-table, and ~100 hand-written cases chosen to reach every arm — with zero disagreements on the acidic
-set, the basic set and the aryl classification. That measurement belongs to the commit that made the
-change; it cannot be re-run once the old code is gone. What survives it is the *partition*, pinned
-below on a curated set where every row names the arm it exercises, so a future edit to the table
-fails here with a molecule a chemist can reason about rather than with a count.
-
-Each row is `(smiles, acidic sites, basic sites, what it is a case of)`. The counts are structural:
-`ionisable_sites` reports what `predict_pka` would enumerate before any xTB runs, so nothing in this
-file is noisy and nothing in it needs a calculator.
+Each row is `(smiles, acidic sites, basic sites, what it is a case of)`. The counts are
+structural; no calculator runs.
 """
 
 from __future__ import annotations
@@ -103,10 +92,8 @@ def _pattern(arms: tuple[str, ...]) -> str:
 def test_every_arm_of_the_basic_nitrogen_pattern_excludes_something_in_this_corpus() -> None:
     """A pattern arm that excludes nothing is an arm nobody would notice losing.
 
-    The three exclusions are what make this enumeration narrower than "every nitrogen with a free
-    valence", and the corpus above has to reach all three or two thirds of the table is untested
-    prose. Checked by construction: each arm is dropped in turn and the corpus must then perceive
-    **more** basic sites than it does with the whole pattern.
+    Each arm is dropped in turn, and the corpus must then perceive more basic sites than with the
+    whole pattern.
     """
     from chemclaw_mcp_calc.engine.xtb_engine import parse_molecule
     from rdkit import Chem
@@ -129,12 +116,9 @@ def test_every_arm_of_the_basic_nitrogen_pattern_excludes_something_in_this_corp
 
 
 def test_the_pattern_this_file_asserts_is_the_module_s_own() -> None:
-    """The arm test above re-types the pattern, which is the shape that asserts nothing.
+    """The pattern re-typed above is the module's own, compared through RDKit's canonical SMARTS.
 
-    `D-2026-09-12-a-test-that-re-types-the-expression-under-test-asserts-nothing` is the record. The
-    re-typed string is unavoidable there — the point is to drive *modified* copies of it — so the
-    honest arrangement is to check the unmodified one against the module, through RDKit's own
-    canonical SMARTS rather than as text.
+    The arm test must drive modified copies, so this checks the unmodified one against the module.
     """
     from chemclaw_mcp_calc.engine import pka
     from rdkit import Chem
@@ -147,21 +131,9 @@ def test_the_pattern_this_file_asserts_is_the_module_s_own() -> None:
 def test_a_molecule_with_more_sites_than_rdkit_s_default_ceiling_is_counted_whole() -> None:
     """`GetSubstructMatches` stops at 1,000 matches and says nothing about having stopped.
 
-    The imperative walk these SMARTS replaced had no bound, so the transcription introduced one —
-    invisibly, because every molecule in the 231-row probe corpus above has fewer than ten sites
-    and could not reach it (`D-2026-09-16-a-default-ceiling-is-a-silent-truncation`).
-
-    **A nitrogen chain, because it is the cheapest molecule that crosses the ceiling while staying
-    inside every bound this server enforces**: 1,500 heavy atoms against
-    `MAX_MOLECULE_ATOMS`'s 2,000 and 1,500 characters against `MAX_SMILES_CHARS`'s 4,000. Measured
-    at `6c6a0eb`, `ionisable_sites` reported `basic=1000` for it. The count is asserted against
-    the molecule's own nitrogen count rather than against the literal 1,500, so the assertion is
-    about the perception being complete rather than about this string.
-
-    The published tool surface does not reach this — `predict_logd` is the only caller and its pKa
-    refuses above `xtb_max_atoms` first — which is why it is worth a test and not a release note:
-    an unreachable truncation is one that becomes reachable the day a bound moves, and nothing
-    would have said so.
+    A nitrogen chain is the cheapest molecule over that default while inside every input bound. The
+    count is asserted against the molecule's nitrogen count. No published tool reaches it today, but
+    an unreachable truncation becomes reachable the day a bound moves.
     """
     from chemclaw_mcp_calc.engine.pka import _acidic_protons, _basic_nitrogens
     from chemclaw_mcp_calc.engine.xtb_engine import parse_molecule

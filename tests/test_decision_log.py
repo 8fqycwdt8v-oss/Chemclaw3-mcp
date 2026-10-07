@@ -1,116 +1,74 @@
-"""A decision record must identify one decision, and the ledger must match the files beside it.
+"""A decision record identifies one decision, and the ledger matches the files beside it.
 
-Ported from `Chemclaw3`'s `tests/test_decision_log.py`, which this repository had no equivalent of:
-every argument in `CLAUDE.md` was unanchored prose with no record behind it. Three things went on
-the way over, and each is a decision rather than a simplification:
-
-- **The numbered sequence is gone.** That repository carries a frozen `D-NNN` range and the two
-  orderings, the stem slice and the sort test that keep it readable. This one has no such range and
-  must never acquire one — allocating a number means reading "highest on `origin/main`, plus one",
-  which is stale the instant another session pushes. So record order is `sorted(glob("D-*.md"))`,
-  which is chronological for free because the date leads the stem.
-- **Reservations are gone.** They exist there because sessions had numbers in flight when the dated
-  form landed. A dated id cannot be claimed by anyone else, so there is nothing to reserve.
-- **The "By topic" index is not here yet**, and neither is its ratchet. `docs/decisions/README.md`
-  says when to add both, together.
-
-What came over unchanged is the check most in this repository's idiom:
-`test_every_test_a_record_names_still_exists`. `CLAUDE.md` already says "anything this file claims
-about a server should be checked by a test in that server", and a rename retires such a citation in
-silence — the citation still reads as authoritative while pointing at nothing. The test corpus here
-is `tests/`, `packages/*/tests` and `servers/*/tests`, because that is where this fleet's tests are.
-It gained a second half here that the original does not have: that check resolves the function
-name and discards the path a record writes in front of it, so a second test
-(`test_a_record_names_the_file_its_test_lives_in`) reads the path. A citation pointing at the wrong
-file sends a reader somewhere the guard is not, and they conclude it is gone.
-
-One check has no counterpart there: `tests/test_fleet.py::test_the_map_and_the_tree_agree` gives
-every **top-level** directory a row-and-README guarantee, and `docs/` lists its own contents by
-hand. A new subtree under `docs/` is therefore exactly that failure one level down, which is what
-`test_the_docs_map_lists_everything_beside_it` refuses.
-
-Deliberately about *identity and reachability*, not prose: whether a record argues well is a review
-matter.
+About identity and reachability, not prose: whether a record argues well is a review matter. The
+checks are unique ids, filename equal to heading, the ledger listing exactly the records on disk,
+every `## What keeps it true` test name resolving against the suite, and an `## Options` section on
+every record dated on or after the cursor below, and no unresolved merge-conflict marker.
 """
 
 from __future__ import annotations
 
 import ast
-import fnmatch
 import re
-import subprocess
-import warnings
 from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_DOCS = ROOT / "docs"
-_DECISIONS = _DOCS / "decisions"
-_BACKLOG = _DOCS / "BACKLOG.md"
+_DECISIONS = ROOT / "docs" / "decisions"
 _INDEX = _DECISIONS / "README.md"
 
-# The one id shape: the whole stem, not the date. Two records on one day is normal here, so an id
-# that were only the date would name two decisions — the thing this file exists to prevent.
+# The id is the whole stem, not the date: two records on one day is normal here.
 _DATED = r"D-\d{4}-\d{2}-\d{2}-[a-z0-9-]+"
 _FILENAME = re.compile(rf"^{_DATED}$")
 _HEADING = re.compile(rf"^# ({_DATED}) — ", re.MULTILINE)
 _INDEX_ROW = re.compile(rf"^\| \[({_DATED})\]\(([^)]+)\) \| ([^|]*)\|", re.MULTILINE)
 _TEST_CITATION = re.compile(r"`(?:[\w./*-]+::)?(test_[a-z0-9_]+)`")
-# The same citation with its path half kept. A record usually writes `<path>::<test>`, and that path
-# was read by nothing: `_TEST_CITATION` discards it, so a citation could name the right function in
-# the wrong file and resolve. `test_a_record_names_the_file_its_test_lives_in` is what reads it.
-# The path may be a glob (`servers/*/tests/test_deploy.py`): a per-server test is seven files.
-_PLACED_CITATION = re.compile(r"`([\w./*-]+)::(test_[a-z0-9_]+)`")
-# A commit a record cites. At least one digit, because an all-letter hex word ("defaced") is a real
-# English string and an abbreviated hash that happens to be all letters is rare enough to be worth
-# the trade: a false positive here fails a run confusingly, a false negative only skips a check.
-_COMMIT = re.compile(r"`(?=[0-9a-f]{7,40}`)(?=[a-f]*[0-9])([0-9a-f]{7,40})`")
 _KEEPS_IT_TRUE = "## What keeps it true"
-# Commits a record names *as unreachable*, which is the one honest reason to write a hash `HEAD`
-# does not contain. These four are PR #54's branch commits:
-# `D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed` §5 quotes them because the finding
-# *is* that they do not resolve, and `D-2026-09-12-a-ratchet-measures-what-it-parses` cited them as
-# evidence until the same pass replaced every one with the merge commit containing them. The
-# exemption is checked in both directions below: if one of these ever becomes reachable, the row is
-# wrong and has to go.
-_QUOTED_AS_UNREACHABLE = frozenset({"68083a4", "39ba4a7", "362e764", "1161473"})
-# A branch commit a squash merge retired, mapped to the record that supplies the reachable citation
-# in its place. This is a *different* exemption from the one above and is deliberately not folded
-# into it: there the point of the citation is that it does not resolve, here the citation was
-# written as plain provenance and was true only on the branch it was written on. Wave 30's two
-# records both name `eb58363`, which PR #66 squashed into `24b50ec`. A merged record is never
-# edited, so the correction is a later record — and the exemption is valid only while that record
-# exists and itself cites a commit `HEAD` can reach, which is what stops this map becoming the
-# place a stale citation goes to be forgotten.
-_RETIRED_BY_A_SQUASH = {
-    "eb58363": "D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance",
-    "64201bd": "D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a",
-    "b812a29": "D-2026-09-27-the-cpu-torch-record-s-branch-commits-are-27aa77a",
+# Records dated on or after this carry an `## Options` section (`TEMPLATE.md`).
+_OPTIONS_CURSOR = "D-2026-10-07"
+
+# Tests a merged record cites that no longer exist, with what replaced them. A merged record is
+# never edited, so a retired citation is listed here rather than corrected in place.
+_PROSE_TESTS = (
+    "retired with the other prose-policing tests (D-2026-10-07-the-record-gets-lean, adopting "
+    "Chemclaw3's D-2026-10-07-the-architecture-programme decision 5)"
+)
+_RETIRED_CITATIONS: dict[str, str] = {
+    "test_only_the_depiction_is_gated_and_it_is_gated": (
+        "servers/chem/tests/test_admission.py::test_the_band_is_gated_and_nothing_else_is"
+    ),
+    "test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error": (
+        "packages/mcp_server_kit/tests/test_manifest_model.py::"
+        "test_an_endpoint_the_consumer_cannot_load_is_refused_here"
+    ),
+    "test_a_dynamic_import_of_a_computed_name_is_deliberately_not_flagged": (
+        "packages/mcp_server_kit/tests/test_no_egress.py::"
+        "test_a_dynamic_import_of_a_computed_name_must_be_justified_at_its_site"
+    ),
+    "test_every_record_says_what_keeps_it_true": (
+        "tests/test_decision_log.py::test_every_test_a_record_names_still_exists"
+    ),
+    "test_the_required_file_set_is_declared_once": (
+        "tests/test_fleet_layout.py::test_the_checklist_lists_every_required_file"
+    ),
+    "test_claude_md_holds_no_second_port_registry": _PROSE_TESTS,
+    "test_no_prose_here_counts_this_fleet_s_servers_without_naming_them": _PROSE_TESTS,
+    "test_claude_md_and_the_guard_name_the_same_channels_as_outside_it": _PROSE_TESTS,
+    "test_claude_md_claims_no_interception_the_guard_does_not_make": _PROSE_TESTS,
+    "test_every_path_claude_md_cites_under_a_real_directory_resolves": _PROSE_TESTS,
+    "test_every_path_first_party_source_cites_resolves": _PROSE_TESTS,
+    "test_every_other_repository_citation_is_still_cited_and_still_not_here": _PROSE_TESTS,
+    "test_every_commit_the_registers_cite_is_reachable_from_head": _PROSE_TESTS,
+    "test_a_record_names_the_file_its_test_lives_in": _PROSE_TESTS,
+    "test_every_retired_citation_names_a_live_replacement": _PROSE_TESTS,
+    "test_two_records_on_one_day_are_distinct_ids": _PROSE_TESTS,
+    "test_a_record_filed_under_another_name_is_not_invisible": _PROSE_TESTS,
 }
 
 
-def _records(directory: Path = _DECISIONS) -> list[Path]:
+def _records() -> list[Path]:
     """Every record in record order. The date leads the stem, so a plain sort is chronology."""
-    return sorted(directory.glob("D-*.md"))
-
-
-def _record_ids(directory: Path = _DECISIONS) -> list[str]:
-    """Every id that has a file, in record order."""
-    return [path.stem for path in _records(directory)]
-
-
-def _unfiled_documents(directory: Path = _DECISIONS) -> list[str]:
-    """Every `.md` beside the records that is not one — the blind spot of a `D-*` glob.
-
-    `_records` globs `D-*.md`, so a record filed as `2026-09-13-a-decision.md` is not a duplicate,
-    not a dangling id and not a missing ledger row: it is *absent*, and every check in this file
-    passes while a decision sits unlisted next to them.
-    """
-    return sorted(
-        path.name
-        for path in directory.glob("*.md")
-        if path.name != "README.md" and not _FILENAME.match(path.stem)
-    )
+    return sorted(_DECISIONS.glob("D-*.md"))
 
 
 def _index_rows() -> list[tuple[str, str, str]]:
@@ -121,6 +79,21 @@ def _index_rows() -> list[tuple[str, str, str]]:
     ]
 
 
+def _test_definitions() -> set[str]:
+    """Every `test_*` function name and `test_*.py` module stem this fleet defines."""
+    roots = [ROOT / "tests", *ROOT.glob("packages/*/tests"), *ROOT.glob("servers/*/tests")]
+    names: set[str] = set()
+    for root in roots:
+        for path in root.rglob("test_*.py"):
+            names.add(path.stem)
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and (
+                    node.name.startswith("test_")
+                ):
+                    names.add(node.name)
+    return names
+
+
 def test_the_record_has_files_to_check() -> None:
     """Guard the guard: a parse matching nothing would pass every assertion below it."""
     assert _records(), "no `D-*.md` files parsed from docs/decisions/; has the naming moved?"
@@ -128,61 +101,64 @@ def test_the_record_has_files_to_check() -> None:
 
 
 def test_every_record_id_is_unique() -> None:
-    """No id names two decisions — a citation that resolves to two is worse than a dangling one.
-
-    The filesystem enforces the common case, since two files cannot share a name. This catches the
-    rest: a heading copied into a second file, which is how a record gets written twice.
-    """
-    duplicates = sorted(adr for adr, count in Counter(_record_ids()).items() if count > 1)
+    """No id names two decisions, including a heading copied into a second file."""
+    headings = [
+        h for path in _records() for h in _HEADING.findall(path.read_text(encoding="utf-8"))
+    ]
+    duplicates = sorted(adr for adr, count in Counter(headings).items() if count > 1)
     assert not duplicates, f"docs/decisions/ reuses ids: {duplicates}"
 
 
 def test_every_filename_matches_its_heading() -> None:
-    """The id in the filename is the id in the document, or a citation reaches the wrong record.
-
-    The filename is what the ledger links to and what a `git grep` for a decision finds; the heading
-    is what a reader sees. A file renamed without its heading is a mismatch nothing else here sees.
-    """
+    """The filename id is the id in the one heading; numbered and date-only ids are refused."""
+    for bad in ("D-2026-9-12-slug", "D-2026-09-12", "D-2026-09-12-Slug", "D-167-numbered"):
+        assert not _FILENAME.match(bad), f"{bad} should not be a valid record filename"
     for path in _records():
-        assert _FILENAME.match(path.stem), (
-            f"{path.name}: expected `D-YYYY-MM-DD-lowercase-slug.md`; the ledger's links and every "
-            "`git grep` for a decision rely on that shape"
-        )
+        assert _FILENAME.match(path.stem), f"{path.name}: expected `D-YYYY-MM-DD-lowercase-slug.md`"
         headings = _HEADING.findall(path.read_text(encoding="utf-8"))
-        assert headings, f"{path.name} has no `# D-YYYY-MM-DD-slug — Title` heading"
-        assert len(headings) == 1, f"{path.name} carries more than one heading: {headings}"
-        assert headings[0] == path.stem, (
-            f"{path.name} is titled {headings[0]}; filename and heading must name one decision"
+        assert headings == [path.stem], (
+            f"{path.name} carries headings {headings}; expected exactly `# {path.stem} — Title`"
         )
 
 
 def test_the_ledger_lists_exactly_the_records_on_disk() -> None:
-    """`docs/decisions/README.md` and the files beside it name the same records, in the same order.
+    """The ledger names exactly the records on disk, in order, each row linking its own file."""
+    on_disk = [path.stem for path in _records()]
+    rows = _index_rows()
+    listed = [adr for adr, _, _ in rows]
+    assert sorted(set(on_disk) - set(listed)) == [], "records missing from docs/decisions/README.md"
+    assert sorted(set(listed) - set(on_disk)) == [], "ledger rows with no record file"
+    assert on_disk == listed, "docs/decisions/README.md lists the records out of date order"
+    mislinked = [(adr, link) for adr, link, _ in rows if link != f"{adr}.md"]
+    assert not mislinked, f"ledger rows linking somewhere other than their own file: {mislinked}"
 
-    A ledger that has silently drifted is worse than no ledger: it is consulted and believed. Order
-    is asserted too, because it is the record's chronology — a reader scanning for "what was decided
-    most recently about this" reads the bottom of that table.
-    """
-    on_disk = _record_ids()
-    listed = [adr for adr, _, _ in _index_rows()]
-    missing = [adr for adr in on_disk if adr not in set(listed)]
-    extra = [adr for adr in listed if adr not in set(on_disk)]
-    assert not missing, f"in docs/decisions/ but not listed in its README.md: {missing}"
-    assert not extra, f"listed in docs/decisions/README.md but no such file: {extra}"
-    assert on_disk == listed, (
-        "docs/decisions/README.md lists the same ids as the files beside it but in a different "
-        "order; the table is the record's chronology"
+
+def test_every_test_a_record_names_still_exists() -> None:
+    """Each record says what keeps it true, and every test name it cites resolves or is retired."""
+    defined = _test_definitions()
+    dangling: set[str] = set()
+    for path in _records():
+        text = path.read_text(encoding="utf-8")
+        assert _KEEPS_IT_TRUE in text, f"{path.name} has no `{_KEEPS_IT_TRUE}` section"
+        names = set(_TEST_CITATION.findall(text))
+        dangling |= {name for name in names if name not in defined}
+    unresolved = sorted(dangling - set(_RETIRED_CITATIONS))
+    assert not unresolved, (
+        f"test name(s) cited in docs/decisions/ that resolve to nothing: {unresolved}. "
+        "Rename the test back, or list it as retired."
     )
+    revived = sorted(name for name in _RETIRED_CITATIONS if name in defined)
+    assert not revived, f"listed as retired but defined again: {revived}"
 
 
-def test_every_row_links_to_its_file() -> None:
-    """A row is only useful if it reaches the record, and only true if the link resolves."""
-    broken = [(adr, link) for adr, link, _ in _index_rows() if not (_DECISIONS / link).exists()]
-    assert not broken, f"docs/decisions/README.md rows whose link resolves to nothing: {broken}"
-    mislinked = [(adr, link) for adr, link, _ in _index_rows() if link != f"{adr}.md"]
-    assert not mislinked, (
-        f"docs/decisions/README.md rows linking somewhere other than their own file: {mislinked}"
-    )
+def test_a_record_from_the_cursor_on_weighs_its_options() -> None:
+    """A record dated on or after the cursor carries `## Options`: a decision is a choice."""
+    missing = [
+        path.name
+        for path in _records()
+        if path.stem >= _OPTIONS_CURSOR and "\n## Options" not in path.read_text(encoding="utf-8")
+    ]
+    assert not missing, f"records with no `## Options` section (see TEMPLATE.md): {missing}"
 
 
 def test_no_record_carries_an_unresolved_conflict_marker() -> None:
@@ -198,385 +174,3 @@ def test_no_record_carries_an_unresolved_conflict_marker() -> None:
             if line.startswith(("<<<<<<< ", ">>>>>>> ")) or line == "======="
         ]
         assert not offenders, f"unresolved merge conflict markers: {offenders}"
-
-
-def test_two_records_on_one_day_are_distinct_ids(tmp_path: Path) -> None:
-    """The property the dated form exists for, now driven over the record machinery.
-
-    **This test was vacuous when it was written and is recorded as such rather than quietly
-    rewritten.** It read `first, second = Path("D-…-one-decision.md"),
-    Path("D-…-another-entirely.md")`
-    and asserted `first.stem != second.stem` — two literals compared against each other, which
-    cannot fail for any state of this repository. Measured on 2026-09-12: filing a record in
-    `docs/decisions/` under a date-only name left it green while
-    `test_every_filename_matches_its_heading` went red, so it contributed nothing that the tree
-    could
-    break. `c1772fb`'s commit message said one new test came back vacuous and recorded it nowhere;
-    this is that record.
-
-    What makes it bite now: the record machinery is run over a directory it is given, so two
-    same-day
-    records are *built* and read back. A `_records` glob that stopped matching, an `_FILENAME` that
-    lost the slug (which is exactly the date-only id this form exists to refuse), or an
-    `_unfiled_documents` that stopped seeing a stray file all fail here.
-    """
-    for stem in ("D-2026-09-12-one-decision", "D-2026-09-12-another-entirely"):
-        (tmp_path / f"{stem}.md").write_text(f"# {stem} — A title\n", encoding="utf-8")
-
-    ids = _record_ids(tmp_path)
-    assert ids == ["D-2026-09-12-another-entirely", "D-2026-09-12-one-decision"]
-    assert len(set(ids)) == len(ids), "same-day records must not share an id"
-    for path in _records(tmp_path):
-        assert _FILENAME.match(path.stem), f"{path.name} is not a record filename"
-        assert _HEADING.findall(path.read_text(encoding="utf-8")) == [path.stem]
-        # The date-only form the id deliberately is not: it would name both of these files.
-        assert not _FILENAME.match(path.stem[: len("D-2026-09-12")])
-    assert _unfiled_documents(tmp_path) == []
-
-
-def test_a_record_filed_under_another_name_is_not_invisible(tmp_path: Path) -> None:
-    """A `D-*` glob is a check that cannot see what it does not glob, which is the hole.
-
-    Every check in this file starts from `_records()`, so a decision filed as
-    `2026-09-13-unfiled.md` is not a duplicate, not a dangling id and not an unlisted row — it is
-    simply absent, with nothing anywhere saying so. Measured on 2026-09-12: such a file in
-    `docs/decisions/` passed the whole module. The missing direction is the one every other map
-    check in this repository already has: *everything beside the records is a record*.
-    """
-    assert _unfiled_documents() == [], (
-        "docs/decisions/ holds a document that is neither README.md nor a `D-YYYY-MM-DD-slug.md` "
-        "record; rename it, because no check in this file can see it where it is"
-    )
-
-    (tmp_path / "2026-09-13-unfiled.md").write_text("# unfiled\n", encoding="utf-8")
-    (tmp_path / "README.md").write_text("# ledger\n", encoding="utf-8")
-    (tmp_path / "D-2026-09-13-filed.md").write_text("# D-2026-09-13-filed — T\n", encoding="utf-8")
-    assert _records(tmp_path) == [tmp_path / "D-2026-09-13-filed.md"]
-    assert _unfiled_documents(tmp_path) == ["2026-09-13-unfiled.md"]
-
-
-def test_every_commit_the_registers_cite_is_reachable_from_head() -> None:
-    """A record's commit citations are its evidence, and a squash merge can retire all of them.
-
-    `docs/decisions/README.md` rests the whole numbering convention on one sentence — "a number
-    written here is a dated measurement of a named commit, never a claim about `HEAD`" — and the
-    naming half broke on the first record written under it.
-    `D-2026-09-12-a-ratchet-measures-what-it-parses` cited four branch commits and told the reader
-    to
-    run `git show 39ba4a7:tests/test_fleet.py`; PR #54 was **squash**-merged, so none of the four is
-    an ancestor of `main` and the command fails for anyone who clones it. Measured on 2026-09-12
-    with
-    full history (this checkout was unshallowed first): all four objects still exist *here*, because
-    this is the branch they were written on, and `git merge-base --is-ancestor` reports none of them
-    reachable from `HEAD`. A citation that resolves only in the session that wrote it is the deleted
-    port table with a hash in it.
-
-    So the check is ancestry, not existence — existence is exactly what misleads. On a shallow clone
-    ancestry cannot be decided at all, and the honest answer is to say what was not looked at rather
-    than to pass: the warning is the same shape `test_every_anchor_a_row_names_exists` uses for a
-    row it cannot open.
-
-    **One exemption, and it is the shape this file's own sibling check describes**: a record may
-    name a hash `HEAD` cannot reach when the *point* is that it cannot, which is what §5 of
-    `D-2026-09-12-a-bypass-that-is-not-in-the-suite-is-not-closed` does. `_QUOTED_AS_UNREACHABLE`
-    carries those four with the reason, and the exemption is asserted in both directions: a hash
-    listed there that becomes reachable fails too, so the allowlist cannot outlive its argument.
-
-    **A second exemption, for the case the first cannot honestly cover**: a record written on a
-    branch cites that branch's commit as its provenance, and the squash merge retires it — which is
-    not "quoted as unreachable", it is a citation that was true where it was written. A merged
-    record is never edited, so the fix is a later record naming the merge commit, and
-    `_RETIRED_BY_A_SQUASH` maps the retired hash to it. That map is checked in *three* directions:
-    the hash must stay unreachable, the correcting record must exist, and it must itself cite a
-    commit `HEAD` reaches — so an exemption cannot outlive the correction that earns it.
-
-    The message names every record that cites a bad hash rather than one of them. `cited` was a
-    `{commit: record}` dict, so the two Wave-30 records that both cite `eb58363` collapsed onto one
-    key and the failure named the second file and hid the first — a reader fixing what the message
-    named would have left the run red and had no idea why.
-
-    `docs/BACKLOG.md` is read here too, and for one reason rather than two: it cited the same
-    unreachable `362e764` in a row about the static scan, and a second copy of this regex in
-    `tests/test_backlog_register.py` would be the second declaration this repository keeps deleting.
-    """
-    shallow = subprocess.run(
-        ["git", "rev-parse", "--is-shallow-repository"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    cited: dict[str, set[str]] = {}
-    for path in [*_records(), _BACKLOG]:
-        for commit in _COMMIT.findall(path.read_text(encoding="utf-8")):
-            cited.setdefault(commit, set()).add(path.name)
-    if shallow.returncode != 0 or shallow.stdout.strip() != "false":
-        warnings.warn(
-            f"the commit citations in docs/ ({sorted(cited)}) were not checked: this is "
-            "a shallow clone, where `git merge-base --is-ancestor` cannot decide reachability. "
-            "Re-run after `git fetch --unshallow`.",
-            stacklevel=1,
-        )
-        return
-
-    def reachable(commit: str) -> bool:
-        return (
-            subprocess.run(
-                ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
-                cwd=ROOT,
-                capture_output=True,
-                check=False,
-            ).returncode
-            == 0
-        )
-
-    def corrects(stem: str) -> bool:
-        """Whether the record exempting a retired hash still names one `HEAD` can reach."""
-        record = _DECISIONS / f"{stem}.md"
-        if not record.is_file():
-            return False
-        return any(reachable(c) for c in _COMMIT.findall(record.read_text(encoding="utf-8")))
-
-    exempt = _QUOTED_AS_UNREACHABLE | set(_RETIRED_BY_A_SQUASH)
-    stale_exemption = sorted(commit for commit in exempt & set(cited) if reachable(commit))
-    assert not stale_exemption, (
-        f"{stale_exemption} is exempted as a hash `HEAD` cannot reach and `HEAD` reaches it; the "
-        "row in `_QUOTED_AS_UNREACHABLE` or `_RETIRED_BY_A_SQUASH` is no longer true and the "
-        "record can cite it plainly"
-    )
-    uncorrected = sorted(
-        f"{commit} is exempted by {stem}"
-        for commit, stem in _RETIRED_BY_A_SQUASH.items()
-        if not corrects(stem)
-    )
-    assert not uncorrected, (
-        f"{uncorrected}, which either does not exist or cites no commit `HEAD` reaches. A retired "
-        "hash is exempt because a later record supplies the reachable citation in its place; with "
-        "no such record the exemption is just a stale citation nobody has to fix."
-    )
-    unreachable = sorted(
-        f"{record} cites {commit}"
-        for commit, records in cited.items()
-        if commit not in exempt and not reachable(commit)
-        for record in records
-    )
-    assert not unreachable, (
-        f"commit(s) cited in docs/ that `HEAD` does not contain: {unreachable}. A branch "
-        "commit does not survive a squash merge; cite the merge commit and the pull request, which "
-        "are what a reader of `main` can open."
-    )
-
-
-def test_a_malformed_id_is_still_rejected() -> None:
-    """The filename check is a real gate, not a shape that accepts anything beginning with `D-`.
-
-    Including the numbered form, which is the one this repository must never acquire: a `D-NNN`
-    landing here would mean somebody had to read `origin/main` to allocate it.
-    """
-    for bad in ("D-2026-9-12-slug", "D-2026-09-12", "D-2026-09-12-Slug", "D-167-numbered", "D-999"):
-        assert not _FILENAME.match(bad), f"{bad} should not be a valid record filename"
-
-
-def _test_definitions() -> dict[str, set[str]]:
-    """Every `test_*` name this fleet defines, mapped to the repository-relative files defining it.
-
-    A function name and a `test_*.py` module stem are both legitimate things for a record to cite: a
-    sentence naming `tests/test_fleet.py` as `test_fleet` would otherwise read as a dangling
-    function. Three test roots, because a server tests itself and the kit tests itself — the
-    fleet-level `tests/` is only a third of the suite.
-
-    The **set** of files is what makes the path half checkable, and it has to be a set rather than a
-    file: `test_the_pod_label_matches_the_networkpolicy_selector` is defined in all seven
-    `servers/*/tests/test_deploy.py`, and a record cites it by the glob.
-    """
-    roots = [
-        ROOT / "tests",
-        *sorted(ROOT.glob("packages/*/tests")),
-        *sorted(ROOT.glob("servers/*/tests")),
-    ]
-    assert len(roots) > 3, f"only {len(roots)} test roots found; has the layout changed?"
-    names: dict[str, set[str]] = {}
-    for root in roots:
-        for path in sorted(root.rglob("test_*.py")):
-            where = path.relative_to(ROOT).as_posix()
-            names.setdefault(path.stem, set()).add(where)
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
-                if isinstance(
-                    node, ast.FunctionDef | ast.AsyncFunctionDef
-                ) and node.name.startswith("test_"):
-                    names.setdefault(node.name, set()).add(where)
-    return names
-
-
-def test_every_record_says_what_keeps_it_true() -> None:
-    """A record names the guards that hold it, or the check below has nothing to resolve.
-
-    This is what makes the citation check load-bearing rather than decorative: without the section,
-    a record can be entirely persuasive and entirely unenforced, and nothing would say so. A
-    decision with no guard to name is worth recording as exactly that, in words.
-    """
-    for path in _records():
-        text = path.read_text(encoding="utf-8")
-        assert _KEEPS_IT_TRUE in text, (
-            f"{path.name} has no `{_KEEPS_IT_TRUE}` section; that section is what a later session "
-            "reads to find out whether the decision is still enforced"
-        )
-        cited = _TEST_CITATION.findall(text[text.index(_KEEPS_IT_TRUE) :])
-        assert cited, (
-            f"{path.name}'s `{_KEEPS_IT_TRUE}` section names no `test_*`. If nothing enforces the "
-            "decision, say so there in a sentence — an empty heading reads as if something does."
-        )
-
-
-# A test a merged record cites, whose *claim* a later decision made false, and what replaced it.
-#
-# The allowlist `test_every_test_a_record_names_still_exists` anticipated: a merged record is never
-# edited, so a citation to a test that was renamed for a reason other than tidiness either keeps a
-# name that now lies or dangles. The first entry is the case: `servers/chem` gated one tool, a test
-# asserted exactly that, and
-# `D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe` gated six — so "only
-# the depiction is gated" could not survive as a name. Each entry names the test that now holds the
-# ground, which `test_every_retired_citation_names_a_live_replacement` resolves, and the record
-# that retired it.
-_RETIRED_CITATIONS: dict[str, tuple[str, str]] = {
-    "test_only_the_depiction_is_gated_and_it_is_gated": (
-        "servers/chem/tests/test_admission.py::test_the_band_is_gated_and_nothing_else_is",
-        "D-2026-09-26-one-ceiling-for-the-band-and-it-is-the-pool-not-the-probe",
-    ),
-    # `D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about` cited the test that
-    # held a bare `tools:` key coerced to `[]`; Chemclaw3's own model refuses that key
-    # (`list_type`), so the stand-in now refuses it too, and keeping the old name would assert the
-    # opposite of the body.
-    "test_a_bare_tools_key_is_an_empty_list_rather_than_a_type_error": (
-        "packages/mcp_server_kit/tests/test_manifest_model.py::"
-        "test_an_endpoint_the_consumer_cannot_load_is_refused_here",
-        "D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses",
-    ),
-    # `D-2026-09-14-what-this-fleet-enforces-bounds-measures-and-accepts` §4.2 cited the test that
-    # pinned a computed-name import as deliberately *unflagged*; the scan now reports one until its
-    # server justifies it by scope, so the old name would assert the opposite of the body.
-    "test_a_dynamic_import_of_a_computed_name_is_deliberately_not_flagged": (
-        "packages/mcp_server_kit/tests/test_no_egress.py::"
-        "test_a_dynamic_import_of_a_computed_name_must_be_justified_at_its_site",
-        "D-2026-09-26-a-computed-import-is-argued-at-its-site",
-    ),
-}
-
-
-def test_every_retired_citation_names_a_live_replacement() -> None:
-    """The allowlist above, held in both directions so it cannot become a place names go to die.
-
-    A retired name must really be gone (or it is not retired), still be cited by some record (or
-    the entry is dead weight), and name a replacement that resolves in the file it names, retired
-    by a record that exists.
-    """
-    defined = _test_definitions()
-    cited = {
-        name
-        for path in _records()
-        for name in _TEST_CITATION.findall(path.read_text(encoding="utf-8"))
-    }
-    records = {path.stem for path in _records()}
-    for retired, (replacement, record) in _RETIRED_CITATIONS.items():
-        assert retired not in defined, f"{retired} still exists, so it is not retired"
-        assert retired in cited, f"no record cites {retired}; delete its allowlist entry"
-        where, _, name = replacement.partition("::")
-        assert any(fnmatch.fnmatch(real, where) for real in defined.get(name, set())), (
-            f"{retired}'s replacement {replacement} does not resolve"
-        )
-        assert record in records, f"{retired} names {record}, which is not a record"
-
-
-def test_every_test_a_record_names_still_exists() -> None:
-    """A guard a record cites by name resolves against the suite.
-
-    A citation that resolves to nothing looks identical to one that resolves: it reads as
-    authoritative while pointing at nothing, which is `CLAUDE.md`'s deleted port table one level in.
-    A merged record is never edited, so when a rename genuinely retires a citation the fix is to
-    rename the test back — or, if it is really gone, an entry in `_RETIRED_CITATIONS` saying what
-    replaced it and which record retired it.
-
-    **This half reads the function name only.** The file half is
-    `test_a_record_names_the_file_its_test_lives_in`, which is a separate test because the two fail
-    for different reasons and a reader fixing one should not be told about the other.
-    """
-    defined = _test_definitions()
-    dangling = sorted(
-        {
-            name
-            for path in _records()
-            for name in _TEST_CITATION.findall(path.read_text(encoding="utf-8"))
-            if name not in defined and name not in _RETIRED_CITATIONS
-        }
-    )
-    assert not dangling, (
-        f"test name(s) cited in docs/decisions/ that resolve to nothing: {dangling}. Rename the "
-        "test back, or correct the citation before the record is merged."
-    )
-
-
-def test_a_record_names_the_file_its_test_lives_in() -> None:
-    """A `path::test` citation names the file that actually defines that test.
-
-    The existence check above resolves the *function* name against every `test_*` in the three
-    roots, and `_TEST_CITATION` throws the path away — so a record could cite
-    `tests/test_fleet.py::test_the_pod_label_matches_the_networkpolicy_selector`, a test that lives
-    in `servers/*/tests/`, and pass. A path is the half a reader uses: it is what they open. A
-    citation with a wrong path is worse than one with none, because it sends the reader to a file
-    where the guard is not, and the reader concludes the guard is gone.
-
-    Measured before this test existed: all 213 path-qualified citations in `docs/decisions/` already
-    named a file that defines the test, so this closes a hole rather than papering over a mess.
-
-    The path may be a glob, and that is the reason `_test_definitions` maps a name to a *set*:
-    `test_the_pod_label_matches_the_networkpolicy_selector` is one name in seven files, and
-    `servers/*/tests/test_deploy.py` is the honest way to cite it. `fnmatch` rather than
-    `Path.match`, because the latter treats `*` as not crossing a separator inconsistently across
-    versions.
-    """
-    defined = _test_definitions()
-    misplaced = sorted(
-        {
-            (record.name, where, name)
-            for record in _records()
-            for where, name in _PLACED_CITATION.findall(record.read_text(encoding="utf-8"))
-            if name in defined and not any(fnmatch.fnmatch(real, where) for real in defined[name])
-        }
-    )
-    assert not misplaced, (
-        f"citation(s) in docs/decisions/ naming a file that does not define the test: {misplaced}. "
-        "The name resolves, so the existence check passes and a reader opens the wrong file."
-    )
-
-
-def test_the_docs_map_lists_everything_beside_it() -> None:
-    """`docs/README.md` is a map, and `tests/test_fleet.py` only checks the top-level one.
-
-    `test_the_map_and_the_tree_agree` gives every top-level directory a row in `CLAUDE.md` and a
-    `README.md` of its own, in both directions, "because a map nobody verifies is read, believed,
-    and wrong". `docs/` lists its own contents by hand and nothing checked that list, so a new
-    subtree here — this record directory is the first — is precisely that failure one level down.
-
-    Both directions, and a `README.md` for every subtree, for the same reason GitHub renders one the
-    moment a reader clicks the folder.
-    """
-    listed = set(
-        re.findall(r"\]\((?!\.\./|https?://)([^)#]+)\)", (_DOCS / "README.md").read_text("utf-8"))
-    )
-    present = {
-        path.name + ("/" if path.is_dir() else "")
-        for path in _DOCS.iterdir()
-        if path.name != "README.md"
-    }
-    unlisted = sorted(
-        name for name in present if name not in listed and name.rstrip("/") not in listed
-    )
-    assert not unlisted, f"present in docs/ and not linked from docs/README.md: {unlisted}"
-    stale = sorted(link for link in listed if not (_DOCS / link).exists())
-    assert not stale, f"linked from docs/README.md and not present: {stale}"
-    for path in sorted(_DOCS.iterdir()):
-        if path.is_dir():
-            assert (path / "README.md").exists(), (
-                f"docs/{path.name}/ has no README.md; GitHub renders one the moment a reader "
-                "clicks the folder, and that is the whole reason for the rule"
-            )

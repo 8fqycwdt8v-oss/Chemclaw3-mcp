@@ -1,85 +1,22 @@
 """The key of a calculation, **before** it is run — what makes a remote cache lookup possible.
 
-## Why returning the key on the result was not enough
+Chemclaw3's `cached_compute` needs the key to look up, so it needs it before computing, and it
+cannot derive it locally (the version string comes from this server's backends and settings). So
+the caller asks `calculation_key` first — canonicalise, embed, hash, read versions, **no SCF** —
+and computes only on a miss:
 
-Chemclaw3's cache seam is `science/calc/store.py::cached_compute`:
+    identity = await remote.calculation_key(tool, arguments)
+    hit = await store.get(identity.key)
+    if hit is None:
+        result = await remote.<tool>(**arguments)
 
-```python
-hit = await store.get(key)
-if hit is not None:
-    return hit.result, True
-result = await compute()
-```
+`key` is returned as the four parts `store.get` takes (`calc_version` may contain `@` and `:`),
+with the flat `calc_key` beside it for comparison with the compute result.
 
-**The key is needed to do the lookup, so it is needed before the compute.** A `calc_key` that only
-arrives *on the result* is unusable there: on a hit there is no result to read it off. The only
-remaining way for Chemclaw3 to fill that argument would be to derive the key locally — which is
-precisely the silent divergence the split was supposed to remove, because `calc_version` is built
-from `tblite`/`rdkit` distribution versions, a Hamiltonian revision, an `xtb --version` subprocess
-and seven pKa calibration settings that a Chemclaw3 pod does not have, and
-`xtb_cli.binary_version()` answers `"absent"` rather than raising.
-
-So this module answers the question one round trip earlier, and cheaply: canonicalise, embed, hash,
-read the versions. **No SCF** — `tests/test_calculation_key.py` proves it by making every path
-through `Calculator` raise and asking for all nine identities anyway.
-
-The wrapper on the Chemclaw3 side then reads:
-
-    identity = await remote.calculation_key(tool, arguments)   # one cheap call
-    hit = await store.get(identity.key)                        # the four parts, ready to use
-    if hit is not None:
-        return hit.result, True
-    result = await remote.<tool>(**arguments)                  # only on a miss
-
-One cheap round trip on a hit instead of an SCF; two calls on a miss, which is noise beside minutes
-of CPU.
-
-## `key` is the four parts, not a string to parse
-
-`CalculationKey` is what `store.get` takes, so this returns it whole. That is not a convenience:
-`calc_version` legitimately contains both `@` and `:` — `esol-delaney@2004/...` and
-`cal-0.28733:-29.3116` — so splitting the flat form is fiddly enough to get wrong, and a
-mis-parsed key is a lookup that misses forever rather than an error. The flat `calc_key` string is
-returned beside it so a caller can assert it against the one the compute tool later puts on its
-result, which is the cheapest possible check that the two paths agree.
-
-**What this leaves as the only thing the two repositories must still keep in step**: the value of
-`CALCULATION_EPOCH`. Not the config (only this server reads it), not the RDKit build (only this
-server embeds), not the flat-string format (nobody parses it). One constant.
-
-## What is covered, and the one tool that is not
-
-Every **calculation** is here — the eight backing Chemclaw3's SMILES-in tools, and the six
-structure-in primitives Chemclaw3's activities compose. Three tools are deliberately absent because
-they are not calculations and nothing stores their output: `embed_structure` and
-`combine_structures` build geometries (cheap, pure, and the *input* to a key rather than a keyed
-thing), and `calculation_key` is this probe itself.
-
-`predict_logd` is the one calculation with no key, and it says so in a `caveat` rather than by
-omission. Chemclaw3 never cached logD, because its expensive half is already a cached pKa and
-Crippen LogP is sub-millisecond, so there is no key derivation to port.
-
-There was briefly a second: `compute_thermochemistry`, whose key named the geometry its refinement
-loop settled on and was therefore an output rather than a function of its arguments. That
-underivable key was the structural signal that a *composite* does not belong on this server at all,
-and the tool was removed rather than shipped uncacheable — Chemclaw3 assembles the same answer from
-`relax_structure` + `compute_hessian` + its own RRHO arithmetic, and every part of it caches. See
-`servers/calc/README.md`.
-
-**The CREST searches key like anything else, and refuse like nothing else.** `CrestSpec
-.calc_version()` answers `crest-absent` when the binary is missing rather than raising, so a key
-*is* derivable with no crest — and it would name a program that cannot run, addressing a row nothing
-will ever write. So the derivation calls `crest_search.require_crest()` exactly as the compute path
-does: the probe refuses precisely where the calculation would.
-
-**And so do the two binary-only xTB panels, which for one wave did not** —
-`compute_atomic_descriptors`
-and `compute_surface_potential` answered an `xtb-absent` key on a pod with no binary, arguing in
-their
-own docstrings that the CREST pair above set that precedent. They set this one.
-`require_binary_backend`
-is now called here for the same reason `require_crest` is, and the rule holds for every tool on this
-server rather than for most of them.
+Every calculation tool is covered except `predict_logd`, which says so in a `caveat`.
+`embed_structure`, `combine_structures` and `calculation_key` are not calculations. **The probe
+refuses precisely where the calculation would**: a version naming a program this image lacks
+(`crest-absent`, `xtb-absent`) is refused rather than returned as a key nothing will ever write.
 """
 
 from __future__ import annotations
@@ -121,15 +58,13 @@ class CalculationIdentity(BaseModel):
     """
 
     tool: str
-    # The version string this calculation's results are keyed and calibrated under. Present even
-    # when there is no key: it is what Chemclaw3's calibration ledger matches on, and the ledger is
-    # keyed per prediction rather than per cache entry.
+    # The version this calculation is keyed and calibrated under; present even without a key,
+    # because the calibration ledger matches on it.
     calc_version: str
     key: CalculationKey | None = None
     calc_key: str | None = None
-    # The content address of the geometry the calculation runs on, where it runs on one. Worth
-    # returning on its own: it is the cheapest way for a caller to see that the two sides agree
-    # about *which molecule* is being asked for, before any energy exists to compare.
+    # The content address of the geometry, where there is one: the cheapest check that both sides
+    # agree which molecule is meant.
     structure_id: str | None = None
     caveat: str | None = None
 
@@ -137,8 +72,7 @@ class CalculationIdentity(BaseModel):
 def _from_spec(tool: str, spec: XtbSpec, structure: Structure) -> CalculationIdentity:
     """The identity of running `spec` on `structure`, resolved backend and all.
 
-    `XtbSpec.cache_key` applies `for_structure` itself, so the version reported here is the one that
-    will actually run — tblite for an open shell even where the binary is configured.
+    `cache_key` applies `for_structure`, so the reported version is the one that will run.
     """
     key = spec.cache_key(structure)
     return CalculationIdentity(
@@ -167,14 +101,8 @@ def _electronic_properties(arguments: dict[str, Any]) -> CalculationIdentity:
 def _site_reactivity(arguments: dict[str, Any]) -> CalculationIdentity:
     """`predict_site_reactivity` — `mode` is accepted and does not enter the key.
 
-    It does not change what is computed: the three single points are mode-independent and it only
-    chooses the sort. Accepting it anyway matters, because a caller passes the compute tool's
-    arguments through unchanged and must not have to know which of them are keyed.
-
-    **An unkeyed argument is only safe while it cannot shorten the payload**, which is why `top_n`
-    is no longer one of them: it used to be accepted here and applied in `tools.py`, so the row
-    stored under this key held whichever fifteen atoms the first caller's mode ranked highest. An
-    argument outside the key may permute the answer and may not remove from it.
+    `mode` only chooses the sort. An unkeyed argument may permute the stored answer but never remove
+    from it, which is why `top_n` is not accepted here.
     """
     return _from_spec("predict_site_reactivity", *xtb_props.fukui_inputs(str(arguments["smiles"])))
 
@@ -182,19 +110,8 @@ def _site_reactivity(arguments: dict[str, Any]) -> CalculationIdentity:
 def _atomic_descriptors(arguments: dict[str, Any]) -> CalculationIdentity:
     """`compute_atomic_descriptors` — refuses without the binary, exactly as the panel does.
 
-    **This used to derive a key naming `xtb-absent` and argue that the CREST searches set the
-    precedent.** They set the opposite one, two functions below: both call
-    `crest_search.require_crest()`, and the rule this module's own docstring states is that "the
-    probe refuses precisely where the calculation would". Measured under the shipped default
-    (`CHEMCLAW_XTB_ENGINE` unset, no `xtb` on PATH) a **ready** pod answered
-    `xtb.atomic@GFN2-xTB+xtb+xtb-absent/...`, a well-formed Chemclaw3 cache and ledger key naming a
-    program it does not carry — for this tool and `compute_surface_potential`, because
-    `xtb_spec._FIXED_BACKEND` pins their task to the binary whatever `resolve_backend()` answers.
-
-    `require_binary_backend` is the compute path's own refusal, so the two cannot diverge: it covers
-    the absent binary *and* the open-shell fallback, which would otherwise key as tblite here and
-    raise there — a key addressing a row nothing will ever write, which is the same defect in the
-    other direction.
+    `require_binary_backend` is the compute path's own refusal, covering both the absent binary and
+    the open-shell fallback, so probe and computation cannot diverge.
     """
     spec, structure = xtb_atomic.atomic_inputs(str(arguments["smiles"]), _solvent(arguments))
     return _from_spec(
@@ -207,9 +124,7 @@ def _atomic_descriptors(arguments: dict[str, Any]) -> CalculationIdentity:
 def _surface_potential(arguments: dict[str, Any]) -> CalculationIdentity:
     """`compute_surface_potential` — a second xtb run, so a second key, and the same refusal.
 
-    Keyed apart from the atomic panel rather than folded into it as an argument: the two produce
-    different payloads from different single points, and one key standing for both would serve a
-    surface request the panel-only row it found.
+    Keyed apart from the atomic panel because the payloads differ.
     """
     spec, structure = xtb_atomic.surface_inputs(str(arguments["smiles"]), _solvent(arguments))
     return _from_spec(
@@ -228,11 +143,7 @@ def _optimize_geometry(arguments: dict[str, Any]) -> CalculationIdentity:
 
 
 def _pka(arguments: dict[str, Any]) -> CalculationIdentity:
-    """`predict_pka` — no geometry needed: the key is on the canonical SMILES.
-
-    `pka_cache_key` expects the canonical form, exactly as `predict_pka` gives it, so this goes
-    through the same canonicalisation rather than trusting the caller's spelling.
-    """
+    """`predict_pka` — no geometry needed: the key is on the canonical SMILES."""
     canonical = require_canonical_smiles(str(arguments["smiles"]))
     key = pka.pka_cache_key(pka.PkaInput(smiles=canonical))
     return CalculationIdentity(
@@ -275,9 +186,8 @@ def _logd(arguments: dict[str, Any]) -> CalculationIdentity:
 def _structure(arguments: dict[str, Any]) -> Structure:
     """The `structure` argument, validated through the same model the compute path uses.
 
-    A caller sends a geometry as JSON; `Structure` rounds and validates it on construction exactly
-    as it did when this server produced it, so a payload that was truncated or edited in transit
-    fails here rather than keying a geometry nobody computed.
+    A geometry truncated or edited in transit fails here rather than keying something never
+    computed.
     """
     return Structure.model_validate(arguments["structure"])
 
@@ -293,9 +203,7 @@ def _relax_structure(arguments: dict[str, Any]) -> CalculationIdentity:
 def _properties_at(arguments: dict[str, Any]) -> CalculationIdentity:
     """`compute_properties_at` — the same `xtb.properties` calculation as the SMILES-in tool.
 
-    Same `calc_type`, so a properties row computed from a SMILES and one computed at the identical
-    geometry are one entry rather than two. That is the whole reason both tools exist without
-    duplicating anything: they differ in how the caller names the subject, not in what is computed.
+    Same `calc_type`, so both ways of naming the subject share one row.
     """
     return _from_spec(
         "compute_properties_at",
@@ -307,14 +215,7 @@ def _properties_at(arguments: dict[str, Any]) -> CalculationIdentity:
 def _fukui_at(arguments: dict[str, Any]) -> CalculationIdentity:
     """`compute_fukui_at` — the same `xtb.fukui` calculation as the SMILES-in tool.
 
-    Same `calc_type` as `predict_site_reactivity`, for the reason `_properties_at` gives one
-    function up: the two differ in how the caller names the subject, not in what is computed.
-
-    **`mode` is absent from the key and `solvent` is present**, and that asymmetry against the
-    SMILES-in twin is real rather than an oversight. `mode` only chooses the sort — the three
-    single points are the same three whichever attack is asked about, which is why `ranked_for`
-    exists — so keying on it would make a cache hit authoritative about an ordering it never chose.
-    `solvent` is in because this tool takes one and `predict_site_reactivity` does not.
+    `mode` is unkeyed (it only chooses the sort); `solvent` is keyed, since this tool takes one.
     """
     return _from_spec(
         "compute_fukui_at",
@@ -326,10 +227,8 @@ def _fukui_at(arguments: dict[str, Any]) -> CalculationIdentity:
 def _hessian(arguments: dict[str, Any]) -> CalculationIdentity:
     """`compute_hessian` — keyed on the geometry and what moves the matrix, and nothing else.
 
-    `HessianSpec` is deliberately narrower than the thermochemistry spec Chemclaw3 wraps it in:
-    temperature, pressure, the symmetry number and the quasi-RRHO cutoff are absent because a
-    Hessian does not depend on them. That absence is what lets a caller ask for a second temperature
-    and pay only the partition functions.
+    Temperature, pressure, symmetry number and quasi-RRHO cutoff are not keyed, so a second
+    temperature costs only the partition functions.
     """
     return _from_spec(
         "compute_hessian", HessianSpec(solvent=_solvent(arguments)), _structure(arguments)
@@ -339,9 +238,8 @@ def _hessian(arguments: dict[str, Any]) -> CalculationIdentity:
 def _scan_point(arguments: dict[str, Any]) -> CalculationIdentity:
     """`scan_point` — driving the coordinate is deterministic, so the key is derivable.
 
-    The driven geometry is a pure function of `(structure, atoms, value)`, so this runs the same
-    driver the compute path does and keys the result. It comes out as an `xtb.opt` key, which is
-    correct: a scan point *is* a constrained optimisation, and it shares its row with one.
+    The driven geometry is a pure function of `(structure, atoms, value)`; the result is an
+    `xtb.opt` key, since a scan point is a constrained optimisation.
     """
     atoms = tuple(int(index) for index in arguments["atoms"])
     spec, driven = scan_point_inputs(
@@ -379,14 +277,9 @@ def _solvent(arguments: dict[str, Any]) -> str | None:
     return None if value is None else str(value)
 
 
-# One derivation per compute tool, plus the argument names it accepts.
-#
-# **The `accepts` sets are not decoration.** A caller passes the compute tool's arguments through
-# unchanged, and an argument this module quietly ignored would be the worst possible failure here: a
-# misspelled `solvent` would produce the *gas-phase* key, the lookup would hit a real row, and the
-# caller would be handed a solvated question's answer computed without solvent. So an unknown name
-# is refused, and `tests/test_calculation_key.py` checks every set against the served tool's own
-# input schema so the two cannot drift.
+# One derivation per compute tool, plus the argument names it accepts. An unknown name is refused:
+# silently ignoring a misspelt `solvent` would hit the gas-phase row.
+# `tests/test_calculation_key.py` holds these sets against each tool's input schema.
 COMPUTE_TOOLS: dict[str, tuple[frozenset[str], Callable[[dict[str, Any]], CalculationIdentity]]] = {
     "compute_xtb_energy": (frozenset({"smiles", "charge"}), _xtb_energy),
     "compute_electronic_properties": (frozenset({"smiles", "solvent"}), _electronic_properties),
@@ -426,8 +319,7 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
 
     Raises:
         ValueError: `tool` is not a compute tool, an argument name is not one that tool takes, or
-            `smiles`/`solvent` is invalid — the same refusals, with the same messages, the compute
-            tool itself would give, because the same canonicaliser and the same spec validator run.
+            `smiles`/`solvent` is invalid — the same refusals the compute tool itself would give.
     """
     known = COMPUTE_TOOLS.get(tool)
     if known is None:
@@ -453,36 +345,11 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
 def _refuse_a_key_naming_a_program_this_image_lacks(
     tool: str, derived: CalculationIdentity
 ) -> CalculationIdentity:
-    """The invariant this module's docstring states, enforced once rather than per tool.
+    """Return `derived` unless its version names the xtb binary this image lacks; then raise.
 
-    **It held for 14 of the 17.** `_atomic_descriptors` and `_surface_potential` call
-    `require_binary_backend`, and the two CREST derivations call `require_crest`, so those four
-    refuse where the calculation would. Nothing checked the rest, and three of them resolve to the
-    binary: `optimize_geometry`, `relax_structure` and `compute_hessian` are not in
-    `_FIXED_BACKEND`, so under `CHEMCLAW_XTB_ENGINE=xtb` they take the preference — and
-    `resolve_backend` honours that
-    without asking `is_available()`. Driven on an image with no `xtb` on `PATH`, all three minted a
-    well-formed key ending `GFN2-xTB+xtb+xtb-absent/...`, and so did **`predict_pka` and
-    `predict_logd`**, whose versions fold the optimisation's in. Five tools, not three.
-
-    Checked here, on the derived identity, rather than added to each derivation, because a per-tool
-    guard is what was already in place and what already had three holes in it: a new compute tool
-    inherits this one with nothing to write. `tests/test_calculation_key.py` drives every entry in
-    `COMPUTE_TOOLS` in that configuration, so the table is what owes the proof.
-
-    The pod is separately 503 for this configuration (`app._readiness`), so the reachable case is a
-    caller talking to the pod outside its Service — which is exactly when a fabricated ledger key is
-    least likely to be noticed.
-
-    Args:
-        tool: The tool whose identity was derived, for the message.
-        derived: What the derivation returned.
-
-    Returns:
-        `derived`, unchanged, when the version names only programs this image has.
-
-    Raises:
-        ValueError: The version names the xtb binary and this image has none.
+    Checked once on the result rather than per derivation, so every compute tool — including those
+    that inherit an optimisation's version, like pKa and logD — is covered with nothing to write.
+    `tool` names the tool in the `ValueError`.
     """
     if xtb_cli.ABSENT_XTB_VERSION in (derived.calc_version or ""):
         raise ValueError(

@@ -1,9 +1,7 @@
 """Chemformer / MolBART forward predictor.
 
-`MolecularAI/MolBART` — BART-style transformer pretrained on PubChem SMILES,
-fine-tunable for forward reaction prediction. Like GraphRXN/MEGAN the
-upstream repo is not a clean Python package; users must install it manually
-and provide a fine-tuned checkpoint.
+`MolecularAI/MolBART`, a BART-style transformer fine-tuned for forward prediction. Not a clean
+package; it and a fine-tuned checkpoint are installed manually.
 """
 
 from __future__ import annotations
@@ -97,10 +95,7 @@ try:
     import transformers  # noqa: F401
 
     register_forward(ChemformerForward())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         ChemformerForward.name,

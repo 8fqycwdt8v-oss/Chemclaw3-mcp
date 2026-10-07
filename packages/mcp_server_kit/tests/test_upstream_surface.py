@@ -1,19 +1,11 @@
 """Every upstream shape this kit depends on, asserted in one place.
 
-`mcp_server_kit` is a thin layer over the MCP SDK by design, and most of what it does is public
-API. A handful of things are not: a module global it rebinds, two private attributes it reads, and
-one upstream *absence* it exists to compensate for. Each of those is a sentence in some module's
-docstring today, and a docstring is evidence about what its author believed — so a dependency bump
-that invalidates one would leave six confident paragraphs and a green build.
+A module global the kit rebinds, private attributes it reads, and upstream absences it
+compensates for. Each assertion names the first-party module that breaks if it fails, and absence
+pins turn red when upstream fixes something, so a workaround cannot outlive its reason.
 
-This file is the other half. Every assertion names the first-party module that breaks if it fails,
-and two of them assert an absence, so that upstream *fixing* something turns the workaround red
-instead of letting it outlive its reason. Chemclaw3 keeps a file with the same name for the same
-purpose, and for the same finding: what breaks on a dependency bump is not the volume of
-first-party code but the number of places reading a shape upstream never promised.
-
-**When one of these fails**, the fix is never to update the assertion and move on. Go and read the
-module it names, decide whether the dependency is still the right one, and record the answer.
+**When one fails**, do not update the assertion and move on: read the module it names and decide
+whether the dependency is still right.
 """
 
 from __future__ import annotations
@@ -44,10 +36,9 @@ def _probe() -> FastMCP:
 def test_the_lowlevel_server_still_validates_through_a_module_global_named_jsonschema() -> None:
     """`schema_cache.install_validator_cache` rebinds that global; there is no other seam.
 
-    The validation happens inside a closure the SDK registers in `Server.request_handlers` at
-    decoration time — no hook, no argument, no subclass point. Rebinding the name the closure looks
-    up is the narrowest possible intervention, and it stops working silently the moment upstream
-    imports `validate` directly (`from jsonschema import validate`) or moves the call.
+    Validation happens in a closure the SDK registers at decoration time, so rebinding the name it
+    looks up is the narrowest intervention, and it fails silently if upstream imports `validate`
+    directly.
     """
     assert hasattr(lowlevel, "jsonschema"), (
         "mcp.server.lowlevel.server no longer has a module-global `jsonschema`; "
@@ -73,12 +64,9 @@ def test_the_lowlevel_server_still_validates_through_a_module_global_named_jsons
 def test_fastmcp_still_disables_the_lowlevel_servers_input_validation() -> None:
     """Which of the two `jsonschema.validate` call sites actually runs, and it is only one.
 
-    `FastMCP._setup_handlers` registers the call-tool handler with `validate_input=False`, so an
-    argument is checked by pydantic inside `Tool.run` and never reaches jsonschema; the *output*
-    schema is the one that costs 6.97 ms a call. `schema_cache.py` says so, and a bump that
-    re-enabled input validation would make that paragraph wrong in the direction that reads as a
-    bigger win than it is. Nothing breaks if it flips — the shim covers both sites — but the prose
-    has to be corrected, so this is a red build rather than a stale sentence.
+    `FastMCP` registers call-tool with `validate_input=False`, so only the output schema reaches
+    jsonschema. The shim covers both, but `schema_cache.py`'s reasoning would need correcting if
+    this flipped.
     """
     source = inspect.getsource(FastMCP._setup_handlers)
     assert "call_tool(validate_input=False)" in source, (
@@ -88,13 +76,10 @@ def test_fastmcp_still_disables_the_lowlevel_servers_input_validation() -> None:
 
 
 def test_jsonschema_validate_is_still_check_schema_then_best_match() -> None:
-    """`cached_validate` is that function with the schema-side work hoisted out of the loop.
+    """`cached_validate` is `jsonschema.validate` with the schema-side work hoisted out of the loop.
 
-    It is a faithful reimplementation only as long as upstream's is `validator_for`,
-    `check_schema`, construct, `best_match(iter_errors(...))`, raise. If upstream grows a step, the
-    cached path silently stops doing it — which is exactly the class of divergence
-    `tests/test_schema_cache.py`'s differential test would catch for the *shapes it covers* and
-    not necessarily for others.
+    Faithful only while upstream is `validator_for`, `check_schema`, construct, `best_match`, raise;
+    a new upstream step would silently be skipped.
     """
     source = inspect.getsource(jsonschema.validators.validate)
     for step in ("validator_for(schema)", "cls.check_schema(schema)", "best_match("):
@@ -105,13 +90,10 @@ def test_jsonschema_validate_is_still_check_schema_then_best_match() -> None:
 
 
 def test_fastmcp_still_does_not_pass_a_session_idle_timeout() -> None:
-    """An **absence** pin: the reason `mcp_server_kit/sessions.py` exists at all.
+    """An absence pin: `FastMCP` does not pass a session idle timeout, which is why `sessions.py`
+    exists.
 
-    `StreamableHTTPSessionManager` has taken `session_idle_timeout` for some time and recommends
-    1800 s; `FastMCP.streamable_http_app()` has never passed it, so every server in this fleet ran
-    with no session GC. If upstream starts passing it, this goes red and `sessions.py` becomes a
-    deployment's *override* rather than the only thing standing between a pod and an OOMKill —
-    which is a different module with a different argument.
+    If upstream starts passing it, `sessions.py` becomes an override rather than the only GC.
     """
     source = inspect.getsource(FastMCP.streamable_http_app)
     assert "StreamableHTTPSessionManager(" in source, (
@@ -127,10 +109,8 @@ def test_fastmcp_still_does_not_pass_a_session_idle_timeout() -> None:
 def test_the_session_manager_reads_its_idle_timeout_at_run_time() -> None:
     """`sessions.py` sets the attribute rather than rebuilding the manager with the keyword.
 
-    That is only sound because both readers — the request handler that pushes the deadline forward
-    and the session task that arms it — read `self.session_idle_timeout` when they run. Rebuilding
-    the manager instead would mean restating every other constructor argument here, and silently
-    dropping whichever one upstream adds next.
+    Sound only because both readers read `self.session_idle_timeout` at run time; rebuilding would
+    restate every constructor argument and drop whichever upstream adds next.
     """
     assert "session_idle_timeout" in inspect.signature(StreamableHTTPSessionManager).parameters
     source = inspect.getsource(StreamableHTTPSessionManager)
@@ -147,10 +127,8 @@ def test_the_session_manager_reads_its_idle_timeout_at_run_time() -> None:
 def test_a_live_session_is_reachable_by_id_through_the_managers_instance_map() -> None:
     """The two private names `sessions._current_session` walks, and the header it starts from.
 
-    `_server_instances` maps a session id to its transport and `idle_scope` is the deadline on it.
-    Neither is public API; without both, a tool call cannot find the session it is being served on,
-    and `sessions.py` would silently stop holding long calls open — a CREST search cancelled at 30
-    minutes with nothing in the logs but "idle timeout".
+    Without `_server_instances` and `idle_scope`, a tool call cannot find its session and long calls
+    would silently stop being held open.
     """
     manager = StreamableHTTPSessionManager(app=_probe()._mcp_server)
     assert isinstance(manager._server_instances, dict)
@@ -159,17 +137,11 @@ def test_a_live_session_is_reachable_by_id_through_the_managers_instance_map() -
 
 
 def test_a_session_is_minted_exactly_when_the_session_id_header_is_absent() -> None:
-    """The branch `sessions._would_mint_a_session` mirrors, read out of upstream's own source.
+    """Upstream mints a session exactly when the session-id header is absent.
 
-    `apply_session_ceiling` has to decide *before* upstream does whether a request will add to
-    `_server_instances`, and it decides on the header alone. Upstream's `_handle_stateful_request`
-    branches the same way — session id present and known, serve it; present and unknown, 404;
-    absent, mint — and reads no method, no JSON-RPC body and no HTTP verb to do it.
-
-    Asserted against the source rather than by driving a request, because what must not drift is the
-    *condition*: a release that started minting on `method == "initialize"` instead would leave the
-    ceiling gating a set of requests that no longer overlaps the ones that cost memory, with every
-    behavioural test still green because the header is absent on an `initialize` either way.
+    `apply_session_ceiling` decides on the header alone, as `_handle_stateful_request` does. Read
+    from source because the condition is what must not drift: minting on `initialize` instead would
+    pass every behavioural test while the ceiling gated the wrong requests.
     """
     source = inspect.getsource(StreamableHTTPSessionManager._handle_stateful_request)
     assert "request_mcp_session_id = request.headers.get(MCP_SESSION_ID_HEADER)" in source
@@ -184,13 +156,10 @@ def test_a_session_is_minted_exactly_when_the_session_id_header_is_absent() -> N
 
 
 async def test_list_tools_rebuilds_a_tools_schema_objects_every_time() -> None:
-    """Why `schema_cache` keys on content: the schema *object* is not stable for a process.
+    """`list_tools` rebuilds a tool's schema objects every time, so `schema_cache` keys on content.
 
-    `Server._get_cached_tool_definition` refreshes `_tool_cache` by re-running the ListToolsRequest
-    handler, and `FastMCP.list_tools` builds a fresh `mcp.types.Tool` per call whose schema dicts
-    pydantic re-validates into new objects. Chemclaw3 sends one `tools/list` per turn per
-    connector, so an identity-keyed cache would miss on every turn — and, held weakly, could hand
-    back a validator compiled for a different schema that happened to reuse the address.
+    An identity-keyed cache would miss on every turn and, held weakly, could return a validator for
+    a different schema at a reused address.
     """
     import mcp.types as types
 
@@ -208,19 +177,11 @@ async def test_list_tools_rebuilds_a_tools_schema_objects_every_time() -> None:
 
 
 def test_a_session_is_recorded_in_a_second_map_only_for_an_authenticated_scope_user() -> None:
-    """The **other** map `sessions._drop_terminated_sessions` does not sweep, and why it may not.
+    """Upstream records a session owner only for an authenticated scope user.
 
-    Upstream keeps `_session_owners` beside `_server_instances` and pops the two together on every
-    one of its own removal paths — including the `finally` in `run_server` that a polite `DELETE`
-    skips, because `terminate()` sets `is_terminated` first. `_drop_terminated_sessions` is what
-    covers that skipped `del`, and it covers exactly one of the two dicts.
-
-    That is sound today for one reason and one reason only: this fleet's `BearerAuthMiddleware`
-    never puts an `AuthenticatedUser` in `scope["user"]`, so `requestor` is `None` on every request
-    and upstream writes nothing. `tests/test_sessions.py` drives that half over a real socket. This
-    half pins the *condition*: if upstream ever records an owner unconditionally, or the kit adopts
-    upstream's own bearer middleware, every politely-deleted session starts leaking into a map
-    nothing sweeps — which is the leak `sessions.py` was written to close, one dict over.
+    `_drop_terminated_sessions` sweeps `_server_instances` but not `_session_owners`. That is sound
+    only while `BearerAuthMiddleware` sets no `AuthenticatedUser`; if upstream records owners
+    unconditionally, or the kit adopts upstream's bearer middleware, deleted sessions leak there.
     """
     source = inspect.getsource(StreamableHTTPSessionManager._handle_stateful_request)
     assert "if requestor is not None:" in source, (

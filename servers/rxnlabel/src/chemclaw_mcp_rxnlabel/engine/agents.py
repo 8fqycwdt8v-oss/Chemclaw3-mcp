@@ -1,22 +1,12 @@
 """What a species *was doing*: the rules that turn a structure into a role.
 
-The recorded vocabulary an ELN or a patent extract uses has five values — reactant, reagent,
-solvent, catalyst, product — and none of them is "ligand" or "base". Those two are most of what a
-chemist actually asks for ("which ligand", "which base"), so somebody has to decide them from the
-structures. That is this module.
+Recorded vocabularies have no "ligand" or "base", yet those are what chemists ask for, so this
+module decides them from structure. Rules and a dictionary rather than a model, so a chemist can
+read and correct a decision that ends up as a count in a frequency table.
 
-**Rules and a dictionary, not a model, and the reason is that this is a decision a chemist can
-check.** A misclassified ligand is not a wrong number, it is a wrong *count* in a frequency table
-that somebody then quotes; a rule that says "phosphorus with three carbon substituents, in a
-reaction that also contains a transition metal" can be read, argued with and corrected. A learned
-classifier over the same evidence would be more accurate at the margins and unauditable in exactly
-the place where being wrong is expensive.
-
-**Two rules are context-dependent, and that is the whole reason this takes a reaction rather than a
-molecule.** Triphenylphosphine is a ligand in a Suzuki and a stoichiometric *reagent* in a
-Mitsunobu — the structure is identical and only the rest of the flask distinguishes them. So a
-phosphine is a ligand when the reaction also contains a transition metal, and a reagent when it
-does not. The same argument applies to a diimine.
+Two rules are context-dependent, which is why this takes a reaction rather than a molecule: a
+phosphine (or diimine) is a ligand when the reaction also contains a transition metal and a reagent
+when it does not (PPh3 in a Suzuki versus a Mitsunobu).
 """
 
 from __future__ import annotations
@@ -28,11 +18,8 @@ from rdkit import Chem
 
 from chemclaw_mcp_rxnlabel.engine.chem import read_molecule
 
-# The transition metals whose presence makes a reaction "catalysed" for the purposes of the ligand
-# rule above, plus the main-group metals that are ordinarily *reagents* rather than catalysts and
-# are deliberately absent (Li, Na, K, Mg, Zn as an organometallic partner). A Grignard is not a
-# catalyst and a butyllithium is not a catalyst, and calling either one would put them at the top of
-# every "catalysts used" table.
+# Transition metals that make a reaction "catalysed" for the ligand rule. Main-group metals used as
+# stoichiometric reagents (Li, Na, K, Mg, Zn) are deliberately absent.
 TRANSITION_METALS = frozenset(
     {
         "Sc",
@@ -66,22 +53,11 @@ TRANSITION_METALS = frozenset(
     }
 )
 
-# Solvents, by canonical SMILES. A dictionary and not a rule, because "is a solvent" is not a
-# structural property: acetonitrile is a solvent and a ligand, water is a solvent and a reagent,
-# and DMF is a solvent and a formylating agent. What decides is that the species is one of the few
-# dozen things a process chemist pours, and the honest encoding of that is a list.
-#
-# Kept here rather than read from the `props` server's 44-solvent table on purpose: that table is
-# another server's vendored data, reaching it would be an outbound call at request time (which this
-# fleet forbids), and copying it would make one file's checksum govern two servers' answers. This
-# list overlaps it and is not derived from it.
-#
-# **A hand-typed list is a list with a duplicate in it**, and this one shipped with one: the ester
-# row read `CCOC(C)=O CC(=O)OC COC(C)=O` — ethyl acetate, then methyl acetate written two ways,
-# 40 tokens for 39 molecules. A `frozenset` swallows that, which is why it survived, and the loss
-# is not the duplicate but whichever solvent the second slot was meant to hold. `_canonical_or_none`
-# swallows the neighbouring failure the same way — a token that does not parse is silently dropped
-# rather than raised on — so both are held by `tests/test_agent_tables.py` instead of by reading.
+# Solvents, by canonical SMILES. A list rather than a rule, because "is a solvent" is not structural
+# (acetonitrile, water and DMF have other roles too). Kept here rather than read from the `props`
+# server, which would be a request-time call. `tests/test_agent_tables.py` checks it for duplicates
+# and unparseable tokens, which a `frozenset` and `_canonical_or_none` would otherwise swallow
+# silently.
 _SOLVENT_SMILES = """
 O CO CCO CC(C)O CCCCO CC(C)(C)O
 CC#N CC(C)=O CCOC(C)=O COC(C)=O
@@ -127,36 +103,25 @@ _LIGAND_SMARTS = (
 # Base motifs, as SMARTS. Ordered by how unambiguous they are; the first match wins.
 _BASE_SMARTS = (
     "[OX1-][CX3](=O)[OX1-]",  # carbonate
-    # Bicarbonate. The pattern here was `[OX2H0-][CX3](=O)[OX2H0]`, which demands an oxygen with
-    # **two** connections and a negative charge — and bicarbonate is `OC(=O)[O-]`, whose anionic
-    # oxygen has one connection while the other carries the proton. It matched no bicarbonate
-    # written any way, so every `NaHCO3` reaction — one of the commonest bases in a Suzuki corpus —
-    # fell through every rule to `additive`, labelled rather than blank and so invisible.
+    # Bicarbonate: the anionic oxygen has one connection, the other carries the proton.
     "[OX1-][CX3](=O)[OX2H1]",
     "[OH-]",  # hydroxide
     "[H-]",  # hydride: NaH, KH
     "[CX4][O-]",  # alkoxide: NaOMe, KOtBu
     "[F-]",  # fluoride: CsF, TBAF
-    # Phosphate, at two deprotonations rather than three: K2HPO4 is charged as a base as often as
-    # K3PO4 is, and demanding three `[O-]` excluded it. KH2PO4 — one `[O-]`, a buffer — stays out.
+    # Phosphate at two deprotonations, so K2HPO4 counts as a base; KH2PO4 (a buffer) stays out.
     "[PX4](=O)([OX1-])[OX1-]",
     "[NX2-]([Si])[Si]",  # silyl amide: LiHMDS, NaHMDS
     "[NX2-]([CX4])[CX4]",  # dialkylamide: LDA
     # Amidine and guanidine superbases: DBU, DBN, TMG, TBD.
     "[NX2]=[CX3]-[NX3]",
-    # Pyridine-type aromatic nitrogen: pyridine, 2,6-lutidine, collidine, DMAP, quinoline. Written
-    # as a whole six-ring with one nitrogen rather than as a bare `[nX2]`, which would also claim
-    # the acidic azoles that sit in the same slot — HOBt is a coupling *additive* and would have
-    # been counted as a base through its benzotriazole.
+    # Pyridine-type nitrogen (pyridine, lutidine, DMAP, quinoline). A whole six-ring rather than a
+    # bare `[nX2]`, which would also claim acidic azoles such as HOBt.
     "c1ccncc1",
-    # Imidazole-type: imidazole, N-methylimidazole, benzimidazole — the basic ring nitrogen is the
-    # two-connection one. The two adjacent ring carbons are what keeps the triazoles and tetrazole
-    # out: neither has a c-c bond in the ring.
+    # Imidazole-type; the two adjacent ring carbons keep triazoles and tetrazole out.
     "[nX2]1ccnc1",
-    # Tertiary amine with no N-H: triethylamine, Hünig's base, DMAP, N-methylmorpholine. Last,
-    # because a tertiary amine is also a great many substrates — which is why this rule is only
-    # ever consulted for a species already in the agent slot or already known not to be a
-    # substrate. See `classify`.
+    # Tertiary amine with no N-H (Et3N, DIPEA, NMM). Last, because many substrates are tertiary
+    # amines; only consulted for species known not to be substrates (see `classify`).
     "[NX3;H0](-[#6])(-[#6])-[#6]",
 )
 
@@ -165,11 +130,8 @@ _BASE_SMARTS = (
 class ReactionContext:
     """What the rest of the flask contributes to one species' classification.
 
-    One field today, and it is a dataclass rather than a bare bool because the two context-dependent
-    rules already disagree about *what* context they need — the ligand rule wants "is there a
-    metal", and a future oxidant/reductant rule would want "what changed". A bool named
-    `has_metal` threaded through four call sites is the thing that gets extended by adding a second
-    bool.
+    A dataclass rather than a bool so a further context-dependent rule adds a field, not a
+    parameter.
     """
 
     has_transition_metal: bool
@@ -183,10 +145,8 @@ def context_of(species: list[str]) -> ReactionContext:
 def is_metal_complex(smiles: str) -> bool:
     """Whether this species contains a transition metal — a catalyst or a precatalyst.
 
-    Deliberately "contains", not "is": `Pd(OAc)2`, `Pd2(dba)3`, `[Pd(PPh3)4]` and a ferrocenyl
-    phosphine all answer yes, and all four are what a chemist would point at when asked which
-    catalyst was used. The ferrocene case is the one that costs something — dppf is a *ligand* with
-    an iron atom in it — and it is handled by `classify` consulting the ligand rules first.
+    "Contains", not "is", so precatalysts and complexes count. A ferrocenyl phosphine such as dppf
+    is a ligand; `classify` consults the ligand rules first for that reason.
     """
     mol = read_molecule(smiles)
     if mol is None:
@@ -201,12 +161,7 @@ def is_solvent(smiles: str) -> bool:
 
 
 def is_ligand(smiles: str, context: ReactionContext) -> bool:
-    """Whether this species is acting as a ligand — which needs a metal to be acting *on*.
-
-    Triphenylphosphine is a ligand in a Suzuki and a stoichiometric reagent in a Mitsunobu, and the
-    structure is identical in both. The rest of the flask is the only thing that distinguishes them,
-    which is why this takes a context and `is_solvent` does not.
-    """
+    """Whether this species is acting as a ligand — which needs a metal to be acting *on*."""
     if not context.has_transition_metal:
         return False
     return _matches_any(smiles, _LIGAND_SMARTS)
@@ -215,9 +170,7 @@ def is_ligand(smiles: str, context: ReactionContext) -> bool:
 def is_base(smiles: str) -> bool:
     """Whether this species is acting as a base.
 
-    Consulted only for a species already known not to be a substrate — see `_BASE_SMARTS`'s last
-    entry. A tertiary amine is a base *and* an enormous fraction of medicinal chemistry's
-    substrates, so this rule outside that guard would classify half the corpus's products as bases.
+    Consult only for a species known not to be a substrate: many substrates are tertiary amines.
     """
     return _matches_any(smiles, _BASE_SMARTS)
 
@@ -225,18 +178,9 @@ def is_base(smiles: str) -> bool:
 def _matches_any(smiles: str, patterns: tuple[str, ...]) -> bool:
     """Whether the structure matches any of the given SMARTS.
 
-    A pattern that does not compile is skipped rather than raised on: these are constants in this
-    file, so a bad one is a bug to fix in review — but failing every classification in the corpus
-    because one pattern has a typo is a worse failure than silently narrowing the rules.
-
-    **That leniency is only safe because something else is strict, and for two waves nothing was.**
-    This docstring claimed "the server's own tests assert each pattern individually" and no test
-    touched `_LIGAND_SMARTS` or `_BASE_SMARTS` at all — `test_roles.py` compiles
-    `species.FUNCTIONAL_GROUPS` and stops there. The bicarbonate entry above is what that costs: a
-    pattern that matched no bicarbonate written any way, in a table where a dead rule and an absent
-    one are indistinguishable from the outside. `tests/test_agent_tables.py` is the claim made true
-    — every pattern compiles, and every reagent a comment here names is matched by the rule that
-    names it.
+    A pattern that does not compile is skipped rather than failing every classification; that
+    leniency is safe only because `tests/test_agent_tables.py` checks every pattern compiles and
+    matches the reagents its comment names.
     """
     mol = read_molecule(smiles)
     if mol is None:
@@ -252,16 +196,8 @@ def _matches_any(smiles: str, patterns: tuple[str, ...]) -> bool:
 def _compiled(pattern: str) -> Chem.Mol | None:
     """One SMARTS from `_LIGAND_SMARTS` or `_BASE_SMARTS`, compiled once per process.
 
-    **Measured before it was cached.** Both tables were re-parsed on every `is_ligand` and
-    `is_base`, which run per species across a whole labelling batch. In the `cc3-gate` Linux image
-    (RDKit 2026.03.5), compiling the twenty patterns cost 0.45-1.3 ms against 0.47-2.3 ms for the
-    two calls themselves — **73-95%** of the call was parsing constants, the largest share of any
-    table `docs/BACKLOG.md` named. In one process, cache cleared per call against warm: 611 → 140
-    µs on ethanol, which walks both tables whole (**4.4x**), and 564 → 217 µs on P(tBu)3 (**2.6x**).
-
-    Cached on the string, following `chem`'s `species.py::_compiled`, so a pattern that will not
-    compile is still a per-pattern skip rather than an import-time failure; `@cache` is unbounded
-    and bounded in fact, the keys being the literals in the two tables. None of the twenty is a
-    recursive SMARTS, so a shared query here is read-only under matching.
+    Re-parsing the tables dominated the per-species cost. Keyed on the string so an uncompilable
+    pattern stays a per-pattern skip; the key set is the literals in the two tables, and none is
+    recursive, so the shared query is read-only under matching.
     """
     return Chem.MolFromSmarts(pattern)

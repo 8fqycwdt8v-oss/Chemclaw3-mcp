@@ -1,11 +1,8 @@
 """T5Chem forward predictor.
 
-Lu & Zhang 2022 — `HelloJocelynLu/t5chem`. HuggingFace-T5 based multi-task model
-for reaction prediction; the `product` task = forward reaction prediction.
-
-Requires the `t5chem` Python package and a downloaded checkpoint (per the repo's
-README: download a tar.gz from the project page and pass the directory via
-T5CHEM_MODEL_PATH or the `model_path` setting).
+Lu & Zhang 2022 — `HelloJocelynLu/t5chem`, a multi-task T5 whose `product` task is forward
+prediction. Requires the `t5chem` package and a checkpoint directory via `T5CHEM_MODEL_PATH` or the
+`model_path` setting.
 """
 
 from __future__ import annotations
@@ -100,10 +97,7 @@ try:
     import t5chem  # noqa: F401
 
     register_forward(T5ChemForward())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         T5ChemForward.name,

@@ -1,10 +1,8 @@
-"""A megamolecule is dropped, not canonicalised — this server eats a multi-million-row corpus.
+"""A megamolecule is dropped, not canonicalised.
 
-`read_molecule` is lenient: an unusable species returns `None` so a corpus scan keeps the other
-forty-nine. But leniency must not reach `MolToSmiles`, which overflows the C stack (an uncatchable
-SIGSEGV) on a large linear molecule — a single such row would take the whole server down mid-scan.
-The bound (via `mcp_server_kit.limits`) makes the oversize case just another "could not be read".
-This process surviving to assert is the regression proof.
+`MolToSmiles` overflows the C stack (an uncatchable SIGSEGV) on a large linear molecule, so the
+size bound from `mcp_server_kit.limits` makes it another "could not be read" and a corpus scan
+keeps going. This process surviving to assert is the proof.
 """
 
 from __future__ import annotations

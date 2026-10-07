@@ -1,41 +1,17 @@
 """The canonicalization contract with Chemclaw3, written as literal strings on both sides.
 
-`engine/chem.py` is a **copy** of a definition Chemclaw3 owns. Copying a definition is normally how
-two answers to one question appear, and the copy here is not free: Chemclaw3's `core/chem.py` keys
-the calculation cache, the QM workflow-dedup id and the prediction ledger on `canonical_smiles`
-(D-011, "compute once, never twice"), and 26 modules import it. If this copy drifts, a chemist
-comparing this server's `resolve_compound` output with a Chemclaw3 note sees two spellings of one
-molecule and has no way to tell which is right.
+`engine/chem.py` copies a definition Chemclaw3 owns and keys its cache and ledger on. Neither
+repository imports the other, so the contract is data: inputs and the exact strings Chemclaw3's
+own `chemclaw.core.chem.require_canonical_smiles` produced when run. The same table must pass in
+Chemclaw3 unchanged, so whichever side moves first goes red.
 
-Neither repository can import the other — that is the point of the split — so the contract is
-written as **data**: an input and the exact string it must canonicalize to. Every expected value
-below was produced by running Chemclaw3's own function, not by reading the code and reasoning about
-it:
+Each row is a genuinely ambiguous case:
 
-    PYTHONPATH=/path/to/Chemclaw3/src /path/to/Chemclaw3/.venv/bin/python -c \\
-        "from chemclaw.core.chem import require_canonical_smiles as f; print(f('CC(O)=CC(C)=O'))"
-
-Paste the same table into Chemclaw3 and it must pass there unchanged. Whichever side moves first —
-an RDKit upgrade here, a pipeline change there — turns a test red instead of quietly answering
-differently, which is the only property that makes the duplication defensible.
-
-**What the cases are chosen to pin.** Each row is a place where "the same molecule" is genuinely
-ambiguous and a canonicalizer has to make a choice:
-
-- **Tautomers stay apart.** The keto and enol forms of acetylacetone are two strings here, and they
-  must be: this is the *structure* question, not the compound question. Chemclaw3 answers the
-  second one with `standard_smiles`, whose tautomer canonicalization is deliberately **not** ported
-  (nothing on this server asks it). A future edit that "helpfully" adds it collapses these two rows.
-- **Charge is preserved.** Acetate is not acetic acid. A calculation submitted for the anion must
-  not silently compute the conjugate acid, and the row pair is what says so.
-- **Stereochemistry is preserved but re-anchored.** `N[C@@H](C)C(O)=O` and `C[C@H](N)C(=O)O` are
-  one molecule written from two atoms; `@@` and `@` are not interchangeable, and the two alanines
-  must stay two strings.
-- **A salt keeps both fragments, in a fixed order.** Fragment *ordering* is exactly what a naive
-  canonicalizer gets wrong, so the two spellings of sodium acetate are written both ways round.
-- **A kekulized aromatic collapses onto the aromatic form.** This is the case everyone expects
-  canonicalization to handle, and it belongs here so that a change which broke it would be caught
-  by the same table as the ones nobody expects.
+- **Tautomers stay apart.** Tautomer canonicalization is deliberately not ported.
+- **Charge is preserved.** Acetate is not acetic acid.
+- **Stereochemistry is preserved but re-anchored.** The two alanines stay two strings.
+- **A salt keeps both fragments, in a fixed order**, written both ways round.
+- **A kekulized aromatic collapses onto the aromatic form.**
 """
 
 from __future__ import annotations
@@ -105,9 +81,8 @@ def test_the_canonical_form_matches_chemclaw3(written: str, canonical: str) -> N
 def test_canonicalization_is_idempotent() -> None:
     """Canonicalizing a canonical string returns it unchanged — the property every key relies on.
 
-    Cheap to state and load-bearing: Chemclaw3 canonicalizes again on its side before keying
-    anything, so a definition that was not idempotent would key one molecule two ways depending on
-    how many times it had been round-tripped.
+    Chemclaw3 canonicalizes again before keying, so a non-idempotent definition would key one
+    molecule two ways.
     """
     for _, canonical in CONTRACT:
         assert require_canonical_smiles(canonical) == canonical
@@ -123,11 +98,9 @@ def test_a_string_rdkit_would_truncate_is_refused(written: str) -> None:
 def test_a_megamolecule_is_refused_not_crashed() -> None:
     """A 20k-atom SMILES must be refused before canonicalisation, not segfault the process.
 
-    `MolToSmiles` recurses over the graph and overflows the C stack (uncatchable SIGSEGV) on a
-    large linear molecule — one such authenticated call would take the pod down. The bound in
-    `require_molecule` (via `mcp_server_kit.limits`) turns that into an ordinary `ValueError`; that
-    this test process survives to assert is itself the regression proof. A real molecule still
-    passes.
+    `MolToSmiles` overflows the C stack on a large linear molecule; the bound in `require_molecule`
+    turns that into a `ValueError`. This process surviving to assert is the proof. A real molecule
+    still passes.
     """
     with pytest.raises(InvalidSmilesError):
         require_canonical_smiles("C" * 20000)
@@ -139,20 +112,14 @@ def test_a_megamolecule_is_refused_not_crashed() -> None:
 
 # (what a caller writes, what `resolve_compound` returns, Chemclaw3's std12 `compound_id` of both).
 #
-# **Not part of the table above, and not to be pasted into Chemclaw3 as one.** Chemclaw3's
-# `require_canonical_smiles` writes these inputs with RDKit's dative arrow, exactly as this
-# server's copy does; the column here is `require_dative_free_smiles`, the spelling
-# `resolve_compound` hands the agent. What makes the two repositories agree on it is measured, and
-# was measured by running Chemclaw3's own functions on Chemclaw3 `14828d2d` (std12):
+# Not part of the shared table: `resolve_compound` returns the dative-free spelling, while
+# Chemclaw3's canonicalizer writes the dative arrow. Measured with Chemclaw3's own functions:
 #
 #     from chemclaw.core.chem import require_canonical_smiles as rcs, compound_id
 #     rcs(returned) == returned                      # True for every row
 #     compound_id(written) == compound_id(returned)  # True for every row; the id is column three
 #
-# So Chemclaw3 re-canonicalizing what this server returns gets the same string back, and its
-# compound key does not move when the agent passes the answer on instead of the question. The
-# first two rows are the live defect: the precatalyst as the agent wrote it, and as this server
-# used to answer it.
+# So the compound key does not move when the agent passes the answer on.
 DATIVE: list[tuple[str, str, str]] = [
     (
         "CC(P(C(C)(C)C)C(C)(C)C)C1=C(C([Fe]C2C=CC=C2)C=C1)[P]([Pd]3(OS(C)(=O)=O)C4=CC=CC=C4"

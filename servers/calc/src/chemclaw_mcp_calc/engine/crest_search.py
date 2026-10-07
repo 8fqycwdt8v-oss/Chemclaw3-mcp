@@ -1,26 +1,9 @@
 """CREST ensemble and complex searches, as primitives — the search, and nothing built on it.
 
-Chemclaw3's `conformers.py` and `complexes.py` each wrap one CREST call in arithmetic: Boltzmann
-populations and a conformational entropy for the first, a three-optimization interaction energy for
-the second. **Only the CREST call is here.** The arithmetic is pure Python over energies and
-degeneracies, the interaction energy is a subtraction over three `relax_structure` results, and both
-stayed in Chemclaw3 with the durable jobs that report them. What crosses the wire is what only the
-binary can produce.
-
-That split is what makes the pieces cacheable. Chemclaw3's `xtb.complex` row today is one entry for
-"embed A, relax A, embed B, relax B, combine, search, relax the best mode" — so changing the
-separation, or asking about A with a different partner, recomputes every optimization. Composed from
-primitives, each monomer relaxation is its own row and is shared with every other question about
-that molecule.
-
-**A CREST search itself cannot be decomposed and is exposed whole.** It is a metadynamics
-trajectory: the sampling is a single stateful run, its intermediate structures are not answers, and
-there is no point at which half of it is a result. One tool, one key, minutes to hours.
-
-**The binary ships in this server's image** (crest 3.0.2 from conda-forge; see the
-`Containerfile`). Chemclaw3's own pods do not have it and do not need it: the searches run here,
-and its composites reach them through this server. Where an operator removes it, these primitives
-refuse by name rather than degrading into a single-conformer answer that looks like an ensemble.
+Populations, entropy and interaction energies are arithmetic over these results and three
+`relax_structure` calls, done in Chemclaw3, so every part is cached separately. A CREST search is
+one stateful metadynamics run and is exposed whole: one tool, one key. Without the binary these
+primitives refuse by name.
 """
 
 from __future__ import annotations
@@ -47,9 +30,7 @@ __all__ = [
     "search_ensemble",
 ]
 
-# The four searches over one molecule. `complex` is excluded deliberately: it is a search over a
-# *pair* and carries its own spec, because the three optimizations around it run on `engine` and
-# therefore belong in its version string.
+# Searches over one molecule; `complex` is a search over a pair and has its own spec.
 EnsembleSearch = Literal["conformers", "tautomers", "protomers", "deprotomers"]
 
 
@@ -99,10 +80,8 @@ class ComplexSpec(CrestSpec):
 def require_crest() -> None:
     """Refuse before anything else happens when the binary is not installed.
 
-    Called by the compute path **and** by the identity derivation, which is the part worth stating:
-    `CrestSpec.calc_version()` answers `crest-absent` rather than raising, so a key *is* derivable
-    with no binary — and it would name a program that cannot run, addressing a row nothing will ever
-    write. A probe that cannot be acted on is worse than a refusal, so both refuse together.
+    Called by both the compute path and the identity derivation: `calc_version()` would otherwise
+    derive a `crest-absent` key addressing a row nothing can write.
 
     Raises:
         ValueError: naming the binary and what is unavailable without it.
@@ -119,9 +98,6 @@ def require_crest() -> None:
 
 def search_ensemble(spec: EnsembleSpec | ComplexSpec, structure: Structure) -> list[EnsembleMember]:
     """Run one CREST search on `structure` and return its members, lowest energy first.
-
-    The whole primitive: no populations, no entropy, no interaction energy. Those are arithmetic
-    over what this returns, and they belong with the orchestration that asked for them.
 
     Raises:
         ValueError: crest is not installed, or the method is not one it accepts.
@@ -151,18 +127,10 @@ def _radius(positions: np.ndarray) -> float:
 def combine_structures(first: Structure, second: Structure, separation: float) -> Structure:
     """Place `second` beside `first` and return the pair as one structure. Pure geometry, no SCF.
 
-    Each monomer is centred and then offset along x by the sum of their radii plus a gap, so the two
-    start apart regardless of their shapes. This is only a starting point: the wall potential holds
-    the pair together and the search finds the binding modes, so the arrangement here decides
-    nothing except that the pair does not begin overlapping.
-
-    Exposed as its own primitive rather than folded into the search, because it is the step that
-    produces the *subject* a complex search is keyed on. A caller that cannot build the combined
-    structure cannot derive the key, and would be back to guessing it.
-
-    **Not symmetric in its arguments** — it holds the first monomer at the origin and offsets the
-    second — so a caller wanting A-with-B and B-with-A to be one calculation orders the pair first
-    with `ordered_pair`.
+    Each monomer is centred and the second offset along x by the sum of radii plus a gap — only a
+    non-overlapping start. A primitive of its own because it produces the subject a complex search
+    is keyed on. Not symmetric in its arguments; use `ordered_pair` to make A+B and B+A one
+    calculation.
     """
     if first.uhf or second.uhf:
         raise ValueError(
@@ -183,12 +151,8 @@ def combine_structures(first: Structure, second: Structure, separation: float) -
         elements=[*first.elements, *second.elements],
         positions=[*left.tolist(), *right.tolist()],
         charge=first.charge + second.charge,
-        # Two closed shells make a closed shell, which is the only case that reaches here: an
-        # open-shell monomer is refused above. It used to say `Structure` did that refusing, and
-        # `Structure` does no such thing — it validates a *declared* multiplicity against the
-        # electron count, which is exactly what makes the open-shell path work everywhere else here.
-        # So two doublets silently became a triplet, chosen by this arithmetic identity and by
-        # nobody, and the whole interaction-energy chain downstream was computed on that surface.
+        # Two closed shells make a closed shell; open-shell monomers are refused above, since
+        # `Structure` would accept any declared multiplicity consistent with the electron count.
         multiplicity=first.multiplicity + second.multiplicity - 1,
         smiles=f"{first.smiles}.{second.smiles}",
     )
@@ -197,10 +161,7 @@ def combine_structures(first: Structure, second: Structure, separation: float) -
 def ordered_pair(smiles_a: str, smiles_b: str) -> tuple[str, str]:
     """The pair in a canonical order, so A-with-B and B-with-A are one calculation.
 
-    The interaction of two molecules is one physical quantity, but `combine_structures` is not
-    symmetric in its arguments: swapping them negates the intermolecular vector while leaving each
-    monomer's own orientation alone. That is a *different* starting arrangement, and it would key to
-    a different entry — paying twice, at minutes per search, for the same answer.
+    Swapping the arguments to `combine_structures` gives a different start, hence a different key.
     """
     first, second = require_canonical_smiles(smiles_a), require_canonical_smiles(smiles_b)
     return (first, second) if first <= second else (second, first)

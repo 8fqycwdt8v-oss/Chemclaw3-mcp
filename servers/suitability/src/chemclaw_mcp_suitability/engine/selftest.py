@@ -1,30 +1,11 @@
 """The readiness check: run the arithmetic on cases whose answers are fixed outside this code.
 
-This server loads no corpus, and `servers/thermalsafety` already settled what that does and does
-not excuse (`D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify`): a probe is
-owed anyway, because the constants *are* a vendored corpus that happens to live in Python source,
-and a transposed digit in one is invisible to a checksum nobody computes.
-
-**What makes the check here unusually strong is that USP's own constants over-determine each
-other.** The chapter gives two plate-count forms and two resolution forms:
-
-    N = 16 (t_R/W)^2        N = 5.54 (t_R/W_0.5)^2
-    Rs = 2 dt/(W1 + W2)     Rs = 1.18 dt/(W_0.5,1 + W_0.5,2)
-
-For a Gaussian peak the tangent width is 4 sigma and the half-height width is 2 sqrt(2 ln 2) sigma
-= 2.3548 sigma, and those relations are what the constants 5.54 and 1.18 were *derived from*. So
-the two forms must agree on a Gaussian to within the rounding in the published constants — and
-they do, to 0.09% and 0.21% respectively. That is a real independent check rather than a
-restatement: a transposed 5.54 -> 5.45, or 1.18 -> 1.81, breaks the agreement immediately, while a
-probe that merely called each function and looked for a number would pass both.
-
-The agreement tolerances below are therefore **derived, not chosen**: 5.54 is 5.545 rounded, and
-1.18 is 1.1774 rounded, so the disagreement each rounding forces is arithmetic, and the tolerance
-is that figure with a margin rather than a number picked until the test went green.
-
-The adjustment table cannot be checked that way — a regulatory allowance is not derivable from
-anything — so it is digested instead, and the digest is what makes an unreviewed edit to a limit
-visible from a scrape rather than from a code review that already happened.
+The constants are a corpus that lives in source, so they are checked. USP's constants over-determine
+each other: for a Gaussian peak the tangent width is 4 sigma and the half-height width 2.3548 sigma,
+from which 5.54 and 1.18 were derived. So the two plate-count forms and the two resolution forms
+must agree on a Gaussian within the published rounding, and a transposed digit (5.45, 1.81) breaks
+that. The tolerances are derived from that rounding, not chosen. The adjustment table cannot be
+derived, so it is digested and the digest published.
 """
 
 from __future__ import annotations
@@ -39,42 +20,37 @@ from chemclaw_mcp_suitability.engine import adjustments, peaks, precision
 
 __all__ = ["CONSTANTS_VERSION", "SelfTestFailed", "verify"]
 
-#: The version of the first-party constants and the transcribed allowance table this build serves.
-#: Bumped by hand in the commit that changes a limit or a formula, so an operator reading
-#: `/healthz` can tell two pods apart without a shell on either.
+#: The version of the constants and allowance table this build serves; bump it by hand when a limit
+#: or formula changes, so `/healthz` tells pods apart.
 CONSTANTS_VERSION = "1.0.0"
 
-#: The Gaussian width relations the USP constants were derived from. Written here as expressions
-#: rather than as decimals so that the derivation is visible and cannot drift from its own source.
+#: The Gaussian width relations the USP constants derive from, written as expressions so the
+#: derivation is visible.
 _TANGENT_WIDTHS_PER_SIGMA = 4.0
 _HALF_HEIGHT_WIDTHS_PER_SIGMA = 2.0 * math.sqrt(2.0 * math.log(2.0))
 
-#: 16/4^2 = 1.0 exactly; 5.54/2.3548^2 = 0.99909. The published 5.54 is 5.545 rounded down, so the
-#: two plate-count forms must disagree by that rounding and no more. 0.3% leaves room for the
-#: rounding (0.09%) without admitting a transposed digit (the nearest, 5.45, is off by 1.7%).
+#: 16/4^2 = 1.0; 5.54/2.3548^2 = 0.99909 (5.545 rounded). 0.3% admits that rounding but not the
+#: nearest transposition, 5.45 (1.7% off).
 _PLATE_AGREEMENT = 0.003
 
-#: 2/8 = 0.25; 1.18/(2 x 2.3548) = 0.25054. The published 1.18 is 1.1774 rounded up, forcing a
-#: 0.21% disagreement. 0.5% admits that and nothing near a transposition.
+#: 2/8 = 0.25; 1.18/(2 x 2.3548) = 0.25054 (1.1774 rounded), a 0.21% gap. 0.5% admits that and no
+#: transposition.
 _RESOLUTION_AGREEMENT = 0.005
 
 
 class SelfTestFailed(RuntimeError):
     """A published or self-consistent value this server no longer reproduces.
 
-    `RuntimeError` rather than `ValueError`: this is never a caller's input, it is this pod being
-    wrong, and `connector_app` classifies it as a permanent cause so the pod is taken out of its
-    Service rather than left serving arithmetic that has moved.
+    A `RuntimeError`, not a `ValueError`: the pod is wrong, not the caller, and `connector_app`
+    treats it as permanent and takes the pod out of service.
     """
 
 
 def _table_digest() -> str:
     """A digest over the transcribed <621> allowances, field by field.
 
-    Built from the table's *values* rather than from the source file, so a comment or a docstring
-    edit does not change it while a changed limit always does. That is the distinction that makes
-    the digest worth publishing: it answers "has an allowance moved", not "has the file been
-    touched".
+    Built from the values, not the source file, so it changes when a limit moves and not when a
+    comment does.
     """
     digest = hashlib.sha256()
     for name in sorted(adjustments.ADJUSTMENTS):
@@ -160,8 +136,7 @@ def _check_precision() -> None:
             f"deviation gives {expected:.6f}%. A population denominator would give "
             f"{100.0 * math.sqrt(2.0) / 3.0:.6f}%."
         )
-    # The rule runs the counter-intuitive way round, so both sides of the boundary are checked:
-    # a tighter limit takes fewer injections, not more.
+    # Both sides of the boundary: a tighter limit takes fewer injections.
     if precision.injections_required_for(2.0) != 5 or precision.injections_required_for(2.01) != 6:
         raise SelfTestFailed(
             "the <621> replicate rule no longer returns five injections at a 2.0% limit and six "
@@ -173,12 +148,12 @@ def verify() -> list[Dataset]:
     """Recompute what this server is made of, and name the constants this pod serves.
 
     Returns:
-        One `Dataset` describing the first-party constants and the transcribed <621> allowances,
-        with a digest over the allowance table's values.
+        One `Dataset` describing the constants and the <621> allowances, with a digest over the
+            table's values.
 
     Raises:
-        SelfTestFailed: If any check no longer reproduces. `connector_app` turns this into an
-            unready `/healthz` naming the reason.
+        SelfTestFailed: A check no longer reproduces; `connector_app` answers unready with the
+            reason.
     """
     _check_plate_constants()
     _check_resolution_constants()
@@ -201,9 +176,7 @@ def verify() -> list[Dataset]:
                 "digested, because a regulatory limit is not derivable from anything."
             ),
             sha256=_table_digest(),
-            # The constants *are* the modules, so a module is what is named. Pointing this at a
-            # records file that does not exist would be a provenance field that quietly says
-            # nothing.
+            # The constants are the modules, so the module is what is named.
             records_path=Path(adjustments.__file__),
         )
     ]

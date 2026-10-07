@@ -1,13 +1,8 @@
-"""`/healthz` on this server has to prove the child process works, not that the app imported.
+"""`/healthz` on this server proves the child process works, not that the app imported.
 
-`pyexec` is the one server in the fleet that answers by forking. Everything that decides whether it
-can answer anything at all lives outside this process — the interpreter on the image, the runner
-module beside it, the `prctl` seal the parent applies before it forks, and the resource limits the
-child sets on itself — and none of it is touched at import. So a broken sandbox looked exactly like
-a healthy one from the outside: a constant `{"status": "ok"}`, a kubelet probe satisfied, traffic
-routed, and every `run_python` failing. Meanwhile every server's `deploy/deployment.yaml` carries
-the same comment saying `/healthz` here is "real readiness (503 until the corpus/model/backend
-loads), not a constant 200".
+Everything that decides whether `pyexec` can answer (interpreter, runner module, `prctl` seal,
+child resource limits) lives outside the process and is untouched at import, so a broken sandbox
+would otherwise look healthy while every `run_python` fails.
 """
 
 from __future__ import annotations

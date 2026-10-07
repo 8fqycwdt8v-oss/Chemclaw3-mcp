@@ -1,33 +1,14 @@
 """Ideal isothermal reactors: batch, CSTR and PFR, plus semi-batch accumulation.
 
-Three of the four are closed form. The fourth is integrated in plain Python, for the reason
-`servers/thermalsafety` hand-rolled a bisection rather than import `scipy.optimize`: a server is a
-dependency closure as much as a capability, and two fixed-step schemes over two state variables do
-not justify SciPy in this image. Fixed-step RK4 answers every dose it can integrate stably within
-`MAX_INTEGRATION_STEPS`; the stiff band past that — a reaction fast relative to its addition — is
-integrated by an L-stable implicit scheme at a fixed step count instead of being refused
-(`D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused`).
+- *Batch*: perfectly mixed, constant volume; `-dC/dt = k·Cⁿ` in closed form.
+- *PFR*: the batch equation with residence time for clock time, computed by calling it.
+- *CSTR*: steady state, the whole tank at outlet composition — hence more volume than a PFR.
+- *Semi-batch*: one reagent dosed at constant rate; integrated, since volume and both
+  concentrations change together. Fixed-step RK4 where stable within `MAX_INTEGRATION_STEPS`,
+  otherwise an L-stable SDIRK at a fixed step count.
 
-**What each reactor's equation assumes**, because the assumptions are what make a number wrong
-rather than the arithmetic:
-
-- *Batch* — perfectly mixed, constant volume, isothermal. `C(t)` follows from integrating
-  `-dC/dt = k·Cⁿ`, which has a closed form for every order except that `n = 1` is the logarithmic
-  case and every other `n` is the power case.
-- *PFR* — **the same equation**, with residence time in place of clock time. A plug-flow reactor is
-  a batch reactor moving down a pipe, and this module computes it that way rather than
-  re-deriving it, which is also why they cannot disagree.
-- *CSTR* — perfectly mixed and at steady state, so the whole reactor is at the *outlet*
-  composition. That is why a CSTR needs more volume than a PFR for the same conversion, and the
-  difference is not small: at 90% conversion in first order, `τ_CSTR/τ_PFR = 3.9`. A chemist
-  moving a batch process to continuous meets this and is often surprised by it.
-- *Semi-batch* — one reagent dosed at a constant rate into the other. Not closed form, because the
-  volume and both concentrations change together; integrated instead.
-
-**Isothermal, in every case.** Nothing here solves an energy balance. A reaction that heats its own
-contents changes `k` as it runs, and that coupled problem is the one `servers/thermalsafety`
-answers from calorimetry rather than the one this module answers from kinetics. Every result says
-so.
+Plain Python, so the image carries no SciPy. Isothermal in every case: nothing here solves an
+energy balance (that is `servers/thermalsafety`'s), and every result says so.
 """
 
 from __future__ import annotations
@@ -53,97 +34,44 @@ __all__ = [
     "time_for_batch_conversion",
 ]
 
-#: The integrator's fixed step count. Chosen rather than adaptive because an adaptive controller is
-#: what would want SciPy, and because the problem is smooth. A fixed count is also a bound on the
-#: cost, which an adaptive scheme is not.
-#:
-#: **Measured, and the measurement found a defect rather than confirming a guess.** This comment
-#: first claimed 2,000 steps agreed with a tenfold finer grid to 7 significant figures, written
-#: from what RK4 ought to do. Driven, it agreed to *three* — and the error fell as 1/N, which is
-#: first-order convergence from a fourth-order scheme and therefore a bug rather than a tolerance.
-#: The cause was one line: a `time < dose_time_seconds` guard on the feed term meant the final
-#: step's k4 stage alone saw the feed switched off. See `derivatives` below.
-#:
-#: With that removed, against a hundredfold finer grid on the worked case: 200 steps agrees to
-#: 6.4e-08, 500 to 1.6e-09 and 2,000 to **6.2e-12** — and 200 → 500 improves by a factor of 40
-#: against a step ratio of 2.5, which is 2.5^4, so the scheme converges at the order it claims.
-#: The defect was not academic: it reported the peak accumulation **low**, 0.047856 against
-#: 0.047940, and low is the dangerous direction for a number a dose time is chosen from.
+#: Ceiling on RK4 steps. Fixed-step rather than adaptive keeps SciPy out and bounds the cost; the
+#: feed term must stay unconditional (see `derivatives`) for the scheme to converge at fourth order.
 MAX_INTEGRATION_STEPS = 200_000
 
-#: RK4's stability limit on the real axis: the scheme is stable for `h*|lambda| <= 2.785` and
-#: diverges above it. Classical, and the number this module needs rather than a tolerance somebody
-#: chose — see `_steps_for_stability`, which is what stops a fast reaction being reported as a safe
-#: one.
+#: RK4's stability limit on the real axis: stable for `h*|lambda| <= 2.785`. Used by
+#: `_steps_for_stability`, which keeps a fast reaction from being reported as a safe one.
 RK4_REAL_STABILITY_LIMIT = 2.785
 
-#: How far above its quasi-steady value the dosed reagent's concentration is allowed for when the
-#: step floor is derived. The quasi-steady value is itself an upper bound on what the dose reaches
-#: (see `_dosed_concentration_bound`), so this is margin for RK4's transient and for the
-#: co-reagent's partial derivative `_stiffness_bound` leaves out, not a correction. It enters the
-#: stiffness as `margin^(n_d - 1)`: ten times the steps at second order, nothing at first order.
+#: Headroom over the dosed reagent's quasi-steady concentration when deriving the step floor, for
+#: RK4's transient and the co-reagent term `_stiffness_bound` leaves out. Enters the stiffness as
+#: `margin^(n_d - 1)`.
 QUASI_STEADY_MARGIN = 10.0
 
-#: What a call actually runs at, and it is a *tenth* of the cap for a reason the bug fix bought.
-#: While the feed-term discontinuity made convergence first-order, 2,000 steps was genuinely needed
-#: to reach four figures — so that is what the default was set to, before anybody had measured the
-#: rate. With the discontinuity gone, **200 steps agrees with a hundredfold finer grid to 6.4e-08**,
-#: eight significant figures on a number reported to four, and costs 0.83 ms of CPU against 8.1 ms.
-#:
-#: That tenfold saving was once the argument that this server owed no concurrency ceiling. It held
-#: only while the count was fixed: `_steps_for_stability` below makes the cost the caller's, the
-#: worst legal call is seconds, and `engine/admission.py` is the ceiling it now has.
-#:
-#: **This stays the default and is no longer the whole story, because "measured sufficient" was
-#: measured on one case.** The 6.4e-08 agreement above was taken at `k = 0.02, C_co = 0.9`, i.e.
-#: `h*lambda = 0.65` — comfortably inside RK4's stability region. The step count a stiff case needs
-#: is not a constant, so `_steps_for_stability` derives a floor from the problem and
-#: `MAX_INTEGRATION_STEPS` is now high enough to hold the realistic band. A call that would still be
-#: unstable at the ceiling is refused rather than answered.
+#: Default (minimum) step count. Sufficient to eight figures on a non-stiff dose;
+#: `_steps_for_stability` raises it as the problem requires.
 DEFAULT_INTEGRATION_STEPS = 200
 
-#: The most points a `SemiBatchProfile` keeps: evenly spaced samples of the dose, its last instant,
-#: and its peak. **The integrator's step count is not what bounds this, and it used to be.** Every
-#: step was materialised as an `AccumulationPoint` and the tool thinned the list afterwards, so a
-#: stiff dose at the step ceiling built ~200,000 objects to return 25 — memory proportional to a
-#: number the *caller's* rate constant sets. The peak is tracked inside the loop instead, so memory
-#: is O(this) and the peak is exact rather than whichever sample happened to land nearest it.
+#: The most points a `SemiBatchProfile` keeps: evenly spaced samples, the last instant and the
+#: peak. The peak is tracked inside the loop, so memory is bounded by this, not by the step count.
 PROFILE_POINTS = 25
 
 #: The two schemes a `SemiBatchProfile` can come out of, returned as its `method`.
 METHOD_RK4 = "rk4"
 METHOD_STABLE = "sdirk3-l-stable"
 
-#: The stable scheme's step count, fixed rather than derived — which is the whole point of it: an
-#: L-stable scheme is stable at every step size, so what sets the count is the accuracy the *slow*
-#: part of the dose needs, not the reaction's speed. Its cost is therefore a constant however fast
-#: the caller's reaction is, and that is what lets the stiff band be answered inside the admission
-#: ceiling `engine/admission.py` derived for RK4's worst call.
-#:
-#: **Measured, against RK4 on the fixtures RK4 answers and against itself at 16,000 steps on the
-#: ones it cannot.** At 2,000 steps the stable scheme agrees with RK4 to 7.9e-10 on the worked dose,
-#: 2.6e-07 on the worked dose at `k = 50`, 4.5e-08 on the stiff dose at `k = 2.5` and 5.8e-08 on the
-#: second-order dose; past the RK4 ceiling it agrees with a 465,000-step RK4 reference to 9.3e-08 on
-#: the worked dose at `k = 200`, and with its own 16,000-step answer to 1.3e-09 at `k = 100` on the
-#: stiff dose and to 2.7e-12 at `k = 1e12`. Third order on a smooth dose (500 -> 1,000 steps
-#: improves 7.8x against 2^3 = 8); lower in the stiff band, where a stage order of one costs the
-#: classical order, which is why the count is 2,000 and not the 200 RK4 needs.
+#: The stable scheme's fixed step count. An L-stable scheme is stable at any step size, so the count
+#: is set by the accuracy the slow part of the dose needs and the cost is constant however fast the
+#: reaction. Agrees with fine-grid RK4 to better than 1e-7 on the reference fixtures.
 STABLE_INTEGRATION_STEPS = 2_000
 
-#: Backward-Euler sub-steps that replace the stable scheme's first step. **Without them the reported
-#: peak was an artefact of the start**: the dose begins at zero accumulation, far off the
-#: quasi-steady value the reaction pulls it to within `1/lambda` seconds, and the SDIRK stability
-#: function is *negative* at large `h*lambda`, so the first step overshot that value and the
-#: overshoot was the peak — measured 7.8e-03 high at `k = 200` against a zero-order co-reagent,
-#: where the true profile rises monotonically to its plateau. Backward Euler's stability function
-#: lies in (0, 1) for every `h*lambda`, so it can only approach from below; four of them damp the
-#: start below 1e-9 and cost one step's worth of the O(h) error they carry (Rannacher's start, for
-#: the same reason).
+#: Backward-Euler sub-steps replacing the stable scheme's first step. The SDIRK stability function
+#: is negative at large `h*lambda`, so starting from zero accumulation it would overshoot the
+#: quasi-steady value and report that overshoot as the peak; backward Euler approaches from below.
 STABLE_START_SUBSTEPS = 4
 
 # Alexander's three-stage, third-order, L-stable, stiffly accurate SDIRK (SIAM J. Numer. Anal. 14,
-# 1977, table 5.2). Stiffly accurate means the last stage *is* the step's answer, so the step
-# inherits the stage solve's guarantee that neither species goes below zero.
+# 1977, table 5.2). Stiffly accurate: the last stage is the step's answer, so neither species goes
+# below zero.
 _SDIRK_GAMMA = 0.435866521508459
 _SDIRK_TAU = (1.0 + _SDIRK_GAMMA) / 2.0
 _SDIRK_B1 = -(6.0 * _SDIRK_GAMMA**2 - 16.0 * _SDIRK_GAMMA + 1.0) / 4.0
@@ -155,14 +83,12 @@ _SDIRK_A: tuple[tuple[float, ...], ...] = (
 )
 _SDIRK_C = (_SDIRK_GAMMA, _SDIRK_TAU, 1.0)
 
-#: Newton iterations allowed per implicit stage before the bisection bracket alone must have closed.
-#: Measured at three per stage across every fixture; the bracket halves on any iteration Newton
-#: would leave, so this is a bound on the cost rather than a convergence tolerance.
+#: Newton iterations per implicit stage; the bisection bracket closes regardless, so this bounds
+#: cost rather than setting a tolerance.
 _STAGE_ITERATIONS = 100
 
-#: Conversions at or above this are refused as an input, because the time to reach them is where
-#: the ideal-reactor idealisation stops describing anything: at 99.99% the answer is set by mixing,
-#: impurities and the reverse reaction rather than by the rate law.
+#: Conversions at or above this are refused: there the answer is set by mixing, impurities and the
+#: reverse reaction, not the rate law.
 _MAX_MEANINGFUL_CONVERSION = 0.9999
 
 
@@ -185,10 +111,7 @@ def _fraction(value: float, what: str) -> float:
 def _finite(value: float, what: str) -> float:
     """Any input to a rate law, which must be a real number before any other check means anything.
 
-    `value <= 0.0` is False for NaN and for infinity alike, and pydantic's `gt=0` passes infinity,
-    which the MCP JSON parser accepts as the literal `Infinity`. So an infinite rate constant used
-    to reach `math.ceil` in the step floor and leave as an `OverflowError`, which `connector_app`
-    replaces with an opaque `error_id` rather than a sentence the caller can act on.
+    `value <= 0.0` is False for NaN, and pydantic's `gt=0` passes `Infinity`.
     """
     if not math.isfinite(value):
         raise KineticsInputError(f"{what} must be a finite number; got {value}.")
@@ -205,8 +128,7 @@ def _positive(value: float, what: str) -> float:
 def _order(value: float) -> float:
     """A reaction order, which may be fractional but not negative here.
 
-    A negative order is real — an inhibiting product gives one — but the closed forms below are
-    derived for `n >= 0` and would return a rising concentration for `n < 0` without saying so.
+    The closed forms are derived for `n >= 0`.
     """
     if _finite(value, "the reaction order") < 0.0:
         raise KineticsInputError(
@@ -232,15 +154,10 @@ def batch_conversion(
         n ≠ 1 :  C^(1-n) = C₀^(1-n) + (n-1)·k·t
 
     Args:
-        rate_constant: `k`, in the unit its order implies — s⁻¹ for first order,
-            (concentration·s)⁻¹ for second, and so on. Not converted and not checked, because the
-            unit is a consequence of `order` and the caller's concentration unit.
-        initial_concentration: `C₀`, in the caller's own unit. Only its ratio to `C` matters for
-            first order; for every other order the absolute value changes the answer, which is why
-            it is required rather than defaulted to 1.
+        rate_constant: `k`, in the unit its order implies; not converted.
+        initial_concentration: `C₀`, in the caller's own unit.
         time_seconds: How long the reaction runs.
-        order: The order in the limiting reagent. 1.0 by default because it is by far the most
-            common single-reagent case; 0 and 2 are the other two that appear routinely.
+        order: The order in the limiting reagent.
 
     Returns:
         Fractional conversion, between 0 and 1.
@@ -259,13 +176,9 @@ def batch_conversion(
     if math.isclose(order, 1.0):
         return 1.0 - math.exp(-rate_constant * time_seconds)
 
-    # Worked in ratio form, `(C/C₀)^(1-n) = 1 + (n-1)·a` with `a = k·t·C₀^(n-1)` the Damköhler
-    # number, and `a` taken as a logarithm. **The absolute form `C^(1-n) = C₀^(1-n) + (n-1)·k·t`
-    # refused inputs whose answer is an ordinary double**: `C₀^(1-n)` overflows at order 200 and
-    # `C₀ = 1e-5` although the conversion is effectively zero, and `(n-1)·k·t` overflows at
-    # `k·t` past DBL_MAX although the conversion is exactly one — at every order but the first,
-    # which made the answer depend on the order. Here only the ratio is ever exponentiated, and a
-    # ratio lies in [0, 1].
+    # Ratio form `(C/C₀)^(1-n) = 1 + (n-1)·a` with `a = k·t·C₀^(n-1)` the Damköhler number, taken as
+    # a logarithm: only the ratio (in [0, 1]) is exponentiated, so the absolute form's overflows at
+    # extreme order or concentration cannot refuse an ordinary answer.
     shift = order - 1.0
     log_scaled = (
         math.log(abs(shift))
@@ -276,9 +189,8 @@ def batch_conversion(
     if shift < 0.0:
         scaled = math.exp(min(log_scaled, 0.0))
         if scaled >= 1.0:
-            # For n < 1 the concentration reaches exactly zero in finite time — a real property of
-            # a zero- or half-order rate law, not a numerical failure, so it is reported as
-            # complete rather than raised.
+            # For n < 1 the concentration reaches zero in finite time — a real property of the rate
+            # law, so reported as complete.
             return 1.0
         log_ratio = math.log1p(-scaled) / -shift
     else:
@@ -297,8 +209,7 @@ def time_for_batch_conversion(
 ) -> float:
     """How long an isothermal batch reactor needs to reach a given conversion, in seconds.
 
-    The inverse of `batch_conversion`, in closed form rather than by search — which is why the two
-    cannot drift apart at the fourth decimal the way a solver and its forward model can.
+    The closed-form inverse of `batch_conversion`, so the two cannot drift apart.
 
     Args:
         rate_constant: `k`, in the unit its order implies.
@@ -343,9 +254,7 @@ def pfr_conversion(
 ) -> float:
     """Fractional conversion in an ideal plug-flow reactor.
 
-    **This calls `batch_conversion` rather than re-deriving anything**, because an ideal PFR *is* a
-    batch reactor with residence time in place of clock time. Writing the integrated forms twice
-    would be two places for one equation to be wrong in.
+    An ideal PFR is a batch reactor in residence time, so this calls `batch_conversion`.
 
     Args:
         rate_constant: `k`, in the unit its order implies.
@@ -376,18 +285,8 @@ def cstr_conversion(
 ) -> float:
     """Fractional conversion in an ideal continuous stirred-tank reactor at steady state.
 
-    The steady-state balance is algebraic rather than integrated, because a perfectly mixed tank is
-    everywhere at its *outlet* composition:
-
-        C₀ - C = τ·k·Cⁿ
-
-    First order solves directly (`X = kτ/(1+kτ)`); second order is a quadratic; every other order
-    is solved by bisection on a bracket that is guaranteed to contain the root, since the residual
-    is monotonic in `C`.
-
-    That outlet-composition fact is the whole reason a CSTR needs more volume than a PFR for the
-    same conversion — the entire reactor runs at the *lowest* concentration in the system, so at
-    the *slowest* rate.
+    Solves the algebraic balance `C₀ - C = τ·k·Cⁿ` (the tank is at outlet composition): first order
+    directly, second as a quadratic, every other order by bisection on a guaranteed bracket.
 
     Args:
         rate_constant: `k`, in the unit its order implies.
@@ -420,14 +319,9 @@ def cstr_conversion(
         removed = rate_constant * residence_time_seconds
         return min(removed / initial_concentration, 1.0)
 
-    # C₀ - C - τkCⁿ = 0 is strictly decreasing in C over (0, C₀]: at C = C₀ it is -τkC₀ⁿ < 0, and
-    # as C → 0 it tends to C₀ > 0. So a bisection on (0, C₀] always brackets the root, with no
-    # bracket-widening and no failure mode to report.
-    #
-    # **Only the residual's sign is needed, and it is compared in logarithms**, because `τ·k·Cⁿ`
-    # overflows a double at `C₀ = 1e120`, order 3, while the outlet it is bisecting for (~1e40) is
-    # an ordinary number. Refusing the overflow refused a finite answer; an overflowing term only
-    # ever means "consumption exceeds the gap", i.e. the root is below this `C`.
+    # C₀ - C - τkCⁿ is strictly decreasing in C over (0, C₀], negative at C₀ and positive near 0, so
+    # bisection always brackets the root. Only its sign is needed, compared in logarithms so
+    # `τ·k·Cⁿ` cannot overflow when the outlet itself is an ordinary number.
     log_tk = math.log(residence_time_seconds) + math.log(rate_constant)
 
     def feed_exceeds_consumption(concentration: float) -> bool:
@@ -456,9 +350,8 @@ class AccumulationPoint:
     time_seconds: float
     #: How much of the dosed reagent has been added so far, as a fraction of the whole dose.
     dosed_fraction: float
-    #: The *unreacted* dosed reagent present, as a fraction of the whole dose. This is the number
-    #: the question is about: it is the reagent that would still be there to react all at once if
-    #: cooling failed at this instant.
+    #: Unreacted dosed reagent present, as a fraction of the whole dose: what would react at once if
+    #: cooling failed now.
     accumulated_fraction: float
     #: Concentration of the dosed reagent in the vessel, in the caller's own unit.
     concentration: float
@@ -473,9 +366,7 @@ class SemiBatchProfile:
     #: At most `PROFILE_POINTS`: evenly spaced samples, the end of the dose, and the peak — never
     #: one point per integration step.
     points: tuple[AccumulationPoint, ...]
-    #: The highest unreacted fraction reached at any point in the dose, and when. This is what a
-    #: dose time is chosen to control: accumulation is the reagent a cooling failure would have to
-    #: absorb, so the peak is the design case.
+    #: The highest unreacted fraction during the dose, and when: the design case for the dose time.
     peak_accumulation_fraction: float
     peak_at_seconds: float
     #: What is still unreacted when the addition finishes. A dose slow enough to keep accumulation
@@ -501,22 +392,11 @@ def _stiffness_bound(
 ) -> float:
     """An upper bound, per second, on how fast the dosed reagent's own rate responds to it.
 
-    That is `J_d = d(k*C_d^n_d*C_co^n_co)/dC_d = k*n_d*C_d^(n_d-1)*C_co^n_co`, bounded by evaluating
-    it at the concentrations' own bounds — `C_d` at `_dosed_concentration_bound` and
-    `C_co <= C_co,0` (the co-reagent is only consumed and diluted). At `n_d = 1` the first bound
-    drops out and this is the old `k * C_co^n_co` exactly.
-
-    **The order in the dosed reagent is in it, and it was not.** The bound used to be
-    `k * C_co^n_co` whatever `n_d` was — right only at `n_d = 1`, and not even dimensionally a rate
-    at `n_d = 2`, where it under-stepped a slow dose whose dosed reagent accumulates. An order below
-    one contributes nothing here because its derivative is unbounded as the reagent is used up, and
-    no step count covers that; `semibatch_accumulation` refuses that case by name when it happens.
-
-    **The co-reagent's partial derivative is deliberately left out.** The Jacobian is rank one and
-    its eigenvalue is `-(J_d + J_c)`, but `J_c` scales with `C_d`, which is small exactly when the
-    reaction is fast. Bounding it by `C_d`'s ceiling measured as refusing the worked dose at
-    `k = 50` — a case a fine grid answers at 3.22e-05 — for a stiffness it never reaches. The rare
-    slow dose where `J_c` does matter is caught by the divergence check rather than answered.
+    `J_d = k*n_d*C_d^(n_d-1)*C_co^n_co`, evaluated at `_dosed_concentration_bound` and `C_co,0` (the
+    co-reagent is only consumed and diluted). Orders below one return zero — their derivative is
+    unbounded as the reagent runs out, and `semibatch_accumulation` refuses that case by name. The
+    co-reagent's partial derivative is left out because it is small exactly when the reaction is
+    fast; the divergence check catches the rare case where it matters.
     """
     if order_in_dosed < 1.0:
         return 0.0
@@ -545,24 +425,10 @@ def _dosed_concentration_bound(
 ) -> float:
     """The highest concentration of unreacted dosed reagent the step floor has to allow for.
 
-    **Not `dosed_moles / initial_volume`, which it was.** That is the whole charge present
-    unreacted in the starting volume — the one state a reacting dose never reaches — and at
-    `n_d > 1` it enters the stiffness as `C_d^(n_d-1)`. Measured at `n_d = 2, k = 0.5` (1 h dose of
-    40 mol into 1 against a co-reagent at 45), it put the floor at 2.3 million steps and refused as
-    "too fast for this integrator" a dose that 5,000 steps answers to eleven figures (0.0024630155).
-    A false refusal, in exactly the regime a dose time is chosen for.
-
-    The bound used instead is the quasi-steady concentration, where consumption matches the feed:
-    `C_d* = (F / (V * k * C_co^n_co))^(1/n_d)`. The dose starts at `C_d = 0` and cannot cross
-    `C_d*(t)` from below — at it the net feed is zero and dilution only lowers `C_d` — and
-    `V * C_d*` only grows as the volume rises and the co-reagent is used up, so `J_d = n_d*r/C_d` is
-    largest at the start's quasi-steady value. Evaluated at `V_0` and `C_co,0` it therefore bounds
-    `J_d` over the whole dose; `QUASI_STEADY_MARGIN` is headroom on top, and the total charge stays
-    the ceiling for a slow reaction whose quasi-steady value the dose never reaches. The negative-
-    mole check in `semibatch_accumulation` remains the backstop for anything this misses.
-
-    At `n_d < 1` the result is unused (`_stiffness_bound` returns zero), and `1/n_d` is undefined at
-    zero order, so the total charge is returned as-is.
+    The quasi-steady concentration `C_d* = (F / (V * k * C_co^n_co))^(1/n_d)` at `V_0` and `C_co,0`:
+    the dose starts at zero and cannot cross `C_d*(t)` from below, so this bounds `J_d` over the
+    whole dose. Capped by the whole charge in the starting volume, for a slow reaction that never
+    reaches quasi-steady state. At `n_d < 1` the result is unused and the charge is returned as-is.
     """
     total = dosed_moles / initial_volume
     if order_in_dosed < 1.0:
@@ -585,38 +451,10 @@ def _steps_for_stability(
 ) -> int | None:
     """The RK4 step count this dose actually needs, never fewer than `requested` — or `None`.
 
-    **A fixed step count reported a fast reaction as a perfectly safe one, and the clamps hid it.**
-    At first order in each reagent the dosed-reagent ODE is pseudo-first-order with eigenvalue
-    `lambda = k * C_co`, largest at `t = 0` where the co-reagent is undiluted; `_stiffness_bound`
-    gives the general case. RK4 diverges once `h * lambda` passes
-    `RK4_REAL_STABILITY_LIMIT`, and the divergence went *negative* — where `max(dosed, 0.0)` turned
-    it into `accumulated_fraction = 0.0`, i.e. "no unreacted dosed reagent at any instant in the
-    dose". That is the number `tools.semibatch_accumulation` calls "the material a cooling failure
-    would have to absorb all at once", so the answer said the dose was safe at any rate.
-
-    Measured on a 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60, at the old fixed
-    200
-    steps:
-
-    | `k` | `h*lambda` | reported peak | true peak |
-    | --- | --- | --- | --- |
-    | 0.005 | 5.4 | 0.00627642 | 0.00627636 |
-    | 0.02 | 21.6 | 0.00043211 | 0.00163955 |
-    | 0.05 | 54 | **0.00000000** | 0.00066222 |
-
-    The regime that failed is the one a dose time is *chosen* for: a dose is slow **because** the
-    reaction is fast. `steps` is not exposed on the tool, so a caller could not work around it.
-
-    The floor is derived rather than raised to a new constant, because the number depends on the
-    problem: a rate and a dose time somebody supplies cannot be covered by any fixed count.
-
-    **Past `MAX_INTEGRATION_STEPS` this returns `None`, and the dose goes to the stable scheme.** It
-    used to be refused there as mixing-limited — a refusal set by what an *explicit* scheme can
-    afford, not by the chemistry, and
-    `D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused` replaced it with an
-    answer that carries that caveat instead. What is still refused
-    is a stiffness too large to represent at all, which used to reach `math.ceil` and leave as an
-    `OverflowError` the caller saw only as an `error_id`.
+    RK4 diverges once `h * lambda` passes `RK4_REAL_STABILITY_LIMIT`, and a divergence clamped at
+    zero would report a fast reaction as having no accumulation at all. So the floor is derived from
+    the problem's stiffness. Past `MAX_INTEGRATION_STEPS` this returns `None` and the dose goes to
+    the stable scheme.
 
     Args:
         stiffness: `_stiffness_bound`'s upper bound on the Jacobian's eigenvalue, per second.
@@ -624,8 +462,7 @@ def _steps_for_stability(
         requested: The caller's step count, which is a floor rather than the answer.
 
     Returns:
-        The RK4 step count — `requested` when the problem is not stiff — or `None` when no count up
-        to `MAX_INTEGRATION_STEPS` integrates it stably.
+        The RK4 step count, or `None` when no count up to `MAX_INTEGRATION_STEPS` is stable.
 
     Raises:
         KineticsInputError: If the stiffness, or the step count it implies, is not a finite number.
@@ -663,36 +500,22 @@ def semibatch_accumulation(
 ) -> SemiBatchProfile:
     """Integrate a constant-rate semi-batch addition and report the accumulation profile.
 
-    The question a dose time is chosen to answer: **how much unreacted dosed reagent is present at
-    the worst moment?** That is the material a cooling failure would have to absorb all at once,
-    and it is why "add it slowly" is a safety decision rather than a preference.
-
-    Integrated over two states — moles of dosed reagent and moles of co-reagent — with the volume
-    rising linearly as the dose goes in. No closed form exists: the volume and both concentrations
-    move together. Fixed-step RK4 at a step count derived from the problem, or — when no count up to
-    `MAX_INTEGRATION_STEPS` makes RK4 stable — Alexander's L-stable SDIRK at
-    `STABLE_INTEGRATION_STEPS`. The profile's `method` says which.
-
-    **Isothermal.** The vessel is assumed held at temperature, which is what a jacket is for and
-    what makes this a kinetics question rather than a thermal one. If the jacket cannot hold it,
-    the rate constant rises as the batch warms and the accumulation falls while the danger rises —
-    that coupled problem is `servers/thermalsafety`'s, from calorimetry.
+    Answers how much unreacted dosed reagent is present at the worst moment — what a cooling failure
+    would have to absorb. Two states (moles of each reagent), volume rising linearly. RK4 at a
+    problem-derived step count, or Alexander's L-stable SDIRK at `STABLE_INTEGRATION_STEPS` when RK4
+    cannot be stable; the profile's `method` says which. Isothermal: the jacket is assumed to hold.
 
     Args:
-        rate_constant: `k` for the reaction between the dosed reagent and the co-reagent, in the
-            unit the two orders imply.
+        rate_constant: `k` for the reaction, in the unit the two orders imply.
         dose_time_seconds: How long the addition takes, at a constant rate.
         initial_volume: The volume in the vessel before dosing, in the caller's own unit.
         dosed_moles: Total moles of the dosed reagent added over the whole addition.
-        dosed_volume: The volume that dose occupies, in the same unit as `initial_volume`. Pass 0
-            for a neat addition small enough to ignore.
+        dosed_volume: The volume that dose occupies, in the unit of `initial_volume`; 0 for neat.
         initial_coreagent_concentration: The co-reagent's concentration in the vessel at the start.
         order_in_dosed: Order in the dosed reagent.
-        order_in_coreagent: Order in the co-reagent. Pass 0 for a large excess, which makes the
-            reaction pseudo-first-order in the dosed reagent.
-        steps: Integration steps. The default is measured sufficient; lowering it is for a test.
-        force_stable: Integrate with the stable scheme even where RK4 would be stable. For the
-            tests that hold the two schemes to each other; the tool never sets it.
+        order_in_coreagent: Order in the co-reagent; 0 for a large excess.
+        steps: Minimum integration steps.
+        force_stable: Use the stable scheme even where RK4 would be stable (tests only).
 
     Returns:
         The profile, its peak accumulation and the value at the end of the dose.
@@ -715,9 +538,7 @@ def semibatch_accumulation(
             f"steps must be between 1 and {MAX_INTEGRATION_STEPS}; got {steps}. The upper bound is "
             "what this server prices."
         )
-    # **Derived from the problem, because the old fixed count reported a fast reaction as a safe
-    # one** — see `_steps_for_stability` for the measurement. `steps` is the caller's floor, not the
-    # answer.
+    # Derived from the problem's stiffness; `steps` is the caller's floor, not the answer.
     feed_rate = dosed_moles / dose_time_seconds
     stiffness = _stiffness_bound(
         rate_constant=rate_constant,
@@ -748,17 +569,8 @@ def semibatch_accumulation(
     def _rate(dosed_c: float, coreagent_c: float) -> float:
         """The rate law, which is zero when either reagent is gone — whatever the orders.
 
-        `max(c, 0.0) ** n` alone is not that: `0.0 ** 0.0` is 1, so a rate law of order zero in
-        the dosed reagent kept consuming a reagent that was not there, and drove its own state
-        negative.
-
-        **A float `**` raises `OverflowError` rather than returning infinity**, and every guard
-        upstream is about finiteness, not magnitude: at an order below one in the dosed reagent the
-        stiffness bound is zero, so nothing priced the co-reagent's own power, and a finite
-        `C_co = 1e200` at order 2 left here as an `OverflowError` that `connector_app` turns into an
-        opaque `error_id`. Caught here, at the one expression that can raise, rather than by an
-        arbitrary input ceiling: no magnitude bound on the inputs is physical, and a rate that
-        cannot be represented is the refusal the caller needs to read.
+        Explicit because `0.0 ** 0.0` is 1. A float `**` overflow is caught here and refused by
+        name, since no magnitude bound on the inputs is physical.
         """
         if dosed_c <= 0.0 or coreagent_c <= 0.0:
             return 0.0
@@ -776,13 +588,9 @@ def semibatch_accumulation(
         """d(moles)/dt for both species. Consumption is one-to-one in the dosed reagent."""
         volume = volume_at(time)
         consumed = _rate(dosed / volume, coreagent / volume) * volume
-        # The feed is unconditional, because this integration's domain **is** the dose: t runs from
-        # 0 to `dose_time_seconds` and no further. A `time < dose_time_seconds` guard here reads as
-        # defensive and is a defect — the last step's k4 stage evaluates at exactly
-        # `dose_time_seconds`, so it alone would see the feed switched off while k1-k3 saw it on.
-        # That is one step of O(h) error inside an O(h^4) scheme, and it dominates: measured, it
-        # dropped the integrator to *first-order* convergence, 2,000 steps agreeing with 20,000 to
-        # three significant figures instead of the eleven RK4 gives without it.
+        # The feed is unconditional: the integration domain is exactly the dose. A
+        # `time < dose_time_seconds` guard would switch the feed off for the last k4 stage alone and
+        # drop RK4 to first-order convergence.
         return feed_rate - consumed, -consumed
 
     def implicit_stage(
@@ -790,13 +598,9 @@ def semibatch_accumulation(
     ) -> tuple[float, float]:
         """Solve one implicit stage: `Y = known + weight * f(time, Y)`, both species at once.
 
-        **Two unknowns reduce to one, exactly.** The feed enters only the dosed reagent and the
-        consumption is one-to-one, so `Y_d - Y_c = known_d - known_c + weight * F` whatever the
-        rate law — the stage is a scalar equation in `Y_d`. It is `Y_d + weight*R = target`, with
-        `R >= 0` rising in `Y_d`, so its root is unique and bracketed: at or below `target`, and
-        above the point where either species reaches zero (where `R` vanishes). Newton inside that
-        bracket, bisecting whenever Newton would leave it, cannot diverge or go negative, which
-        is the property an explicit step lacked.
+        `Y_d - Y_c` is fixed by the feed whatever the rate law, so the stage is the scalar equation
+        `Y_d + weight*R = target` with `R >= 0` rising in `Y_d`: a unique, bracketed root. Newton
+        inside the bracket, bisecting whenever it would leave, cannot diverge or go negative.
         """
         offset = dosed_known - coreagent_known + weight * feed_rate  # Y_d - Y_c
         target = dosed_known + weight * feed_rate
@@ -834,14 +638,9 @@ def semibatch_accumulation(
     ) -> tuple[float, float]:
         """One step of the stable scheme, from `time` to `time + step`.
 
-        The first step is `STABLE_START_SUBSTEPS` backward-Euler sub-steps instead (see that
-        constant). Every step ends by moving a state that truncation left below zero back onto the
-        line `dosed - coreagent = F*t - n_co,0`, which every Runge-Kutta scheme conserves exactly: a
-        co-reagent at -1e-6 mol means the reagent ran out inside the step, and the exact state
-        there is zero co-reagent with that excess of dosed reagent. Without it a dose that uses its
-        co-reagent up mid-way reported a peak 1.1e-04 low at 2,000 steps; with it, exactly the
-        excess. **This is a projection onto the conserved line, not the clamp the divergence check
-        forbids**: that clamp discarded moles, this keeps the difference the feed fixes.
+        The first step is `STABLE_START_SUBSTEPS` backward-Euler sub-steps. Each step ends by
+        projecting a state truncation left below zero back onto the conserved line `dosed -
+        coreagent = F*t - n_co,0` — unlike a clamp, this keeps the moles the feed fixes.
         """
         if first:
             sub = step / STABLE_START_SUBSTEPS
@@ -888,13 +687,10 @@ def semibatch_accumulation(
     points: list[AccumulationPoint] = []
     peak_index, peak_moles, peak_coreagent = 0, 0.0, coreagent_moles_0
 
-    # **A negative mole count is a diverged integration, not a physical zero, and clamping it was
-    # what turned the divergence above into a reassuring answer.** The tolerance is relative to the
-    # whole dose and generous: RK4 round-off on a state that is legitimately at zero is many orders
-    # below it, so anything past it is the instability `_steps_for_stability` now prevents. Kept as
-    # a belt rather than deleted, because an order below one has an unbounded Jacobian as its
-    # reagent runs out, which no step floor covers — and that case gets its own message below, so a
-    # reagent consumed as fast as it arrives is not misreported as a stiffness the floor missed.
+    # A negative mole count is a diverged integration, never a physical zero, so it is refused
+    # rather than clamped. The tolerance is far above round-off. Kept as a backstop because an order
+    # below one has an unbounded Jacobian no step floor covers; that case gets its own message
+    # below.
     divergence_floor = -1e-9 * dosed_moles
 
     for index in range(steps + 1):

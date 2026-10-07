@@ -2,19 +2,9 @@
 
     uvicorn chemclaw_mcp_kinetics.app:app --host 127.0.0.1 --port 8852
 
-Three lines of composition, because `mcp_server_kit.connector_app` owns the shape: the MCP session
-manager's lifespan, the bearer check on `/mcp`, the caller logging, the body cap, the session
-ceiling, `/healthz`, `/livez` and `/metrics`.
-
-`CHEMCLAW_KINETICS_TOKEN` is the environment variable this server's `connector.yaml` declares, and
-it is enforced even on the loopback dev URL — the manifest says bearer, so the server is bearer, and
-an unset variable fails closed with 401 rather than serving the surface anonymously.
-
-**The readiness check runs the arithmetic against relations it does not contain**: the textbook
-CSTR/PFR ratio, the exactness of the closed-form inverse at five orders, the integrator's
-convergence *order*, and the doubling-per-10-degrees rule. The third of those has already earned its
-place — it is what caught a feed-term discontinuity that left the answer right to three significant
-figures and the convergence first-order. See `engine/selftest.py`.
+`mcp_server_kit.connector_app` owns the shape. Bearer auth via `CHEMCLAW_KINETICS_TOKEN` is
+enforced even on loopback; unset, every request fails closed with 401. Readiness runs the
+arithmetic against relations it does not contain (see `engine/selftest.py`).
 """
 
 from fastapi import FastAPI

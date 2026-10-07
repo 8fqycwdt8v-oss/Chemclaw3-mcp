@@ -1,28 +1,9 @@
 """A wall clock for the calculations that run *in this process* — the half `run_isolated` cannot do.
 
-Every wall clock on this server used to be a subprocess timeout, and the shipped image pins
-`CHEMCLAW_XTB_ENGINE=tblite` — so the paths it actually takes for `opt` and `hess` had none. What
-bounded them was `xtb_opt_max_steps`, which bounds *iterations*: one iteration on a large
-substrate is unbounded in seconds.
-
-**The manifest's `request_timeout` does not close that, and cannot.** It bounds the caller's wait.
-Every tool body here runs its work in `asyncio.to_thread`, and cancelling the awaiting coroutine
-does not stop the worker thread — so a caller that has given up leaves the CPU burning, and because
-`cached_compute` is check-then-act, its retry starts a second identical burn beside the first. That
-is the same argument this repository's `CLAUDE.md` makes against putting a timeout in the transport,
-and the same reason `xtb_cli.run_isolated` kills a whole process group rather than trusting
-`subprocess.run(timeout=...)`: the control has to sit where the cost is.
-
-So a `Deadline` is threaded into the two in-process loops and checked between units of work — per
-gradient in the optimizer, per displacement in the finite-difference Hessian. Between rather than
-inside, because a single SCF is not interruptible: the granularity of the clock is one single point,
-which on any system this server accepts is seconds rather than minutes.
-
-**Why a `ValueError`.** `mcp_server_kit.connector_app` passes that family to the model verbatim and
-replaces everything else with a generic notice. This refusal is the same statement as the atom cap —
-*this calculation is too expensive to run inside a turn* — only reached late, and it is equally
-actionable: run a smaller system, or configure a deployment that waits longer. `CliError` is
-deliberately not reused: it exists to carry a subprocess's stderr tail, which is internal state.
+The tblite optimiser and finite-difference Hessian run in a worker thread, which cancelling the
+caller does not stop, and `xtb_opt_max_steps` bounds iterations, not seconds. So a `Deadline` is
+checked between units of work (per gradient, per displacement); a single SCF is not
+interruptible. The stop is a `ValueError` so the model can act on it (run a smaller system).
 """
 
 from __future__ import annotations
@@ -38,36 +19,22 @@ __all__ = ["TIME_BUDGET_MARKER", "Deadline", "TimeBudgetError"]
 
 logger = logging.getLogger(__name__)
 
-# The token that tells a caller "stopped by this pod's clock", not "bad input" — the same channel
-# and the same placement as `admission.AT_CAPACITY_MARKER`, for the same reason: a refused tool call
-# carries no code and no structured payload, only text, and the head of that text is the one
-# position a caller's own quoted arguments cannot reach. Chemclaw3 transcribes this literal as
-# `core/mcp_session.SERVER_TIME_BUDGET`; each side pins only its own copy.
-#
-# **Why a stop needs a name of its own.** Wall clock depends on what else the pod is running, so the
-# same calculation can finish on an idle pod and be stopped on a busy one. Read as an ordinary
-# refusal, a caller reports it as a property of the molecule — and a screen that answers per item
-# lists it beside a structure that would not embed, with no way to say which of the two remedies
-# (correct the input, or give the calculation more time) applies to it.
+# "Stopped by this pod's clock", not "bad input": a stop depends on load, so a caller must not
+# report it as a property of the molecule. Placed at the head of the message like
+# `admission.AT_CAPACITY_MARKER`; Chemclaw3 transcribes it as `core/mcp_session.SERVER_TIME_BUDGET`.
 TIME_BUDGET_MARKER = "[calc-time-budget]"
 
 
 class TimeBudgetError(ValueError):
     """The inline wall clock stopped this calculation; the input itself was not refused.
 
-    A `ValueError` so `connector_app` still passes the message to the caller verbatim — narrowing it
-    would replace an actionable sentence with a generic notice. The subclass exists so this server's
-    own code and tests can catch the stop precisely instead of matching prose.
+    A `ValueError` so `connector_app` passes it verbatim; a subclass so it can be caught precisely.
     """
 
 
 @dataclass(frozen=True)
 class Deadline:
-    """A budget in seconds, started when it is constructed.
-
-    `monotonic` rather than wall time, because a clock adjustment must not lengthen or shorten a
-    calculation's budget.
-    """
+    """A budget in seconds, started when it is constructed, on the monotonic clock."""
 
     seconds: float
     started: float = field(default_factory=time.monotonic)
@@ -80,39 +47,17 @@ class Deadline:
     def check(self, what: str, progress: Callable[[], str] | None = None) -> None:
         """Raise if the budget is spent, naming the calculation, both numbers and how far it got.
 
-        **Logged and counted before it is raised, and that is not symmetry for its own sake.** A
-        `ValueError` is the family `connector_app` passes to the model verbatim — which is exactly
-        why this refusal was invisible to everyone else: it was never logged and never counted, so
-        the likeliest capacity symptom a `calc` deployment has (this pod is undersized for the
-        molecules it is being sent) was a sentence only the agent ever saw. The counter is what
-        turns "occasionally a chemist is told to run a smaller system" into a rate an operator can
-        put a threshold on.
-
-        WARNING rather than INFO for the same reason: it means the deployment's budget is too small
-        for its traffic, not that the caller asked for something silly.
+        Logged at WARNING and counted before raising: an undersized budget is a deployment
+        problem an operator must see, not only the model.
 
         Args:
-            what: The calculation in progress, phrased to complete "a <what> exceeded …" — the
-                caller's only lever is its size, so the message has to say what was running. It is
-                also the counter's label, so it must stay a **literal written at the call site**:
-                `/metrics` is unauthenticated and a label built from anything a caller supplies is
-                an unbounded series set. Two exist today, `"Hessian"` and `"geometry optimization"`,
-                and telling them apart is the point — an undersized Hessian budget and an
-                undersized optimisation budget are different decisions.
-            progress: How far the loop got, phrased to follow "stopped after" — called only once
-                the budget is spent, so the loop pays nothing for it on the path that continues.
-                **This is what makes an abandoned calculation legible rather than silent.** At
-                `servers/calc`'s atom ceiling a relaxation gets on the order of eleven optimizer
-                cycles before this clock stops it (the per-cycle cost is measured in
-                `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`), so
-                "exceeded the budget" alone cannot tell a caller — or an operator reading the
-                WARNING — whether the run was one cycle from converging or nowhere near. The
-                figures come from the loop, not from the caller, so they are safe in the message.
+            what: The calculation in progress, completing "a <what> exceeded …". Also a
+                metric label, so it must be a literal at the call site, never caller-derived.
+            progress: How far the loop got, completing "stopped after"; called only once the
+                budget is spent, so a caller can tell nearly-converged from hopeless.
 
         Raises:
-            TimeBudgetError: the budget is spent. A `ValueError`, worded for the model, which is
-                what receives it, and opening with `TIME_BUDGET_MARKER` so a caller can tell a stop
-                from a refusal of the input.
+            TimeBudgetError: the budget is spent; led by `TIME_BUDGET_MARKER`.
         """
         if self.elapsed <= self.seconds:
             return

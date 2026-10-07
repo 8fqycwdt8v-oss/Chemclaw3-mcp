@@ -1,31 +1,14 @@
 """The `thermalsafety` MCP tool surface: runaway arithmetic from calorimetry numbers.
 
-**These docstrings are the prompt**, and on this server that matters more than on most of the
-fleet: every tool here returns a number a chemist may use to decide whether a batch is safe to
-scale, and every one of them is an *arithmetic consequence of inputs the caller supplied*. So each
-docstring states its units in every argument name, and each says what the tool is not evidence of —
-because the failure mode is not a wrong formula, it is a right formula fed a heat capacity in the
-wrong unit or an accumulation fraction somebody assumed.
+The tool docstrings are the prompt: units are in every argument name and each says what the tool is
+not evidence of, since the likely failure is a right formula fed a wrong unit or an assumed input.
+Nothing here measures anything; inputs come from DSC, ARC or RC1 reports, and a missing
+safety-critical input is refused rather than defaulted (`mtsr` will not assume an accumulation
+fraction, `tmr_ad` an activation energy). Every answer carries `basis`: the model and its
+assumption.
 
-**Nothing here measures anything.** There is no calorimetry model, no kinetics fit and no corpus:
-every input is a number from a DSC, ARC or RC1 report that a person ran. A tool that cannot be
-given one refuses rather than defaulting it — `mtsr` will not assume an accumulation fraction and
-`tmr_ad` will not assume an activation energy — because a default here is the safety argument being
-invented by the calculator instead of made by the chemist.
-
-Every answer carries `basis`: the model it came out of and the assumption that model makes. A
-number from a Semenov balance and a number from an adiabatic balance answer different questions,
-and a result that does not say which it is cannot be put in a report.
-
-The tools are synchronous. Measured rather than assumed, and the measurement corrected the guess
-that preceded it: the slowest is `tmr_ad` at **63.7 µs**, because it solves for T_D24 by a
-fixed 200-step bisection — not `semenov_critical_ambient` (16.3 µs), whose bisection stops on a
-tolerance. `oxygen_balance_screen` is 4.5 µs and the two closed-form tools are under half a
-microsecond. Four orders of magnitude below the point at which holding the event loop matters, with
-no subprocess and no thread to pin. `servers/calc`'s admission ceiling exists because one call
-there is minutes of
-CPU across forked workers; nothing here is, so a ceiling would be a control with nothing to control.
-A tool added here that grows real work must revisit both sentences.
+The tools are synchronous and take microseconds, with no subprocess or threads, so there is no
+admission ceiling; a tool that grows real work must revisit that.
 """
 
 from __future__ import annotations
@@ -40,10 +23,8 @@ from chemclaw_mcp_thermalsafety.engine import runaway, semenov
 
 server = FastMCP("thermalsafety")
 
-#: The longest molecular formula `oxygen_balance_screen` will parse. A bound on the input so the
-#: cost cannot run away unpriced — the rule `docs/adding-a-server.md` states for a slow tool, which
-#: applies to a fast one whose input length is unbounded. A real molecular formula is under 60
-#: characters; 512 leaves room for a polymer repeat unit written out and refuses a payload.
+#: The longest formula `oxygen_balance_screen` will parse: room for a written-out repeat unit, while
+#: refusing a payload.
 MAX_FORMULA_CHARACTERS = 512
 
 
@@ -314,23 +295,9 @@ def tmr_ad(
     **Adiabatic means no cooling at all.** For a package that does lose heat to its surroundings,
     the question is a Semenov one and `semenov_critical_ambient` is the tool.
     """
-    # **`is None`, not truthiness, and truthiness discarded a stated 0 °C.** This field defaulted to
-    # `0.0` and was read with `if reference_temperature_c else temperature_c`, so a caller who said
-    # "the rate was measured at 0 °C" — an ice-bath isothermal, the ordinary reference for a
-    # peroxide
-    # or a diazo compound — had that replaced by `temperature_c`, skipping the Arrhenius
-    # extrapolation entirely and using q(0 °C) as though it were q(T_asked).
-    #
-    # Driven at q = 1 W/kg, E_a = 100 kJ/mol, c_p = 1.8 kJ/(kg·K), asked at 150 °C: a stated
-    # reference of **0.0 °C** gave TMR_ad = 7.44 h and T_D24 = +132 °C, while **0.001 °C** gave
-    # 1.24e-06 h and -12.7 °C. A thousandth of a degree moved the answer by a factor of six
-    # million, because q(150 °C) is 6.0e6 W/kg and the tool was using 1. Carried into
-    # `stoessel_criticality_class`, which names this tool at `target_hours=24` as its source, that
-    # is
-    # **class 2** ("a cooling failure reaches neither barrier") against **class 5** ("the scenario
-    # has
-    # to be eliminated by process design") — the reassuring end of the scale instead of the one that
-    # stops a process. The only trace was `basis` naming a temperature the caller had not written.
+    # `is None`, not truthiness: a stated reference of 0 °C (an ice-bath isothermal) is a real
+    # value, and dropping it would skip the Arrhenius extrapolation and move TMR_ad and the Stoessel
+    # class by orders of magnitude.
     reference = temperature_c if reference_temperature_c is None else reference_temperature_c
     hours = runaway.time_to_maximum_rate_hours(
         temperature_c=temperature_c,
@@ -376,10 +343,7 @@ def _rate_at(
 ) -> float:
     """Arrhenius-extrapolate a measured specific heat release rate to another temperature, W/kg.
 
-    Exists because `tmr_ad` takes the rate at a reference point and the TMR at a *different*
-    temperature, and doing that conversion inline in the tool body would put the only copy of the
-    Arrhenius expression somewhere untested. It is one call to `semenov.heat_generation_w` over a
-    1 kg basis, which is what makes it a wrapper rather than a second implementation.
+    One call to `semenov.heat_generation_w` on a 1 kg basis, so the expression has one tested copy.
     """
     return semenov.heat_generation_w(
         temperature_c=temperature_c,

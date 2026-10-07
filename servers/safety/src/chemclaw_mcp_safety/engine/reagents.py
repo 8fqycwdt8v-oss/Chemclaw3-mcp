@@ -1,27 +1,11 @@
 """Resolve the abbreviation a chemist writes to the name an ICH table is keyed by.
 
-`ich.py` needs one thing from this module: `THF`, `2-MeTHF`, `IPA` and `C1CCOC1` must all reach the
-guideline's own spelling, without every one of those spellings having to be copied into the
-transcribed tables. The ICH files carry the synonyms a *regulatory* reader writes; this carries the
-ones a bench chemist writes, plus the structures — and a structure is the case the guideline files
-cannot cover at all, because a SMILES is not a spelling of a name.
-
-**This is a second copy of `servers/chem/src/chemclaw_mcp_chem/engine/reagents.py`'s lookup, over a
-byte-identical corpus.** That is deliberate and it is what the repository's central rule costs: one
-server never imports another, so a capability two servers both need is carried by both. The
-duplication is made safe rather than merely accepted — `tests/test_dataset.py` pins this copy of
-`data/reagents/records.csv` byte-identical to `chem`'s, and `tests/test_fleet.py` asserts it across
-the two servers, so the two cannot answer differently about one substance.
-
-**What was deliberately left behind.** `chem`'s copy also carries `density_of` and the density index
-behind it, because its charge table turns process volumes into masses. Nothing here asks that
-question, so neither is present; the CSV's `density_g_per_ml` column is carried unread so the file
-stays byte-identical to the one `chem` ships.
-
-Resolution is **conservative**: an unknown name returns no match rather than a guess. That property
-is the whole reason the ICH lookup may use this at all — a fabricated structure would turn a miss
-("this system does not carry the number") into a confident wrong row with a real ICH citation
-attached to it, which is worse than the fabrication the tables were transcribed to end.
+`ich.py` needs `THF`, `2-MeTHF`, `IPA` and `C1CCOC1` to reach the guideline's spelling without
+copying bench synonyms or structures into the transcribed tables. A second copy of `servers/chem`'s
+reagent lookup, because servers never import each other; `tests/test_dataset.py` and
+`tests/test_fleet_data.py` pin `data/reagents/records.csv` byte-identical to `chem`'s (its unread
+density column included). Resolution is conservative: an unknown name returns no match, never a
+guess that would attach a real ICH citation to the wrong substance.
 """
 
 from __future__ import annotations
@@ -45,21 +29,18 @@ class ResolvedCompound(BaseModel):
     query: str
     smiles: str
     name: str
-    # How the identity was established: `synonym` is the curated table, `smiles` means the query
-    # already was a structure.
+    # How the identity was established: `synonym` (the curated table) or `smiles` (the query was a
+    # structure).
     source: str
 
 
 def _normalize(name: str) -> str:
     """Fold a written name to its lookup key: case, whitespace and separator punctuation.
 
-    `2-MeTHF`, `2 methf` and `2_MeTHF` are one key; `Hünig's base` and `hunigsbase` are not, because
-    the apostrophe folds away and the umlaut does not — the table therefore carries the spelling a
-    keyboard produces. Everything dropped here is punctuation a chemist varies without meaning to.
+    `2-MeTHF`, `2 methf` and `2_MeTHF` share a key; apostrophes fold away, diacritics do not.
     """
     folded = name.strip().lower()
-    # The curly apostrophe is here on purpose and is not a typo for the straight one: a name pasted
-    # out of a document or an ELN carries whichever the editor produced.
+    # Both straight and curly apostrophes: pasted names carry whichever the editor produced.
     for noise in (" ", "-", "_", "'", "’"):  # noqa: RUF001
         folded = folded.replace(noise, "")
     return folded
@@ -78,18 +59,17 @@ def _split(raw: str) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _index() -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
-    """Build the two lookups this module answers from, canonicalizing every structure once.
+    """Build the two lookups this module answers from, canonicalising every structure once.
 
-    Returned together and cached as one unit because they are two views of one file, and a partially
-    rebuilt pair would be a table that disagreed with itself.
+    Cached together because they are two views of one file.
 
     Returns:
-        The spelling -> (canonical SMILES, display name) table, and the reverse canonical SMILES ->
-        display name map, which is what lets a caller who typed a structure get a name back.
+        The spelling -> (canonical SMILES, display name) table, and the canonical SMILES -> display
+            name map.
 
     Raises:
-        ValueError: a row's SMILES does not parse, two rows claim one spelling, or two rows
-            canonicalize to one structure. All three are silent at call time and loud here.
+        ValueError: A row's SMILES does not parse, two rows claim one spelling, or two rows
+            canonicalise to one structure.
     """
     table: dict[str, tuple[str, str]] = {}
     by_structure: dict[str, str] = {}
@@ -121,19 +101,16 @@ def _index() -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
 def resolve_compound_name(name: str) -> ResolvedCompound | None:
     """Resolve a written reagent name (or a SMILES) to a canonical structure, or `None`.
 
-    Returns `None` rather than guessing: the one caller is an ICH limit lookup, and a fabricated
-    structure there would hand a chemist somebody else's permitted daily exposure under a genuine
-    guideline citation.
+    Never guesses: the caller is an ICH limit lookup, where a wrong structure means a wrong cited
+    limit.
     """
     table, by_structure = _index()
     lookup = table.get(_normalize(name))
     if lookup is not None:
         smiles, display = lookup
         return ResolvedCompound(query=name, smiles=smiles, name=display, source="synonym")
-    # A caller may already hold a structure; accepting it here means one entry point for "give me
-    # the canonical form of whatever the chemist typed". The strict canonicalizer is essential: a
-    # lenient one returns its input unparsed, which would resolve every unknown name to itself as a
-    # fabricated structure — exactly the failure this module exists to prevent.
+    # Accept a structure too. The strict canonicaliser is essential: a lenient one would resolve
+    # every unknown name to itself as a fabricated structure.
     try:
         canonical = require_canonical_smiles(name)
     except InvalidSmilesError:

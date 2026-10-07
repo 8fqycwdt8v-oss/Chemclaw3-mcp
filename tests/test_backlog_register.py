@@ -1,34 +1,10 @@
-"""This repository's two registers must obey the rules they open with, and their anchors resolve.
+"""This repository's two registers obey the rules they open with, and their anchors resolve.
 
-Ported from `Chemclaw3`'s `tests/test_backlog_register.py`, minus the half of it that exists for one
-quoted sentence: that file carries `_HISTORICAL`/`_RETROSPECTIVE` so a *past-tense* measurement of
-what the register once was may state a count. No such sentence exists here, and machinery for a case
-the tree does not contain is the shape this repository keeps deleting. Add it when a retrospective
-sentence is actually written, not before.
-
-What is new here has no counterpart there, and it is the check that repository states in prose and
-cannot run: **open every anchor**. Its own 2026-08-17 pass did that by hand and found seventeen rows
-unworkable as written, four of them describing code a merged decision had already deleted.
-This file is small enough that a backticked path in a row can simply be resolved, so it is.
-
-**The count rule is enforced here for both registers, not only for `docs/BACKLOG.md`.** `CLAUDE.md`
-and `docs/decisions/README.md` state the same rule — a number nobody re-derives is a claim about its
-author's afternoon — and the ledger is the likelier of the two to accumulate one, because nobody
-re-counts records while adding one. One implementation, driven over both files: the alternative is a
-second copy of the pattern in `tests/test_decision_log.py`, and this suite runs with
-`--import-mode=importlib`, under which a sibling test module cannot be imported (measured).
-
-Two limits, stated rather than discovered later:
-
-- **A row about another repository is skipped, and the skip is counted and reported.** No test here
-  can open `chemclaw2_retrosynthesis`. A check that quietly shrinks is worse than one that says what
-  it did not look at, so the skipped rows are named in a warning the run prints.
-- **A symbol anchor is not resolved, only its path.** `file.py::_helper` checks `file.py`. Resolving
-  the symbol means parsing every language in the tree, and the path is what makes a row findable.
-
-**Whether a row is still *true* is not checkable by any test**, here or there. An anchor that
-resolves proves the row can be looked up, not that what it says about the code still holds — which
-is why the register's own header says to check a row against `HEAD` before working it.
+Checked: every backticked path in an open row resolves (symbol anchors are resolved to their file
+only); neither `docs/BACKLOG.md` nor the decision ledger states a count of its own contents, one
+implementation driven over both. A row about another repository is skipped, and the skips are
+counted and reported. Whether a row is still *true* is not checkable; an anchor that resolves
+only proves the row can be looked up.
 """
 
 from __future__ import annotations
@@ -40,12 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 _BACKLOG = ROOT / "docs" / "BACKLOG.md"
 _LEDGER = ROOT / "docs" / "decisions" / "README.md"
-# An open row: a checkbox item, up to the next one or the next section. **Not "a checkbox item with
-# a bolded title"**, which is what this matched until 2026-09-12 while the register's own header
-# published `grep -c '^- [ ]'` as the authority on what a row is. The two disagreed, so a row
-# written without bold was a row by the header's definition and invisible to every check in this
-# file — including the duplicate check and the anchor check.
-# `test_the_row_parse_agrees_with_the_headers_own_command` is what keeps them one definition.
+# An open row: a checkbox item, up to the next one or the next section. This must match the
+# header's own `grep -c '^- [ ]'` definition (bold title or not);
+# `test_the_row_parse_agrees_with_the_headers_own_command` keeps them one definition.
 _ROW = re.compile(r"^- \[ \] (.*?)(?=^- \[ \]|^## |\Z)", re.MULTILINE | re.DOTALL)
 # The bolded title, where a row has one. It is a row's identity when it exists; the first line is
 # the fallback, so an unbolded row still has a name to report and to compare.
@@ -59,10 +32,8 @@ _BACKTICKED = re.compile(r"`([^`]+)`")
 # not the queue.
 _BACKLOG_NOUNS = r"rows?|findings?|items?|tasks?|entry|entries"
 _LEDGER_NOUNS = r"records?|rows?|entry|entries"
-# Spelled-out numbers are in the pattern because a mutation walked past it without them: the
-# sibling's version matches `\d` only, and "Eight rows are open today." passed while "8 rows"
-# failed. The word list stops at twenty — past that nobody writes the number out — plus `dozen`,
-# which is the one idiom above it that reads as a count rather than as a round figure.
+# Spelled-out numbers up to twenty, plus `dozen`, so "Eight rows are open" is caught as well as
+# "8 rows".
 _WORDS = (
     "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen"
     "|sixteen|seventeen|eighteen|nineteen|twenty|dozen"
@@ -77,14 +48,8 @@ _QUALIFIER = r"(?:of its|of them|open|still open|remaining|outstanding|live|more
 def _stated_counts(text: str, nouns: str) -> list[str]:
     """Every phrase in `text` that states a count of the register's own contents.
 
-    Two orders, because a stale count arrives in both and only the first was matched: `8 open rows`,
-    and `Rows open: 8` — the second being also how a markdown table cell reads.
-
-    **Backticks are stripped first.** A careful author writes a number in a code span, and
-    `` There are `9` open rows. `` walked past a pattern requiring whitespace between the digit and
-    the noun. Measured on 2026-09-12, each of these was inserted into the real header and the suite
-    stayed green: a code span, the singular (`1 row is open.`), `Only one row remains open.`,
-    `a dozen`, `Rows open: 8`, a table cell, and `8 tasks`.
+    Both orders are matched (`8 open rows` and `Rows open: 8`, as a table cell reads), and backticks
+    are stripped first so a number in a code span is not missed.
 
     Args:
         text: the register's own text.
@@ -103,9 +68,7 @@ def _stated_counts(text: str, nouns: str) -> list[str]:
 def _rows() -> list[tuple[str, str]]:
     """Every open row as `(title, body)`, in file order, the title unwrapped to one line.
 
-    Unwrapped because a title is a row's identity: whether it happens to break across two lines is a
-    formatting accident, and comparing the wrapped forms would let one row be re-added under a
-    different line break and read as a second item.
+    The title is a row's identity, so a different line break must not make it a second item.
     """
     rows: list[tuple[str, str]] = []
     for block in _ROW.findall(_BACKLOG.read_text(encoding="utf-8")):
@@ -123,10 +86,7 @@ def test_the_register_has_rows_to_check() -> None:
 def test_the_row_parse_agrees_with_the_headers_own_command() -> None:
     """What this file calls a row and what the header tells a reader to count are one definition.
 
-    They were two. `_ROW` required a bolded title while the header publishes `grep -c '^- [ ]'` as
-    the authority, so a row written without bold was a row to every reader and invisible to every
-    check here — not a duplicate, not missing an anchor, simply absent. A register whose own checks
-    disagree with its own instructions has a hole the width of the disagreement.
+    Otherwise a row outside the parser's definition would be invisible to every check here.
     """
     text = _BACKLOG.read_text(encoding="utf-8")
     counted = len(re.findall(r"^- \[ \]", text, re.MULTILINE))
@@ -149,9 +109,7 @@ def test_no_row_appears_twice() -> None:
 def test_nowhere_in_the_file_states_a_live_row_count() -> None:
     """The register carries the `grep`; it must not also carry the answer, in any section.
 
-    A number nobody re-derives is a claim about its author's afternoon, and one printed beside the
-    command that disproves it is worse than none. This is the same rule `CLAUDE.md` applies to its
-    own `make` targets and to the port table it deleted.
+    A count printed beside the command that disproves it is worse than none.
     """
     stated = _stated_counts(_BACKLOG.read_text(encoding="utf-8"), _BACKLOG_NOUNS)
     assert not stated, (
@@ -161,12 +119,10 @@ def test_nowhere_in_the_file_states_a_live_row_count() -> None:
 
 
 def test_the_decision_ledger_states_no_count_of_its_own_records() -> None:
-    """The same rule, over the file that states it — and that nothing was checking.
+    """The decision ledger states no count of its own records.
 
-    `docs/decisions/README.md` says "a number written here is a dated measurement of a named
-    commit, never a claim about `HEAD`", and `CLAUDE.md` names both registers when it refuses a
-    count in prose. Only the backlog was checked. The ledger is the likelier of the two to grow
-    one, because a session adding a record reads the table and nobody re-counts it afterwards.
+    The same rule as the backlog; the ledger is likelier to grow one, since nobody re-counts it
+    after adding a record.
     """
     stated = _stated_counts(_LEDGER.read_text(encoding="utf-8"), _LEDGER_NOUNS)
     assert not stated, (
@@ -176,16 +132,11 @@ def test_the_decision_ledger_states_no_count_of_its_own_records() -> None:
 
 
 def test_the_count_guard_catches_the_shapes_that_walked_past_it() -> None:
-    """Every evasion measured on 2026-09-12, as this guard's own data.
+    """The count guard catches each known evasion and passes legitimate measurements.
 
-    A guard is worth what its worst case is worth, and each of these went into the real register and
-    left the suite green. The code span is the one worth naming twice: a backtick is exactly how a
-    careful author writes a number in a document like this, so the guard was weakest against the
-    person most likely to be believed.
-
-    The clean arms are the other half. This register measures plenty of things that are not itself —
-    a corpus, a line count, a number of servers — and a guard that flagged those would be deleted
-    within a week, which is the failure mode of every over-eager check.
+    Evasions include code spans, the singular, spelled-out numbers and table cells. The clean arms
+    matter equally: the register measures plenty that is not itself, and a guard that flagged those
+    would be deleted.
     """
     for evasion in (
         "There are `9` open rows.",
@@ -227,26 +178,10 @@ def test_the_header_still_shows_how_to_derive_the_count() -> None:
 
 
 def test_every_anchor_a_row_names_exists() -> None:
-    """Every path a row names resolves, so the row can be looked up rather than argued about.
+    """Every row resolves at least one path anchor, and every path it names exists.
 
-    Only backticked tokens rooted at a real top-level entry are treated as paths, which needs no
-    allowlist — the same trick `tests/test_fleet.py` uses on `CLAUDE.md`. A row's prose names many
-    things that are not paths (`MCP_EGRESS_ALLOW`, `dict[str, float]`, `make check`), and none of
-    them begins with an entry that exists here. A `::symbol` suffix is cut: the path is what makes
-    the row findable, and resolving a symbol means parsing every language in the tree. The limit of
-    that trick is stated where it is shared, in `tests/test_fleet.py`: a *single-segment* anchor is
-    self-rooting, so a row naming a root-level file that has been deleted stops being read as a path
-    at the same moment it stops resolving.
-
-    **Resolution is tracked per row, which is the half that was missing.** The count was global and
-    the assertion was `assert checked` once at the end, so a row every one of whose backticked
-    tokens is *shorthand* — `mcp_server_kit/egress.py` is the shape, and `CLAUDE.md` writes it
-    thirteen times — contributed nothing, was reported by nothing, and the assertion passed on other
-    rows' hits. Rule 2 of the register's header says every row names an anchor; this is now the
-    check that says so rather than a check that says *some* row does.
-
-    Rows marked as another repository's are skipped, and the skip is **reported** — a check that
-    quietly shrinks tells you nothing about what it did not look at.
+    Only backticked tokens rooted at a real top-level entry are paths; a `::symbol` suffix is cut.
+    Rows marked as another repository's are skipped, and the skip is reported.
     """
     top_level = {path.name for path in ROOT.iterdir()}
     missing: list[str] = []

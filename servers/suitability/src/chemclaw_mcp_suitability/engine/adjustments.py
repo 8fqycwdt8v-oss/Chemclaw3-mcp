@@ -1,30 +1,14 @@
 """The USP <621> allowances for adjusting a chromatographic method without revalidating it.
 
-A compendial method may be adjusted within stated limits to meet system suitability; beyond them
-the change is a revalidation. The limits are a short table with numbers in it, they are the thing
-a chemist looks up rather than remembers, and getting one wrong is expensive in both directions —
-too cautious revalidates a method that did not need it, too bold puts an unvalidated method into a
-release test.
+Beyond these limits a change is a revalidation, and an error is costly either way. Three constraints
+bound what the tool may claim:
 
-**Three things about this table constrain what the tool built on it may claim.**
-
-*It is for isocratic separations.* USP restricts adjustments to gradient methods much further,
-because a gradient's behaviour depends on the instrument's dwell volume as well as on the method,
-and a change that is harmless on one system shifts selectivity on another. This module therefore
-refuses a gradient method by name instead of applying the isocratic allowances to it, which is the
-fleet's "refuse rather than approximate" rule at its most load-bearing: the approximation here
-would be permissive.
-
-*A monograph overrides it.* "Unless otherwise specified in the individual monograph" opens the
-section, so an allowance computed here is what the general chapter permits, never a statement that
-a particular monograph permits it. Every answer says so, because the tool cannot read the
-monograph and the model reading the answer will not know that unless it is told.
-
-*It is a table transcribed from a document, so it is exactly the kind of data that rots quietly.*
-It is versioned and checksummed for that reason (see `engine/selftest.py`) — not because the
-arithmetic is hard, but because a transposed digit in a limit nobody re-reads is invisible and
-consequential, which is the same argument `servers/props` makes for validating its corpus against
-itself.
+- **Isocratic only.** A gradient's behaviour depends on the instrument's dwell volume, so gradient
+  methods are refused rather than given the (permissive) isocratic allowances.
+- **A monograph overrides it.** An allowance here is what the general chapter permits, never what a
+  particular monograph permits; every answer says so.
+- **It is transcribed data**, so it is versioned and checksummed (`engine/selftest.py`) to make a
+  transposed digit visible.
 """
 
 from __future__ import annotations
@@ -41,8 +25,7 @@ __all__ = [
     "check_adjustment",
 ]
 
-#: The revision of USP General Chapter <621> this table was transcribed from. It is part of every
-#: answer: an allowance is only meaningful beside the edition that grants it.
+#: The USP <621> revision this table was transcribed from; part of every answer.
 CHAPTER_BASIS = "USP General Chapter <621> Chromatography, Adjustments to Chromatographic Systems"
 
 Parameter = Literal[
@@ -67,20 +50,15 @@ class AdjustmentError(ValueError):
 class Allowance:
     """What <621> permits for one parameter.
 
-    The three bounds are deliberately separate rather than folded into one number, because they
-    are different *kinds* of limit and a single "tolerance" would lose which one bit.
+    The bounds are separate because they are different kinds of limit.
 
     Attributes:
-        relative_percent: The permitted change as a percentage of the original value, or `None`
-            where the limit is not expressed that way.
-        absolute: The permitted change in the parameter's own unit, or `None`. Where both this
-            and `relative_percent` are set, `absolute_is_a_cap` says how they combine.
-        absolute_is_a_cap: True when the absolute bound *caps* the relative one (the relative
-            allowance applies, but never beyond the absolute figure); False when the absolute
-            bound is the only limit there is.
-        direction: Which way the change may go. "either" for a symmetric allowance, "decrease"
-            where only a reduction is permitted, "none" where no adjustment is allowed at all.
-        unit: The parameter's unit, for the message. Empty where the parameter is dimensionless.
+        relative_percent: The permitted change as a percentage of the original value, or `None`.
+        absolute: The permitted change in the parameter's own unit, or `None`.
+        absolute_is_a_cap: True when the absolute bound caps the relative one; False when it is the
+            only limit.
+        direction: "either", "decrease" (only a reduction permitted) or "none" (no adjustment).
+        unit: The parameter's unit, for the message; empty where dimensionless.
         note: What a chemist needs to know that the numbers do not say.
     """
 
@@ -92,9 +70,8 @@ class Allowance:
     note: str
 
 
-#: The table. Every entry is one row of the chapter, and the notes are why a row is not just a
-#: number. Keep this dict and `selftest._TABLE_DIGEST` in step: the digest is what makes an
-#: unreviewed edit to a limit visible from a readiness probe.
+#: The table, one entry per row of the chapter. Keep it and `selftest._TABLE_DIGEST` in step, so an
+#: unreviewed edit fails readiness.
 ADJUSTMENTS: dict[Parameter, Allowance] = {
     "mobile_phase_ph": Allowance(
         relative_percent=None,
@@ -211,14 +188,12 @@ class AdjustmentVerdict:
     original: float
     proposed: float
     permitted: bool
-    #: The reason, written for a chemist. Populated whether or not the change is permitted,
-    #: because "why is this allowed" is asked as often as "why is this not".
+    #: The reason, for a chemist; populated whether or not the change is permitted.
     reason: str
     #: The widest value the allowance reaches in the direction of travel, or `None` where the
     #: allowance is not a number (no change permitted, or a reduction bounded by judgement).
     limit_value: float | None
-    #: The change actually asked for, as a percentage of the original. `None` when the original
-    #: is zero, where a relative change is undefined rather than infinite.
+    #: The requested change as a percentage of the original; `None` when the original is zero.
     requested_relative_percent: float | None
 
 
@@ -235,15 +210,14 @@ def check_adjustment(
         parameter: Which method parameter is changing.
         original: The value the validated method specifies, in the parameter's own unit.
         proposed: The value being proposed, in the same unit.
-        is_gradient: True if the separation is a gradient. Gradient methods are refused rather
-            than evaluated, because the isocratic allowances do not carry to them.
+        is_gradient: True if the separation is a gradient; gradient methods are refused.
 
     Returns:
         The verdict, the limit it was measured against, and the reason in words.
 
     Raises:
-        AdjustmentError: If the separation is a gradient, or if a value is negative, or if the
-            original is zero for a parameter whose allowance is relative.
+        AdjustmentError: The separation is a gradient, a value is negative, or the original is zero
+            for a relative allowance.
     """
     if is_gradient:
         raise AdjustmentError(
@@ -326,8 +300,7 @@ def check_adjustment(
 def _bound_for(allowance: Allowance, original: float, parameter: Parameter) -> float:
     """The widest change permitted, in the parameter's own unit.
 
-    Where a relative allowance is capped by an absolute one, the cap is applied here rather than
-    at the comparison, so the number reported back as the limit is the one that actually bound.
+    An absolute cap is applied here so the reported limit is the one that actually bound.
     """
     if allowance.relative_percent is None:
         if allowance.absolute is None:  # pragma: no cover - guarded by the caller
@@ -348,9 +321,7 @@ def _bound_for(allowance: Allowance, original: float, parameter: Parameter) -> f
 def _tolerance(bound: float) -> float:
     """A float-comparison slack, so a change exactly at the limit is not failed by rounding.
 
-    A proposed value stated to the precision a chemist writes it in — 1.5 mL/min from 1.0 — should
-    read as exactly at the 50% limit, and binary floating point does not always agree. The slack
-    is relative to the bound and far below any real method's precision.
+    Relative to the bound and far below any real method's precision.
     """
     return abs(bound) * 1e-9
 

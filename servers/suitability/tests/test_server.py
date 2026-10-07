@@ -1,13 +1,8 @@
 """The server as Chemclaw3 meets it: a real socket, a real MCP handshake, a real 401.
 
-Everything else in this directory tests functions. This tests the *deployment surface* — and it is
-the test that would have caught each of the three defects Chemclaw3 recorded on this exact seam:
-
-- a mounted MCP app whose session manager nobody ran (accepts the connection, hangs on the call);
-- a bearer credential the serving side never checked;
-- a manifest that claimed a tool surface the server did not have.
-
-So it runs uvicorn on a loopback port and talks to it the way the agent will.
+Runs uvicorn on loopback and talks to it the way the agent will, so a session manager nobody
+ran, an unchecked bearer credential, or a manifest that disagrees with the served surface fails
+here.
 """
 
 from __future__ import annotations
@@ -42,9 +37,8 @@ def _free_port() -> int:
 def running_server() -> Iterator[str]:
     """Run the real app under uvicorn on loopback, and yield its base URL.
 
-    Module-scoped because a server start is the expensive part of this file, and every test here
-    wants the same one. The bearer token is set in the environment the same way a deployment sets
-    it, so the auth path under test is the deployed one rather than a stub.
+    Module-scoped because the server start is the expensive part. The bearer token is set in the
+    environment as a deployment sets it, so the auth path under test is the deployed one.
     """
     import os
 
@@ -85,28 +79,18 @@ def test_healthz_names_the_constants_this_pod_verified(running_server: str) -> N
 
 
 def test_the_readiness_probe_refuses_when_a_usp_constant_is_transposed() -> None:
-    """Break a dependency and read the status — the proof D-2026-09-12 asks a new probe to give.
+    """Break a dependency and read the status: a transposed USP constant makes the probe unready.
 
-    The dependency broken here is the one this server's probe is unusually able to see. USP gives
-    two plate-count forms and two resolution forms, and the second of each pair was *derived* from
-    the first through the Gaussian width relation — so on a Gaussian peak they must agree. 5.54
-    transposed to 5.45 is a 1.7% disagreement where the published rounding permits 0.09%, and the
-    probe refuses.
-
-    That is what makes this a check rather than a restatement. A probe that called each function
-    and found a float would pass a transposed constant; this one cannot, because the two constants
-    have to agree with each other and a typo in either breaks the agreement.
-
-    Driven against the engine rather than over the wire because it patches a module constant;
-    `/healthz`'s consumption of the result is asserted by the test above.
+    The second form of each plate and resolution pair is derived from the first, so on a Gaussian
+    peak they must agree; a probe that only checked each function returns a float would pass a
+    typo. Driven against the engine because it patches a module constant; `/healthz`'s use of the
+    result is asserted above.
     """
     assert selftest.verify(), "the probe must pass on an unmodified build"
 
     original = selftest._PLATE_AGREEMENT
-    # Rather than patch the formula's constant (which lives inside a conditional expression), the
-    # honest equivalent is to tighten the agreement tolerance below what the published rounding
-    # can satisfy: if 5.54 and 16 were mutually inconsistent, this is exactly the signal the probe
-    # would see. The next test drives the transposition itself.
+    # Tightening the agreement tolerance below the published rounding produces the same signal an
+    # inconsistent constant would; the next test drives the transposition itself.
     selftest._PLATE_AGREEMENT = 1e-9
     try:
         with pytest.raises(selftest.SelfTestFailed, match="plate-count conventions disagree"):
@@ -118,12 +102,10 @@ def test_the_readiness_probe_refuses_when_a_usp_constant_is_transposed() -> None
 
 
 def test_a_transposed_plate_constant_would_break_the_agreement_the_probe_checks() -> None:
-    """The arithmetic behind the test above, so the tolerance is shown to be load-bearing.
+    """A transposed plate constant would break the agreement the probe checks.
 
-    Computed directly: with the correct 5.54 the two conventions differ by 0.09%, and with 5.45
-    they differ by 1.7% — an order of magnitude past the 0.3% the probe allows. So the probe's
-    tolerance discriminates a real transposition from the published rounding, which is the only
-    property that makes it worth having.
+    5.54 gives 0.09% disagreement and 5.45 gives 1.7%, well past the probe's 0.3%, so the tolerance
+    discriminates a real transposition from published rounding.
     """
     sigma, retention = 0.05, 6.0
     tangent = 16.0 * (retention / (4.0 * sigma)) ** 2
@@ -141,11 +123,8 @@ def test_a_transposed_plate_constant_would_break_the_agreement_the_probe_checks(
 def test_a_failing_probe_is_a_permanent_cause_and_therefore_answers_503() -> None:
     """Only a permanent cause may take a pod out of its Service.
 
-    `D-2026-09-13-a-probe-that-can-kill-the-pod-is-not-a-readiness-probe` makes that
-    `connector_app`'s decision rather than each callable's, and a transient resource exhaustion
-    must answer 200 with `degraded`. A wrong constant is permanent — it does not get better under
-    less load — so `SelfTestFailed` has to classify into `PERMANENT_CAUSES` for the 503 to happen
-    at all. Asserted against the kit's own classifier rather than restated.
+    A wrong constant does not improve under less load, so `SelfTestFailed` must classify into
+    `PERMANENT_CAUSES` for `connector_app` to answer 503; asserted against the kit's classifier.
     """
     from mcp_server_kit.degradation import PERMANENT_CAUSES, classify
 
@@ -165,12 +144,10 @@ def test_livez_answers_without_consulting_anything(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """Driven against the running server, because the defect is invisible in the source.
+    """The bearer credential is enforced on the mounted MCP surface, against the running server.
 
-    `/mcp` is *mounted*, and a mount bypasses the enclosing app's dependencies — so a credential
-    can be declared, reviewed and applied to everything except the route that matters.
-    `assert_bearer_is_enforced` holds every arm, and holds them once so servers cannot drift into
-    different proofs.
+    A mount bypasses the enclosing app's dependencies, so this cannot be read off the source.
+    `assert_bearer_is_enforced` drives every arm once for the whole fleet.
     """
     await assert_bearer_is_enforced(running_server, MANIFEST, token=TOKEN)
 
@@ -188,11 +165,10 @@ async def _session(base: str) -> AsyncIterator[ClientSession]:
 
 
 async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) -> None:
-    """The handshake plus a tool call — the shape of every turn Chemclaw3 will run through here.
+    """The handshake plus a tool call, and the manifest checked against the running surface.
 
-    The value asserted is the one `test_precision.py` computes from the eval corpus's own six
-    injections, carried through pydantic validation and JSON serialisation. A denominator error
-    introduced by the *surface* rather than by the engine would show up here and nowhere else.
+    The value is the one `test_precision.py` computes from the eval corpus, carried through pydantic
+    and JSON, so a denominator error introduced by the surface shows here.
     """
     async with _session(running_server) as session:
         listed = await session.list_tools()
@@ -219,11 +195,10 @@ async def test_a_real_mcp_session_lists_and_calls_a_tool(running_server: str) ->
 
 
 async def test_the_convention_reaches_the_answer_over_the_wire(running_server: str) -> None:
-    """A plate count without its convention is not comparable with a limit, so it must survive.
+    """A plate count's convention survives the wire.
 
-    The field exists on the dataclass and could be dropped by the response model, which no test
-    calling the function directly would see — and a number arriving without its convention is
-    precisely the failure this server's whole surface is shaped to prevent.
+    A response model could drop the field unseen by a direct call, and a count without its
+    convention is not comparable with a limit.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(
@@ -260,10 +235,9 @@ async def test_the_gaussian_assumption_is_flagged_in_the_serialised_resolution(
 async def test_a_bad_input_reaches_the_agent_as_a_usable_message(running_server: str) -> None:
     """A deliberately worded domain error passes through; an internal one would not.
 
-    `connector_app` decides by exception *type*, and the decision is invisible from a direct call:
-    `PeakError`, `PrecisionError` and `AdjustmentError` are separate classes, and any one of them
-    sorted into the sanitiser's other branch would reach a chemist as an opaque `error_id` rather
-    than as the sentence naming which number is wrong.
+    `connector_app` decides by exception type, invisible from a direct call; a misclassified
+    `PeakError`, `PrecisionError` or `AdjustmentError` would reach a chemist as an opaque
+    `error_id`.
     """
     async with _session(running_server) as session:
         reversed_peaks = await session.call_tool(
@@ -308,11 +282,10 @@ async def test_an_oversized_injection_series_is_refused_at_the_transport(
 async def test_the_report_composes_the_primitives_and_lists_only_declared_failures(
     running_server: str,
 ) -> None:
-    """The contract that stops `failures: []` being read as "this run is suitable".
+    """The report composes the primitives and lists only declared failures.
 
-    Two criteria are declared and one is not. The undeclared one is not checked and does not
-    appear — which is the honest behaviour and the dangerous one, so it is asserted rather than
-    left to the docstring.
+    An undeclared criterion is neither checked nor listed, so `failures: []` must not be read as
+    "suitable"; asserted rather than left to the docstring.
     """
     async with _session(running_server) as session:
         result = await session.call_tool(

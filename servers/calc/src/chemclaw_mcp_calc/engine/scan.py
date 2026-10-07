@@ -1,27 +1,10 @@
 """One point of a relaxed scan — the step, not the sweep.
 
-Chemclaw3's `xtb_scan.run_scan` walks a list of coordinate values and relaxes at each. **The loop is
-not here.** What is here is one point: drive an internal coordinate to a value, freeze the atoms
-that define it, and relax everything else.
-
-The decomposition is exact rather than approximate, and that is a property of how the sweep was
-written rather than a liberty taken here. `run_scan` drives every point from the **input** geometry
-rather than from the previous point — deliberately, because a sequential scan's result depends on
-the direction it was walked, which is a hidden input a content-addressed cache must not have. So the
-points are independent by construction, and a sweep is exactly N calls to this.
-
-**What the caller gains by composing it.** Chemclaw3 caches the sweep as one `xtb.scan` row today,
-so adding two points to a 24-point profile recomputes all 26. Point by point, the 24 already
-computed are hits. And a scan point is an ordinary constrained optimization, so it keys as `xtb.opt`
-— which means a point shares a row with a hand-written constrained relaxation of the same geometry
-rather than sitting in a private namespace.
-
-**What stays behind with the sweep**: the profile arithmetic (relative energies against the lowest
-point, the barrier maximum), the point-count cap, and picking the minimum geometry out. All of it is
-arithmetic over what this returns.
-
-Also not here: `progress.py`'s callback. A request/response tool has no channel to report progress
-on, and inventing one would mean holding job state — which is the other side of the seam.
+Drive an internal coordinate to a value, freeze the atoms defining it, relax the rest. Chemclaw3
+drives every point from the input geometry (a sequential scan would depend on walk direction, a
+hidden cache input), so a sweep is exactly N independent calls to this, each cached. A point keys
+as `xtb.opt`, sharing rows with an equivalent constrained relaxation. The profile arithmetic, the
+point cap and progress reporting stay with the sweep in Chemclaw3.
 """
 
 from __future__ import annotations
@@ -47,10 +30,8 @@ COORDINATES: dict[int, tuple[str, str]] = {
 def _mol_with_conformer(structure: Structure) -> Chem.Mol:
     """Rebuild the RDKit molecule for `structure`, carrying its geometry.
 
-    A `Structure` holds elements and coordinates but no bonds, and setting an internal coordinate
-    needs connectivity. Re-parsing the canonical SMILES reproduces the atom order the geometry was
-    built in (`structure_from_smiles` embeds the same parse), and the element check turns that
-    reliance into an assertion rather than an assumption.
+    Setting an internal coordinate needs bonds, which a `Structure` lacks; re-parsing the canonical
+    SMILES reproduces the embedding's atom order, and an element check enforces that.
     """
     if not structure.smiles:
         raise ValueError("a scan point needs the molecule's SMILES to know its connectivity")
@@ -68,20 +49,10 @@ def _mol_with_conformer(structure: Structure) -> Chem.Mol:
 def drive_coordinate(structure: Structure, atoms: tuple[int, ...], value: float) -> Structure:
     """Move one internal coordinate of `structure` to `value`. Pure geometry, no SCF.
 
-    RDKit's `rdMolTransforms` sets a bond length, angle or dihedral by moving the whole attached
-    fragment, so the driven geometry is chemically sensible rather than one atom dragged out of
-    place. Deterministic, so the driven structure — and therefore the scan point's key — is a
-    function of `(structure, atoms, value)` alone.
-
-    Args:
-        structure: The starting geometry, which must carry the SMILES its connectivity comes from.
-        atoms: Two atoms for a bond, three for an angle, four for a dihedral. They must be bonded in
-            sequence — RDKit rejects the rest.
-        value: Angstrom for a bond, degrees for an angle or dihedral.
-
-    Raises:
-        ValueError: an atom index is out of range, the count is not 2-4, or the structure and its
-            SMILES disagree.
+    `atoms` are two (bond, Angstrom), three (angle, degrees) or four (dihedral, degrees) atoms
+    bonded in sequence; `structure` must carry its SMILES. `rdMolTransforms` moves the whole
+    attached fragment, deterministically. Raises `ValueError` for a bad index or count, or a
+    structure that disagrees with its SMILES.
     """
     if len(atoms) not in COORDINATES:
         raise ValueError(
@@ -117,14 +88,9 @@ def scan_point_inputs(
 ) -> tuple[OptSpec, Structure]:
     """The settings and driven geometry one scan point relaxes — the pair its identity is made of.
 
-    An ordinary `OptSpec` with the coordinate's defining atoms frozen, so a scan point *is* a
-    constrained optimization and keys as `xtb.opt` rather than inventing a task of its own.
-
-    The approximation this inherits: the frozen atoms' own local geometry — the bond lengths and
-    angles *between* them — cannot relax with the coordinate. For a torsion profile, the case this
-    is mostly used for, that is the standard treatment; for a bond-breaking scan the profile maximum
-    is a sketch of a barrier rather than a transition state, because there is no saddle-point search
-    anywhere in this system.
+    An ordinary `OptSpec` with the defining atoms frozen, so it keys as `xtb.opt`. The frozen atoms'
+    mutual geometry cannot relax: standard for torsion profiles, but for a bond-breaking scan the
+    maximum only sketches a barrier (there is no saddle-point search).
     """
     return OptSpec(solvent=solvent, frozen_atoms=tuple(atoms)), drive_coordinate(
         structure, tuple(atoms), value

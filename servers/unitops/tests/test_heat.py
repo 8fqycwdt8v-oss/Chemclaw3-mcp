@@ -1,9 +1,7 @@
 """The jacketed-vessel time constant, against the identities every first-order system satisfies.
 
-Nothing here is checked against a recorded number except the one hand computation at the top. The
-rest are relations — 63.2% at `t = τ`, a half-life of `τ·ln 2`, the inversion round-tripping — which
-tie the time constant to the two functions derived from it and cannot be satisfied by any of the
-three agreeing with itself.
+Besides one hand computation, these are relations (63.2% at `t = τ`, half-life `τ·ln 2`,
+inversion round-tripping) that tie the time constant to the functions derived from it.
 """
 
 from __future__ import annotations

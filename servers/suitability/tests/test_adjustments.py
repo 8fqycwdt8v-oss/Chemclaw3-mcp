@@ -1,8 +1,7 @@
 """The <621> adjustment allowances, and the two places the obvious reading is wrong.
 
-A transcribed regulatory table cannot be checked against a derivation the way the peak formulas
-can, so what is asserted here is the *behaviour at each boundary* — which is where a transcription
-error shows up — plus the two rows whose rule is not the one a reader assumes.
+A transcribed regulatory table cannot be derived, so behaviour at each boundary is asserted,
+which is where a transcription error shows, plus the two rows whose rule is not the obvious one.
 """
 
 from __future__ import annotations
@@ -28,11 +27,10 @@ def test_just_past_the_limit_is_refused() -> None:
 
 
 def test_the_minor_component_cap_binds_the_other_way_round_from_the_obvious_reading() -> None:
-    """30% relative, capped at 10 absolute — and at 5% organic the *relative* bound is tighter.
+    """30% relative, capped at 10 absolute, and at 5% organic the relative bound is tighter.
 
-    The obvious misreading is that the 10-point cap is the operative limit, so 5% may go to 15%.
-    It may go to 6.5%. The two bounds swap which one binds depending on the starting proportion,
-    which is why both are carried and why the answer names the one that applied.
+    5% may go to 6.5%, not 15%: which bound binds depends on the starting proportion, so both are
+    carried and the answer names the one that applied.
     """
     tight = adjustments.check_adjustment("minor_mobile_phase_component", 5.0, 6.5)
     assert tight.permitted is True
@@ -85,11 +83,10 @@ def test_ph_is_an_absolute_allowance_not_a_relative_one() -> None:
 
 
 def test_a_gradient_is_refused_by_name_rather_than_evaluated_against_the_isocratic_table() -> None:
-    """The refusal that matters most, because the approximation here would be permissive.
+    """A gradient is refused by name rather than evaluated against the isocratic table.
 
-    A gradient's selectivity depends on the instrument's dwell volume as well as on the method, so
-    an isocratic allowance applied to one would bless a change that shifts the separation on a
-    different system — the failure mode being permissive is why this refuses instead of warning.
+    Gradient selectivity depends on the instrument's dwell volume, so an isocratic allowance would
+    permissively bless a change that shifts the separation on another system.
     """
     with pytest.raises(adjustments.AdjustmentError, match="isocratic"):
         adjustments.check_adjustment("flow_rate", 1.0, 1.2, is_gradient=True)

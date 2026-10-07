@@ -1,9 +1,7 @@
 """The Semenov balance, checked against its own defining condition rather than against literals.
 
-The crossover is *defined* by two equations holding at once — the generation equals the loss, and
-their slopes are equal. So the strongest assertion available is to take the answer back to those
-two equations and see whether it satisfies them, which is independent of how the root was found.
-A test that pinned the returned number would pin the bisection's tolerance instead.
+The crossover is where generation equals loss and their slopes are equal; taking the answer back
+to both equations is independent of how the root was found.
 """
 
 from __future__ import annotations
@@ -31,15 +29,9 @@ DRUM = {
 def test_the_answer_satisfies_both_equations_that_define_the_crossover() -> None:
     """Q(T_c) = U·A·(T_c - T_a) and dQ/dT = U·A, checked on the returned point.
 
-    The tangency condition, verified rather than re-derived: the first equation is asserted through
-    the returned generation and self-heating, and the second numerically as a central difference,
-    which does not reuse the analytic slope the solver itself used.
-
-    **The tolerances are derived from the solver's bracket rather than picked.** `_TOLERANCE_K` is
-    1e-4 K, and `dQ/Q = Ea/(R·T²)·dT` turns that into 1.2e-5 of relative error in the generation at
-    this case's 371.5 K — so 1e-6 would be asserting the bisection is tighter than it says it is,
-    which is how a test ends up pinning an implementation detail instead of a property. Measured
-    before this line was written: the identity holds to 1.8e-6, comfortably inside its own bound.
+    The slope is checked by central difference, not the solver's analytic slope. Tolerances derive
+    from the solver bracket: `_TOLERANCE_K` of 1e-4 K is about 1.2e-5 relative error in generation
+    here, so a tighter bound would pin the bisection rather than the property.
     """
     balance = semenov_criticality(**DRUM)
     conductance = DRUM["heat_transfer_coefficient_w_per_m2_k"] * DRUM["surface_area_m2"]
@@ -84,11 +76,10 @@ def test_the_self_heating_is_exactly_r_t_squared_over_ea() -> None:
 
 
 def test_better_cooling_raises_the_critical_ambient_and_more_material_lowers_it() -> None:
-    """Two monotonicities that any correct implementation has and a sign error does not.
+    """Better cooling raises the critical ambient and more material lowers it.
 
-    These are the properties a user reasons with — "a smaller drum is safer to store warmer", "more
-    insulation is worse" — so getting one backwards is a defect nobody would catch from a single
-    spot value, and both are checked against the same reference case.
+    These are the monotonicities a user reasons with, and a sign error would pass a single spot
+    value.
     """
     reference = semenov_criticality(**DRUM)
     better_cooled = semenov_criticality(**{**DRUM, "heat_transfer_coefficient_w_per_m2_k": 20.0})
@@ -99,17 +90,14 @@ def test_better_cooling_raises_the_critical_ambient_and_more_material_lowers_it(
 
 
 def test_a_package_with_no_crossover_in_range_is_told_which_end_it_ran_off() -> None:
-    """Both ends of the bracket, and they mean opposite things.
+    """A package with no crossover in range is told which end of the bracket it ran off.
 
-    A clamped value returned as a critical ambient would be read as one — a transport decision made
-    from -40 °C or 400 °C because the search stopped there. The two messages are distinguished
-    because "self-heats in a freezer" and "no crossover below 400 °C" lead to opposite actions.
+    A clamped value would be read as a critical ambient, and "self-heats in a freezer" and "no
+    crossover below 400 °C" lead to opposite actions.
     """
-    # A rate in the wrong unit *read at a low reference temperature* — which is the realistic way
-    # to land here. The first attempt at this arm used 1e9 W/kg at the 100 °C reference and did not
-    # raise: Arrhenius attenuates that by 1.7e-12 on the way down to -40 °C, so it takes 1.9e11 to
-    # outrun a 2.5 W/K loss from there. The mistake that actually reaches this branch is not a large
-    # number, it is a number attached to the wrong temperature.
+    # A rate read at a low reference temperature in the wrong unit: the realistic way to reach this
+    # branch. A large rate at the 100 °C reference is attenuated by Arrhenius on the way to -40 °C
+    # and does not raise.
     with pytest.raises(ThermalInputError, match="no stable ambient"):
         semenov_criticality(
             **{**DRUM, "heat_release_rate_w_per_kg": 1e6, "reference_temperature_c": -40.0}
@@ -121,9 +109,8 @@ def test_a_package_with_no_crossover_in_range_is_told_which_end_it_ran_off() -> 
 def test_heat_generation_extrapolates_along_arrhenius_in_both_directions() -> None:
     """The rate at the reference point is the rate given, and it falls as temperature falls.
 
-    The identity at the reference temperature is the assertion that catches a reciprocal written
-    the wrong way round — an error that leaves the extrapolation monotone and every derived number
-    wrong by an exponential.
+    The identity at the reference catches a reciprocal written the wrong way round, which keeps the
+    extrapolation monotone while every derived number is wrong.
     """
     at_reference = heat_generation_w(
         temperature_c=100.0,

@@ -1,26 +1,10 @@
-"""How much this pod labels at once, and what it does with the batch that arrives when full.
+"""How many batches this pod labels at once, and what it does with one that arrives when full.
 
-`MAX_BATCH` bounds one request; this bounds how many are in flight. The fleet's rule says in so
-many words that those are not the same bound, and here the distinction has teeth: the caller is
-Chemclaw3's corpus drain, so "many maximal batches arriving together" is normal traffic rather than
-an attack.
-
-Four properties, each with its own failure:
-
-- **The refusal is prompt.** A full pod turns a batch away before any work starts. A queued batch
-  of 500 comes back after `connector.yaml`'s `request_timeout` has expired — an answer nobody is
-  waiting for, computed at the expense of one somebody is.
-- **The slot outlives a caller that gave up.** Releasing on cancellation would hand the freed slot
-  to the drain's retry while the original batch was still burning a core.
-- **`labeller_version` stays answerable.** It is how a caller decides whether it needs to label at
-  all, so refusing it under load creates work rather than shedding it.
-- **A slot is a core, not a call.** The RDKit path is measured GIL-bound at one core; the mapper is
-  a transformer whose intra-op width torch takes from the node rather than from the cgroup, so a
-  call-counting ceiling under-counts by whatever that happens to be.
-
-The gated set is checked against the *served* surface rather than a list kept here, for the reason
-this repository keeps relearning: the thing that must not be forgotten is exactly the thing a
-forgetful change adds.
+`MAX_BATCH` bounds one request; this bounds how many are in flight, and the caller (Chemclaw3's
+corpus drain) sends many maximal batches as normal traffic. Properties pinned: a full pod
+refuses promptly instead of queueing past `request_timeout`; a slot outlives a caller that gave
+up; `labeller_version` stays answerable under load; a slot is a core, so the mapper is charged
+its torch threads. The gated set is derived from the served surface, not a list kept here.
 """
 
 from __future__ import annotations
@@ -131,9 +115,8 @@ def test_the_gate_refuses_once_the_ceiling_is_reached_and_reopens_when_one_finis
 def test_a_cost_wider_than_the_pod_is_clamped_rather_than_made_unadmittable() -> None:
     """A batch that costs more than the whole ceiling runs alone; it is never refused forever.
 
-    The alternative is a tool that configuration has deleted: a pod with one slot and a mapper
-    told to use four threads would refuse every labelling call, permanently, with nothing in the
-    message to say the ceiling was the reason.
+    Otherwise a one-slot pod with a four-thread mapper would refuse every labelling call, with
+    nothing saying the ceiling was why.
     """
     gate = Admission(2)
     assert gate.acquire("a represent_reactions", 64) == 2
@@ -146,13 +129,11 @@ def test_a_cost_wider_than_the_pod_is_clamped_rather_than_made_unadmittable() ->
 async def test_a_full_pod_refuses_the_next_batch_before_starting_it(
     one_slot: Admission, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The driven saturation probe: one batch in flight, the next refused promptly.
+    """One batch in flight, the next refused promptly.
 
-    "Promptly" is measured against the work it would have queued behind rather than against a bare
-    clock: the batch in flight holds its slot for `BLOCK_SECONDS`, so a gate that queued would
-    answer the second caller at the end of that and a gate that refuses answers immediately. The
-    peak concurrency is asserted too, because a refusal that still started the work would satisfy
-    the timing and be the defect.
+    "Promptly" is relative to the in-flight batch's `BLOCK_SECONDS`: a queueing gate would answer
+    at its end. Peak concurrency is asserted too, since a refusal that still started the work would
+    pass the timing.
     """
     blocking = _BlockingBatch()
     monkeypatch.setattr(tools, "_represent", blocking)
@@ -184,11 +165,10 @@ async def test_a_full_pod_refuses_the_next_batch_before_starting_it(
 async def test_the_slot_is_held_until_the_work_finishes_not_until_the_caller_gives_up(
     one_slot: Admission, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The half that breaks the retry loop.
+    """The slot is held until the work finishes, not until the caller gives up.
 
     Cancelling the awaiting coroutine does not stop the worker thread, so releasing on cancellation
-    would hand the freed slot to the drain's retry while the original batch was still burning a
-    core — the pod would believe it had room it does not have.
+    would give the drain's retry a slot while the original batch still burns a core.
     """
     blocking = _BlockingBatch()
     monkeypatch.setattr(tools, "_represent", blocking)
@@ -239,19 +219,11 @@ async def test_labeller_version_stays_answerable_while_the_pod_is_full(
 def test_a_batch_is_charged_the_mappers_threads_rather_than_one_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A slot is a core, and the mapper is the reason this server cannot count calls.
+    """A mapped batch is charged the mapper's threads rather than one call.
 
-    RXNMapper is a transformer: torch releases the GIL and parallelises inside one forward pass, at
-    a width it takes from the machine's physical cores rather than from the container's cgroup
-    unless `OMP_NUM_THREADS` pins it, which the image does at 1 and a deployment may raise. So a
-    gate counting calls would admit two
-    batches on a two-core pod while each ran four, eight or sixty-four threads. Charged its
-    threads, one mapped batch fills the pod and the next call is refused rather than admitted onto
-    a machine with no core left for it.
-
-    Driven with a stub `torch` rather than the real extra, which no test environment here carries:
-    the number under test is what `inference_threads()` *reads*, and reading it from a real torch
-    would assert this runner's core count instead.
+    Torch parallelises inside one forward pass at a width taken from `OMP_NUM_THREADS` or the
+    node's cores, not the cgroup, so counting calls would oversubscribe the pod. A stub `torch` is
+    used: the number under test is what `inference_threads()` reads, not this runner's core count.
     """
     assert mapping.inference_threads() == 1, "no mapper is installed, so the cost must be one core"
 
@@ -277,11 +249,11 @@ UNGATED = {"labeller_version"}
 
 
 def test_every_labelling_tool_is_gated_and_only_the_version_probe_is_not() -> None:
-    """Derived from the served surface, so a tool added next year is gated or this fails.
+    """Every labelling tool is gated and only the version probe is not, derived from the served
+    surface.
 
-    A hand-kept list of gated names here would be the second declaration this repository refuses
-    everywhere else: it would agree with itself while a new tool shipped as the one uncounted way
-    to load this pod.
+    A hand-kept list would agree with itself while a new tool shipped as an uncounted way to load
+    the pod.
     """
     manager = tools.server._tool_manager
     served = {tool.name for tool in asyncio.run(tools.server.list_tools())}
@@ -299,17 +271,10 @@ def test_every_labelling_tool_is_gated_and_only_the_version_probe_is_not() -> No
 def test_both_bounds_are_environment_variables_and_not_constants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The ceiling and the batch bound are both settable from outside the image.
+    """The ceiling and the batch bound are both settable from the environment.
 
-    `MAX_BATCH` was a bare `500` in the source, which is a bound nobody can loosen for a genuinely
-    larger drain without editing code — and one the fleet's own ratchet over what a deployment may
-    move could not see either.
-
-    **This test claimed to read the module twice and did neither.** It set two variables and then
-    compared a re-typed copy of the expression under test — `int(os.environ.get(...))` — to the
-    numbers it had just set, which asserts that `os.environ.get` works. `tools.MAX_BATCH` was never
-    read: hardcoding it back to `500` left this and 208 other tests green. It now executes the
-    module's own source under each environment and reads the values off *that*.
+    Executes the module's own source under each environment and reads the values off it, so
+    hardcoding either bound back fails here.
     """
     monkeypatch.setenv("CHEMCLAW_RXNLABEL_MAX_BATCH", "7")
     monkeypatch.setenv("CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES", "9")
@@ -327,10 +292,8 @@ def test_both_bounds_are_environment_variables_and_not_constants(
 def test_the_shipped_gate_enforces_the_shipped_default() -> None:
     """The module-level gate is the one the server serves behind, at the default ceiling.
 
-    Cheap and easy to leave out, and it is what makes every `monkeypatch`ed ceiling in this file
-    evidence about the real gate rather than about an `Admission` the tests built for themselves.
-    `servers/chem` has had it since its gate was written; this server copied the gate and not the
-    test.
+    This makes every monkeypatched ceiling in this file evidence about the real gate rather than
+    about an `Admission` the tests built for themselves.
     """
     assert isinstance(tools._admission, Admission)
     assert tools._admission.limit == DEFAULT_MAX_CONCURRENT_BATCHES
@@ -340,9 +303,7 @@ def test_the_shipped_gate_enforces_the_shipped_default() -> None:
 def test_a_gated_tool_still_advertises_its_real_signature() -> None:
     """`functools.wraps` is load-bearing: without it the tool's schema is `(*args, **kwargs)`.
 
-    FastMCP builds each tool's input schema from `inspect.signature`, which follows `__wrapped__`.
-    A gate that quietly replaced every argument name with `kwargs` would be invisible in this
-    server's own tests and fatal to the agent reading the schema.
+    FastMCP builds the input schema from `inspect.signature`, which follows `__wrapped__`.
     """
     schema = asyncio.run(tools.server.list_tools())
     batched = next(tool for tool in schema if tool.name == "represent_reactions")
@@ -350,12 +311,9 @@ def test_a_gated_tool_still_advertises_its_real_signature() -> None:
 
 
 def test_the_ceiling_is_the_pods_own_core_count() -> None:
-    """A slot is a core, so the default has to equal `limits.cpu` in the shipped Deployment.
+    """A slot is a core, so the default ceiling equals `limits.cpu` in the shipped Deployment.
 
-    Read from the file rather than transcribed. `servers/pyexec` shipped exactly this coupling as
-    two transcribed copies, and lowering `limits.cpu` there would have put two runs on one core
-    with the suite green; `servers/chem/tests/test_depiction_bound.py` is where the pattern of
-    reading the Deployment comes from.
+    Read from the file rather than transcribed, so changing either side alone fails here.
     """
     manifest = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
     containers = manifest["spec"]["template"]["spec"]["containers"]
@@ -373,17 +331,11 @@ def test_the_ceiling_is_the_pods_own_core_count() -> None:
 def test_a_bound_set_to_nothing_refuses_at_import_and_names_the_variable(
     monkeypatch: pytest.MonkeyPatch, variable: str, value: str
 ) -> None:
-    """Neither of this server's bounds has an "off", and both now say so instead of implying it.
+    """Neither bound has an "off": `0` or a negative refuses at import, naming the variable.
 
-    `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, so `0` is the value an operator is most
-    likely to try here — and it meant the opposite in both knobs. The ceiling raised a `ValueError`
-    that named the *number* and not the variable, which is a CrashLoopBackOff and a source to
-    guess. `CHEMCLAW_RXNLABEL_MAX_BATCH=0` was quieter and worse: measured, the pod started, passed
-    its readiness probe, and refused every batch with "0 reactions in one request exceeds the batch
-    limit of 0".
-
-    The assertion is on the variable's own name appearing in the message, because that is the one
-    thing an operator reading a crash loop can act on.
+    `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, so `0` is what an operator tries here;
+    a batch limit of 0 would start a ready pod that refuses every batch. The variable's name in the
+    message is what an operator reading a crash loop can act on.
     """
     monkeypatch.setenv(variable, value)
     with pytest.raises(ValueError, match=variable):

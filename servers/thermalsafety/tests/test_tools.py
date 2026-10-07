@@ -1,12 +1,8 @@
 """The tool surface: what a caller gets back, and what every answer is obliged to say about itself.
 
-`engine/` is tested for arithmetic. This file tests the *surface* — the shape of each result, the
-`basis` string every one of them carries, and the defaults the tools do and do not supply. Those
-are the parts a chemist reads, and none of them is exercised by an engine test.
-
-`@server.tool()` returns the undecorated function, so calling these directly skips pydantic's
-argument validation. That is deliberate here and the reason `test_server.py` exists: a bound that
-is only real over the wire is asserted over the wire.
+Covers result shapes, the `basis` every result carries, and the defaults the tools do and do not
+supply. `@server.tool()` returns the undecorated function, so wire-only bounds are asserted in
+`test_server.py`.
 """
 
 from __future__ import annotations
@@ -27,12 +23,10 @@ from chemclaw_mcp_thermalsafety.tools import (
 
 
 def test_every_tool_returns_a_basis_that_names_its_model_and_its_assumption() -> None:
-    """The one property every result here shares, asserted over all seven rather than one by one.
+    """Every tool returns a `basis` naming its model and assumption, asserted over the whole set.
 
-    A number from a Semenov balance and a number from an adiabatic balance answer different
-    questions, and a result that does not say which cannot be put in a report. It is checked as a
-    property of the set because the realistic regression is a *new* tool shipped without one —
-    which a per-tool test written alongside that tool would never catch.
+    Semenov and adiabatic numbers answer different questions; checking the set catches a new tool
+    shipped without one.
     """
     results = (
         adiabatic_temperature_rise(
@@ -81,12 +75,10 @@ def test_every_tool_returns_a_basis_that_names_its_model_and_its_assumption() ->
 
 
 def test_the_semenov_tool_says_in_its_own_words_that_it_is_not_an_sadt() -> None:
-    """The refusal that matters most on this server, and it must survive a docstring edit.
+    """The Semenov tool says in its own words that it is not an SADT.
 
-    A Semenov estimate quoted as an SADT is a transport classification made from arithmetic. The
-    disclaimer lives in three places — the docstring the model reads, the `basis` string the answer
-    carries, and the module header — and the one that travels with the *number* is this one, so it
-    is the one asserted.
+    The disclaimer that travels with the number is the `basis`, so that is the one asserted; a
+    Semenov estimate quoted as an SADT is a transport classification made from arithmetic.
     """
     result = semenov_critical_ambient(
         mass_kg=25.0,
@@ -117,12 +109,10 @@ def test_the_rounded_value_is_never_below_the_computed_one() -> None:
 
 
 def test_tmr_defaults_its_reference_to_the_temperature_asked_about() -> None:
-    """The one default this server supplies, and the reason it is safe to supply.
+    """TMR defaults its reference to the temperature asked about.
 
-    `reference_temperature_c` defaulting to `temperature_c` means "the rate you gave me was read
-    here" — an identity rather than an assumption, so the extrapolation is a no-op. Asserted by
-    comparing the default call against the explicit one, which is what makes it an identity claim
-    and not a spot value.
+    That default is an identity (the rate was read here), so the extrapolation is a no-op; asserted
+    by comparing default and explicit calls.
     """
     implicit = tmr_ad(
         temperature_c=150.0,
@@ -141,26 +131,12 @@ def test_tmr_defaults_its_reference_to_the_temperature_asked_about() -> None:
 
 
 def test_a_stated_reference_of_zero_celsius_is_a_reference_and_not_an_omission() -> None:
-    """The sentinel this field is read through, and truthiness discarded a real input.
+    """A stated reference of 0 °C is a reference, not an omission.
 
-    **`reference_temperature_c` defaulted to `0.0` and was read with `if ... else temperature_c`**,
-    so
-    a caller who stated "the rate was measured at 0 °C" — an ice-bath isothermal, the ordinary
-    reference for a peroxide or a diazo compound — had that silently replaced by `temperature_c`.
-    The Arrhenius extrapolation was then skipped and q(0 °C) used as though it were q(T_asked).
-
-    Measured at q = 1 W/kg, E_a = 100 kJ/mol, c_p = 1.8 kJ/(kg·K), asked at 150 °C: a stated
-    reference of **0.0** gave TMR_ad = 7.44 h where **0.001** gave 1.24e-06 h. A thousandth of a
-    degree moved the answer by a factor of six million, because q(150 °C) is 6.0e6 W/kg and the tool
-    was using 1. Carried into `stoessel_criticality_class`, which names this tool at
-    `target_hours=24` as its source, that is class 2 — "a cooling failure reaches neither barrier" —
-    against class 5, "the scenario has to be eliminated by process design".
-
-    So this asserts CONTINUITY rather than a spot value: 0.0 must sit between its neighbours, which
-    no
-    sentinel reading can satisfy by accident. The test above still holds the omitted case, and the
-    two
-    together are what make the field's two meanings distinguishable.
+    An ice-bath isothermal is an ordinary reference, and a truthiness test would replace it with
+    `temperature_c`, skipping the Arrhenius extrapolation by orders of magnitude and shifting the
+    Stoessel class. Asserted as continuity: 0.0 must sit between its neighbours, which no sentinel
+    reading satisfies by accident.
     """
     common = {
         "temperature_c": 150.0,
@@ -192,12 +168,11 @@ def test_a_stated_reference_of_zero_celsius_is_a_reference_and_not_an_omission()
 
 
 def test_tmr_extrapolates_the_rate_when_the_reference_is_a_different_temperature() -> None:
-    """The half the default hides: a rate measured hot, asked about cold, must be attenuated.
+    """A rate measured at another temperature is extrapolated along Arrhenius.
 
-    Without the extrapolation the rate at 200 °C would be used as the rate at 100 °C, making TMR_ad
-    shorter by orders of magnitude — an error in the *conservative* direction for the headline
-    number and in the dangerous direction for nothing, which is exactly why it would survive review
-    unnoticed. Asserted as an inequality against the un-extrapolated call.
+    Without it a hot rate would be used cold, shortening TMR_ad by orders of magnitude in the
+    conservative direction, which would survive review. Asserted as an inequality against the
+    un-extrapolated call.
     """
     extrapolated = tmr_ad(
         temperature_c=100.0,
@@ -216,11 +191,10 @@ def test_tmr_extrapolates_the_rate_when_the_reference_is_a_different_temperature
 
 
 def test_a_target_tmr_no_temperature_reaches_comes_back_as_a_note_rather_than_an_error() -> None:
-    """`tmr_ad`'s headline answer still exists when its secondary one does not.
+    """An unreachable target TMR comes back as a note, not an error.
 
-    The TMR at the temperature asked about is always computable; the *inverse* may not be. Failing
-    the whole call because T_D24 is out of range would withhold the number the caller asked for, so
-    the field is null and `note` carries the engine's own explanation verbatim.
+    The TMR at the asked temperature is always computable; failing the call because T_D24 is out of
+    range would withhold it, so the field is null and `note` carries the engine's explanation.
     """
     result = tmr_ad(
         temperature_c=25.0,
@@ -248,12 +222,10 @@ def test_the_criticality_ordering_comes_back_as_readable_strings_with_units() ->
 
 
 def test_a_domain_refusal_reaches_the_caller_as_a_value_error() -> None:
-    """`connector_app` passes `ValueError` through and replaces everything else with an error_id.
+    """Domain refusals are `ValueError`s, which `connector_app` passes through verbatim.
 
-    So these messages are only useful to a chemist if they stay in that family. Both families this
-    server raises are checked, because `FormulaError` and `ThermalInputError` are separate classes
-    and one of them subclassing something else would silently turn a worded message into an opaque
-    identifier.
+    Both `FormulaError` and `ThermalInputError` are checked, since either leaving the family would
+    turn a worded message into an opaque identifier.
     """
     assert issubclass(FormulaError, ValueError)
     assert issubclass(ThermalInputError, ValueError)
@@ -268,11 +240,10 @@ def test_a_domain_refusal_reaches_the_caller_as_a_value_error() -> None:
 
 
 def test_an_oversized_formula_is_refused_before_it_is_parsed() -> None:
-    """A bound on the input, which is what `docs/adding-a-server.md` asks of any unbounded one.
+    """An oversized formula is refused before it is parsed.
 
-    The parser is linear, so a megabyte of `C` is a megabyte of work and a dict with one key. Cheap
-    rather than dangerous — but unbounded, and this fleet bounds inputs rather than arguing about
-    which unbounded ones are affordable.
+    The parser is linear and cheap, but this fleet bounds every input rather than arguing which
+    unbounded ones are affordable.
     """
     with pytest.raises(FormulaError, match="at most"):
         oxygen_balance_screen(molecular_formula="C" * (MAX_FORMULA_CHARACTERS + 1))

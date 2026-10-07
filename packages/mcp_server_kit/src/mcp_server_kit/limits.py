@@ -1,47 +1,17 @@
-"""A structural-size bound every server applies before it canonicalises a SMILES.
+"""Resource bounds shared by the fleet: structure size, environment-read bounds, echo, admission.
 
-**RDKit's `MolToSmiles` and the tautomer canonicalizer recurse over the molecular graph, and a
-large enough linear molecule overflows the C stack** — the process dies with SIGSEGV (exit 139),
-which no `try`/`except` in Python can catch. Measured: `MolToSmiles(MolFromSmiles("C" * 20000))`
-segfaults, while the *parse* that produced the molecule returns normally in ~40 ms. So one ~20 KB
-authenticated tool call takes the whole pod down, and with it every other session sharing it — a
-denial of service that costs the caller one request.
+RDKit's `MolToSmiles` and tautomer canonicaliser recurse over the molecular graph, and a large
+linear molecule overflows the C stack — an uncatchable SIGSEGV that takes the pod down. So before
+any canonicalisation every server applies two config-driven bounds:
 
-The defence has to sit **before** any canonicalisation and it is the same in four servers
-(`chem`, `safety`, `rxnlabel`, `rxnpredict`), so it lives here once. Two independent bounds, both
-config-driven (a bound written as a magic number is one nobody can loosen for a real megamolecule
-without editing code):
+- `MAX_SMILES_CHARS` on the raw string, before parsing.
+- `MAX_MOLECULE_ATOMS` on the parsed atom count — the bound that stops the crash, with a ceiling
+  derived from this process's stack so it cannot be raised past what survives.
 
-- **`MAX_SMILES_CHARS`** — a cheap guard applied to the raw string *before* it is parsed, so a
-  pathological megastring never reaches `MolFromSmiles` at all. A real reagent SMILES is tens of
-  characters; the default is far above anything a process chemist submits.
-- **`MAX_MOLECULE_ATOMS`** — applied to `mol.GetNumAtoms()` after a successful parse and before
-  canonicalisation. This is the bound that actually stops the segfault, because the recursion depth
-  scales with the atom count, not the string length. **It is the one bound here with a ceiling as
-  well as a floor**, derived from this process's own stack rather than transcribed: a knob that
-  tunes a crash guard is also an off switch for it unless something stops it being turned up past
-  what the stack survives, and nothing did — see `env_bound` and `stack_safe_atom_ceiling`.
-
-Neither of those two functions raises: they return a *worded reason* or `None`. A server that
-refuses (a chemist is waiting) raises its own `ValueError` subclass with the reason; a server that
-ingests a corpus leniently (`rxnlabel`) treats a reason as "could not be read" and drops the one
-species. The reason string is caller-safe — it quotes only sizes, never the offending megastring —
-so it is safe to surface to the model verbatim through `connector_app`.
-
-**Every bound read here is also recorded, and `/healthz` reports the record.** The deployment
-ratchets in `tests/test_fleet.py` read the files this repository ships, so a bound moved by an
-overlay applied elsewhere, a Helm value or a `kubectl set env` is invisible to them and always will
-be. What the process can do is say what it is actually running with: `env_bound` and `env_ratio`
-record the value they return, `report_settings` records a settings object's numbers, and
-`connector_app`'s `/healthz` answers with `effective_bounds()` beside the corpus versions — so an
-operator's override is read from a probe rather than inferred from an image
-(`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
-
-**`env_bound` is the exception to that rule and its docstring says why**: it is how every server in
-this fleet reads a resource bound out of the environment at import, and a bound that cannot work
-has to stop the process rather than hand somebody a reason there is nobody to receive. It is here
-rather than beside any one server for the reason `Admission` is — every server already imports this
-module, and what varied between the hand-written copies was the sentence, not the check.
+Those checks return a caller-safe worded reason (sizes only) or `None`; the caller raises. Every
+bound read here is recorded and reported by `/healthz` via `effective_bounds()`, so a deployment
+override is visible from the probe. `env_bound`/`env_ratio` raise at import, because an unusable
+bound must stop the pod rather than refuse every request.
 """
 
 from __future__ import annotations
@@ -82,10 +52,8 @@ __all__ = [
 ]
 
 
-#: Every bound this process has resolved, by the environment variable that moves it. Written by
-#: `report_bound` — which `env_bound`, `env_ratio` and `report_settings` all go through — and read
-#: by `/healthz`. A plain dict under a lock rather than anything cleverer: it is written a few
-#: dozen times at import and read once per probe.
+#: Every bound this process has resolved, keyed by the environment variable that moves it.
+#: Written by `report_bound`, read by `/healthz`.
 _EFFECTIVE: dict[str, int | float | None] = {}
 _EFFECTIVE_LOCK = threading.Lock()
 
@@ -93,16 +61,12 @@ _EFFECTIVE_LOCK = threading.Lock()
 def report_bound(name: str, value: int | float | None) -> None:
     """Record the value this process is running a bound at, for `/healthz` to report.
 
-    Called by the two readers below for every bound they return, so a bound read through them needs
-    nothing more. A bound read any other way — a settings class, a per-call reader in `sessions.py`
-    or `executor.py` — calls this itself, and `tests/test_fleet.py::
-    test_every_bound_a_deployment_can_move_is_reported_on_the_probe` is what makes it.
+    `env_bound`, `env_ratio` and `report_settings` call this; any other bound reader must too
+    (`test_every_bound_a_deployment_can_move_is_reported_on_the_probe`).
 
     Args:
-        name: The environment variable that moves the bound, spelled as an operator would set it.
-        value: What the process is actually using — after defaults, floors and clamps, which is the
-            number an overlay's author needs to see. `None` means the bound is off, which only the
-            kit's own "0 means unbounded" knobs can say.
+        name: The environment variable that moves the bound.
+        value: The value in use after defaults, floors and clamps; `None` means the bound is off.
     """
     with _EFFECTIVE_LOCK:
         _EFFECTIVE[name] = value
@@ -111,14 +75,9 @@ def report_bound(name: str, value: int | float | None) -> None:
 def report_settings(settings: Any) -> None:
     """Record every numeric field of a `pydantic-settings` object under its environment name.
 
-    `servers/calc` and `servers/rxnpredict` configure themselves through `BaseSettings`, so their
-    bounds never pass through `env_bound`. The environment name is derived the way pydantic-settings
-    derives it for these classes — `env_prefix` plus the field name, upper-cased, or the field's
-    `validation_alias` where it has a literal one — and `bool` is skipped, since it is an `int` to
-    Python and a switch, not a bound, to an operator.
-
-    Duck-typed rather than importing `pydantic_settings`: the kit does not depend on it, and all
-    this needs is the model's field table, its config and the values.
+    The name is `env_prefix` plus the upper-cased field name, or a literal `validation_alias`.
+    `bool` fields are switches, not bounds, and are skipped. Duck-typed so the kit does not depend
+    on `pydantic_settings`.
     """
     prefix = str(settings.model_config.get("env_prefix", ""))
     for field, info in type(settings).model_fields.items():
@@ -133,10 +92,8 @@ def report_settings(settings: Any) -> None:
 def effective_bounds() -> dict[str, int | float | None]:
     """Every bound this process has resolved so far, sorted by name — what `/healthz` reports.
 
-    "So far" is literal: a bound declared in a module nothing has imported yet is not in it. Every
-    server here imports its tool modules before `connector_app` builds the app, which is where the
-    fleet's bounds live, and `sessions.py` and `executor.py` record theirs when they are first
-    resolved — before the lifespan completes, so before a probe can be answered.
+    Servers import their tool modules before `connector_app` runs, and the kit records its own
+    bounds before the lifespan completes, so the set is complete by the first probe.
     """
     with _EFFECTIVE_LOCK:
         return dict(sorted(_EFFECTIVE.items()))
@@ -145,11 +102,7 @@ def effective_bounds() -> dict[str, int | float | None]:
 def _refused(name: str, value: float, default: float, minimum: float, consequence: str) -> str:
     """The sentence both readers raise when a value is under the floor its call site declared.
 
-    One function because the two readers differ in the type they parse and in nothing a reader of
-    the message can see: an operator meeting `CHEMCLAW_RXNLABEL_MAX_BATCH=0` and one meeting
-    `CHEMCLAW_PROPS_MAX_TB_RATIO=0` need the same four facts in the same order — the variable, what
-    they set, what the floor is and why, and the way back. `:g` so a ratio reads `1.8` and a count
-    reads `500` rather than `500.0`.
+    Names the variable, the value set, the floor and why, and the default to return to.
     """
     return (
         f"{name}={value:g} is below the minimum of {minimum:g}: {consequence}. A bound has no "
@@ -163,68 +116,10 @@ def env_bound(
 ) -> int:
     """One resource bound read from the environment at import, refused here if it cannot work.
 
-    **The defect this exists for is a pod that starts and then refuses every request.** A bare
-    `int(os.environ.get(name, default))` accepts `0` and every negative, and a bound whose whole job
-    is to refuse has no "off": measured on `rxnlabel` before its own guard,
-    `CHEMCLAW_RXNLABEL_MAX_BATCH=0` started the pod, passed its readiness probe, and answered every
-    call with "0 reactions in one request exceeds the batch limit of 0". `0` is also the value an
-    operator is most likely to try, because `MCP_MAX_SESSIONS=0` means *no ceiling* one layer down
-    and here it means the opposite. So an unusable bound is a **startup** failure, which a kubelet
-    reports as a pod that never became ready rather than as a server quietly serving nothing.
-
-    **Raising is the whole point, and it is why this does not follow `Admission` and the two size
-    bounds in this module** — both of which return a worded reason and let their caller raise
-    (`D-2026-09-15-five-copies-varied-the-message-not-the-mechanism` has that argument). Those run
-    inside a request, where the reason is written for a chemist waiting on an answer and the caller
-    chooses the exception type the model will read. This runs at import: there is no request, no
-    model and no caller, and the only reader is an operator looking at a container log. A returned
-    reason would have exactly one possible handler at every call site, which is the shape the Rule
-    of Three says to inline rather than abstract.
-
-    **A bound that protects against a crash also needs a ceiling, and this had none.** `minimum`
-    stops an operator turning a bound down until it refuses everything; nothing stopped them turning
-    one *up* until it refuses nothing. That is harmless for a bound whose job is taste and load-
-    bearing for `MAX_MOLECULE_ATOMS`, whose job is to stop an uncatchable SIGSEGV: measured on this
-    container, `MCP_MAX_MOLECULE_ATOMS=999999999` is accepted at import and a 20,000-atom SMILES
-    then takes the pod down with exit 139, which is the exact denial of service the module docstring
-    above is written about. So `maximum` is optional and is passed exactly where exceeding it is a
-    crash rather than a preference — see `stack_safe_atom_ceiling`.
-
-    **What stays per-site is the wording and the floor**, which is the half that genuinely varies.
-    `consequence` is the server's own sentence about what the value would break, and `minimum` is
-    not `1` everywhere: `CHEMCLAW_CHEM_RENDER_SIZE_PX` is a canvas in pixels, not a count of
-    things, and a one-pixel canvas is not a smaller picture.
-
-    A non-integer is refused the same way rather than falling back with a warning, which is what
-    `executor.thread_pool_size` and `sessions.max_sessions` do with theirs. Those two have a
-    defensible runtime default and are read per call; these are read once, before the server has
-    accepted anything, and silently ignoring a number a deployment deliberately set is how a
-    deployment comes to believe a ceiling it does not have. An empty or whitespace-only value *is*
-    treated as unset, matching both of those and the way a Kubernetes `env:` entry with no value
-    arrives.
-
-    Args:
-        name: The environment variable, named in every refusal because it is the one thing an
-            operator reading a crash loop can act on — a traceback out of `int()` names neither
-            the variable nor the value.
-        default: What this bound is when the variable is unset. Named in the refusal too, so the
-            way back is in the message rather than in this repository.
-        minimum: The smallest value that still leaves the server able to do its work. Declared by
-            the call site, because only the call site knows what the number measures.
-        consequence: A clause completing "…: <consequence>." — what the rejected value would do to
-            this server, in the operator's own vocabulary.
-        maximum: The largest value this bound may take, where exceeding it breaks the server rather
-            than merely loosening it. `None` — the usual case — means the call site has a floor and
-            no ceiling. Passed only where the ceiling is a property of something this process does
-            not control, which today is the C stack.
-
-    Returns:
-        The configured value, which is at least `minimum` and, when one was given, at most
-        `maximum`.
-
-    Raises:
-        ValueError: The variable is set to something that is not a whole number, to a number below
-            `minimum`, or to a number above `maximum` when one was given.
+    A value below `minimum` (e.g. `0`) or above `maximum` (given only where exceeding it crashes
+    the server), or a non-integer, raises `ValueError` naming the variable, the floor and
+    `consequence` — a startup failure rather than a pod that refuses every request. An empty value
+    counts as unset (`default`).
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -253,48 +148,8 @@ def env_bound(
 def env_ratio(name: str, *, default: float, minimum: float, consequence: str) -> float:
     """One dimensionless ratio read from the environment at import, refused if it cannot work.
 
-    **`env_bound`'s argument applies unchanged and its type does not.**
-    `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` put every *integer* bound
-    behind that function, and one bound in this fleet is a ratio, so it stayed a bare
-    `float(os.environ.get(...))` and kept the whole defect the sweep was about. Measured on
-    `servers/props`' `CHEMCLAW_PROPS_MAX_TB_RATIO`, which multiplies a normal boiling point in
-    kelvin:
-
-        1.8 (the default)  toluene ceiling  417.6 °C   25 °C answers
-        1.0                toluene ceiling  110.6 °C   exactly the boiling point
-        0                  toluene ceiling -273.1 °C   every question refused
-        -1                 toluene ceiling -656.9 °C   below absolute zero
-        "loose"            ValueError: could not convert string to float: 'loose'
-
-    A pod started at `0`, passed its readiness probe, and refused every vapour-pressure question —
-    the same shape `CHEMCLAW_RXNLABEL_MAX_BATCH=0` had, one type over. The last line is the other
-    half: a bare traceback out of `float()` names neither the variable nor the way back.
-
-    **A floor and no ceiling, unlike `MAX_MOLECULE_ATOMS`.** That one has a `maximum` because
-    raising it re-arms an uncatchable SIGSEGV. Raising a *sanity* ratio loosens a bound and nothing
-    more, and `correlations.py` argues for that on purpose — a deployment holding a real critical
-    temperature, or asking a supercritical question deliberately, is meant to be able to. A ceiling
-    here would contradict the decision the knob exists to serve.
-
-    Separate from `env_bound` rather than folded into it: `int` refusing `"1.8"` is a feature of
-    every caller of that function, so a shared parser would have to be told which type it is
-    reading at each of twelve call sites to keep it. What the two genuinely share is the wording,
-    and that is what `_refused` holds.
-
-    Args:
-        name: The environment variable, named in every refusal because it is the one thing an
-            operator reading a crash loop can act on.
-        default: What this ratio is when the variable is unset. Named in the refusal too.
-        minimum: The smallest ratio that still leaves the server able to do its work. Declared by
-            the call site, because only the call site knows what the ratio multiplies.
-        consequence: A clause completing "…: <consequence>." — what the rejected value would do.
-
-    Returns:
-        The configured ratio, which is at least `minimum`.
-
-    Raises:
-        ValueError: The variable is set to something that is not a finite number, or to one
-            below `minimum`.
+    `env_bound`'s rules for a float: a floor and no ceiling (raising a sanity ratio only loosens
+    it); a non-finite, non-numeric or below-`minimum` value raises `ValueError` naming the variable.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -307,10 +162,7 @@ def env_ratio(name: str, *, default: float, minimum: float, consequence: str) ->
             f"{name}={raw!r} is not a number, so this server cannot size the bound it controls; "
             f"unset it for the default of {default:g} or give it a value of at least {minimum:g}"
         ) from None
-    # `float()` parses "nan" and "inf", and neither is caught by the floor: `nan < minimum` is
-    # False, so the one value that disables the bound outright walked past the check written to
-    # stop a value disabling it. Every comparison against a nan ceiling is False, and an infinite
-    # ceiling is never crossed, so both are an off switch rather than a loosening.
+    # `float()` accepts "nan" and "inf"; both would slip past the floor and disable the bound.
     if not math.isfinite(value):
         raise ValueError(
             f"{name}={raw!r} is not a finite number, and a bound multiplied by it is never "
@@ -332,37 +184,24 @@ MAX_SMILES_CHARS = env_bound(
     minimum=1,
     consequence="every structure this fleet is given would be refused before it is parsed",
 )
-#: Atoms of linear chain the canonicaliser survives per KiB of C stack, halved for margin.
-#:
-#: **Measured rather than reasoned**, on the installed RDKit, by canonicalising `"C" * n` under a
-#: reduced `ulimit -s` and reading the exit status: a 1 MiB stack survives 2,000 atoms and dies at
-#: 2,500, a 2 MiB stack dies at 4,500, an 8 MiB stack survives 18,000 and dies at 20,000. That is
-#: 2.0 to 2.4 atoms per KiB across an eightfold range of stack, so the threshold is linear in the
-#: stack and `1` is that slope with a factor of two in hand. The margin is not decoration: the
-#: constant is measured on a *linear* chain, and how deep a graph of a given atom count recurses
-#: depends on its shape.
+#: Atoms of linear chain the canonicaliser survives per KiB of C stack, with a factor-of-two
+#: margin over the measured ~2 atoms/KiB (linear in stack size); branched graphs recurse
+#: differently.
 ATOMS_PER_KIB_OF_STACK = 1
 
 
 def stack_safe_atom_ceiling(*, floor: int) -> int:
     """The largest `MAX_MOLECULE_ATOMS` this process's own C stack can survive.
 
-    **The ceiling on the atom bound is a property of the container, not of this repository**, so
-    transcribing a number here would be a claim about somebody else's `ulimit -s`. The process can
-    read its own: `RLIMIT_STACK`'s soft limit is what the main thread gets, and the threshold scales
-    linearly with it (`ATOMS_PER_KIB_OF_STACK` has the measurement).
+    Derived from `RLIMIT_STACK`'s soft limit times `ATOMS_PER_KIB_OF_STACK`, since the stack size is
+    a property of the container.
 
     Args:
-        floor: The module's own default for the bound. The derived ceiling is never returned below
-            it, because a deployment that changed nothing must not newly fail to start — but a
-            deployment where the derivation lands *under* the default is one whose default is
-            itself thin, so that case is reported at WARNING rather than clamped in silence. This is
-            the same choice Chemclaw3 makes when its compaction trigger floors.
+        floor: The bound's default. The ceiling is never below it, so an unchanged deployment still
+            starts; a derivation under it is logged at WARNING.
 
     Returns:
-        The ceiling, in atoms, always at least `floor`. An unlimited stack yields no useful
-        derivation, so `floor` is returned for that too — with nothing logged, since an unlimited
-        stack is not a thin one.
+        The ceiling in atoms, at least `floor`; `floor` for an unlimited stack.
     """
     soft, _hard = resource.getrlimit(resource.RLIMIT_STACK)
     if soft == resource.RLIM_INFINITY:
@@ -390,10 +229,7 @@ MAX_MOLECULE_ATOMS = env_bound(
     # One atom, for the same reason: a parsed molecule always has at least one, so `0` refuses
     # every molecule that got past the parser — after the parse, which is the expensive half.
     minimum=1,
-    # The one ceiling in this module, because this is the one bound whose job is to stop a crash.
-    # Raising it past what the stack survives does not loosen a limit, it re-arms the SIGSEGV the
-    # module docstring above is written about — measured, `MCP_MAX_MOLECULE_ATOMS=999999999` was
-    # accepted and a 20,000-atom SMILES then killed the pod with exit 139.
+    # The one ceiling here: raising this bound past what the stack survives re-arms the SIGSEGV.
     maximum=stack_safe_atom_ceiling(floor=DEFAULT_MAX_MOLECULE_ATOMS),
     consequence=(
         "below it every molecule would be refused after it is parsed and before it is "
@@ -411,9 +247,7 @@ def smiles_length_error(
 ) -> str | None:
     """A worded reason `smiles` is too long to parse safely, or `None` if it is within bounds.
 
-    Applied to the raw string *before* `MolFromSmiles`, so a megastring never reaches the parser.
-    The message quotes the length and the limit, never the string itself — a 500 KB SMILES echoed
-    into a refusal would flood the log and the model context it is meant to protect.
+    Applied before `MolFromSmiles`; quotes only the length and limit, never the string.
     """
     if len(smiles) > max_chars:
         return (
@@ -432,9 +266,7 @@ def atom_count_error(
 ) -> str | None:
     """A worded reason a molecule of `num_atoms` atoms is too large, or `None` if within bounds.
 
-    Applied after a successful parse and **before** any `MolToSmiles`/tautomer canonicalisation,
-    which recurse over the graph and overflow the C stack (an uncatchable SIGSEGV) on a large
-    linear molecule. `max_atoms` is far above any real reagent.
+    Applied after parsing and before any canonicalisation, which would overflow the C stack.
     """
     if num_atoms > max_atoms:
         return (
@@ -459,29 +291,16 @@ MAX_ECHO_CHARS = env_bound(
 def echo(text: str, *, limit: int | None = None) -> str:
     """Caller-supplied text, bounded for quoting in a refusal: the head, then the full length.
 
-    **Every refusal that quotes what it was given goes through this, because of where a refusal
-    goes.** `connector_app` passes a `ValueError` to the model verbatim, so an unbounded echo is
-    unbounded caller-influenced text in the context window of the turn that asked — and a log line
-    nobody reads. `MAX_SMILES_CHARS` above is not that bound: it is 4,000 characters and exists to
-    stop a parse, so a structure inside it is an ordinary accepted call and was quoted whole.
-    Measured 2026-09-12 on `servers/calc`: `predict_pka` on `"C" * 1500` raised a 1,587-character
-    refusal where a bounded echo produces about two hundred.
-
-    **It lives here rather than in each server because four servers each declared it.** `chem`,
-    `calc`, `safety` and `rxnpredict` carried their own 120-character constant and their own copy of
-    this function, and most refusal sites in those servers interpolated the structure directly
-    anyway — the copies bounded the sites written beside them and nothing else. One config-driven
-    constant, `MCP_MAX_ECHO_CHARS`, is what `tests/test_fleet.py::
-    test_no_refusal_interpolates_caller_text_past_the_echo_bound` holds every refusal to.
+    A `ValueError` reaches the model verbatim, so every refusal quoting caller text goes through
+    this (`test_no_refusal_interpolates_caller_text_past_the_echo_bound`).
 
     Args:
-        text: The caller's string, as typed. Not stripped — what is quoted is what was sent.
-        limit: The characters of `text` kept before the ellipsis. `None` means `MAX_ECHO_CHARS`,
-            read at call time so a reimported module under a test's environment is what applies.
+        text: The caller's string, unstripped.
+        limit: Characters kept before the ellipsis; `None` means `MAX_ECHO_CHARS`, read
+            at call time.
 
     Returns:
-        `text` itself when it is at most `limit` characters; otherwise its first `limit` characters,
-        an ellipsis and `(<length> chars)`, so nothing about the size of the input is hidden.
+        `text` if at most `limit` characters, else its head, an ellipsis and `(<length> chars)`.
     """
     bound = MAX_ECHO_CHARS if limit is None else limit
     return text if len(text) <= bound else f"{text[:bound]}… ({len(text)} chars)"
@@ -490,13 +309,10 @@ def echo(text: str, *, limit: int | None = None) -> str:
 class Slots(NamedTuple):
     """The outcome of asking for concurrency slots, decided under the lock.
 
-    `free` is carried out of the lock with the decision rather than read afterwards, because a
-    refusal message quoting a count sampled later is quoting a number that was never true: between
-    the refusal and the read, another call can finish.
+    `free` is captured with the decision, so a refusal quotes a count that was true.
 
     Attributes:
-        charged: The slots actually taken, or `None` if the budget had no room. Not always the
-            `cost` asked for — see `Admission.take`'s clamp.
+        charged: The slots taken (see `Admission.take`'s clamp), or `None` if there was no room.
         free: Slots free at the instant the decision was made.
     """
 
@@ -507,15 +323,8 @@ class Slots(NamedTuple):
 def at_capacity_marker(server: str) -> str:
     """The token that opens every full-pod refusal from `server`: `[<server>-at-capacity]`.
 
-    A refused tool call crosses MCP as one text block with `isError` set and nothing else — no error
-    code, no structured payload — so the head of the message is the only channel a caller has for
-    telling "this pod is full, the identical call will succeed shortly" from "this input is wrong".
-    `calc` found that first and minted `[calc-at-capacity]`; every other gated server refused
-    with a plain `ValueError`, so a full `rxnpredict` or `pyexec` pod read to Chemclaw3 as bad
-    input and was never retried. One format for the fleet is what lets a caller queue and retry
-    *any* heavy tool rather than one: Chemclaw3 matches `[<name>-at-capacity]` at the head of the
-    message, and `calc`'s existing token is this function's value for `"calc"`, so nothing already
-    matching it changes.
+    A refused MCP call carries only text, so this prefix is how a caller tells "full, retry shortly"
+    from "bad input"; Chemclaw3 matches it to queue and retry.
     """
     return f"[{server}-at-capacity]"
 
@@ -523,36 +332,16 @@ def at_capacity_marker(server: str) -> str:
 class AtCapacityError(ValueError):
     """This pod is full; the identical call may well succeed once admitted work finishes.
 
-    A `ValueError` so `connector_app` still passes it to the caller verbatim as a deliberately
-    worded refusal rather than replacing it with an internal-error notice. Built by
-    `Admission.refuse`, which is what puts the marker at the head of the message.
+    A `ValueError` so `connector_app` passes it verbatim; built by `Admission.refuse`.
     """
 
 
 class Admission:
     """A ceiling on how much of a server may run at once: the counter, the clamp and the lock.
 
-    **This class does not raise, for the same reason the two bounds above do not.** A refusal has to
-    be worded for the caller who receives it, and that wording is the one genuinely per-server part:
-    `chem`'s names a replica because raising its ceiling cannot help, `calc`'s names a knob and
-    leads with a marker Chemclaw3 matches, `rxnlabel`'s tells a drain to re-send the identical
-    batch. So the arithmetic lives here once and the sentence stays with the server, exactly as
-    `smiles_length_error` returns a reason and lets its caller raise.
-
-    **What was measured before this was extracted.** Five servers carried a copy of this class, and
-    with every string literal erased the mechanisms reduced to *three* distinct bodies: `chem` and
-    `pyexec` byte-identical to each other, `rxnlabel` and `rxnpredict` byte-identical to each other,
-    and `calc` differing from both in one expression — the exception it raises. With `cost`
-    defaulting to 1 the first split is not a difference at all, so what five copies actually varied
-    was the error type and the message. That is the case for extracting the rest.
-
-    **Guarded by a lock rather than an `asyncio.Semaphore`**, and this is the part worth keeping in
-    one place: slots are taken on the event loop and given back from whichever thread or callback
-    finishes the work, and **nothing ever waits**. A full budget is an immediate refusal. A
-    semaphore would make a caller queue, and a queued minute-long call returns after its
-    `request_timeout` has expired — computed at the expense of one somebody is still waiting for.
-
-    A server subclasses this and adds the verb its call sites use:
+    Does not raise: the refusal wording is per-server, so a subclass adds the verb that raises.
+    Guarded by a lock, not an `asyncio.Semaphore`, because nothing may wait: a full budget is an
+    immediate refusal, since a queued long call would finish after its caller's timeout.
 
         class Admission(mcp_server_kit.limits.Admission):
             server = "mine"
@@ -564,10 +353,7 @@ class Admission:
                 return taken.charged
     """
 
-    #: The noun this server counts, used in the construction refusal. A subclass sets it, because
-    #: "would refuse every depiction" and "would refuse every labelling batch" are the operator's
-    #: own vocabulary — the same argument as the refusal message, at one word instead of a
-    #: paragraph, and so not worth an `__init__` override.
+    #: The noun this server counts, for the construction refusal; a subclass sets it.
     unit = "call"
 
     #: The server this gate belongs to: the `server` label on the admission metrics and the name in
@@ -575,11 +361,12 @@ class Admission:
     server: ClassVar[str] = ""
 
     def __init__(self, limit: int, *, server: str | None = None) -> None:
-        """Args:
-        limit: the most slots that may be held at once. Must be at least one.
-        server: overrides the class's `server`; one of the two must name it, because an unnamed
-            gate would publish its occupancy under an empty label and refuse with a marker no
-            caller matches.
+        """Create a gate of `limit` slots.
+
+        Args:
+            limit: The most slots that may be held at once; at least one.
+            server: Overrides the class's `server`; one must be set, or occupancy is
+                published under an empty label and the refusal marker matches nothing.
         """
         if limit < 1:
             raise ValueError(f"an admission ceiling of {limit} would refuse every {self.unit}")
@@ -601,8 +388,7 @@ class Admission:
     def refuse(self, sentence: str) -> AtCapacityError:
         """The full-pod refusal: the server's own sentence, led by the fleet's marker.
 
-        Returned rather than raised, like `smiles_length_error`, so the `raise` stays at the call
-        site that owns the wording.
+        Returned rather than raised, so the `raise` stays at the call site that owns the wording.
         """
         return AtCapacityError(f"{self.marker} {sentence}")
 
@@ -621,14 +407,13 @@ class Admission:
         """Take `cost` slots if the budget has room, without waiting and without raising.
 
         Args:
-            cost: How many slots this call occupies. **Clamped into `1..limit`**: a cost of zero
-                would make a call uncounted, and a cost above the ceiling would make it permanently
-                unadmittable, so an over-large one takes the pod exclusively instead. That clamp is
-                the subtle half of this class and the reason it is worth having one copy of.
+            cost: Slots this call occupies, clamped into `1..limit`: zero would go
+                uncounted, and more than the ceiling would never be admitted, so it takes
+                the pod exclusively instead.
 
         Returns:
-            `Slots`, whose `charged` is the slots taken — which `release` must be given back, and
-            which is not always `cost` — or `None` when the budget had no room.
+            `Slots`, whose `charged` must be given back to `release`, or is `None` when
+            there was no room.
         """
         charge = max(1, min(cost, self._limit))
         with self._lock:
@@ -649,26 +434,15 @@ class Admission:
     async def hold(self, work: Awaitable[_T], charged: int) -> _T:
         """Await admitted work, giving its slots back when the *work* ends, not its awaiter.
 
-        Reached through `admit`, after the server's own `acquire` succeeded, with the `charged` it
-        returned — the refusal stays per-server, the release does not. Six servers hand-wrote this
-        same four-line sequence and its done-callback; it is here once because each line is a
-        load-bearing choice rather than boilerplate:
-
-        - **`asyncio.shield`**, because cancelling the awaiting coroutine does not stop the worker
-          thread underneath it. Releasing on cancellation would hand a slot to a retry while the
-          original burn continued — a caller times out, retries, and the second computation lands
-          beside the first on a pod that thinks it has room.
-        - **Release in a done-callback on the inner task**, so the slots come back when the CPU is
-          actually free again, whether the work returned, raised or was itself cancelled.
-        - **Retrieve the exception**, because a shielded task whose awaiter was cancelled has
-          nobody left to receive its failure, and asyncio logs "exception was never retrieved"
-          at exit for every one — noise in the logs of exactly the incident a ceiling exists for.
+        - `asyncio.shield`, because cancelling the awaiter does not stop the worker thread;
+          releasing on cancellation would admit a retry beside the still-running original.
+        - Release in a done-callback on the inner task, whether it returned, raised or was
+          cancelled.
+        - Retrieve the exception, so an abandoned failure does not log "never retrieved".
 
         Args:
-            work: The admitted computation — a coroutine, typically the tool body or an
-                `asyncio.to_thread(...)`. Scheduled here, so it must not have been awaited yet.
-            charged: The slots `take` charged for it (its `Slots.charged`), which is not always
-                the cost asked for, because `take` clamps.
+            work: The admitted computation, not yet awaited.
+            charged: The slots `take` charged for it (not always the cost asked for).
 
         Returns:
             Whatever the work returns; its exception, if it raises.
@@ -686,26 +460,9 @@ class Admission:
     async def admit(self, work: Awaitable[_T], acquire: Callable[[], int]) -> _T:
         """Charge admitted work and `hold` it, with the work built *before* anything is charged.
 
-        This is the order every gated tool needs and the one six of them had backwards: they called
-        `acquire` and only then `work(*args, **kwargs)`. Calling an `async def` binds its arguments
-        on the spot, so a call the signature does not accept raised `TypeError` *between* the charge
-        and `hold` — the only place a slot is ever given back — and the slot was gone for the life
-        of the process. A ceiling of one lost to one malformed direct call is a pod that refuses
-        everything. Taking the already-built awaitable makes the leak unrepresentable here: a bad
-        call fails while building the argument, before this method runs.
-
-        The other order has a cost of its own, paid here once: on a refusal the built coroutine was
-        never scheduled, and asyncio warns "coroutine ... was never awaited" when it is collected —
-        noise on exactly the saturated pod whose logs somebody is reading. So it is closed.
-
-        Args:
-            work: The admitted computation, built but not yet awaited — see `hold`.
-            acquire: The server's own charge, returning the slots it took and raising its own
-                caller-worded refusal. A callable rather than a count so the refusal happens here,
-                after `work` exists, where it can be cleaned up.
-
-        Returns:
-            Whatever the work returns; the refusal or the work's exception, if either raises.
+        `work` is an already-built awaitable, so a bad call fails before a slot is taken and no slot
+        can leak; `acquire` is the server's own charge, which may raise its refusal, after which the
+        unused coroutine is closed.
         """
         try:
             charged = acquire()

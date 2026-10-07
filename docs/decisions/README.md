@@ -1,44 +1,14 @@
 # `docs/decisions/` — the record
 
-Why this fleet is the way it is, one file per decision. A decision that has changed gets a **new**
-record that supersedes the old one; a merged record is never edited, because it is right about the
-moment it was written.
+Why this fleet is the way it is, one file per decision. [`CURRENT.md`](CURRENT.md) is the one-page
+index of what is in force.
 
-## The convention
-
-**Name the file `D-YYYY-MM-DD-<slug>.md`** — today's date plus a slug naming the decision — give it
-the heading `# D-YYYY-MM-DD-<slug> — Title`, and add its row to the table below. That is the whole
-procedure: nothing to reserve, nothing to coordinate with another session.
-
-The id is the **whole stem**, not the date. A second record on the same day is normal here, and an
-id that names more than one decision is the failure this ledger exists to prevent. Two authors
-collide only on the same date *and* the same slug, and even that arrives as an add/add conflict on a
-filename, which git reports loudly.
-
-**There is no numbered sequence here and there must never be one.** [`Chemclaw3`] has a frozen
-`D-NNN` range because it started with one and the citations to it still have to resolve; its record
-of why that ended (`D-2026-07-31-adr-ids-that-cannot-collide`) is the reason this repository skips
-the stage: "highest on `origin/main`, plus one" is a read that is stale the instant another session
-pushes, and many sessions run at once across this family. Allocating a number here would import a
-solved problem. `tests/test_decision_log.py` rejects the shape outright, in both directions.
-
-**There is no "By topic" index yet, deliberately.** A second index buys navigation and costs an
-update nobody is reminded to make: the sibling's went stale by a whole month of records under four
-green assertions about the record table beside it, because nothing checked it. It starts paying for
-itself somewhere past a hundred records, when reading the table below stops being how you find the
-current decision on a subject. Add it *with* the ratchet that fails when a new record lands unfiled
-— not before, and not without.
-
-**Every record ends with a `## What keeps it true` section naming the `test_*` that holds it.** That
-section is the load-bearing half: it is what a later session reads to find out whether a claim is
-still enforced, and `test_every_test_a_record_names_still_exists` resolves every name in it against
-the suite, so a rename cannot retire a citation in silence. A record with nothing to name is a
-record whose decision nothing enforces, and saying so is more useful than an empty heading.
-
-**A number written here is a dated measurement of a named commit, never a claim about `HEAD`.** The
-same rule `CLAUDE.md` applies to itself, for the same reason: the past does not move, so a
-measurement attributed to a commit cannot go stale, while a bare figure is a claim about its
-author's afternoon. Anything that must stay true belongs in a test, and the record cites it.
+- **Name** a record `D-YYYY-MM-DD-<slug>.md`, heading `# D-YYYY-MM-DD-<slug> — Title`, start from
+  [`TEMPLATE.md`](TEMPLATE.md), and add its row to the table below in date order. No numbers.
+- **Write one** for a choice between options or a decline (with `Revisit when:`); a defect fix is a
+  commit and a test. Records from 2026-10-07 on carry an `## Options` section.
+- **Never edit** a merged record, except to add a `Superseded-by:` line; a changed decision gets a new
+  record. Every record ends with `## What keeps it true`, whose test names must resolve.
 
 ## The record
 
@@ -148,5 +118,6 @@ author's afternoon. Anything that must stay true belongs in a test, and the reco
 | [D-2026-10-02-an-unrecognised-name-is-said-in-words](D-2026-10-02-an-unrecognised-name-is-said-in-words.md) | An unrecognised name is said in words |
 | [D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name](D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name.md) | The rebinding guard stays on and is told the Service name |
 | [D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads](D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads.md) | A Deployment reads its bearer from the Secret its caller reads |
+| [D-2026-10-07-the-record-gets-lean](D-2026-10-07-the-record-gets-lean.md) | The record gets lean: decisions in ADRs, rules in CLAUDE.md, architecture in tests |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

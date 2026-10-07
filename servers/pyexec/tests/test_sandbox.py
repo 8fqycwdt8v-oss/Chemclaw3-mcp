@@ -1,13 +1,8 @@
 """What the sandbox refuses, and what it still lets through.
 
-Every other server in this fleet is tested for the answers it gives. This one is tested for the
-answers it *denies*, because its input is a program: the failure that matters is not a wrong number
-but a run that reached something it should not have.
-
-**The bounds are tightened for the suite and that is deliberate.** `Limits()`'s defaults are sized
-for a chemist's analysis; a test that waits 20 s to prove a timeout works is a test somebody deletes
-for being slow. `_fast()` shortens the clock and nothing else, so what is under test is the
-mechanism rather than the number.
+The input is a program, so the failure that matters is a run reaching something it should not.
+`_fast()` shortens the clock for the suite and nothing else, so the mechanism is under test
+rather than the production number.
 """
 
 from __future__ import annotations
@@ -78,11 +73,10 @@ def test_numpy_and_pandas_are_available() -> None:
 
 
 def test_scipy_submodules_import_lazily_inside_a_call() -> None:
-    """The regression the first guard design caused, pinned so it cannot come back.
+    """Library-internal lazy imports do not go through the allowlist.
 
-    `scipy.optimize` imports `sys` lazily *at call time*. A `sys.modules` purge plus a `meta_path`
-    finder refused it, so `brentq` raised `SandboxImportError` — measured, and the reason the guard
-    is a replaced `__import__` instead. A library's imports must not go through the allowlist.
+    `scipy.optimize` imports `sys` at call time; a `meta_path` guard refused it and broke `brentq`,
+    which is why the guard is a replaced `__import__`.
     """
     outcome = run(
         "from scipy import optimize\nresult = float(optimize.brentq(lambda x: x*x - 2, 0, 2))",
@@ -156,8 +150,8 @@ def test_open_reads_a_path_outside_the_jail_the_same_way_it_always_refused_it() 
 
 
 # --------------------------------------------------------------------------------------------
-# The jailed filesystem. `open` was restored so a program could write a plot or read one back
-# inside its own call; these tests are the boundary of that restoration.
+# The jailed filesystem: `open` is restored so a program can write or read back a file inside its
+# own call; these tests are the boundary of that restoration.
 # --------------------------------------------------------------------------------------------
 
 
@@ -213,12 +207,12 @@ def test_a_file_descriptor_is_refused_rather_than_resolved() -> None:
 
 
 def test_a_chdir_does_not_relocate_the_jail() -> None:
-    """A regression test for a bypass measured against an earlier version of this file: the jail
-    used to be `Path.cwd().resolve()`, re-read on every `open()` call, and `os` is reachable through
-    an already-allowed module's own attributes (`uuid.os`) with no import-guard escape needed — so
-    `os.chdir('/')` followed by an ordinary `open('etc/passwd')` read the real file. The jail is now
-    pinned once, in `main()`, before `exec()` ever runs, so relocating `cwd` only moves where a
-    *relative* path is joined from, never what it is checked against."""
+    """A `chdir` does not relocate the jail.
+
+    `os` is reachable through an allowed module (`uuid.os`), so the jail is pinned once in `main()`
+    before `exec()`; moving `cwd` changes where a relative path is joined from, never what it is
+    checked against.
+    """
     outcome = run(
         "import uuid\nos = uuid.os\nos.chdir('/')\nresult = open('etc/passwd').read()",
         limits=_fast(),
@@ -231,11 +225,12 @@ def test_a_chdir_does_not_relocate_the_jail() -> None:
 
 
 def test_open_does_not_accept_a_custom_opener() -> None:
-    """A regression test for a second bypass: `open()`'s own `opener=` callback receives `(name,
-    flags)` and may return a descriptor for any path, ignoring `name` entirely — forwarding it would
-    let a harmless-looking, in-jail `file=` argument be paired with an opener that reads or writes
-    somewhere else altogether. The guarded `open()`'s signature has no `**kwargs`, so passing
-    `opener` fails before any path is even checked."""
+    """`open()` does not accept a custom `opener`.
+
+    An `opener` receives `(name, flags)` and may open any path, so forwarding it would bypass the
+    jail behind an in-jail `file=`. The guarded signature has no `**kwargs`, so it fails before any
+    path is checked.
+    """
     outcome = run(
         "import uuid\nos = uuid.os\n"
         "def sneaky(path, flags):\n"
@@ -250,11 +245,11 @@ def test_open_does_not_accept_a_custom_opener() -> None:
 
 
 def test_a_self_referential_result_degrades_to_repr_instead_of_crashing_the_runner() -> None:
-    """A regression test: recursing into `dict`/`list`/`tuple` to find nested bytes (see `_encode`)
-    means a cyclic container now recurses forever unless it is caught explicitly. Before that cycle
-    guard existed, this raised an uncaught `RecursionError` that killed the runner before it could
-    write any result at all — for a caller mistake that `json.dumps`'s own cycle detection used to
-    turn into a graceful `repr()` fallback."""
+    """A self-referential result degrades to `repr()` instead of crashing the runner.
+
+    `_encode` recurses into containers to find nested bytes, so a cycle must be caught explicitly or
+    a `RecursionError` would kill the runner before it writes any result.
+    """
     outcome = run("result = []\nresult.append(result)", limits=_fast())
     assert outcome.error is None, outcome.error
     assert not outcome.timed_out
@@ -262,11 +257,11 @@ def test_a_self_referential_result_degrades_to_repr_instead_of_crashing_the_runn
 
 
 def test_leaked_file_handles_are_closed_before_the_result_is_written() -> None:
-    """A regression test: `open()` existing at all means a careless (not malicious) program can
-    exhaust `RLIMIT_NOFILE` by never closing what it opens — and before this fix, the *runner's
-    own* final write of `result.json` shared that same exhausted budget and failed right after the
-    caller's program had already computed a perfectly good answer, discarding it. Opened handles
-    are now closed once `exec()` returns, reclaiming the budget before the runner needs it."""
+    """Leaked file handles are closed before the result is written.
+
+    A program that never closes what it opens can exhaust `RLIMIT_NOFILE`; handles are closed once
+    `exec()` returns so the runner's own `result.json` write still has budget.
+    """
     outcome = run(
         "fs = []\n"
         "try:\n"
@@ -322,12 +317,10 @@ def test_bytes_nested_inside_a_dict_result_are_also_encoded() -> None:
 
 
 def test_a_plot_can_be_written_read_back_and_returned_as_bytes() -> None:
-    """The end-to-end path the matplotlib dependency exists for: savefig, guarded open, base64 out.
+    """The matplotlib path end to end: savefig, guarded open, base64 out.
 
-    A small, low-DPI figure on purpose: the base64 envelope is ~1.33x the PNG's own bytes, and this
-    keeps the encoded result comfortably under the default 20,000-character result cap so the test
-    is about the round-trip rather than about the truncation `result_chars` already has its own test
-    for.
+    A small, low-DPI figure keeps the base64 result under the default result cap, so the test is
+    about the round-trip and not about truncation.
     """
     outcome = run(
         "import matplotlib.pyplot as plt\n"
@@ -391,12 +384,10 @@ def test_the_other_withheld_builtins_are_gone(name: str) -> None:
 
 
 def test_the_environment_carries_no_credential() -> None:
-    """The child's environment is *built*, not filtered, so a token cannot arrive by being new.
+    """The child's environment is built from an allowlist, so a token cannot arrive by being new.
 
-    Set a variable shaped exactly like this server's own bearer token and prove the child never sees
-    it. Filtering a copy of `os.environ` would pass this test only until somebody added a variable
-    nobody thought of — which is why the code builds an allowlist instead, and why this asserts on
-    the whole environment rather than on one name.
+    Sets a variable shaped like this server's bearer token and asserts on the whole environment,
+    which a filtered copy of `os.environ` would fail as soon as an unforeseen variable appeared.
     """
     os.environ["CHEMCLAW_PYEXEC_TOKEN"] = "a-secret-that-must-not-cross"
     try:
@@ -423,11 +414,9 @@ def test_an_infinite_loop_is_stopped_and_says_so() -> None:
 
 
 def test_a_run_that_ignores_the_cpu_signal_still_dies_on_the_wall_clock() -> None:
-    """`SIGXCPU` is catchable. The wall clock is not, and it is the bound that always holds.
+    """`SIGXCPU` is catchable; the wall clock is not, and it always holds.
 
-    The program swallows the CPU signal and keeps spinning, which is a two-line thing to write and
-    exactly what a bound that could be caught would be worth. `signal` is not importable, so this
-    reaches for it the only way left — and the run still dies.
+    The program swallows the CPU signal and keeps spinning, and the run still dies.
     """
     outcome = run(
         "import functools\n"
@@ -478,12 +467,10 @@ def test_nothing_survives_between_runs() -> None:
 
 
 def test_the_traceback_holds_only_the_callers_frames() -> None:
-    """A traceback must name the caller's program and nothing about this server.
+    """A traceback names the caller's program and nothing about this server.
 
-    Two things at once. It is what a caller can act on — `runner.py`'s `exec` frame is noise they
-    cannot fix. And an unfiltered traceback prints this server's absolute source paths into a
-    result a model reads and may quote into an answer, which tells a chemist where the sandbox
-    lives for no benefit to either of them.
+    `runner.py`'s frames are noise the caller cannot fix, and its absolute source paths would reach
+    a model that may quote them.
     """
     outcome = run("def inner():\n    return 1 / 0\n\n\nresult = inner()", limits=_fast())
     assert outcome.error is not None
@@ -502,14 +489,12 @@ def test_a_syntax_error_returns_the_message_without_a_frame_list() -> None:
 
 
 # --------------------------------------------------------------------------------------------
-# The boundary, granting the escape. Every test below *starts* from a program that already holds
-# `os` — the guard above does not claim to prevent that — and asks what the boundary does next.
+# The boundary after an escape: every test below starts from a program that already holds `os`
+# and asks what holds next.
 # --------------------------------------------------------------------------------------------
 
-#: A handle on `os` from inside the sandbox. `uuid` is on the allowlist and imports `os` at module
-#: level, which is the porosity `runner.py`'s docstring describes rather than a new hole. These
-#: tests are about what holds *after* an escape, so they take the shortest reliable route to one
-#: instead of the object-graph walk an attacker would write.
+#: A handle on `os` from inside the sandbox, via `uuid` (allowlisted, imports `os` at module
+#: level): the shortest reliable route to an escape.
 _ESCAPED = "import uuid\nos = uuid.os\n"
 
 #: A fake pod secret, shaped like this server's own bearer token — the variable `app.py` reads.
@@ -518,12 +503,9 @@ _POD_SECRET = "SECRET-BEARER-abc123"
 #: The unprivileged uid the stand-in server drops to when the suite runs as root.
 _NOBODY = 65534
 
-#: A stand-in for the pyexec pod, run as a process of its own: it carries a bearer token in its
-#: environment, runs one program through `sandbox.run`, and reports what came back beside what the
-#: run cost it in memory. It cannot be the pytest process, for three separate reasons — that
-#: process's environment is not a pod's, its RSS high-water mark is whatever an earlier test left
-#: there, and when the suite runs as root the sandbox child inherits `CAP_SYS_PTRACE`, which reads
-#: any `/proc/<pid>` whatever the dumpable flag says.
+#: A stand-in for the pyexec pod as its own process: bearer token in its environment, one program
+#: through `sandbox.run`, reporting the result and its memory growth. Not the pytest process, whose
+#: environment, RSS high-water mark and (as root) `CAP_SYS_PTRACE` would all distort the result.
 _STAND_IN_SERVER = """
 import ctypes, json, resource, sys
 
@@ -555,18 +537,12 @@ print(
 
 
 def _a_second_uid_is_reachable() -> bool:
-    """Whether this process can actually become another user, rather than merely look like root.
+    """Whether this process can actually become another user, rather than merely be uid 0.
 
-    `geteuid() == 0` is not the question. `make offline-run` and the `offline` CI lane run the suite
-    under `unshare --user --map-root-user --net`, where the process *is* uid 0 — of a user namespace
-    that maps exactly one uid. `setuid(65534)` there fails with `EINVAL`, inside `preexec_fn`, which
-    `subprocess` reports only as "Exception occurred in preexec_fn".
-
-    So the map is what is read. A single-entry map covering one uid means there is no second user to
-    drop to, and the two tests below are skipped rather than run as root — at root the refusal they
-    assert would be the kernel declining to let `CAP_SYS_PTRACE` be used on a dumpable-cleared
-    process, which is not the control this server added. The `check` lane runs as real root with the
-    full range and proves it there; this is the same rule as the binary-gated skips, written down.
+    Under `unshare --user --map-root-user` (the offline lane) the uid map has one entry and
+    `setuid(65534)` fails with `EINVAL`, so the map is what is read. Without a second uid the tests
+    below skip: as real root the refusal they assert would be the kernel's ptrace rule, not this
+    server's control.
     """
     try:
         entries = [line.split() for line in Path("/proc/self/uid_map").read_text().splitlines()]
@@ -591,9 +567,8 @@ _needs_a_second_uid = pytest.mark.skipif(
 def _drop_privileges() -> None:  # pragma: no cover — runs after fork, inside the stand-in server.
     """Become an unprivileged user, because root reads any `/proc/<pid>` whatever the flag says.
 
-    Nothing here restores the dumpable flag the credential change clears: the `execve` that
-    follows sets it back to 1 for an unprivileged image, which is where the pod's own process
-    lives and what `dumpable_at_start` above asserts rather than assumes.
+    The dumpable flag the credential change clears is restored by the following `execve`, as in the
+    pod; `dumpable_at_start` asserts that.
     """
     os.setgroups([])
     os.setgid(_NOBODY)
@@ -621,14 +596,11 @@ def _through_a_stand_in_server(code: str) -> dict[str, Any]:
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/<ppid>/environ")
 @_needs_a_second_uid
 def test_an_escaped_program_cannot_read_the_servers_own_environment() -> None:
-    """The child's environment is built from an allowlist; the *parent's* was readable anyway.
+    """An escaped program cannot read the server's own environment through `/proc/<ppid>/environ`.
 
-    `/proc/<ppid>/environ` is mode 0400 owned by the uid the server runs as — which is the uid the
-    child runs as too, so the only thing between an escaped program and this pod's bearer token,
-    its DSNs and whatever else a deployment injects is the kernel's rule about the *target's*
-    dumpable flag. The stolen values come back to the caller in `result`, an exfiltration channel
-    that the empty-egress NetworkPolicy never sees, so the allowlisted environment on its own is
-    not the boundary the docstrings claim it is.
+    Parent and child share a uid, so the only barrier to the bearer token and DSNs is the parent's
+    dumpable flag; values read there would leave via `result`, a channel the NetworkPolicy never
+    sees.
     """
     answered = _through_a_stand_in_server(
         _ESCAPED + "fd = os.open('/proc/%d/environ' % os.getppid(), os.O_RDONLY)\n"
@@ -645,12 +617,10 @@ def test_an_escaped_program_cannot_read_the_servers_own_environment() -> None:
 
 @_needs_a_second_uid
 def test_a_flood_to_the_stdout_descriptor_does_not_grow_the_server() -> None:
-    """The 10,000-character cap is on the runner's own capture; fd 1 goes straight past it.
+    """A flood to fd 1 does not grow the server's memory.
 
-    A program that reached `os` can `os.write(1, ...)` in a loop, and every byte was read into the
-    *parent's* memory and then discarded — a bound on the child's address space that the server
-    paid for. Measured before this was fixed: 1.5 GB written took the parent's RSS from 39 MiB to
-    3020 MiB, which is an OOM kill of a pod serving every other session, not of the one run.
+    The output cap is on the runner's own capture; a program holding `os` can write to fd 1
+    directly, and reading that into the parent would OOM the pod for every session.
     """
     answered = _through_a_stand_in_server(
         _ESCAPED + "chunk = b'X' * (1 << 20)\n"
@@ -665,16 +635,11 @@ def test_a_flood_to_the_stdout_descriptor_does_not_grow_the_server() -> None:
 
 
 def test_a_flood_to_the_stderr_descriptor_cannot_come_back_as_the_diagnostic() -> None:
-    """fd 2 is the same hole as fd 1, and it has a second end: the "died quietly" message.
+    """A flood to fd 2 cannot inflate the "died quietly" diagnostic.
 
-    The parent needs the child's last stderr line to explain a run that wrote no result, and a
-    program that floods fd 2 would otherwise decide how big that explanation is. Writing it to a
-    file inside the scratch directory puts it under the child's own `RLIMIT_FSIZE` — a bound it
-    cannot raise back — and the parent reads a bounded tail rather than the whole stream.
-
-    The refusal reaches the program as `OSError: File too large` rather than killing it, because
-    CPython ignores `SIGXFSZ` so that an over-long write returns `EFBIG` instead. That is the
-    better half of the outcome: the caller is told which bound stopped their program.
+    stderr goes to a file in the scratch directory under the child's own `RLIMIT_FSIZE`, and the
+    parent reads a bounded tail. CPython ignores `SIGXFSZ`, so the program sees `OSError: File too
+    large` and the caller learns which bound stopped it.
     """
     outcome = run(
         _ESCAPED + "chunk = b'X' * (1 << 20)\n"
@@ -690,11 +655,10 @@ def test_a_flood_to_the_stderr_descriptor_cannot_come_back_as_the_diagnostic() -
 
 
 def test_each_call_gets_its_own_scratch_directory_and_leaves_none_behind() -> None:
-    """One directory per call, and it is `HOME`, `TMPDIR` and the working directory at once.
+    """One directory per call, serving as `HOME`, `TMPDIR` and the working directory at once.
 
-    This is the half of statelessness that the code holds up: what an *escaped* program writes to
-    an absolute path elsewhere in the pod is bounded by the deployment and by nothing here, which
-    is why the README says so rather than promising that nothing survives a call.
+    What an escaped program writes to an absolute path elsewhere is bounded by the deployment, not
+    here, which is why the README does not promise nothing survives a call.
     """
     first = run(
         _ESCAPED + "result = [os.getcwd(), os.environ['TMPDIR'], os.environ['HOME']]",
@@ -718,11 +682,10 @@ def test_the_scratch_directory_goes_even_when_the_run_is_killed() -> None:
 
 
 def test_the_default_fork_headroom_is_zero() -> None:
-    """The config default that closes the fork-based escape — asserted where a change would show.
+    """`Limits.process_headroom` defaults to 0, so `RLIMIT_NPROC` refuses the child any new task.
 
-    `Limits.process_headroom` is 0 so `RLIMIT_NPROC` refuses the child any new task. Raising it
-    back re-opens the window in which a program can fork a grandchild and `setsid` it out of the
-    process group the wall-clock kill targets, which is the escape this value forecloses.
+    Raising it lets a program fork a grandchild and `setsid` out of the process group the wall-clock
+    kill targets.
     """
     assert Limits().process_headroom == 0
 
@@ -731,11 +694,9 @@ def test_the_default_fork_headroom_is_zero() -> None:
 def test_a_forked_grandchild_cannot_escape_the_kill_group() -> None:
     """The setsid-orphan escape is closed at the fork, not at the kill.
 
-    `killpg` reaches one process group; a grandchild that forks and calls `setsid()` leaves that
-    group and survives the wall-clock kill — measured, an orphan outlived it. With
-    `process_headroom = 0` the child cannot `fork` at all: `RLIMIT_NPROC` refuses it with `EAGAIN`,
-    so there is no grandchild to orphan. Meaningful only as a non-root uid, since `RLIMIT_NPROC` is
-    unenforced for root — hence `_needs_a_second_uid`, the same gate the seal tests use.
+    `killpg` reaches one process group, and a `setsid` grandchild would outlive it; with zero
+    headroom the fork itself fails with `EAGAIN`. Needs a non-root uid, since `RLIMIT_NPROC` is not
+    enforced for root.
     """
     answered = _through_a_stand_in_server(
         _ESCAPED

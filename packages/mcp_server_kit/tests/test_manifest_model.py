@@ -1,15 +1,7 @@
 """The `connector.yaml` model: what it refuses, and why refusing it *here* is the point.
 
-`assert_manifest_matches` used to walk a raw dict defensively — `endpoint.get("tools") or []` with
-a comment at the call site explaining that a bare `tools:` key parses to `None`. That is a model,
-written by hand, in a package that already ships pydantic, and it could see nothing it had not been
-told to look for.
-
-The repository that *reads* these files models them and is `extra="forbid"`, so a key invented here
-aborts Chemclaw3's startup rather than this suite. This repository owns the manifests, so the
-refusal belongs in this suite: the same argument
-`D-2026-09-14-the-gate-that-catches-a-change-is-the-gate-of-the-tree-it-is-made-in` makes for a
-change, applied to a declaration.
+Chemclaw3 models these files with `extra="forbid"`, so a bad manifest aborts its startup. This
+repository owns the manifests, so the refusal belongs in this suite.
 """
 
 from __future__ import annotations
@@ -72,13 +64,11 @@ def test_a_complete_manifest_validates(tmp_path: Path) -> None:
 def test_an_endpoint_the_consumer_cannot_load_is_refused_here(
     tmp_path: Path, label: str, endpoint: dict[str, object]
 ) -> None:
-    """Each of these validated here once and aborts Chemclaw3's startup with a `ConnectorError`.
+    """Each of these would abort Chemclaw3's startup with a `ConnectorError`, so it is refused here.
 
-    Measured against the consumer's own `ConnectorManifest.model_validate`: no `transport:` is
-    `union_tag_not_found` (the endpoint is a discriminated union there), a bare list key is YAML's
-    `None` and a `list_type` error, and an empty or absent `tools` is refused by the classification
-    validator. This model used to *coerce* the bare keys to `[]`, which made this suite green on a
-    manifest the one reader that matters cannot load.
+    No `transport:` fails the discriminated union, a bare list key is YAML `None`, and an empty or
+    absent `tools` fails classification. Coercing them would pass here on a file the consumer cannot
+    load.
     """
     with pytest.raises(ValueError, match="not a connector manifest"):
         load_manifest(_written(tmp_path, {**COMPLETE, "endpoint": endpoint}))
@@ -93,10 +83,8 @@ def test_a_bare_top_level_list_key_is_refused_as_the_consumer_refuses_it(tmp_pat
 def test_default_enabled_is_a_field_the_fleet_can_declare(tmp_path: Path) -> None:
     """The consumer's `default_enabled`, which a shadowing fleet manifest has to be able to say.
 
-    A fleet manifest wins the name collision over the consumer's own copy when this fleet's
-    `manifests/` comes first on `CHEMCLAW_CONNECTORS_DIR`. If the consumer's copy says `false` and
-    this model cannot represent the key, the shadow carries the default `true` and binds every tool
-    schema it declares on every model call.
+    A fleet manifest that wins the name collision must be able to carry `false`, or it binds every
+    tool schema on every model call.
     """
     assert load_manifest(_written(tmp_path, COMPLETE)).default_enabled is True
     declared = load_manifest(_written(tmp_path, {**COMPLETE, "default_enabled": False}))
@@ -108,9 +96,7 @@ def test_a_key_this_fleet_invents_is_refused_here_rather_than_at_chemclaw3_s_sta
 ) -> None:
     """`extra="forbid"`, in the repository that owns the file.
 
-    An `arguments:` key under `endpoint:` is the concrete case: `test_manifest_surface.py`'s module
-    docstring records that it was considered and rejected *because* Chemclaw3 would refuse it. Until
-    this model existed nothing on this side would have noticed somebody adding it anyway.
+    An `arguments:` key under `endpoint:` is the concrete case: Chemclaw3 would refuse it.
     """
     manifest = dict(COMPLETE)
     manifest["endpoint"] = {**ENDPOINT, "arguments": {"a_tool": {}}}
@@ -121,12 +107,10 @@ def test_a_key_this_fleet_invents_is_refused_here_rather_than_at_chemclaw3_s_sta
 
 
 def test_auth_cannot_be_omitted_or_declared_none(tmp_path: Path) -> None:
-    """`CLAUDE.md` requires bearer on every manifest, *including the loopback dev URL*.
+    """Bearer auth is required on every manifest, including the loopback dev URL.
 
-    Chemclaw3's model accepts `mode: none` for a loopback address, and would refuse it the moment a
-    deployment moved that address — which makes a manifest's auth mode a function of where it is
-    pointed. This fleet's rule is stricter and was a review convention until now: neither omission
-    nor `mode: none` is representable here.
+    Chemclaw3 accepts `mode: none` for loopback only, which would make auth a function of the
+    address; here neither omission nor `mode: none` is representable.
     """
     without = {
         **COMPLETE,
@@ -141,13 +125,10 @@ def test_auth_cannot_be_omitted_or_declared_none(tmp_path: Path) -> None:
 
 
 def test_every_shipped_manifest_in_this_repository_validates() -> None:
-    """Both manifest directories, against the model, in one place.
+    """Both manifest directories validate against the model, without a running server.
 
-    Each server's own `test_server.py` validates its manifest as a side effect of
-    `assert_manifest_matches`, which is the direction that matters at call time. This is the
-    direction that does not need a running server: a manifest under `manifests-internal/` whose
-    `mount: backend` was misspelled would still be refused by Chemclaw3 — with a `ConnectorError`
-    at *its* startup, which is the one place nobody here can watch.
+    A misspelled `mount: backend` under `manifests-internal/` would otherwise surface only at
+    Chemclaw3's startup.
     """
     manifests = sorted(ROOT.glob("servers/*/connector.yaml"))
     assert len(manifests) >= 8, f"only {len(manifests)} manifests found — the glob is wrong"

@@ -1,6 +1,6 @@
 # Adding a server
 
-Read [`CLAUDE.md`](../CLAUDE.md) first — it is the *why*. This is the checklist.
+Read [`CLAUDE.md`](../CLAUDE.md) first — it states the rules. This is the checklist.
 
 The reference server is `servers/props/`. Copy its structure rather than inventing one; the
 variance between servers should be in what they compute, not in how they are shaped.
@@ -73,7 +73,7 @@ variance between servers should be in what they compute, not in how they are sha
      **Deciding you need no ceiling is an answer this checklist now collects**, because it used to
      be one nobody asked for: most of the servers then built shipped `engine/admission.py` and the
      rest were exempt by judgement in prose, so a new one arrived with that same shape and passed
-     every test here. `tests/test_fleet.py::test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not`
+     every test here. `tests/test_fleet_manifests.py::test_every_server_either_bounds_its_concurrency_or_argues_why_it_need_not`
      is what asks; the exemption goes in `CEILING_IS_ARGUED_ABSENT` beside it, carrying the
      measurement rather than the adjective, and a second test deletes it the day the server grows a
      ceiling after all. See
@@ -83,7 +83,7 @@ variance between servers should be in what they compute, not in how they are sha
      lists its gated tools under `endpoint.queued:`, so a full pod becomes a short wait in
      Chemclaw3's queue rather than a refusal in a chemist's turn — and refuses with
      `Admission.refuse(...)`, whose `[<server>-at-capacity]` head is what that queue retries on.
-     `tests/test_fleet.py::test_a_server_queues_exactly_what_it_gates` holds the two lists equal.
+     `tests/test_fleet_manifests.py::test_a_server_queues_exactly_what_it_gates` holds the two lists equal.
 
 5. **You do not write a ceiling on sessions.** `mcp_server_kit` bounds those for every server at
    `MCP_MAX_SESSIONS`, because a session is the transport's object rather than a capability's: it
@@ -102,7 +102,7 @@ variance between servers should be in what they compute, not in how they are sha
    has the set and the measurement. Two things follow for a new server: the floor is **yours** to
    declare and is not always `1` (`chem`'s render size is a canvas in pixels, floored at RDKit's own
    `minFontSize`), and using the helper is what puts the variable into
-   `tests/test_fleet.py::numeric_env_bounds`, the inventory that stops a deployment moving your
+   `tests/test_fleet_deploy.py::numeric_env_bounds`, the inventory that stops a deployment moving your
    bound without an argued row. A bound read any other way is in neither check.
 
 ## The files
@@ -155,7 +155,7 @@ ln -s ../../servers/<name>/connector.yaml manifests-internal/<name>/connector.ya
 That key is refused by Chemclaw3's `extra="forbid"` manifest model, which is the point: a deployment
 that mounts the directory anyway gets a startup error naming the file rather than an agent whose
 tool surface quietly changed. A connector's manifest must carry no `mount:` key at all, for the same
-reason. `tests/test_fleet.py` checks both directions.
+reason. `tests/test_fleet_manifests.py` checks both directions.
 
 ## The dataset
 
@@ -182,7 +182,7 @@ prohibits transfer into other information systems: no corpus in this fleet is ve
 later by reaching for the most complete source available, so the server that vendors one says in its
 own README which source it may not use and why — the catalogue is not where the next contributor
 looks (`D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build`).
-`tests/test_fleet.py::test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why` holds both
+`tests/test_fleet_data.py::test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why` holds both
 halves.
 
 **Then make the corpus validate itself.** This is the part most worth the effort, and `props`
@@ -264,7 +264,7 @@ What a *new server* still owes:
    exception", which is what a genuine bug looks like.
 4. **`deploy/service.yaml` and `deploy/servicemonitor.yaml`**, copied from any server and renamed.
    The NetworkPolicy already admits the monitoring namespace; these are what tell Prometheus to use
-   it. `tests/test_fleet.py` requires both files and `tests/test_deploy.py` holds their port against
+   it. `tests/test_fleet_layout.py` requires both files and `tests/test_deploy.py` holds their port against
    the Containerfile and the manifest.
 5. **`deploy/hpa.yaml` and `deploy/pdb.yaml`**, copied from a server whose cost shape resembles
    yours. Both are required and `tests/test_deploy_shape.py` checks them: without a PDB a rollout
@@ -310,7 +310,7 @@ erroring.
 
 The suite already refuses a server that skips the credential proof: `test_server.py` must call
 `mcp_server_kit.testing.assert_bearer_is_enforced` against the running fixture, and
-`tests/test_fleet.py::test_every_server_proves_its_bearer_check_against_a_running_server` is what
+`tests/test_fleet_auth.py::test_every_server_proves_its_bearer_check_against_a_running_server` is what
 notices that it does not. Copy the call from any existing server — it needs the base URL, the
 manifest and the token the fixture put in the environment, and it drives the anonymous caller, a
 wrong token, a wrong scheme, the credential serving, and the declared variable unset.
@@ -323,8 +323,7 @@ Finally, update the documents an operator reads:
   Service, token, the Chemclaw3 wiring, pod resources, every own environment variable with its
   default, what `/healthz` verifies, and its admission ceiling or why it has none.
 
-**There is nothing to update in `CLAUDE.md`**: it holds no port table
-(`tests/test_fleet.py::test_claude_md_holds_no_second_port_registry`), and `MODULES.md` is the
+**There is nothing to update in `CLAUDE.md`**: it holds no port table, and `MODULES.md` is the
 registry and the only file the port tests read. If the agent should see the server's tools, its
 manifest also needs a declaration on the Chemclaw3 side (or a mount of `manifests/<name>` there) —
 that is a pull request in that repository.

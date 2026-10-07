@@ -1,12 +1,8 @@
 """MEGAN forward predictor.
 
-Sacha et al. 2021 — `molecule-one/megan`. Graph-edit attention network that
-models a reaction as a sequence of graph edits. Best known for retrosynthesis
-but also runs in the forward direction with the same architecture.
-
-This wrapper assumes the molecule-one/megan repo is installed (it's not on
-PyPI; installed from the molecule-one/megan repository — see the server README)
-and a pretrained checkpoint sits at $MEGAN_MODEL_PATH.
+Sacha et al. 2021 — `molecule-one/megan`, a graph-edit attention network run here in the forward
+direction. Requires the repo (not on PyPI; see the server README) and a checkpoint at
+`$MEGAN_MODEL_PATH`.
 """
 
 from __future__ import annotations
@@ -91,10 +87,7 @@ try:
     import torch  # noqa: F401
 
     register_forward(MeganForward())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         MeganForward.name,

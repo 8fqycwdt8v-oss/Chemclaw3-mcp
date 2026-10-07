@@ -1,26 +1,15 @@
 """The reagent table validates itself, because a hand-compiled table is a table with typos in it.
 
-`props` sets the bar here with three checks that compare pairs of *independently written* numbers —
-CAS check digits, formula against molecular weight, Antoine constants against the boiling point —
-so a transposed digit fails a test instead of answering a question. **This corpus has no
-counterpart to those, and saying so is more useful than inventing a weak one.** It is a port of a
-table Chemclaw3 already reviewed, and it carries no second number about any substance: a name, a
-structure, and for some rows a density. There is nothing here to cross-check a SMILES against, and
-generating a formula column from that same SMILES would validate RDKit rather than the table.
+Unlike `props`, this corpus carries no second independent number to cross-check (a name, a
+structure, sometimes a density), so the checks are the real ones available:
 
-So the checks below are the ones that are real:
+- **Structural.** Every SMILES parses under the strict gate; no spelling resolves two ways and no
+  two substances share a structure, either of which makes answers depend on file order.
+- **Range.** A density outside 0.5-2.0 g/mL is not a solvent charged by volume.
+- **The manifest's own claims** (row and spelling counts).
 
-- **Structural.** Every SMILES parses under the strict gate. No spelling resolves two ways, and no
-  two substances resolve to one structure — either would make an answer depend on file order, which
-  is the defect that shows up once, in production, in a number nobody re-derives.
-- **Range.** A density outside 0.5-2.0 g/mL is not a solvent anyone charges by volume; a
-  transposed digit lands outside that band far more often than inside it.
-- **The claims the manifest makes about itself** — row and spelling counts — because
-  `dataset.json`'s description is what a reviewer reads instead of the file.
-
-The checks that actually catch drift for this corpus live elsewhere, and deliberately:
-`test_canonicalization_contract.py` pins the structure definition against Chemclaw3, and
-`tests/test_fleet.py` pins the densities against `props`'s independently compiled solvent table.
+Drift against Chemclaw3 is in `test_canonicalization_contract.py`; densities are checked against
+`props` in the fleet tests.
 """
 
 from __future__ import annotations
@@ -74,11 +63,9 @@ def test_a_density_is_in_the_range_a_liquid_can_be(row: dict[str, str]) -> None:
 
 
 def test_every_spelling_resolves_to_its_own_row() -> None:
-    """The two ambiguities that would make an answer depend on file order, caught from outside.
+    """Every spelling resolves to its own row, read off the public surface.
 
-    A spelling claimed by two rows resolves to the wrong name here; two rows sharing one structure
-    make the reverse map hand back the other row's name. Both are refused when the index is built,
-    and this is the check that reads the refusal off the public surface rather than trusting it.
+    Duplicate spellings or shared structures are refused at index build; this confirms from outside.
     """
     for row in RECORDS:
         canonical = require_canonical_smiles(row["smiles"])
@@ -102,9 +89,7 @@ def test_the_corpus_is_the_size_the_manifest_describes() -> None:
 def test_every_recorded_density_is_reachable_through_a_name() -> None:
     """A density keyed to a row nobody can name is a solvent charge that cannot be computed.
 
-    The failure it guards is silent in exactly the wrong direction: `stoichiometry_table` refuses a
-    solvent with no density on file, so a dead density row reads to a chemist as "this server does
-    not know THF" rather than as a broken table.
+    `stoichiometry_table` would report it as "unknown solvent" rather than a broken table.
     """
     for row in RECORDS:
         if not row["density_g_per_ml"].strip():

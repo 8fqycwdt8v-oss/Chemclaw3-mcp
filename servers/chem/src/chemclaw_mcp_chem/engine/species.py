@@ -1,31 +1,13 @@
 """The species set a multi-step calculation runs over — enumerated from the graph, never computed.
 
-**What these four functions are for.** Chemclaw3's expensive jobs (`rank_species`,
-`survey_bond_strengths`) rank a *set* of structures; something has to produce the set. Producing it
-from the molecular graph is free and total, and producing it any other way is neither: a model
-asked to "list the tautomers" invents plausible strings, and a calculation asked to find them has
-to know where to look first. So the split Chemclaw3's own skills state — *enumerate, then compute,
-and never the reverse* — needs an enumerator on this side that costs nothing.
+These produce the sets Chemclaw3's `rank_species` and `survey_bond_strengths` rank, so a model never
+invents one (*enumerate, then compute*). They are candidate sets, not predictions; degradants carry
+transform names so a chemist can reject one on chemical grounds.
 
-**These are candidate sets, not predictions.** Every function here answers "what could this be,
-structurally" and none answers "which one is it". A tautomer list says a proton can sit in several
-places, not that it does; a degradant list says a transform matches, not that the chemistry
-happens. That distinction is the reason `enumerate_degradants` returns transform *names* beside the
-structures — a chemist reading "N-oxidation" can reject it for a substrate that will not oxidise,
-and cannot reject a bare SMILES.
-
-**The parent is always a member of its own set**, first, and that is not padding. A tautomer
-ranking whose universe excludes the input cannot report "the form you gave me is the major one",
-which is the answer more often than not; and a downstream `rank_species` populates over exactly the
-list it is given. Excluding the parent would silently redefine the question.
-
-**Caps, and why they are refusals rather than truncations.** Stereoisomer enumeration is
-2^n — a molecule with 10 unassigned centres is 1024 structures, each of which a caller may then pay
-a conformer search for. Every function here bounds its output, and past the bound *raises* rather
-than returning a prefix: a truncated set silently redefines "the universe of forms" into "the first
-N the algorithm happened to emit", and the population that a downstream ranking normalizes over
-would then be a fraction reported as a whole. Chemclaw3's
-`D-2026-08-08-a-partial-answer-must-say-so` is the same rule one repository over.
+The parent is a member of its own set, first (except for degradants and an underspecified stereo
+input), so "the form you gave me is the major one" stays a possible answer. Every bound is a
+refusal, never a truncation: a downstream population normalised over a prefix would report a
+fraction as a whole.
 """
 
 from __future__ import annotations
@@ -62,87 +44,22 @@ __all__ = [
     "enumerate_tautomer_set",
 ]
 
-# Each bound is a refusal, not a truncation — see the module docstring. The numbers are the point
-# where the *next* step stops being affordable rather than where this one does: enumeration is
-# milliseconds at any of these, and `rank_species` at `level="thorough"` is a conformer search per
-# member, so 64 tautomers is already a search the caller should have to ask for deliberately.
+# Output caps, each a refusal (see the module docstring). Set where the next step — a conformer
+# search per member in `rank_species` — stops being affordable.
 MAX_TAUTOMERS = 64
 MAX_MICROSTATES = 32
 MAX_STEREOISOMERS = 64
 MAX_DEGRADANTS = 64
 
-#: How much work `enumerate_microstates` will do before it refuses — a bound on the **input**, and
-#: the only one of the five that prices CPU rather than the next step. The quantity is
-#: `ionisable sites x heavy atoms`, because that is what the call costs.
+#: How much work `enumerate_microstates` will do before it refuses: `ionisable sites x heavy atoms`.
 #:
-#: **The four caps above bound an answer; none of them bounds this tool's work.** Every other bound
-#: in this server stops the cost before it is paid: `MAX_MOLECULE_ATOMS` refuses a megamolecule at
-#: the parse, and `StereoEnumerationOptions`' `maxIsomers` stops the stereo enumerator one past its
-#: cap rather than materialising 2^n. `enumerate_microstates` had neither — it shifted, sanitised
-#: and canonicalised **every** site and consulted `MAX_MICROSTATES` afterwards — so the cap made the
-#: refusal certain and not cheap. Measured on this container, both cases inside every bound that
-#: existed at the time:
-#:
-#:     N + CCN*659            1,978 atoms, 660 sites  48,077 ms  then ValueError (nothing returned)
-#:     C1 + CNC*659 + CN1     1,980 atoms, 660 sites  15,647 ms  then **answered**, with 2 species
-#:
-#: The second is the case an output cap can never reach: the sites are equivalent, every microstate
-#: collapses to one string, and the answer is inside `MAX_MICROSTATES` — so the tool burns 15 s to
-#: return two structures and no cap on the answer would have fired. The first exceeds this server's
-#: own `request_timeout` of 30 s, so the caller has gone before the refusal is written.
-#:
-#: **The first bound written here priced the site count alone, and that is the wrong variable.**
-#: Each site is one `_shift`, one `SanitizeMol` and one `_canonical` over the *whole* graph, so the
-#: cost is the product — which this server's own README said in the sentence beside the bound while
-#: the bound read one factor of it. What a site-only bound of 32 did, measured on the shipped entry
-#: point: it **refused** PAMAM G3 (484 heavy atoms, 62 sites, 128 ms, 6 species) and PAMAM G4 (996
-#: atoms, 126 sites, 587 ms, 7 species) — catalogue dendrimers whose sites are symmetric, so the
-#: answer is small and cheap — while **admitting** a 1,891-atom polyamine at 31 sites for 413 ms.
-#: Degeneracy is the normal case for a symmetric real molecule, not the pathology the site-only
-#: derivation treated it as.
-#:
-#: **150,000 is derived from the cost, at the worst shape measured.** Cost per site-atom is
-#: 4.3-4.7 us on a branched dendrimer, 5.6 us on a macrocycle and up to **8.4 us** on a long-chain
-#: polyamine, so the bound prices the worst of the three. The frontier, two runs each, best of two:
-#:
-#:     PAMAM G3                 484 atoms,  62 sites     30,008     129 ms  admitted
-#:     PAMAM G4                 996 atoms, 126 sites    125,496     591 ms  admitted
-#:     macrocycle, 223 amines   669 atoms, 223 sites    149,187     841 ms  admitted
-#:     chain, 100 amines      1,500 atoms, 100 sites    150,000   1,266 ms  admitted (the worst)
-#:     macrocycle, 387 amines 1,161 atoms, 387 sites    449,307   3,146 ms  refused
-#:     chain, 660 amines      1,980 atoms, 660 sites  1,306,800  12,479 ms  refused, 8.7x over
-#:
-#: **"The worst of the three" is not "the worst", and a fourth ordinary shape is 1.6x dearer**
-#: (`D-2026-09-19-the-worst-of-three-shapes-is-not-the-worst-shape`). All three fixtures above are
-#: aliphatic. A poly(pyridine) at the same product — every site in a ring, so each toggle re-runs
-#: aromaticity perception over the whole conjugated graph — measures **13.26 us** per site-atom,
-#: and unlike the three it is *super-linear in the product*: 10.75, 11.97, 13.26 us at n = 100, 130
-#: and 158, so `sites x atoms` under-prices an aromatic molecule by more the closer it gets to this
-#: bound. Re-measured on one container, the three aliphatic figures reproducing to within a few
-#: percent, which is what makes the fourth comparable:
-#:
-#:     oligopyridine n=158      948 atoms, 158 sites    149,784   1,986 ms  admitted (the worst)
-#:
-#: **The bound is unchanged and that is a decision.** Lowering it to price this shape at the old
-#: 1.3 s would mean ~98,000, which refuses the 223-amine macrocycle and the 100-amine chain this
-#: derivation deliberately admits — a real regression for real polyelectrolytes, to make a sentence
-#: true. The sentence is what was wrong.
-#:
-#: So the worst call this admits costs about **2.0 s** of one core: 1.5x inside the readiness
-#: probe's own 3 s timeout and 15x inside the manifest's 30 s `request_timeout`. That is above the
-#: 0.1-0.62 s band `D-2026-09-18-an-output-cap-is-not-a-bound-on-the-work` derived the old number
-#: against, and that band does not survive being measured on anything but a linear alkane. The
-#: tautomer and degradant enumerators beside this one are bounded by their own cost now —
-#: `MAX_TAUTOMER_HEAVY_ATOMS` and `MAX_DEGRADANT_MATCH_ATOM_PRODUCT` below, each with its frontier
-#: table, held by `tests/test_enumeration_cost_bounds.py` — and a molecule the size of PAMAM G4 is
-#: refused by both before it runs, so their G4 timings are not a comparison for this one.
-#:
-#: 150,000 is also 75 sites at the largest molecule `MAX_MOLECULE_ATOMS` admits, and 19.5% above
-#: PAMAM G4 — which is the largest PAMAM this server can see at all, since G5 is 2,004 heavy atoms
-#: and the parse bound refuses it.
-#:
-#: Overridable, because a bound nobody can loosen for a real polyelectrolyte is one somebody edits
-#: code around; `env_bound` refuses a value that would make the tool refuse everything.
+#: Each site is one shift, sanitise and canonicalisation over the whole graph, so the cost is the
+#: product; `MAX_MICROSTATES` only bounds the answer, after the work. Pricing sites alone would
+#: refuse cheap symmetric dendrimers and admit expensive long chains. Set at the costliest aliphatic
+#: shape measured, about a second of CPU, inside the readiness-probe and request budgets; aromatic
+#: sites are dearer per unit and super-linear, so the worst admitted call is about two seconds
+#: (`tests/test_enumeration_cost_bounds.py`). Overridable; `env_bound` refuses a value that would
+#: refuse everything.
 MAX_SITE_ATOM_PRODUCT = env_bound(
     "CHEMCLAW_CHEM_MAX_SITE_ATOM_PRODUCT",
     default=150_000,
@@ -160,28 +77,11 @@ MAX_SITE_ATOM_PRODUCT = env_bound(
 
 #: The largest molecule, in heavy atoms, whose tautomers this server enumerates.
 #:
-#: **The enumeration stops at `MAX_TAUTOMERS + 1` forms and each form is canonicalised over the
-#: whole graph**, so on a tautomeric molecule the work is roughly the cap times a canonicalisation —
-#: and canonicalisation is itself super-linear in size. The output cap therefore bounds nothing
-#: about the cost, and before this bound there was none: measured, polyglycine at 1,985 heavy atoms
-#: (inside `MAX_MOLECULE_ATOMS`) cost 11.6 s in `enumerate_tautomer_set` and the same again inside
-#: `describe_molecule`, holding a worker thread through ~40% of the manifest's 30 s
-#: `request_timeout` and burning on after its caller had gone. The frontier, one run each:
-#:
-#:     polyglycine          401 atoms      583 ms
-#:     PAMAM G3             484 atoms      835 ms
-#:     poly-1,3-dicarbonyl  498 atoms      788 ms
-#:     polyketone           500 atoms      943 ms
-#:     poly(phenol ketone)  500 atoms    1,218 ms   (the worst shape measured at the bound)
-#:     polyglycine          601 atoms    1,156 ms
-#:     PAMAM G4             996 atoms    2,746 ms   refused
-#:     polyketone         1,200 atoms    4,958 ms   refused
-#:
-#: A heavy-atom count rather than a count of mobile-proton sites, because the site perception here
-#: does not see a ketone's enol at all (the polyketone above has zero sites and is the dearest
-#: shape per atom) — the enumerator's own transforms decide, and they cannot be priced before they
-#: run. So a large molecule with no tautomer question is refused too; that is the cost of a bound
-#: that is honest about what it can see.
+#: The enumeration canonicalises up to `MAX_TAUTOMERS + 1` forms over the whole graph, which is
+#: super-linear in size, so the output cap bounds nothing about cost. A heavy-atom count rather than
+#: a mobile-proton count, because the enumerator's own transforms decide which sites exist (the site
+#: perception cannot see a ketone's enol); so a large molecule with no tautomer question is refused
+#: too.
 MAX_TAUTOMER_HEAVY_ATOMS = env_bound(
     "CHEMCLAW_CHEM_MAX_TAUTOMER_HEAVY_ATOMS",
     default=500,
@@ -195,21 +95,8 @@ MAX_TAUTOMER_HEAVY_ATOMS = env_bound(
 
 #: The most `transform matches x heavy atoms` one degradant enumeration may spend.
 #:
-#: **Each match is one product, sanitised and canonicalised over the whole graph**, so the work is
-#: the product of those two numbers — and `MAX_DEGRADANTS` is consulted only after all of it. On a
-#: molecule with a repeating hydrolysable or oxidisable unit that is not a small number: measured,
-#: polyglycine at 1,985 heavy atoms (496 amide matches) cost 22.5 s and a 2,000-atom polyester
-#: 18.8 s, both to be refused as too many candidates at the end. The frontier, one run each:
-#:
-#:     PAMAM G3        484 atoms,  90 matches     43,560     275 ms
-#:     polyester       500 atoms, 100 matches     50,000     409 ms
-#:     polyglycine     633 atoms, 158 matches    100,014   1,030 ms
-#:     polyester       632 atoms, 158 matches     99,856   1,362 ms   (the worst shape measured)
-#:     PAMAM G4        996 atoms, 186 matches    185,256   1,695 ms   refused
-#:     polyglycine   1,985 atoms, 496 matches    984,560  22,514 ms   refused
-#:
-#: The matches are counted by substructure search before any product is built, which costs about a
-#: millisecond at the largest molecule `MAX_MOLECULE_ATOMS` admits.
+#: Each match is a product canonicalised over the whole graph, and `MAX_DEGRADANTS` is consulted
+#: only after all of it. Matches are counted by substructure search before any product is built.
 MAX_DEGRADANT_MATCH_ATOM_PRODUCT = env_bound(
     "CHEMCLAW_CHEM_MAX_DEGRADANT_MATCH_ATOM_PRODUCT",
     default=100_000,
@@ -226,49 +113,13 @@ MAX_DEGRADANT_MATCH_ATOM_PRODUCT = env_bound(
 #: The most `stereoisomers the enumerator would build x heavy atoms` one stereoisomer enumeration
 #: may spend.
 #:
-#: **`maxIsomers` bounds how many isomers are built, not what each one costs.** The enumerator stops
-#: one past `MAX_STEREOISOMERS`, and each isomer it builds is canonicalised over the whole graph —
-#: which is super-linear in the molecule. So the work is the isomer count times a whole-graph
-#: canonicalisation, and neither `MAX_MOLECULE_ATOMS` nor the output cap saw the product: a
-#: 1,991-atom polyol (994 open centres) built its 65 isomers and was *then* refused, after 10.2 s in
-#: the `cc3-gate` image. The isomer count is `min(2^n, MAX_STEREOISOMERS + 1)` for `n` open
-#: stereo elements — what `EnumerateStereoisomers` itself flips, counted by the same
-#: `FindPotentialStereo` it calls, before any isomer is built.
-#:
-#: **Priced on that count and not on the atom count alone**, because an atom bound refuses the
-#: wrong molecules: a 996-atom PAMAM G4 has no open centre and enumerates in 23 ms. The frontier,
-#: CPU for the whole `enumerate_stereoisomer_set` call, best of three, measured 2026-09-26 with
-#: RDKit 2025.09.3 on a loaded 4-core x86_64 laptop (load average 13-30, where this suite's own
-#: `test_the_worst_call_the_bound_admits_stays_inside_the_probe_budget` measured 5.96 s against the
-#: gate image's ~1.3 s) — so read the ratios rather than the milliseconds:
-#:
-#:     shape                        atoms  open  built  product   before           after
-#:     paclitaxel, no stereo           62    11     65    4,030     132 ms  cap      137 ms  cap
-#:     polyol                          92    45     65    5,980     218 ms  cap      223 ms  cap
-#:     polylactide                     91    18     65    5,915     166 ms  cap      142 ms  cap
-#:     six open centres                93     6     64    5,952     188 ms  64       204 ms  64
-#:     chain, two open              1,498     2      4    5,992   1,457 ms  4      1,452 ms  4
-#:     chain, nothing open          1,991     0      1    1,991   1,293 ms  1      1,252 ms  1
-#:     chain, one open              1,991     1      2    3,982   2,791 ms  2      2,880 ms  2
-#:     chain, two open              1,989     2      4    7,956   2,736 ms  4        526 ms  refused
-#:     polyol                       1,991   994     65  129,415  11,493 ms  cap      157 ms  refused
-#:
-#: ("cap" is the old refusal, after the isomers were built: more than `MAX_STEREOISOMERS`.)
-#:
-#: **The unbranched chain is the worst shape, and it is worst for a reason this bound does not
-#: price**: RDKit's canonical ranking of a 1,991-atom path is super-linear, so the parse, the count
-#: and the parent's own canonical SMILES cost 1.25 s here with no stereo work at all — which is why
-#: the worst admitted call (one open centre on that chain) is 2.3x the chain with none. The product
-#: under-prices that shape by the same super-linearity `MAX_SITE_ATOM_PRODUCT` documents for
-#: aromatics; a bound tight enough to refuse it at one open centre (below 3,982) would also refuse
-#: `paclitaxel` drawn without stereo (4,030) by cost rather than by the cap it reaches anyway, and
-#: every 32-isomer set above 124 atoms, which the cap would not.
-#:
-#: **What the bound changes is mostly the cost of a refusal, not which molecules are answered**:
-#: seven or more open elements build 65 isomers, and 65 non-degenerate isomers are past
-#: `MAX_STEREOISOMERS` — so the answer was a refusal already, and past this bound it now costs a
-#: parse and a count (157 ms on the 1,991-atom polyol) instead of 11.5 s. The one molecule the
-#: table shows moving from answered to refused is the two-centre 1,989-atom chain.
+#: `maxIsomers` bounds how many isomers are built, not their cost: each is canonicalised over the
+#: whole graph. The count is `min(2^n, MAX_STEREOISOMERS + 1)` for `n` open stereo elements, read by
+#: the same `FindPotentialStereo` the enumerator uses, before any isomer is built. Priced on that
+#: product rather than atoms alone, since a large molecule with no open centre is cheap. The
+#: product under-prices long unbranched chains (their canonical ranking is super-linear), accepted
+#: so drug-size molecules are not refused by cost. Mostly this makes a certain refusal cheap rather
+#: than changing which molecules are answered.
 MAX_STEREO_ISOMER_ATOM_PRODUCT = env_bound(
     "CHEMCLAW_CHEM_MAX_STEREO_ISOMER_ATOM_PRODUCT",
     default=6_000,
@@ -289,8 +140,8 @@ class TautomerCostRefused(ValueError):
 def _refuse_tautomer_enumeration_past(heavy_atoms: int, smiles: str) -> None:
     """Raise when enumerating tautomers of a molecule this size would cost more than one call may.
 
-    A `ValueError`, so `connector_app` passes the wording through to the model verbatim — and a
-    `TautomerCostRefused` so `describe_molecule` can tell "not computed" from "past the count cap".
+    `TautomerCostRefused` is a `ValueError` (reaches the model verbatim) and lets
+    `describe_molecule` tell "not computed" from "past the count cap".
     """
     if heavy_atoms > MAX_TAUTOMER_HEAVY_ATOMS:
         raise TautomerCostRefused(
@@ -375,9 +226,7 @@ class Topology(BaseModel):
     )
 
 
-# The three routes an ICH Q1A forced-degradation study covers. Named as a type rather than left
-# as a bare string so the transform table below is checked against it: a typo in a condition
-# would otherwise reach the model as a group nobody can filter on.
+# The three ICH Q1A forced-degradation routes, typed so the transform table is checked against it.
 DegradationCondition = Literal["oxidative", "hydrolytic", "thermal"]
 
 
@@ -405,9 +254,7 @@ class DegradantSet(BaseModel):
 def _canonical(mol: Chem.Mol) -> str:
     """Canonical SMILES for a molecule this module built, with no re-parse.
 
-    Sanitisation is what a transform product needs and a parsed input has already had, so the two
-    paths differ and this one is the transform path: a product RDKit cannot sanitise is not a
-    structure anyone can calculate on, and is dropped by the caller rather than returned broken.
+    A transform product RDKit cannot sanitise is dropped by the caller, never returned broken.
     """
     return str(Chem.MolToSmiles(mol))
 
@@ -415,9 +262,7 @@ def _canonical(mol: Chem.Mol) -> str:
 def _ordered_unique(parent: str, found: list[str]) -> list[str]:
     """`found` with the parent first and duplicates removed, order otherwise preserved.
 
-    Order is preserved rather than sorted because every enumerator here emits in an order that
-    means something — RDKit's tautomer scoring, the stereo enumerator's centre ordering — and
-    sorting would replace it with alphabetical, which means nothing.
+    Enumerator order is meaningful (tautomer scoring, centre ordering); sorting would discard it.
     """
     seen = {parent}
     result = [parent]
@@ -431,15 +276,9 @@ def _ordered_unique(parent: str, found: list[str]) -> list[str]:
 def _without_erased_twins(species: list[str]) -> list[str]:
     """Drop any member that differs from an earlier one only by an erased stereocentre.
 
-    RDKit's `TautomerEnumerator` strips stereochemistry from a centre the transformation touches,
-    so `C[C@H](O)C(C)=O` emits both `CC(=O)[C@H](C)O` and `CC(=O)C(C)O`. Those are two strings and
-    one compound-with-and-without-a-specification, and `_ordered_unique` compares strings — so the
-    keto form survived twice, and `rank_species`, which populates over exactly the list it is
-    given, embedded it twice and split its population against the genuinely different tautomers.
-
-    The *first* spelling wins, which is the specified one: the parent leads the list, so the
-    member that carries the claim is kept and the erased twin is what goes. That an alpha centre
-    epimerises through the enol is real chemistry — it is just not a second tautomer.
+    `TautomerEnumerator` strips stereo from a centre it touches, emitting the same compound with and
+    without a specification; `rank_species` would count it twice. The first (specified) spelling
+    wins.
     """
     kept: list[str] = []
     seen_flat: set[str] = set()
@@ -456,9 +295,7 @@ def _without_erased_twins(species: list[str]) -> list[str]:
 def _refuse_past(count: int, cap: int, what: str, smiles: str) -> None:
     """Raise when an enumeration exceeded its bound, saying what to do instead.
 
-    A `ValueError`, so `connector_app` passes the wording through to the model rather than
-    replacing it: the caller can act on this — narrow the molecule, assign the centres by hand —
-    and cannot act on "internal error".
+    A `ValueError`, so the remedy (narrow the molecule, assign centres) reaches the model verbatim.
     """
     if count > cap:
         raise ValueError(
@@ -472,21 +309,9 @@ def _refuse_past(count: int, cap: int, what: str, smiles: str) -> None:
 def _refuse_past_enumeration_cost(sites: int, atoms: int, smiles: str) -> None:
     """Raise when walking a molecule's ionisable sites would cost more than one call may spend.
 
-    Separate from `_refuse_past` rather than a fifth caller of it, because the two refusals are
-    about different things and a caller acts on them differently. That one says *the answer would
-    be too large to be useful*, and its remedy is to narrow the question. This one says *finding
-    out would cost more than one call here may spend*, and its remedies are a different tool, a
-    smaller question or a deployment that allows more — none of which the other message gives.
-
-    **The wording names the two numbers the bound is actually made of and the factor by which they
-    exceed it, and no seconds.** The sentence this replaces told every refused caller that
-    enumerating "would hold this server for tens of seconds ... to produce a set this tool would
-    then refuse as too large": measured on PAMAM G3, which that bound refused, the truth was 128 ms
-    and six structures. A refusal that states a cost it has never timed for the molecule in front
-    of it is the defect `CLAUDE.md`'s "docstrings are the prompt" rule is about, one message over. A
-    *factor* is exact for every input, needs no wall clock, and does not go stale on a faster pod.
-
-    A `ValueError`, so `connector_app` passes the wording through to the model verbatim.
+    Separate from `_refuse_past`: that says the answer is too large; this says finding out costs too
+    much, with different remedies. The message names the two factors and the ratio to the bound,
+    never seconds, so it is exact for every input. A `ValueError`, so it reaches the model verbatim.
     """
     product = sites * atoms
     if product > MAX_SITE_ATOM_PRODUCT:
@@ -522,22 +347,12 @@ def enumerate_tautomer_set(smiles: str) -> SpeciesSet:
     return SpeciesSet(smiles=species, count=len(species), parent=parent)
 
 
-# Acidic and basic sites, as SMARTS over the *neutral* form. Deliberately a short, named list
-# rather than a general pKa model: this module enumerates what could ionise, and `predict_pka` on
-# the calculation server answers how readily. A site listed here that a chemist would not count is
-# a species that ranks near-zero downstream; a site missing here is a form nobody ever sees, which
-# is the worse error, so the patterns are inclusive.
+# Acidic and basic sites, as SMARTS over the *neutral* form: what could ionise, not how readily.
+# Inclusive by design, since a missing site is a form nobody sees.
 #
-# **`servers/calc/src/chemclaw_mcp_calc/engine/pka.py` perceives ionisable sites too, and the two
-# are not copies of each other.** They answer overlapping questions with opposite error preferences,
-# and both preferences are deliberate: this list is **inclusive**, because a microstate nobody
-# enumerated is a form that never reaches a caller; that module's is **narrow and frozen**, because
-# its enumeration is what `calc_version`'s linear calibration was fitted over and a broader site set
-# silently invalidates every residual the ledger holds against that version. So they disagree on
-# purpose — an amide N-H is an acidic site here and never a basic site there — and neither may be
-# "corrected" to match the other. (A third copy lives in Chemclaw3's `science/calc/logd.py`, where
-# it is pinned to the calc server's by `servers/calc/tests/test_logd_contract.py`; this one is
-# pinned to nothing on either side, and that is the right arrangement for a different question.)
+# `servers/calc/src/chemclaw_mcp_calc/engine/pka.py` perceives sites too, deliberately narrow and
+# frozen because its calibration was fitted over it. The two disagree on purpose (an amide N-H is
+# acidic here, never basic there); neither may be "corrected" to match the other.
 _ACIDIC: tuple[tuple[str, str], ...] = (
     ("carboxylic acid", "[OX2H1][CX3]=O"),
     ("sulfonic acid", "[OX2H1][SX4](=O)=O"),
@@ -549,9 +364,7 @@ _ACIDIC: tuple[tuple[str, str], ...] = (
     ("imide N-H", "[NX3H1]([CX3]=O)[CX3]=O"),
 )
 _BASIC: tuple[tuple[str, str], ...] = (
-    # Amide nitrogen is excluded by the `!$(...)` guards: it is not basic in any useful sense, and
-    # including it produced protonated amides as candidate microstates, which is a form that does
-    # not exist at any pH a chemist works at.
+    # The guards exclude amide nitrogen, which is not basic at any working pH.
     ("aliphatic amine", "[NX3;H2,H1,H0;!$(N[#6]=[O,N,S]);!$(N[S,P]=O);!$(N#*);!$([N-])]"),
     ("pyridine-type N", "[nX2;$(n1ccccc1),$(n1ccnc1),$(n1cccn1)]"),
     ("amidine/guanidine", "[NX2]=[CX3][NX3]"),
@@ -562,51 +375,13 @@ _BASIC: tuple[tuple[str, str], ...] = (
 def _compiled(smarts: str) -> Chem.Mol | None:
     """One SMARTS, compiled once per process. `None` for a pattern RDKit will not parse.
 
-    **Both tables above are constants and were re-parsed on every call.** The two of them hold
-    eleven patterns between them, and `_sites` ran `Chem.MolFromSmarts` over each one every time
-    it was called — eleven rebuilds per `enumerate_microstates`, and twenty-two per
-    `describe_molecule`, which perceived each table twice until the pass that added this cache made
-    it perceive each once. `servers/safety`'s `screen.py::_load_rules` is `lru_cache`d
-    over its whole rule table for this reason and says so, and `servers/rxnpredict`'s
-    `classifier.py::_compiled` is the same shape one server over.
+    Cached on the string rather than compiled at import, so a bad constant is a per-pattern skip and
+    not an import failure; the keys are the literals in `_ACIDIC` and `_BASIC`.
 
-    **It is not the last one in the fleet, and this docstring said it was.** Grepping after the
-    measurement found four more constant tables compiled per call. Each was then measured on its
-    own (`D-2026-09-26-a-constant-table-is-cached-where-its-compile-is-measured-to-matter`):
-    `_TRANSFORMS` below and `rxnlabel`'s `agents.py` are cached, `sites.py` and `torsions.py` are
-    not, and `rxnlabel`'s `species.py` had been compiling at import all along.
-
-    **What it is worth, measured here against the exact code this replaced rather than transcribed
-    from the row that asked for it.** On tyrosine, over five runs of 2,000 iterations: both tables
-    through `_sites` go 209-227 µs → 35.5-35.9 µs (**5.8x to 6.4x**), and a whole
-    `enumerate_microstates` call goes 853-890 µs → 602-620 µs (**1.39x to 1.43x**) — so the
-    per-call compile was ~30% of that call, which is the 28% the backlog row measured four days
-    earlier on a machine this is not.
-
-    **The saving is a constant rather than a factor, and that is the thing to read off it**: it is
-    ~250 µs per call whatever the molecule, so it is a third of a small call and nothing at all in
-    a large one — at a molecule near what `MAX_SITE_ATOM_PRODUCT` admits (1,891 atoms, 31 sites) the
-    two forms measure 580 ms and 595 ms, inside each other's noise. Which is why the bound above is
-    the half of this commit that matters and this is the half that was asked for.
-
-    Cached on the string rather than pre-compiled at import, following `classifier.py`, so a bad
-    constant is still a per-pattern skip rather than an import-time failure — this server loads its
-    corpus lazily on purpose (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer…`) and
-    a module-scope parse of eleven patterns would be a second thing that can fail in an import.
-    `@cache` is unbounded and bounded in fact: the keys are the literals in `_ACIDIC` and `_BASIC`.
-
-    **Why sharing one compiled query is safe, which is not the reason this docstring first gave.**
-    It said `GetSubstructMatches` "does not mutate" the query. That is false for a *recursive*
-    SMARTS — two of the eleven patterns here are one, the aliphatic-amine pattern with its four
-    `!$(...)` guards and the pyridine-type one — because RDKit caches the match set of a recursive
-    query against the current target **on the query object**, which is precisely why RDKit has a
-    `RDK_BUILD_THREADSAFE_SSS` build flag to put a mutex around it. What makes the sharing safe is
-    therefore that flag, and it is load-bearing rather than incidental: every tool body here runs
-    in `asyncio.to_thread`, so two concurrent calls match against one shared query by construction.
-    `rdBase._multithreadedEnabled` is what reports it, it is `True` in the wheel this lockfile
-    resolves, and `tests/test_microstate_bound.py` is what now asserts it instead of leaving the
-    cache resting on a sentence — measured beside it, 16 threads x 400 matches over the shared
-    queries give zero wrong answers.
+    Sharing a compiled query across threads is safe only because RDKit is built with
+    `RDK_BUILD_THREADSAFE_SSS`: a recursive SMARTS caches its match set on the query object, and
+    every tool body runs in `asyncio.to_thread`. `tests/test_microstate_bound.py` asserts
+    `rdBase._multithreadedEnabled`.
     """
     return Chem.MolFromSmarts(smarts)
 
@@ -614,16 +389,9 @@ def _compiled(smarts: str) -> Chem.Mol | None:
 def _sites(mol: Chem.Mol, patterns: tuple[tuple[str, str], ...]) -> list[tuple[str, int]]:
     """`(group name, atom index)` for every match, de-duplicated by atom.
 
-    **The ionisable atom is `match[0]`, which is why every pattern above is written to start on
-    it.** The first version took "the first N, O or S in the match" instead, and that is wrong for
-    exactly the group that matters most: in `[CX3](=O)[OX2H1]` the first hetero atom is the
-    *carbonyl* oxygen, which carries no proton — so every carboxylic acid was found and then
-    silently failed to deprotonate, and beta-alanine came back with its ammonium form and no
-    carboxylate. Measured, not reasoned about: the enumeration returned two species where it should
-    return three.
-
-    De-duplicated by atom because the patterns overlap by design — a guanidine matches both the
-    amidine pattern and the amine one — and counting one nitrogen twice would double the set.
+    The ionisable atom is `match[0]`, so every pattern starts on it (a carboxylic acid's first
+    heteroatom is the carbonyl oxygen). De-duplicated because patterns overlap by design (a
+    guanidine matches amidine and amine).
     """
     found: dict[int, str] = {}
     for name, smarts in patterns:
@@ -639,9 +407,7 @@ def _sites(mol: Chem.Mol, patterns: tuple[tuple[str, str], ...]) -> list[tuple[s
 def _shift(mol: Chem.Mol, index: int, delta: int) -> Chem.Mol | None:
     """`mol` with one proton added to or removed from atom `index`, or None if that is impossible.
 
-    Returns None rather than raising, because "this site cannot lose a proton" is an ordinary
-    outcome of walking a candidate list and not an error: the acid patterns match on the neutral
-    form, and a site already deprotonated in the input has no hydrogen to take.
+    None is an ordinary outcome (a site already deprotonated has no proton to give), not an error.
     """
     edited = Chem.RWMol(mol)
     atom = edited.GetAtomWithIdx(index)
@@ -662,15 +428,9 @@ def _shift(mol: Chem.Mol, index: int, delta: int) -> Chem.Mol | None:
 def enumerate_microstates(smiles: str) -> SpeciesSet:
     """The protonation microstates of `smiles`: each ionisable site toggled, singly.
 
-    **Singly, and that bound is the design.** A molecule with 4 ionisable sites has 16 combined
-    charge states, most of which are never populated at any pH; the ones a chemist asks about are
-    the parent and each single ionisation. Combined states are reachable by calling this on a
-    result, which makes the expansion the caller's explicit decision rather than a silent 2^n.
-
-    **The cost is checked before any proton is moved**, which is the other bound and the one that
-    prices the call. That cost is `sites x heavy atoms`, not the site count — see
-    `MAX_SITE_ATOM_PRODUCT` for what each of those two mistakes costs. The check itself is the two
-    `_sites` passes this function already made plus one descriptor read, so it is free.
+    Singly by design: combined states are reachable by calling this on a result, so a 2^n expansion
+    is the caller's explicit decision. The cost (`sites x heavy atoms`, `MAX_SITE_ATOM_PRODUCT`) is
+    checked before any proton is moved.
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
@@ -697,9 +457,7 @@ def enumerate_microstates(smiles: str) -> SpeciesSet:
 
     ordered = _ordered_unique(parent, species)
     _refuse_past(len(ordered), MAX_MICROSTATES, "protonation microstates", smiles)
-    # Labels are re-derived against the de-duplicated list so the two stay positional: two sites
-    # can produce one structure (a symmetric diacid), and zipping the raw lists would misalign
-    # every label after the collision.
+    # Labels follow the de-duplicated list, since two sites can produce one structure.
     by_smiles = dict(zip(species, labels, strict=True))
     return SpeciesSet(
         smiles=ordered,
@@ -712,9 +470,8 @@ def enumerate_microstates(smiles: str) -> SpeciesSet:
 def _open_stereo_elements(mol: Chem.Mol) -> int:
     """How many stereo elements `EnumerateStereoisomers(onlyUnassigned=True)` would flip.
 
-    Counted the way the enumerator counts them — `FindPotentialStereo`, keeping the unspecified and
-    unknown tetrahedral centres and double bonds, plus each non-absolute stereo group — so the price
-    is read off the same perception the work would use, not off a second one that could disagree.
+    Counted with the enumerator's own perception (`FindPotentialStereo`, unspecified and unknown
+    centres and double bonds, plus non-absolute stereo groups), so price and work cannot disagree.
     """
     elements = sum(
         1
@@ -733,9 +490,8 @@ def _open_stereo_elements(mol: Chem.Mol) -> int:
 def _refuse_stereo_enumeration_past(mol: Chem.Mol, smiles: str) -> None:
     """Raise when building this molecule's stereoisomers would cost more than one call may.
 
-    The enumerator builds `min(2^n, MAX_STEREOISOMERS + 1)` isomers for `n` open elements and
-    canonicalises each over the whole graph, so that count times the heavy atoms is what is priced
-    — see `MAX_STEREO_ISOMER_ATOM_PRODUCT`. A `ValueError`, so the wording reaches the model.
+    Priced as `MAX_STEREO_ISOMER_ATOM_PRODUCT` describes. A `ValueError`, so the wording reaches the
+    model.
     """
     elements = _open_stereo_elements(mol)
     # The exponent is clamped first, so a 994-centre polyol never builds 2^994 to compare it.
@@ -757,9 +513,8 @@ def _refuse_stereo_enumeration_past(mol: Chem.Mol, smiles: str) -> None:
 def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
     """Every stereoisomer of `smiles` at its *unassigned* centres, parent first.
 
-    **Unassigned only**, which is what makes this answer the question a chemist asks. A structure
-    drawn with defined stereochemistry is a claim; re-enumerating over it would silently offer the
-    enantiomer of a compound somebody specified. What is expanded is what the input left open.
+    Defined stereochemistry is a claim and is never re-enumerated; only what the input left open is
+    expanded.
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
@@ -771,15 +526,9 @@ def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
     # second: a refusal costs the parse and the count, nothing more.
     _refuse_stereo_enumeration_past(mol, smiles)
     parent = _canonical(mol)
-    # Two `type: ignore`s, and one below in `describe_molecule`: all the same `rdkit-stubs` gap
-    # that `engine/chem.py` records for `Descriptors.MolWt` — the stub marks these untyped, and
-    # the ignore is about the stub rather than a claim about the call.
-    # **`maxIsomers` bounds the work, and `_refuse_past` below bounds the answer.** They are not the
-    # same bound and only the second used to exist: the enumerator ran unlimited (`maxIsomers=0`)
-    # and the whole 2^n set was materialised before the cap was consulted, so refusing a 16-centre
-    # molecule — an 82-character string — cost 28 s of GIL-holding CPU in a worker thread nothing
-    # can cancel, past this server's own 30 s request budget. One past the cap is what makes the
-    # refusal fire on exactly the same molecules as before, at 0.06 s.
+    # The `type: ignore`s here and in `describe_molecule` are `rdkit-stubs` gaps, not claims about
+    # the calls. `maxIsomers` (one past the cap) bounds the work; `_refuse_past` below bounds the
+    # answer.
     options = StereoEnumerationOptions(  # type: ignore[no-untyped-call]
         onlyUnassigned=True, unique=True, maxIsomers=MAX_STEREOISOMERS + 1
     )
@@ -787,13 +536,8 @@ def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
         _canonical(isomer)
         for isomer in EnumerateStereoisomers(mol, options=options)  # type: ignore[no-untyped-call]
     ]
-    # **The parent is prepended only when it is one of the isomers**, which is the one place the
-    # module-wide "parent first" rule does not apply. A structure drawn with its centres left open
-    # is not a member of its own stereoisomer set — it is the underspecified question the set
-    # answers. Prepending it anyway put an extra species in the list, and since `rank_species`
-    # populates over exactly the list it is given, that species would have been embedded, optimised
-    # and assigned a Boltzmann population of its own. Measured on `CC(Cl)C(Br)C`: five species for
-    # a molecule with two centres.
+    # The parent is prepended only when it is one of the isomers: a structure with open centres is
+    # the question, not a member, and `rank_species` would give it a population of its own.
     species = found if parent not in found else _ordered_unique(parent, found)
     if not species:  # a molecule with nothing to expand is its own only isomer
         species = [parent]
@@ -802,11 +546,8 @@ def enumerate_stereoisomer_set(smiles: str) -> SpeciesSet:
 
 
 # Forced-degradation transforms, as reaction SMARTS grouped by the condition that drives them.
-# **A short, named, defensible list rather than a comprehensive one.** ICH Q1A forced degradation
-# is oxidative, hydrolytic and thermal; these are the transforms a formulation chemist looks for
-# first, and each is named so the proposal can be rejected on chemical grounds. A transform this
-# list lacks is a degradant nobody is offered — which is why the calling template's own prompt says
-# in as many words that the set is structural and not a prediction.
+# A short, named list (ICH Q1A oxidative, hydrolytic, thermal) so each proposal can be rejected on
+# chemical grounds; the set is structural, not a prediction.
 _TRANSFORMS: tuple[tuple[DegradationCondition, str, str], ...] = (
     ("oxidative", "N-oxidation", "[NX3;H0;!$(N[#6]=[O,N,S]);!$(N=*):1]>>[N+:1][O-]"),
     ("oxidative", "S-oxidation to sulfoxide", "[SX2;$(S([#6])[#6]):1]>>[S:1]=O"),
@@ -834,9 +575,7 @@ _TRANSFORMS: tuple[tuple[DegradationCondition, str, str], ...] = (
 )
 
 
-#: A ceiling on the substructure search that prices a degradant enumeration, so pricing a
-#: pathological molecule cannot itself be the expensive step. Any count this high is already far
-#: past the bound.
+#: Ceiling on the pricing substructure search, so pricing cannot itself be the expensive step.
 _MATCH_COUNT_LIMIT = 100_000
 
 
@@ -848,25 +587,11 @@ _CompiledTransform = tuple[DegradationCondition, str, rdChemReactions.ChemicalRe
 def _compiled_transforms() -> tuple[_CompiledTransform, ...]:
     """`_TRANSFORMS`, each reaction SMARTS compiled and initialised once per process.
 
-    **Measured before it was cached, which is the whole of the backlog row this closes.** The
-    eleven reaction SMARTS were re-parsed on every `enumerate_degradant_candidates` call. In the
-    `cc3-gate` Linux image (RDKit 2026.03.5), best of repeated runs: compiling the table costs
-    0.4-2.1 ms per call against a whole call of 2.4-4.2 ms on tyrosine (**32-50%**) and 5.8-17 ms
-    on imatinib (**7-12%**). Measured again in one process, cache cleared per call against warm,
-    the whole call goes 1,588 → 1,262 µs on tyrosine (**1.26x**) and 4,578 → 3,970 µs on imatinib
-    (**1.15x**) — the same constant-not-factor shape `_compiled` above records. The host was under
-    heavy unrelated load throughout, so the ranges are wide and only the in-process ratio compares
-    like with like.
-
-    `Initialize()` here rather than on first use: `RunReactants` initialises an uninitialised
-    reaction lazily, which is a write to the shared object inside a call that may be running in
-    two worker threads at once. Done once, under `@cache`, every later `RunReactants` only reads.
-    Three of the eleven reactant templates are recursive SMARTS, so the same
-    `RDK_BUILD_THREADSAFE_SSS` argument `_compiled` makes applies here too, and
-    `tests/test_species.py` drives the shared reactions from threads rather than assume it.
-
-    A pattern RDKit will not parse is dropped rather than raised on, exactly as before — a malformed
-    constant is a review failure, and `tests/test_species.py` asserts all eleven compile.
+    Compiling was a large share of a small call. `Initialize()` runs here because `RunReactants`
+    would otherwise initialise lazily — a write to a shared object from concurrent worker threads;
+    afterwards every call only reads. Recursive reactant templates rely on
+    `RDK_BUILD_THREADSAFE_SSS` as `_compiled` does, and `tests/test_species.py` drives the shared
+    reactions from threads. An unparsable pattern is dropped (the tests assert all compile).
     """
     compiled: list[_CompiledTransform] = []
     for condition, name, smarts in _TRANSFORMS:
@@ -881,11 +606,8 @@ def _compiled_transforms() -> tuple[_CompiledTransform, ...]:
 def enumerate_degradant_candidates(smiles: str) -> DegradantSet:
     """Structures a forced-degradation transform reaches from `smiles`.
 
-    **A short list, not a ranking, and not a prediction.** Each entry says a transform *matches*
-    the parent's graph; whether the chemistry happens is what the calling study decides. The parent
-    is deliberately **not** a member here — unlike the three enumerators above — because a
-    degradant set is a set of *products*, and including the starting material would make "how many
-    degradation liabilities does this have" read one too high.
+    Each entry says a transform matches, not that the chemistry happens. The parent is not a member:
+    a degradant set is a set of products.
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
@@ -948,22 +670,11 @@ def describe_molecule(smiles: str) -> Topology:
         if bond.GetBondType() == Chem.BondType.DOUBLE
         and bond.GetStereo() == Chem.BondStereo.STEREOANY
     )
-    # The tautomer count is the one field here that is not a bare descriptor read, and it is worth
-    # the enumeration: "is this molecule tautomeric at all" is the question the calling skill says
-    # to ask before paying for a resolution, and no count of heteroatoms answers it.
-    # Perceived once each and counted three times. This read `_sites(mol, _ACIDIC)` twice and
-    # `_sites(mol, _BASIC)` twice — four passes over the graph for three numbers, two of which are
-    # the other two added up. **`describe_molecule` is deliberately *not* bounded by
-    # `MAX_SITE_ATOM_PRODUCT`**: it is the total tool a caller consults to decide whether an
-    # enumeration is worth asking for, so "this molecule has 660 ionisable sites" is precisely the
-    # answer that should reach them rather than a refusal. Perceiving the sites costs 7.4 ms at 660
-    # sites and 1,978 atoms, measured; walking them is what costs 48 s.
-    #
-    # **It is not free.** The `tautomers` field below enumerates, which costs what the site counts
-    # do not: measured, 839 ms on PAMAM G3 against `enumerate_microstates`' 128 ms. That
-    # enumeration is bounded by `MAX_TAUTOMER_HEAVY_ATOMS`, and past it the field is null with
-    # `tautomer_count_computed` false rather than a refusal, so this stays the tool to ask first —
-    # it answers for a molecule the enumeration refuses.
+    # Sites are perceived once per table and counted three ways. Not bounded by
+    # `MAX_SITE_ATOM_PRODUCT`: this is the tool a caller consults before an enumeration, and
+    # perceiving sites is cheap where walking them is not. The tautomer count does enumerate; past
+    # `MAX_TAUTOMER_HEAVY_ATOMS` it is null with `tautomer_count_computed` false rather than a
+    # refusal.
     acidic = _sites(mol, _ACIDIC)
     basic = _sites(mol, _BASIC)
     computed = True
@@ -974,10 +685,8 @@ def describe_molecule(smiles: str) -> Topology:
         # which would claim the molecule is emphatically tautomeric.
         tautomers, computed = None, False
     except ValueError:
-        # Past the cap is emphatically tautomeric; answering rather than failing keeps this tool
-        # free and total, which is the property its callers rely on. But the cap is not a count —
-        # a molecule with 195 tautomers reported as having 64 invites a comparison with a molecule
-        # that really has 64 — so the answer is "more than the cap" and says so in two fields.
+        # Past the cap the answer is "more than the cap", in two fields, rather than a failure or a
+        # count that would read as exact.
         tautomers = None
     return Topology(
         smiles=_canonical(mol),

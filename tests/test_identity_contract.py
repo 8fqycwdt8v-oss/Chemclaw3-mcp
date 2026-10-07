@@ -1,48 +1,16 @@
 """The `X-Chemclaw-*` header contract with Chemclaw3, checked against the names it actually sends.
 
-Every other cross-repository claim this fleet makes is checked. `assert_manifest_matches` drives a
-running server and pins the tool surface in both directions, because "a `connector.yaml` is a
-*claim* about the tool surface, and Chemclaw3's own history is a list of claims that outlived the
-code they described". The four identity headers are the same kind of claim and had no such check —
-so one of them was wrong, on every request, for as long as it had existed.
+Header lookup is case-insensitive but not suffix-insensitive, so a constant that differs from the
+sent name binds an empty value, which `ContextFilter` writes onto every log line as "no
+correlation", and a durable record stamped with it would carry nothing.
 
-`HEADER_CORRELATION` read `x-chemclaw-correlation` against a sender writing
-`X-Chemclaw-Correlation-Id`. HTTP header lookup is case-insensitive, not suffix-insensitive, so
-`request.headers.get(...)` returned `None` and `bind_caller` bound the empty string.
+The literals are transcribed from `chemclaw.connectors.identity.STAMPED_HEADERS`, not imported
+from `mcp_server_kit.identity`: a test against this repository's own constants only proves it
+agrees with itself. Change one only because Chemclaw3 changed it.
 
-**It never surfaced as a *broken* thing, which is not the same as nothing reading it.** This
-paragraph said nothing consumed `current_caller().correlation`, and `mcp_server_kit.logging`'s
-`ContextFilter` reads all three fields onto **every log record** in every server — installed by
-`configure_logging` on each handler that reaches an output stream. So the wrong spelling did reach
-production behaviour: it wrote `correlation=-` on every line of every server, on the one field that
-joins this fleet's records to Chemclaw3's audit trail, and a missing id reads as "this request
-carried none" rather than as a defect. What no server does *yet* is stamp a stored record with it —
-`current_caller` is public kit API, and the first one to do so would have written an empty string
-into a durable row. That is the shape Chemclaw3 named in
-`D-2026-08-26-an-attribution-nothing-can-write-is-not-an-attribution`: a provenance field nothing
-can fill, described in the present tense by three docstrings.
-
-**The literals below are deliberately not imported from `mcp_server_kit.identity`.** A test written
-against this repository's own constants asserts that this repository agrees with itself, which it
-always did — the two constants were consistent, and both were wrong about the sender. These strings
-are transcribed from `chemclaw.connectors.identity` — exactly its `STAMPED_HEADERS` tuple
-(`HEADER_ACTOR`, `HEADER_SESSION`, `HEADER_CORRELATION`, `HEADER_DRY_RUN`) — and are the thing under
-test. Change one only because Chemclaw3 changed it.
-
-**`X-Chemclaw-Roles` was a fifth and is not one any more.** Chemclaw3 deleted `HEADER_ROLES` in
-`D-2026-08-26-an-entitlement-set-is-not-provenance`: it had one writer and, measured across both
-repositories, zero readers, while being the one header with no bound — under
-`entra_group_claims_as_roles` it carried every AD group a user is in, to every connector. This file
-went on listing it among the constants it transcribes and went on sending it, which is precisely the
-failure it exists to catch, in the file positioned as the authority. Nothing broke at runtime,
-because the header was ignored on both sides; what was lost is the property that made this file
-worth having.
-
-Driven through a real `connector_app` over a real MCP session rather than through the middleware
-alone, because the caller is bound *twice* and only the second binding is what a tool body reads:
-middleware binds the ASGI task, `_bind_caller_per_tool_call` re-binds inside the session manager's.
-A test that only exercised the first would have passed while a tool read the handshake's identity —
-which is the defect that made per-tool re-binding necessary in the first place.
+Driven through a real `connector_app` over a real MCP session, because the caller is bound twice
+(middleware in the ASGI task, `_bind_caller_per_tool_call` in the session manager's) and only the
+second is what a tool body reads.
 """
 
 from __future__ import annotations
@@ -121,11 +89,9 @@ def _free_port() -> int:
 def probe_url() -> Iterator[str]:
     """Run the probe server under uvicorn on loopback and yield its MCP endpoint.
 
-    A real socket rather than an ASGI transport, matching every server's own `test_server.py`.
-    Two reasons, and the second is not a preference: the MCP transport's DNS-rebinding guard
-    refuses a synthetic `Host`, and driving the session manager's lifespan from the test's own task
-    exits an `anyio` cancel scope in a task that did not enter it. Loopback, so the egress guard
-    permits it.
+    A real socket rather than an ASGI transport: the DNS-rebinding guard refuses a synthetic `Host`,
+    and driving the session manager's lifespan from the test's task would exit an `anyio` cancel
+    scope in the wrong task.
     """
     config = _probe_app()
     server = uvicorn.Server(config)
@@ -161,8 +127,7 @@ async def _call_whoami(url: str, headers: dict[str, str]) -> dict[str, str]:
 async def test_a_tool_body_reads_every_header_chemclaw3_sends(probe_url: str) -> None:
     """All three identity values reach the tool body under the sender's own spellings.
 
-    The regression this pins: `correlation` came back `""` here while the other two were fine, so
-    any test that checked "identity arrives" without naming each field would have passed.
+    Each field is named, since a check that "identity arrives" would pass with one field empty.
     """
     seen = await _call_whoami(
         probe_url,
@@ -177,11 +142,10 @@ async def test_a_tool_body_reads_every_header_chemclaw3_sends(probe_url: str) ->
 
 
 async def test_an_absent_header_is_empty_rather_than_missing(probe_url: str) -> None:
-    """A caller off the request path sends no identity, and that must not be an error.
+    """An absent header binds as empty, not as an error.
 
-    Chemclaw3 omits a header rather than sending an empty one precisely so a server's log cannot
-    claim an anonymous user made the call, so the absent case is a real one and has to be typed the
-    same way as the present one.
+    Chemclaw3 omits a header off the request path rather than sending an empty one, so the absent
+    case is real and must be typed like the present one.
     """
     seen = await _call_whoami(probe_url, {})
     assert seen == {"actor": "", "session": "", "correlation": ""}
@@ -197,12 +161,11 @@ async def test_an_absent_header_is_empty_rather_than_missing(probe_url: str) -> 
     ],
 )
 def test_each_constant_names_the_header_that_is_sent(constant: str, sent: str) -> None:
-    """The constants agree with the sender, case aside — the one-line version of the test above.
+    """Each constant names the header that is sent, case aside.
 
-    Kept beside the end-to-end check rather than instead of it: this one names *which* constant
-    drifted, which is the thing a reader of a red suite wants first. Neither is sufficient alone —
-    a constant can be right while the binding is not, and `HEADER_DRY_RUN` has no binding at all
-    (it is read straight off the request in `CallerLogMiddleware`), so only this covers it.
+    Names which constant drifted. Kept beside the end-to-end check: a constant can be right while
+    the binding is not, and `HEADER_DRY_RUN` has no binding (it is read directly in
+    `CallerLogMiddleware`), so only this covers it.
     """
     from mcp_server_kit import identity
 
@@ -212,14 +175,11 @@ def test_each_constant_names_the_header_that_is_sent(constant: str, sent: str) -
 async def test_two_concurrent_calls_on_one_session_each_read_their_own_caller(
     probe_url: str,
 ) -> None:
-    """Chemclaw3's agent gathers a whole tool batch, so two `tools/call`s can be in flight on one
-    `mcp-session-id` at once — and the caller re-binding was only ever measured sequentially.
+    """Two concurrent calls on one MCP session each read their own caller.
 
-    If the SDK served both from one task, the bind/reset pairs would interleave and a durable row
-    would be stamped with the other caller's identity. This pins that each in-flight call reads
-    its own headers, which is the property the fleet's whole attribution story rests on under
-    parallel batches. Raw JSON-RPC posts rather than `ClientSession`, because the client session
-    fixes its headers at construction and the thing under test is per-*call* identity.
+    Chemclaw3 gathers a whole tool batch, so calls overlap on one `mcp-session-id`; interleaved
+    bind/reset pairs would stamp one call with another's identity. Raw JSON-RPC posts, since
+    `ClientSession` fixes headers at construction and the subject is per-call identity.
     """
 
     def who(name: str) -> dict[str, str]:
@@ -280,12 +240,9 @@ async def test_two_concurrent_calls_on_one_session_each_read_their_own_caller(
 
 
 def test_the_constants_are_exactly_the_headers_chemclaw3_stamps() -> None:
-    """The inverse assertion, which is what makes the four above a *set* rather than four names.
+    """The constants are exactly the headers Chemclaw3 stamps, as a set.
 
-    A header Chemclaw3 adds is invisible here otherwise, and a header it deletes lives on — this
-    file sent `X-Chemclaw-Roles` on every request for as long as after Chemclaw3 removed it
-    (`D-2026-08-26-an-entitlement-set-is-not-provenance`), while claiming in its own docstring to
-    transcribe the sender's constants. Both directions, so neither can drift alone.
+    Otherwise a header Chemclaw3 adds is invisible here and one it deletes lives on.
     """
     from mcp_server_kit import identity
 

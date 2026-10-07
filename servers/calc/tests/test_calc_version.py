@@ -1,38 +1,16 @@
-"""Every compute result carries the version that produced it. This is the port's whole point.
+"""Every compute result carries the version that produced it.
 
-## The failure this file exists to prevent, stated once
+Chemclaw3's calculation cache and calibration ledger are addressed by `calc_version`, matched
+exactly. That string is assembled from things that exist only in this process (tblite and rdkit
+versions, `_HAMILTONIAN_REVISION`, `xtb --version`, pKa calibration constants). A Chemclaw3 pod
+re-deriving it would get `"absent"` rather than an error and silently match no rows. So **the
+derivation lives here, the string ships in every result, and nothing re-derives it.**
 
-Chemclaw3 keeps two stores this server's answers belong in: the calculation cache
-(`calculation_results`, addressed by `calc_type@calc_version:input_hash:params_hash`) and the
-**calibration ledger** (`predictions`, unique on `(calc_type, calc_version, input_hash)`, read with
-an *exact* `calc_version` predicate — no version pooling, deliberately, so a v1 that ran high is
-never averaged with a v2 that ran low).
-
-`calc_version` is assembled from things that live in *this* process and nowhere else:
-
-- the installed `tblite` and `rdkit` distribution versions,
-- `_HAMILTONIAN_REVISION`, a constant in `engine/xtb_engine.py`,
-- `xtb --version`, a subprocess, when the backend resolves to the binary,
-- and, for pKa, seven `settings.*` calibration constants.
-
-After the split a Chemclaw3 pod has neither distribution installed and no xtb binary. If it
-re-derived the string it would **not** get an exception. `xtb_cli.binary_version()` returns the
-literal string `"absent"` rather than raising, so the reconstruction would be well-formed, would
-match zero ledger rows, and `calculator_trust("pka")` would report `UNCALIBRATED`, n=0 — a confident
-answer about a calibration that is merely unreachable. Silent, not loud, which is why it needs a
-test rather than a convention.
-
-So: **the derivation lives here, the string ships in every result, and nothing re-derives it.**
-
-## What is asserted
-
-Two properties, over all nine tools, driven through the tool functions themselves rather than the
-engine — because the tool layer is where a `model_copy(update=...)` or a summary projection could
-drop a field while every engine test stayed green (`OptimizationSummary.of` is exactly that shape).
+Asserted through the tool functions, where a projection could drop a field:
 
 1. `calc_version` is present and non-empty on every result.
-2. `calc_key` is the full four-part string on the eight calculators whose Chemclaw3 source derives a
-   key, and `None` on the one that does not (`predict_logd` — see its module docstring).
+2. `calc_key` is the full four-part string wherever a key is derivable, and `None` on
+   `predict_logd`.
 """
 
 from __future__ import annotations
@@ -61,22 +39,16 @@ ACETIC = "CC(=O)O"
 # fourth is a deliberate act with a reason beside it.
 HELPERS = {"embed_structure", "combine_structures", "calculation_key"}
 
-# The two CREST searches. The image now ships the binary
-# (`D-2026-08-26-a-sampler-nobody-ships-is-a-refusal-with-a-manual`), so the conformer search joins
-# the dict below wherever one is installed — on water, which is seconds. `search_binding_modes`
-# stays out either way and by cost rather than by capability: a wall-potential metadynamics over a
-# *pair* is minutes at best, which is not a unit test, and its identity is covered by
-# `test_calculation_key.py`.
+# `search_binding_modes` is excluded by cost: a metadynamics over a pair takes minutes. Its
+# identity is covered by `test_calculation_key.py`.
 _UNRUNNABLE_HERE = {"search_binding_modes"}
 
 
 def _crest_exclusions() -> set[str]:
     """Which searches this run cannot exercise — a fact about the machine, read at call time.
 
-    Named as a function rather than a constant because the answer differs between the shipped image
-    and a CI runner without the binary, and a constant would have to pick one and be wrong on the
-    other. The subtraction is what keeps the remainder closed: a tool that is neither exercised nor
-    named here fails the set assertion.
+    The subtraction keeps the remainder closed: a tool neither exercised nor named here fails the
+    set assertion.
     """
     if crest_cli.is_available():
         return set(_UNRUNNABLE_HERE)
@@ -86,10 +58,8 @@ def _crest_exclusions() -> set[str]:
 def _binary_exclusions() -> set[str]:
     """Which binary-only panels this run cannot exercise — a fact about the machine, not the image.
 
-    Same shape and same reason as `_crest_exclusions` above: the answer differs between the shipped
-    image and a runner without the binary, so a constant would have to pick one and be wrong on the
-    other. Both panels come from `xtb` and nothing approximates them, so with no binary they are
-    excluded here and their refusal is exercised in `test_reactivity_panel.py` instead.
+    With no `xtb` binary they are excluded here; their refusal is tested in
+    `test_reactivity_panel.py`.
     """
     if xtb_cli.is_available():
         return set()
@@ -99,14 +69,9 @@ def _binary_exclusions() -> set[str]:
 async def _every_tool_result() -> dict[str, Keyed]:
     """Call every computing tool once and return its result by tool name.
 
-    One helper rather than a fixture per tool because the assertions below are the *same* assertion
-    twelve times — a per-tool fixture would make it possible to add a thirteenth tool and a
-    thirteenth fixture without the new tool ever being checked, which is the failure mode this file
-    guards against in the first place.
-
-    Water for the primitives: three atoms, so a Hessian is 18 single points and the whole chain runs
-    in milliseconds. The CREST searches are absent from this dict and subtracted from the served set
-    below rather than skipped silently — a skip would stop noticing the day the binary *is* shipped.
+    One helper, so a new tool cannot get a fixture without being checked. Water for the primitives,
+    so the whole chain runs in milliseconds. Excluded searches are subtracted from the served set
+    below rather than skipped.
     """
     water = await tools.embed_structure("O")
     relaxed = await tools.relax_structure(water)
@@ -146,11 +111,9 @@ async def _every_tool_result() -> dict[str, Keyed]:
 
 
 async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
-    """The one invariant this port turns on. Every calculation, one property, no exceptions.
+    """Every compute tool returns a non-empty `calc_version`.
 
-    Also asserts the *set*, so adding a tool to `tools.py` without adding it here fails rather than
-    being silently unchecked — and the two exclusions are named sets rather than a predicate, so
-    growing either is a deliberate act.
+    The set is asserted too, so an unlisted new tool fails, and the exclusions are named sets.
     """
     results = await _every_tool_result()
     # The helpers are excluded by name rather than by forgetting them, the searches this machine
@@ -172,14 +135,11 @@ async def test_every_compute_tool_returns_a_non_empty_calc_version() -> None:
 
 
 async def test_the_version_names_the_programs_that_actually_ran() -> None:
-    """A version string that names nothing is as useless as an absent one.
-
-    Each family is checked for the component it *must* mention, because that is what makes an
-    upgrade a cache miss on the other side rather than a silent stale hit:
+    """The version names the programs that actually ran, so an upgrade is a cache miss.
 
     - every xTB-family result names the GFN method, the resolved backend and the tblite build;
     - the two RDKit-only calculators name the rdkit build;
-    - pKa names its calibration constants, which is the half no program version can see.
+    - pKa names its calibration constants.
     """
     results = await _every_tool_result()
     for name in (
@@ -216,23 +176,11 @@ async def test_the_version_names_the_programs_that_actually_ran() -> None:
 async def test_the_optimizer_that_decides_the_geometry_is_in_the_optimization_version() -> None:
     """geomeTRIC chooses the stationary point, so a geomeTRIC upgrade is a different answer.
 
-    Measured at `6c6a0eb`: `engine_version()` read
-    `tblite-0.7.0/rdkit-2026.3.5/scipy-1.17.1/h3` and `'geometric' in engine_version()` was
-    `False`, while `servers/calc/pyproject.toml` said in the present tense that the distribution
-    version was in it "for the same reason tblite's is". So the one program whose *output is the
-    payload* — the optimized geometry, which `optimize_geometry` and `relax_structure` store and
-    whose `structure_id` every downstream key is built from — was the one program no key named
-    (`D-2026-09-16-the-optimizer-that-decides-the-geometry-is-not-in-the-version-string`).
-
-    **Driven through the tools rather than through `OptSpec`**, for this file's stated reason: the
-    tool layer is where a summary projection can drop a field with every engine test still green.
-    `scan_point` and `predict_pka` are here because both relax through an `OptSpec` and neither
-    mentions the optimizer anywhere in its own code — if the version were assembled per tool
-    instead of on the spec, those are the two that would be missed.
-
-    The negative half is the rule's second clause. A single point, a properties panel and a Hessian
-    are evaluated at a geometry somebody hands them; naming geomeTRIC on their rows would key three
-    calculations on a program they do not run.
+    The optimized geometry is the payload every downstream `structure_id` is built from, so the
+    optimization version must name geomeTRIC. Driven through the tools; `scan_point` and
+    `predict_pka` relax through an `OptSpec` without mentioning the optimizer. The negative half:
+    single points, property panels and Hessians are evaluated at a given geometry and must not name
+    it.
     """
     if xtb_cli.is_available() and settings.xtb_engine != "tblite":
         pytest.skip(
@@ -254,12 +202,10 @@ async def test_the_optimizer_that_decides_the_geometry_is_in_the_optimization_ve
 
 
 async def test_the_key_travels_wherever_the_source_derives_one() -> None:
-    """Eight of nine carry the full four-part key; `predict_logd` carries `None`, and only it.
+    """Every keyed tool carries the full four-part key; `predict_logd` carries `None`, and only it.
 
-    The exception is not an omission: Chemclaw3 never gave logD a cache entry, because the expensive
-    half was already memoized as a pKa and Crippen LogP is sub-millisecond, so there is no key
-    derivation to port. Asserting the `None` explicitly is what stops somebody "fixing" it by
-    inventing one — an invented `logd@...` key would address a row nothing on the other side writes.
+    Chemclaw3 never cached logD, so there is no key to derive; asserting `None` stops anyone
+    inventing one that addresses a row nothing writes.
     """
     results = await _every_tool_result()
     for name, result in results.items():
@@ -279,9 +225,8 @@ async def test_the_key_travels_wherever_the_source_derives_one() -> None:
 async def test_the_key_is_stable_across_two_identical_calls() -> None:
     """A key that changed per call would address a new row every time — a cache that never hits.
 
-    The realistic way to break this is not randomness but the geometry: `structure_id` hashes the
-    coordinates, so an embedding that is not seeded, or an optimizer that always moves something,
-    mints a new id on every pass. Both have happened in this code's history.
+    `structure_id` hashes coordinates, so an unseeded embedding or an always-moving optimizer would
+    mint a new id every pass.
     """
     first = await tools.compute_xtb_energy(ETHANOL)
     second = await tools.compute_xtb_energy(ETHANOL)
@@ -292,10 +237,7 @@ async def test_the_key_is_stable_across_two_identical_calls() -> None:
 async def test_two_spellings_of_one_molecule_share_a_key() -> None:
     """`"CCO"` and `"OCC"` are one molecule, so they must be one key.
 
-    This is the property `engine/chem.require_canonical_smiles` exists for, checked at the level
-    that matters: canonicalization happens *before* embedding, because atom order steers the seeded
-    geometry, so a canonicalizer applied only to the key would produce one key for two different
-    structures.
+    Canonicalization happens before embedding, because atom order steers the seeded geometry.
     """
     assert (await tools.compute_xtb_energy("CCO")).calc_key == (
         await tools.compute_xtb_energy("OCC")

@@ -1,35 +1,14 @@
 """The readiness check: run the arithmetic against relations it does not itself contain.
 
-This server loads no corpus, and
-`D-2026-09-15-a-server-with-nothing-to-load-still-has-something-to-verify` already settled that
-this does not excuse a probe.
+- The CSTR/PFR volume ratio at 90% first-order conversion is 3.909 — fails if either model is
+  wrong, and cannot be satisfied by both being wrong the same way.
+- The closed-form batch conversion and its inverse round-trip to machine precision at every order.
+- The RK4 integrator converges at fourth order; a rate check catches an O(h) defect that an
+  absolute tolerance would pass.
+- The stable scheme lands on the quasi-steady limit `1 / (k * C_co,end * t_dose)`.
+- Arrhenius doubles the rate per 10 °C near room temperature at about 53 kJ/mol.
 
-What it verifies is chosen on the same principle as `servers/suitability`'s: prefer a check the
-implementation cannot satisfy by agreeing with itself.
-
-- **The CSTR/PFR ratio at 90% first-order conversion is 3.909**, a textbook number written nowhere
-  in `reactors.py`. It comes out of the two reactor models being *different* — a tank at outlet
-  composition against a plug at every composition — so it fails if either is wrong, and it cannot
-  be satisfied by both being wrong the same way.
-- **The closed-form inverse must round-trip to machine precision.** `batch_conversion` and
-  `time_for_batch_conversion` are separately derived integrals of the same rate law, so a sign or
-  exponent error in either breaks the identity, at every order.
-- **The integrator must converge at fourth order.** This is the check that has already earned its
-  place: the first version of `semibatch_accumulation` guarded its feed term with
-  `time < dose_time_seconds`, which put one step of O(h) error into an O(h⁴) scheme and dropped it
-  to first-order convergence. The answer was still right to three significant figures, so no
-  absolute tolerance would have caught it — only the *rate* did.
-- **The stable scheme must land on the quasi-steady limit.** A dose far past RK4's ceiling reacts
-  its feed as fast as it arrives, so the unreacted reagent is `F / (k * C_co)` at every instant —
-  at the end of the dose, a fraction `1 / (k * C_co,end * t_dose)` of the charge. That closed form
-  is written nowhere in the scheme, which knows only the rate law; an SDIRK coefficient typed wrong
-  or a projection that discards moles moves the answer off it.
-- **Arrhenius must reproduce the rule every chemist carries**: the rate doubles per 10 °C near room
-  temperature at an activation energy of about 53 kJ/mol.
-
-There is nothing to digest here — unlike `suitability`, this server transcribes no table. Every
-number it uses is a physical constant or a definition, so the `Dataset` names the module and the
-version rather than a checksum over a corpus that does not exist.
+No corpus, so the `Dataset` digests the engine source rather than a table.
 """
 
 from __future__ import annotations
@@ -52,9 +31,8 @@ CONSTANTS_VERSION = "1.1.0"
 #: than as 3.909 so the check cannot be satisfied by somebody updating a literal.
 _NINETY_PERCENT = 0.9
 
-#: Refining by 2.5x must improve a fourth-order answer by about 2.5^4 = 39. The threshold is 20
-#: because the measured improvement is ~40 and the defect it guards against gave 2.5 — an order of
-#: magnitude of daylight on either side, so the bound needs no precision.
+#: Refining by 2.5x must improve a fourth-order answer by about 2.5^4 = 39; a first-order defect
+#: gives 2.5, so 20 separates them with room either side.
 _FOURTH_ORDER_FLOOR = 20.0
 
 _DOSE = {
@@ -70,9 +48,8 @@ _DOSE = {
 class SelfTestFailed(RuntimeError):
     """A relation this server's arithmetic no longer satisfies.
 
-    `RuntimeError` rather than `ValueError`: this is never a caller's input, it is this pod being
-    wrong, and `connector_app` classifies it as a permanent cause so the pod leaves its Service
-    rather than serving arithmetic that has moved.
+    `RuntimeError`, not `ValueError`: this is the pod being wrong, and `connector_app` treats it as
+    a permanent cause, so the pod leaves its Service.
     """
 
 
@@ -137,8 +114,8 @@ def _check_integrator_order() -> None:
         )
 
 
-#: A 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60 — the stiff fixture the reviews
-#: drove — at a rate constant six orders past RK4's ceiling.
+#: A 1 h dose of 5 mol into 0.10 volume against a co-reagent at 60, at a rate constant six orders
+#: past RK4's ceiling.
 _STIFF_DOSE = {
     "rate_constant": 1.0e6,
     "dose_time_seconds": 3600.0,
@@ -215,10 +192,8 @@ def _check_arrhenius() -> None:
 def _formula_digest() -> str:
     """A digest over this server's two engine modules.
 
-    Unlike `servers/suitability`, there is no transcribed table to digest field by field — every
-    number here is a physical constant or a definition. So the digest is over the source, and it
-    says what it is: two pods agreeing means they run the same formulas, and a comment change moves
-    it. That is weaker than a value digest and is the honest thing available.
+    Over the source, since there is no table: two pods agreeing means they run the same formulas (a
+    comment change also moves it).
     """
     digest = hashlib.sha256()
     for module in (arrhenius, reactors):
@@ -239,8 +214,7 @@ def verify() -> list[Dataset]:
         One `Dataset` naming the formulas this pod serves.
 
     Raises:
-        SelfTestFailed: If any relation no longer holds. `connector_app` turns that into an unready
-            `/healthz` naming the reason.
+        SelfTestFailed: If any relation no longer holds; `/healthz` then answers unready.
     """
     _check_reactor_ratio()
     _check_inverse_round_trip()

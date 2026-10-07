@@ -149,7 +149,7 @@ pipeline {
 
     // What only a running image proves, and what the fleet's own tests cannot: that the server
     // answers on its declared port with only what the image carries. `MCP_SERVER_REVISION` reaching
-    // `/healthz` is the same check `tests/test_fleet.py` makes of the *file* — this makes it of the
+    // `/healthz` is the same check `tests/test_fleet_images.py` makes of the *file* — this makes it of the
     // *build*, which is where Chemclaw3's revision field read "unknown" for eight months.
     stage('Verify every image answers') {
       when { expression { params.IMAGE_BUILDER != 'kaniko' } }

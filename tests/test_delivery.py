@@ -1,22 +1,10 @@
 """The delivery pipeline describes this fleet; these are the halves a file can check.
 
-`Jenkinsfile` cannot run here — there is no controller, no registry, no cluster. What can be checked
-is every claim it makes about *this tree*, and one property that matters more than the rest:
-
-**it must derive the server list from the filesystem rather than carry one.**
-
-That is not a style preference. Chemclaw3's image workflow kept a hand-written component list and
-went on smoking `workers.hpc_worker` for months after the component ceased to exist — a green gate
-asserting something absent. This repository adds servers regularly (seven now, five more `proposed`
-in `MODULES.md`), so a list written into a pipeline is a list that is wrong by the next merge, and
-wrong in the direction that fails open: a server nobody builds is a server nobody deploys, silently.
-
-**It is not only `Jenkinsfile` any more.** Since the `fetch-depth` assertion this file also reads
-every workflow under `.github/workflows/` — the jobs, not the file — for the same reason: that tree
-is checked by no compiler and no linter here either, and a suite job on a shallow checkout turns
-`test_every_commit_the_registers_cite_is_reachable_from_head` into a control that does not run.
-
-Deliberately not checked: whether any of it works against a registry. Nothing here can know that.
+`Jenkinsfile` cannot run here, so its claims about this tree are checked, chiefly that it
+derives the server list from the filesystem: a written list fails open, since a server nobody
+builds is silently never deployed. Every workflow under `.github/workflows/` is read too,
+because a suite job on a shallow checkout would disable the reachability check. Whether any of
+it works against a registry is not checked.
 """
 
 from __future__ import annotations
@@ -69,15 +57,10 @@ def test_every_server_with_a_containerfile_can_be_addressed_by_the_pipeline() ->
 
 
 def test_the_running_image_is_verified_rather_than_the_source() -> None:
-    """The two facts only a started container can establish, and both have failed elsewhere.
+    """The pipeline verifies the started container, not the source, for two facts.
 
-    The revision reaching `/healthz` is what `test_the_revision_reaches_the_handshake_and_the_probe`
-    asserts of the *file*; Chemclaw3's own revision field read `unknown` in every build for eight
-    months with its test green, because nothing ever set the build argument.
-
-    Bearer enforcement on `/mcp` cannot be read off the source at all: the MCP surface is *mounted*,
-    and a mount bypasses the enclosing app's dependencies. `CLAUDE.md` says to verify it against a
-    running server for exactly this reason.
+    The revision reaching `/healthz` needs the build argument actually set, and bearer enforcement
+    on the mounted `/mcp` surface cannot be read off the source.
     """
     text = _pipeline()
     assert "/healthz" in text and "REVISION" in text, "the built image's revision is not checked"
@@ -97,23 +80,12 @@ def test_dry_run_is_the_default() -> None:
 
 
 def test_a_publishing_run_cannot_skip_the_gate() -> None:
-    """`RUN_GATE` defaults off, and nothing in this pipeline can see GitHub Actions.
+    """A publishing run cannot skip the gate.
 
-    The parameter's description said "off because GitHub Actions is the gate", which is a true
-    sentence about a system this file never consults: no step reads a check run, a status or a
-    conclusion for `env.REVISION`. So every publishing run could ship an image built from a
-    revision whose `make check` had never run
-    (`D-2026-09-13-a-gate-in-another-system-is-not-a-gate-this-one-can-see`).
-
-    Read as source rather than driven, because driving it needs a Jenkins. Three separate facts,
-    because the refusal is wrong if any one of them is missing and each fails differently:
-
-    - the refusal names **all three** conditions - a publish is `!DRY_RUN` *and* a registry *and*
-      `!RUN_GATE`, and dropping the registry term would refuse a build-only run that ships nothing;
-    - it `error`s rather than warns, because a pipeline that logs and continues has published by
-      the time anybody reads the log;
-    - the `Gate` stage it points at still runs `make check`, or the refusal sends an operator to a
-      stage that proves nothing.
+    `RUN_GATE` defaults off and the pipeline cannot see GitHub Actions, so Preflight must refuse.
+    Read as source (driving needs a Jenkins), three facts: the refusal names all three conditions
+    (`!DRY_RUN`, a registry, `!RUN_GATE`), so a build-only run is not refused; it `error`s rather
+    than warns; and the `Gate` stage it points at still runs `make check`.
     """
     text = _pipeline()
     guard = "if (!params.DRY_RUN && env.IMAGE_REGISTRY && !params.RUN_GATE) {"
@@ -132,26 +104,14 @@ def test_a_publishing_run_cannot_skip_the_gate() -> None:
 
 
 def test_the_pipeline_has_one_answer_to_whether_there_is_a_registry() -> None:
-    """Two spellings of one predicate disagreed, and Groovy's truthiness is where they disagreed.
+    """The pipeline has one answer to whether there is a registry.
 
-    The Preflight refusal asked `params.IMAGE_REGISTRY?.trim()` and the publish branch asked
-    `!params.IMAGE_REGISTRY`. A whitespace-only string is **truthy** in Groovy while its `trim()` is
-    not, so `IMAGE_REGISTRY="  "` with `DRY_RUN=false` and `RUN_GATE=false` skipped the refusal and
-    took the publishing branch. The push then died on an image reference of `"  /chemclaw-mcp-…"`,
-    which makes it an inconsistency rather than a live bypass — and an inconsistency between two
-    spellings of one question is the thing to delete, not the accident that saves it. A third
-    spelling, `params.IMAGE_REGISTRY != ''`, gated the digest report.
-
-    So the pipeline trims once into `env.IMAGE_REGISTRY` and every later read is of that. This is
-    read as source because driving it needs a Jenkins; what it asserts is the property that made the
-    three spellings possible — that `params.IMAGE_REGISTRY` is read exactly once, where it is
-    normalised.
+    Groovy treats a whitespace-only string as truthy while its `trim()` is not, so different
+    spellings of the predicate disagree. The pipeline trims once into `env.IMAGE_REGISTRY`; this
+    asserts `params.IMAGE_REGISTRY` is read exactly once, where it is normalised.
     """
-    # The comment block above the assignment explains the defect and quotes both old spellings, so
-    # **every** assertion below reads the comment-stripped code. Driven while writing this: with the
-    # normalisation commented out and `env.IMAGE_REGISTRY = params.IMAGE_REGISTRY` in its place,
-    # a version of this test that matched the raw text passed
-    # (`D-2026-09-14-a-ratchet-that-matches-a-comment-holds-nothing`, in the file that records it).
+    # The comment above the assignment quotes the old spellings, so every assertion below reads the
+    # comment-stripped code.
     code = "\n".join(
         line for line in _pipeline().splitlines() if not line.lstrip().startswith("//")
     )
@@ -170,21 +130,18 @@ def test_the_pipeline_has_one_answer_to_whether_there_is_a_registry() -> None:
 def _shell_as_the_shell_receives_it(block: str) -> str:
     r"""Resolve a Groovy GString to the text bash is actually handed.
 
-    `${...}` is interpolated by Jenkins before the shell sees anything; `\${...}` and `\$(...)`
-    reach the shell verbatim — that escape is how a pipeline writes a *shell* variable inside an
-    interpolated string, and getting it backwards is the most common way one of these files breaks.
+    Jenkins interpolates an unescaped dollar-brace before the shell sees it, while an escaped dollar
+    reaches the shell verbatim; getting that backwards is the commonest way these files break.
     """
     resolved = re.sub(r"(?<!\\)\$\{[^}]*\}", "PLACEHOLDER", block)
     return resolved.replace("\\$", "$").replace("\\\\", "\\")
 
 
 def test_every_shell_block_in_the_pipeline_parses() -> None:
-    """The one thing about this pipeline that can actually be executed here.
+    """Every shell block in the pipeline parses under `bash -n`.
 
-    A Jenkinsfile is checked by no compiler and no linter in this repository, and its shell bodies
-    are strings — so an unbalanced quote is invisible until a run, against a registry. `bash -n`
-    costs milliseconds, and speaks about the text the shell receives rather than the text in
-    the file.
+    No compiler or linter here reads a Jenkinsfile, and its shell bodies are strings, so an
+    unbalanced quote would otherwise surface only in a run.
     """
     text = _pipeline()
     blocks = re.findall(r'"""(.*?)"""', text, re.S) + re.findall(r"sh '''(.*?)'''", text, re.S)
@@ -195,17 +152,10 @@ def test_every_shell_block_in_the_pipeline_parses() -> None:
         assert result.returncode == 0, f"a shell block does not parse: {result.stderr.strip()}"
 
 
-# The commands that run this repository's suite. A job that runs one of these runs
-# `tests/test_decision_log.py::test_every_commit_the_registers_cite_is_reachable_from_head`, which
-# needs ancestry: `git merge-base --is-ancestor` cannot decide reachability in a shallow clone, so
-# that test *warns and returns* instead of failing. `actions/checkout` defaults to depth 1.
-#
-# **`pytest` is in this tuple because the four `make` spellings are not the reach they read as.**
-# Every recorded drive of the assertion below used a spelling already listed, so none of them probed
-# a job that invokes the runner directly — and that is not a hypothetical shape: it is the exact
-# step the deleted `manifests` job ran, `run: uv run pytest -q tests`, quoted in this workflow's own
-# comment. Driven at HEAD, re-adding that job at `actions/checkout`'s default depth left this file
-# green. The bare runner name closes the shape a `make` target cannot reach around.
+# The commands that run this repository's suite. A job running one also runs the commit
+# reachability check, which needs full history: in a shallow clone it warns and returns instead of
+# failing, and `actions/checkout` defaults to depth 1. The bare `pytest` runner is listed because
+# a job may invoke it directly rather than through `make`.
 _SUITE_COMMANDS = (
     "make cov",
     "make test",
@@ -219,22 +169,9 @@ _SUITE_COMMANDS = (
 def _ci_jobs() -> dict[str, dict[str, Any]]:
     """Every job in every GitHub Actions workflow, keyed `<file>:<job>`.
 
-    **Every workflow file, not `ci.yml`.** A second file is the cheapest way to add a job — a
-    nightly, a release lane, a scheduled re-run — and it would have been outside anything here.
-    Driven at HEAD: a `.github/workflows/nightly.yml` whose one job runs `make cov` on
-    `actions/checkout`'s default depth left this file green at `9 passed`. That is the same defect
-    as `_SUITE_COMMANDS` being a spelling list, one level out: the set a check enumerates is the
-    only set it holds.
-
-    The key carries the filename because the failure message has to say which file to open, and two
-    workflows may both call a job `check`.
-
-    `Any` rather than `object` for the value: a job is a free-form YAML mapping, and the callers
-    below index into `steps` and `with`. Under `object` every one of those reads is an error, which
-    is how this function's callers came to carry `# type: ignore[union-attr]` comments naming a code
-    mypy does not emit here — it reports `attr-defined`, so the suppressions covered nothing and
-    added two `unused-ignore` errors of their own. `make type` reads `$(SRC)` and not the test tree,
-    so none of that was visible from the gate.
+    Every workflow file, not only `ci.yml`, since a new file is the cheapest way to add a job. The
+    key carries the filename so a failure says which file to open. `Any` for the value because a job
+    is a free-form YAML mapping the callers index into.
     """
     files = sorted(path for path in WORKFLOWS.glob("*.y*ml") if path.suffix in {".yml", ".yaml"})
     assert files, f"no workflow files under {WORKFLOWS}; this parse would assert nothing"
@@ -247,33 +184,13 @@ def _ci_jobs() -> dict[str, dict[str, Any]]:
 
 
 def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
-    """`fetch-depth: 0` is a control, and a control this repository does not read is not one.
+    """Every job that runs the suite checks out full history (`fetch-depth: 0`).
 
-    The reachability check above degrades to a `warnings.warn` on a shallow clone, so under
-    `actions/checkout`'s default depth of 1 it does not fail — it does not *run*. That is the exact
-    shape the assertion exists to refuse, one level up: green because nothing was checked.
-
-    The record that added the depth declined to assert it, on the ground that "a test asserting the
-    content of the file that runs it is a control reading its own configuration". This repository
-    had already settled that question the other way: `test_a_publishing_run_cannot_skip_the_gate`
-    and the seven assertions beside it read `Jenkinsfile`, for the reason that file's own docstring
-    gives — it is checked by no compiler and no linter here. Neither is anything under
-    `.github/workflows/`.
-
-    And the fallback offered instead — "removing the depth silently turns a red gate green" — only
-    holds while a citation is *already* stale. In steady state the assertion passes either way, so
-    removing the depth produces no signal at all until the next squash merge strands a hash, at
-    which point CI is green and `main` is red for anyone with full history. That is the defect the
-    record set out to end, recurring undetected.
-
-    The *jobs* are derived from every workflow file, so a new job — or a whole new workflow — is
-    read the day it is added; what a job runs is still matched against `_SUITE_COMMANDS`, which is a
-    list of spellings and therefore a reach this test cannot prove. The list carries the bare runner
-    name for that reason — see the comment on the tuple, and the drive that made it necessary.
-
-    What this cannot reach: `Jenkinsfile`'s `Gate` stage runs `make check` and `make offline-run` on
-    the implicit declarative checkout, whose depth is controller configuration outside this tree.
-    GitHub Actions is the only place the reachability assertion is known to run.
+    At the default depth the reachability check does not fail, it does not run, and a stranded hash
+    would leave CI green while `main` is red with full history. Workflows are read like
+    `Jenkinsfile` for the same reason: nothing else checks them. Jobs are derived from every
+    workflow file; what a job runs is matched against `_SUITE_COMMANDS`, a list of spellings.
+    Jenkins' `Gate` checkout depth is controller configuration and out of reach.
     """
     running = {
         name: job
@@ -304,13 +221,10 @@ def test_every_job_that_runs_the_suite_checks_out_full_history() -> None:
 
 
 def test_ci_builds_every_image_from_a_list_it_discovers() -> None:
-    """A workflow builds every server's image, and learns which servers from the tree.
+    """A workflow builds every server's image, from a server list it discovers in the tree.
 
-    Until this job existed nothing in CI built an image, and a `servers/rxnlabel/Containerfile`
-    whose bake ran a `chmod` over a directory its locked `rxnmapper` never creates reached a pull
-    request with every gate green: the suite reads a Containerfile as text, and only a build runs
-    it. The list is derived for the reason `test_the_pipeline_derives_its_server_list_from_the_tree`
-    gives about `Jenkinsfile` — a written list is wrong by the next server, and fails open.
+    The suite reads a Containerfile only as text, so only a build catches a bake step that fails; a
+    written list would miss the next server and fail open.
     """
     jobs = _ci_jobs()
     builders = {

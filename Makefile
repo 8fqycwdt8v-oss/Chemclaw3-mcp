@@ -51,7 +51,7 @@ type: ## mypy --strict over every server, the shared kit and the test tree.
 	@# `Success`, because `.` is already the root the flag falls back to and `[tool.mypy] mypy_path`
 	@# names the twelve `src/` trees. Dropping the flag *does* break the run, so only the variable
 	@# was dead (`D-2026-09-18-a-ratchet-that-observes-half-a-command-holds-half-a-gate`). The flag
-	@# is asserted by `tests/test_fleet.py`, which is why removing the variable removes no control.
+	@# is asserted by `tests/test_fleet_layout.py`, which is why removing the variable removes no control.
 	@#
 	@# One invocation rather than two: mypy builds one graph, and the test tree imports the source
 	@# tree anyway, so splitting them would analyse the same modules twice.
@@ -68,6 +68,10 @@ no-egress: ## The no-egress checks alone — the static scan, the runtime guard,
 .PHONY: manifest-validate
 manifest-validate: ## Every connector.yaml parses, is classified, and matches its running server.
 	$(UV) run pytest -q -k "manifest or test_server"
+
+.PHONY: architecture-baseline
+architecture-baseline: ## Cold import, /healthz and MCP handshake latency per server, plus source prose share.
+	$(UV) run python scripts/architecture_baseline.py
 
 .PHONY: offline-run
 offline-run: ## Prove every server answers with the network taken away (needs unshare; Linux).
@@ -301,7 +305,7 @@ deps-audit: ## Check the locked dependency closure for known vulnerabilities (su
 	@# version only, with their transitive closure re-resolving; they are now its `models` extra,
 	@# fetched by hash from this same export
 	@# (`D-2026-09-26-the-labeller-s-torch-is-the-lock-s-torch`), and
-	@# `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash` refuses any install
+	@# `tests/test_fleet_images.py::test_no_image_installs_what_the_lock_did_not_hash` refuses any install
 	@# in any image that did not come through a `--require-hashes` pass.
 	@#
 	@# **`--all-packages --all-extras` is what makes this cover anything at all, and that is a

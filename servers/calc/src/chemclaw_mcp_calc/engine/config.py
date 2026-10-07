@@ -1,26 +1,10 @@
 """Every knob the calculators read, in one settings object — and half of them are cache-key input.
 
-Ported from Chemclaw3's `chemclaw/core/config/calculators.py`. Two things about it are
-load-bearing rather than tidy:
-
-**The env prefix and every field name are Chemclaw3's, exactly.** `CHEMCLAW_PKA_UNCERTAINTY`,
-`CHEMCLAW_XTB_METHOD`, `CHEMCLAW_XTB_ENGINE` mean here what they mean there. That is not
-politeness: seven of these values are interpolated into `pka.calc_version()`, one into
-`solubility.calc_version()`, and `calc_version` is the primary key of Chemclaw3's calibration
-ledger (`predictions`, unique on `(calc_type, calc_version, input_hash)`, matched exactly with no
-version pooling). A deployment that configured this server's pKa calibration differently from the
-one the ledger was filled under would produce rows nothing reconciles against — silently, because
-`calculator_trust("pka")` reports `UNCALIBRATED` rather than an error. Same variable name on both
-sides is what makes "configure them identically" a thing an operator can actually do.
-
-**Defaults are the values Chemclaw3 ships**, character for character, including the fitted
-calibration constants. Changing one here is a scientific decision, not a deployment tweak, and it
-moves `calc_version` — which is the point of it being in the version string at all.
-
-What was left behind, deliberately: every setting that governed the calculation cache, the
-artifact store, the durable-job timeouts or the calibration ledger. This server computes on request
-and stores nothing, so those knobs would be configuration in appearance only — the failure mode
-this repository's own conventions name.
+The env prefix, field names and defaults are Chemclaw3's exactly (from
+`chemclaw/core/config/calculators.py`), because several values enter `calc_version`, the primary
+key of Chemclaw3's calibration ledger: a differently configured server would write rows nothing
+reconciles. Changing a scientific default is a scientific decision that moves `calc_version`.
+Settings for the cache, artifacts, durable jobs and ledger stay in Chemclaw3.
 """
 
 from __future__ import annotations
@@ -31,34 +15,10 @@ from mcp_server_kit.limits import report_settings
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# **What every budget here is held below its caller's bound by, and why it is one number.**
-#
-# Each of the three timeouts below has a Chemclaw3 setting matched to it —
-# `calc_server_timeout_seconds` (900), `calc_atomic_timeout_seconds` (3600) and
-# `calc_sampling_timeout_seconds` (14400) — and all three shipped *equal* to their pair.
-# Chemclaw3's own docstrings say the intent is for "the server to be what bounds the wait, not a
-# client guess shorter than it", and equality defeats that exactly: the caller's clock starts at
-# the request and this server's starts after connect, handshake, JSON decode, structure
-# embedding and admission, so the caller always expired first and every actionable refusal on
-# this server was unreachable in production.
-#
-# 120 s, and the binding term is the *granularity* rather than the transport. `budget.Deadline` is
-# checked between units of work, never inside one, because a single point is not interruptible — so
-# a spent budget is noticed at most one single point late, and one single point measured **81 s** at
-# 493 atoms here (53 atoms 0.20 s, 153 atoms 2.43 s, 303 atoms 19.8 s, 453 atoms 62.7 s, 493 atoms
-# 81.1 s). 120 s is that plus the tens of milliseconds of handshake and the embedding that precede
-# this server's clock. The cost of a single point rises with the atom count, so a figure measured
-# above `xtb_max_atoms` bounds every size the ceiling admits — which is why lowering the ceiling
-# needs no re-measurement and raising it does.
-#
-# **There is a second uninterruptible unit now and it is the smaller one.** `_optimize_with_library`
-# builds geomeTRIC's coordinate system between the initial single point and the first `Deadline`
-# check, and that build measured 0.52 s at 119 atoms, 3.64 s at 239 and 28.9 s at 509 against single
-# points of 0.68 s, 4.16 s and 41.9 s on the same molecules — below the single point at every size,
-# so the granularity of the clock is still one single point and this margin still covers it.
-#
-# It costs each tier 120 s of affordable calculation, which is 13% of the inline budget and under 1%
-# of the sampling one. That is the price of the refusal being the answer that arrives.
+# Every budget here is its Chemclaw3 caller's bound less this margin, so this server's worded
+# refusal arrives before the caller's own timeout (whose clock starts earlier). The binding term is
+# granularity: `budget.Deadline` is checked between single points, and one single point at the atom
+# ceiling takes ~80 s. Raising `xtb_max_atoms` needs a re-measurement.
 _CALLER_MARGIN_SECONDS = 120
 
 
@@ -72,219 +32,94 @@ class CalcSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="CHEMCLAW_", extra="ignore")
 
-    # Which backend runs an xTB task. "tblite" is the in-process library; "xtb" is the binary,
-    # which brings ANCopt (measured 9-11x faster on drug-sized molecules) and GFN-FF. "auto"
-    # prefers the binary when it is installed and falls back, so an image without it still works —
-    # the *resolved* name goes into `calc_version`, never "auto", so two deployments never share a
-    # ledger row they disagree on.
+    # Backend for an xTB task: "tblite" (in-process), "xtb" (the binary), or "auto" (binary if
+    # installed). The *resolved* name enters `calc_version`, never "auto".
     xtb_engine: Literal["auto", "tblite", "xtb"] = "auto"
     xtb_binary: str = "xtb"
-    # Numerical accuracy passed to the binary (xtb's `--acc`; lower is tighter) and the wall-clock
-    # ceiling on one invocation. **`xtb_cli_accuracy` is the default of `XtbSpec.accuracy`**, so it
-    # is in the key of every calculation the binary runs: it scales the SCF and integral thresholds
-    # that produce the numbers being stored. The timeout is not keyed and must not be — it decides
-    # whether an answer comes back, not what it is.
+    # The binary's `--acc` (keyed, via `XtbSpec.accuracy`: it changes the numbers) and its per-call
+    # wall clock (not keyed: it decides only whether an answer arrives).
     xtb_cli_accuracy: float = 1.0
-    # **Every budget on this server is its caller's bound less `_CALLER_MARGIN_SECONDS`, and this
-    # is the first of the three.** Chemclaw3 dials this path with `calc_atomic_timeout_seconds`,
-    # which shipped at exactly 3600 — the same number as this — so the two clocks expired together
-    # and the caller's always won: its clock starts at the request, this one starts after connect,
-    # handshake, JSON decode, structure embedding and admission. The refusal this budget exists to
-    # deliver therefore reached nobody, and the chemist got a transport timeout instead of a
-    # sentence naming the knob. See `_CALLER_MARGIN_SECONDS` for where the margin comes from.
+    # Chemclaw3's `calc_atomic_timeout_seconds` less `_CALLER_MARGIN_SECONDS`.
     xtb_cli_timeout_seconds: int = 3600 - _CALLER_MARGIN_SECONDS
-    # xtb's optimization convergence level. "vtight" (2e-4 Hartree/Bohr) is the first one that
-    # satisfies `xtb_opt_gradient_tolerance`; the default "normal" stops around 1e-3 and the
-    # geometry is then rejected by our own check, which wastes the run. The default of
-    # `OptSpec.opt_level`, and keyed there: it is where the binary's relaxation stops.
+    # The binary's convergence level; "vtight" is the first that meets `xtb_opt_gradient_tolerance`.
+    # Keyed via `OptSpec.opt_level`.
     xtb_cli_opt_level: str = "vtight"
-    # Threads for the binary and its OpenMP runtime. 0 leaves xtb's own default, which uses the
-    # machine — correct for a dedicated pod, and worth measuring before changing: pinning to 1 cost
-    # a factor of ~4 on a 76-atom Hessian.
+    # Threads for the binary; 0 keeps xtb's default (the whole machine).
     xtb_cli_threads: int = 0
-    # The GFN parametrization, and the RDKit embedding seed that fixes the 3D geometry so results
-    # are reproducible. Both are part of the key: the method through `calc_version`, the seed
-    # through the coordinates it produces (and, for pKa, through `params`).
+    # The GFN parametrization and the embedding seed; both are in the key (via `calc_version` and
+    # the coordinates they produce).
     xtb_method: str = "GFN2-xTB"
     xtb_embed_seed: int = 42
-    # Decimal places coordinates are rounded to before a `Structure` is hashed. 4 decimals = 0.1
-    # pm, far below any chemical significance, so run-to-run float noise cannot fork the id; it is
-    # part of `structure_id`, so changing it re-addresses every structure.
+    # Decimals coordinates are rounded to before hashing (0.1 pm), so float noise cannot fork a
+    # `structure_id`; changing it re-addresses every structure.
     xtb_geometry_decimals: int = 4
-    # Wiberg bond order above which a pair of atoms is reported as bonded. 0.5 keeps real bonds (a
-    # single bond is ~1.0) and drops the long-range tail.
-    #
-    # **The default of `PropertiesSpec.bond_order_threshold`, and keyed there**, for the reason
-    # `xtb_opt_trust_radius` gives below and one degree worse: it does not merely move the
-    # answer, it *filters* it. `_bond_orders` read this out of `settings` inside
-    # `compute_properties`, outside every spec, so `params_hash` could not see it — measured on
-    # acetic acid with a real tblite SCF, 0.5 reported 7 bonds and 0.05 reported 9 under one
-    # byte-identical `xtb.properties@…` key. Two pods configured differently therefore forked a
-    # single cache row, and Chemclaw3 never prunes `calculation_results`, so the missing bonds are
-    # missing from its published record permanently.
+    # Wiberg bond order above which atoms are reported bonded. Keyed via
+    # `PropertiesSpec.bond_order_threshold`, since it filters the answer.
     xtb_bond_order_threshold: float = 0.5
-    # Geometry optimization. Convergence is on the largest absolute gradient component in
-    # Hartree/Angstrom; 5e-4 is ~2.6e-4 Hartree/Bohr, tighter than xtb's own "normal" setting
-    # because the finite-difference Hessian is only as clean as the stationary point under it.
+    # Largest gradient component for convergence, in Hartree/Angstrom: tighter than xtb's "normal"
+    # because the finite-difference Hessian is only as clean as the stationary point.
     xtb_opt_gradient_tolerance: float = 5e-4
     xtb_opt_max_steps: int = 1500
-    # Trust radius (Angstrom): the ceiling on how far one optimizer step may move an atom —
-    # geomeTRIC's `tmax`, above an adaptive radius that opens at its own 0.1. Without a ceiling the
-    # first step on a strained geometry is large enough to collapse a bond and leave the SCF
-    # unconvergeable.
+    # Ceiling (Angstrom) on one optimiser step (geomeTRIC's `tmax`), so a strained first step cannot
+    # collapse a bond.
     xtb_opt_trust_radius: float = 0.35
-    # Central-difference step for the Hessian, in Angstrom. Small enough that the harmonic
-    # approximation holds, large enough that the gradient difference is well above the SCF's own
-    # numerical noise.
+    # Central-difference Hessian step, in Angstrom: harmonic yet above SCF noise.
     xtb_hessian_displacement: float = 0.005
-    # Atom-count ceiling for a Hessian. Cost is 6N gradient evaluations, so this is an absolute
-    # practicality limit. The refusal states this bound and names no alternative: where to go next
-    # is orchestration knowledge this server does not have, and the QM job path the message used to
-    # point at was deleted (`D-2026-08-26-semiempirical-is-the-whole-tier`). Chemclaw3 refuses first
-    # at the same count, so this is the backstop for a caller that is not Chemclaw3.
+    # Atom ceiling for a Hessian (6N gradients). Chemclaw3 refuses first at the same count; this is
+    # the backstop for other callers.
     xtb_hessian_max_atoms: int = 150
-    # Atom ceiling for **any** structure this server will accept, enforced by `Structure` itself so
-    # every task inherits it exactly as it inherits the electron-count check. The Hessian's own cap
-    # above is the tighter, per-tool bound inside this one.
-    #
-    # Not a promise that a structure at the ceiling is affordable — `xtb_inline_timeout_seconds` is
-    # what prices the work. This refuses the inputs whose *allocation* takes the pod down before any
-    # clock could act on it: a `tools/call` body under the 1 MB cap carries tens of thousands of
-    # atoms (measured, 19.3-30.4 bytes an atom — the spread is the caller's decimal places, not a
-    # property of this server), and the optimizer's coordinate system is quadratic
-    # in the atom count while the body cap is linear in it.
-    #
-    # **The number is derived rather than chosen, and `tests/test_cost_bounds.py` performs the
-    # derivation** (`D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects`). geomeTRIC's
-    # `DelocalizedInternalCoordinates` builds the primitive G matrix and eigendecomposes it *twice*
-    # (`geometric/internal.py::build_dlc_0`), and `_coordinate_system` passes `addcart=True`, which
-    # puts 3N Cartesian primitives in that set on top of the bonded ones — so the peak is a small
-    # multiple of an (`nprim`, `nprim`) matrix with `nprim` linear in the atom count, and nothing in
-    # it is linear. What the ceiling has to satisfy is that `calc_max_concurrent_requests` calls at
-    # it fit inside the container memory limit `deploy/deployment.yaml` declares, after the server's
-    # own resident set and the session backlog `mcp_server_kit` has already budgeted.
-    #
-    # **The figures that set 500 are retired with the ANC preconditioner that produced them**
-    # (`D-2026-09-16-the-driver-is-a-command-line-program-the-optimizer-is-not`) — 3.6 s at 120
-    # atoms, 11.6 s at 240, 32.9 s and 18.7 MB at 510. The shape of the argument carried and the
-    # constants did not, in the direction that mattered: geomeTRIC's coordinate-system build alone
-    # measured **956.4 MiB at 509 atoms** against that 18.7 MB, about fifty times, and one whole
-    # relaxation there peaks at 978.9 MiB. Four admitted slots at the old 500-atom ceiling therefore
-    # need 4,262 MiB — this server's resident set and the session backlog included — against a
-    # 4,096 MiB limit, so 500 was over its own bound. The derivation puts the bound at 489 and this
-    # is the largest fifty below it, because every constant in that arithmetic carries a few percent
-    # and a ceiling set at the bound is the defect the record is about.
+    # Atom ceiling for any structure, enforced by `Structure`. It bounds memory, not time:
+    # geomeTRIC's coordinate system is quadratic in atoms, and `calc_max_concurrent_requests`
+    # relaxations at the ceiling must fit the Deployment's memory limit. Derived by
+    # `tests/test_cost_bounds.py`, and set a margin below the derived bound.
     xtb_max_atoms: int = 450
-    # Wall-clock ceiling (seconds) on one in-process calculation — the optimizer's leg loop and the
-    # finite-difference Hessian, which is what the shipped image runs for every `opt` and `hess`
-    # (`CHEMCLAW_XTB_ENGINE=tblite`). The two timeouts above bound a *subprocess* and so bound
-    # nothing on that path.
-    #
-    # Its existence is what stops a caller that gave up leaving the CPU burning: cancelling the
-    # awaiting coroutine does not stop the worker thread, so without this the manifest bounded the
-    # caller's wait and not the work, and the caller's retry started a second burn beside the first.
-    #
-    # **The number is `connector.yaml`'s `request_timeout` less `_CALLER_MARGIN_SECONDS`, and it
-    # used to be that number exactly.** 900 against 900 — and against Chemclaw3's matching
-    # `calc_server_timeout_seconds` — meant the two clocks expired together with the caller's
-    # having started first, so `budget.Deadline.check`'s deliberately worded refusal ("run a
-    # smaller system, relax it first, or raise CHEMCLAW_XTB_INLINE_TIMEOUT_SECONDS") could never
-    # be the answer that arrived. It is the difference between an actionable refusal and a
-    # timeout. Raise it deliberately, on a deployment whose caller waits longer — and raise the
-    # caller's bound with it, or this margin is spent.
+    # Wall clock (seconds) on one in-process calculation — the optimiser and finite-difference
+    # Hessian the shipped tblite image runs — so an abandoned call stops burning CPU.
+    # `connector.yaml`'s `request_timeout` less `_CALLER_MARGIN_SECONDS`; raise both together.
     xtb_inline_timeout_seconds: float = 900.0 - _CALLER_MARGIN_SECONDS
-    # How much this server will run **at once**, refused rather than queued past it — counted in
-    # slots of one core, not in calls. The pair on Chemclaw3's side is
-    # `calc_backend_max_concurrent_requests`, which is what it will not exceed when it dials this
-    # server — and it counts *requests*, so the two numbers only mean the same thing while every
-    # request costs one slot. This is the backstop for every other caller and for exactly that
-    # disagreement: four CREST searches from a caller keeping to its own limit are still four times
-    # this pod's cores, and are refused here.
-    #
-    # Not keyed, and it must not be: like the timeouts, it decides whether an answer comes back, not
-    # what it is. **4 because that is the pod's core count**, which is the only quantity this
-    # number can honestly be. An in-process calculation costs one slot, because the image pins
-    # `OMP_NUM_THREADS=1` and the BLAS equivalents; a CREST search costs `crest_threads`, because
-    # that pin is scrubbed out of the sampler's environment and `-T` tells it to use more. Deriving
-    # the *call* ceiling from the thread pin was the defect: `CHEMCLAW_CREST_THREADS=4` made four
-    # admitted searches sixteen runnable threads on a four-core pod, measured at 4.2x the
-    # single-search wall clock. Raise it deliberately, on a pod sized for more;
-    # `engine/admission.py` has the measurement and the argument for why a full gate refuses
-    # instead of queueing.
+    # How much runs at once, in slots of one core, refused past it. Not keyed. 4 is the pod's core
+    # count: an in-process calculation costs one slot (`OMP_NUM_THREADS=1`), a CREST search
+    # `crest_threads`. Chemclaw3's `calc_backend_max_concurrent_requests` counts requests, so this
+    # is the backstop. See `engine/admission.py`.
     calc_max_concurrent_requests: int = Field(default=4, ge=1)
-    # **CREST sampling temperature, and the only survivor of the thermochemistry block.** It keeps
-    # Chemclaw3's name and value because it keeps Chemclaw3's *meaning*: it is passed to `crest
-    # --temp`, so it changes what the search samples and therefore belongs in an ensemble's key. The
-    # seven settings that stood beside it — pressure, the quasi-RRHO cutoff, the imaginary-mode
-    # threshold and kick, the refinement attempt count, the reported free-energy uncertainty and the
-    # IR band count — were all read by the RRHO arithmetic, which stayed in Chemclaw3 along with
-    # `compute_thermochemistry`. A setting with no reader is configuration in appearance only, so
-    # they are gone rather than kept for symmetry.
+    # CREST sampling temperature, passed to `crest --temp` and therefore keyed. The rest of the
+    # thermochemistry settings live with the RRHO arithmetic in Chemclaw3.
     xtb_thermo_temperature_k: float = 298.15
-    # Maximum points in a relaxed scan. **Read by nothing on this server**, deliberately: a scan is
-    # a sweep and this server exposes only the *point*, so the bound belongs to whoever writes the
-    # loop. It is named here rather than silently dropped because a reader looking for it should
-    # find out where it went — `chemclaw.science.calc.xtb_scan.ScanSpec` enforces it, in the
-    # repository that owns the sweep.
-    #
-    # CREST sampling. GPL-3.0 and optional: absent, the ensemble primitives refuse and everything
-    # else works. `crest_effort` is the default search depth and the timeout is generous because
-    # this is the most expensive calculation this server can run.
+    # CREST sampling: GPL-3.0 and optional — absent, the ensemble primitives refuse and everything
+    # else works. (The scan point limit lives in Chemclaw3's `ScanSpec`, which owns the sweep.)
     crest_binary: str = "crest"
     crest_effort: Literal["quick", "normal", "extensive"] = "quick"
     crest_threads: int = 0
-    # The third budget under the same rule: Chemclaw3 dials the two sampling tools with
-    # `calc_sampling_timeout_seconds`, which shipped at exactly 14400. `crest_cli.run_isolated`
-    # kills the sampler's whole process group when this expires, so the margin is what lets that
-    # kill and its refusal reach the caller before the caller stops listening — otherwise the pod
-    # keeps a search running for a request nobody is waiting for, and a search is the entire pod.
+    # Chemclaw3's `calc_sampling_timeout_seconds` less the margin; on expiry the sampler's process
+    # group is killed and the refusal still reaches the caller.
     crest_timeout_seconds: int = 14400 - _CALLER_MARGIN_SECONDS
-    # Atom ceiling for perceiving an ensemble member's SMILES from its geometry. A protonation or
-    # tautomer search changes the constitution, so the member's identity has to be read off the
-    # coordinates — and bond-order assignment is combinatorial over the conjugated system, so an
-    # unbounded call inside the parse loop is a hang rather than a slow answer. Above this a member
-    # simply travels without a label; nothing else about the ensemble changes.
+    # Atom ceiling for perceiving an ensemble member's SMILES; above it the member is unlabelled.
     crest_perceive_max_atoms: int = 150
-    # xTB-based pKa predictor: pKa from the GFN2-xTB solvated (ALPB) deprotonation energy via a
-    # linear calibration pKa = slope*dE + intercept. Defaults fitted over 10 reference O-H acids
-    # (R^2 0.93, residual ~1.6 pKa units). **All four are interpolated into `pka.calc_version()`.**
+    # pKa = slope*dE + intercept on the ALPB deprotonation energy, fitted on 10 O-H acids (R^2 0.93,
+    # residual ~1.6 units). All four values enter `pka.calc_version()`.
     pka_solvent: str = "water"
     pka_calibration_slope: float = 0.28733
     pka_calibration_intercept: float = -29.3116
     pka_uncertainty: float = 1.6
-    # Conjugate-acid pKa of a **base**, its own calibration. Fitted over seven aromatic/aryl-
-    # nitrogen references spanning pKa 1.0-6.95: Spearman 1.000, R^2 0.993, in-sample RMSE 0.17.
-    # The reported uncertainty is deliberately far above that RMSE — a two-parameter fit on seven
-    # points does not support a tighter out-of-sample claim. Aliphatic amines are refused rather
-    # than calibrated. Also interpolated into `pka.calc_version()`.
+    # Conjugate-acid pKa of a base: its own calibration over seven aromatic/aryl-nitrogen references
+    # (pKa 1.0-6.95). The reported uncertainty is far above the in-sample RMSE; aliphatic amines are
+    # refused. In `pka.calc_version()`.
     pka_base_calibration_slope: float = 0.241396
     pka_base_calibration_intercept: float = -22.1843
     pka_base_uncertainty: float = 1.0
-    # Reported log-S RMSE of the ESOL solubility model: the uncertainty attached to every
-    # prediction, and part of `solubility.calc_version()` for the same reason — re-tuning it
-    # changes what the stored number means.
+    # ESOL's log-S RMSE: every prediction's uncertainty, and in `solubility.calc_version()`.
     solubility_rmse_log: float = 0.75
     # logD: the working pH used when a caller does not name one. 7.4 (physiological pH) is the
     # conventional analytical-chemistry default.
     logd_default_ph: float = 7.4
-    # The ionised fraction of the *one* site the pKa predictor reports, at or below which further
-    # unmodelled sites of the same kind can still be dismissed; above it logD refuses rather than
-    # report a single-equilibrium number for a polyprotic molecule.
-    #
-    # The bound is arithmetic, not taste. The predictor reports the *most* ionisable site, so with
-    # r = f/(1-f) its ionisation ratio, every other site's is at most r, and the species sum the
-    # single term omits is bounded by the geometric series: the neglected shift is at most
-    # -log10(1 - r**2). At f = 0.05 that is 0.0012 log units, three orders below the +/-1.6 the
-    # result already carries.
+    # Ionised fraction of the reported site at or below which other sites can be dismissed; above it
+    # logD refuses. With r = f/(1-f), the neglected shift is at most -log10(1 - r**2): 0.0012 log
+    # units at f = 0.05.
     logd_negligible_ionised_fraction: float = Field(default=0.05, gt=0, lt=0.5)
 
 
 # One instance for the process. Read at import by nothing that matters — every consumer reads
 # through `settings.<field>` at call time, so a test may monkeypatch an attribute and see it apply.
 settings = CalcSettings()
-# What the environment resolved to, for `/healthz`: the admission ceiling, the atom bounds and the
-# timeouts an overlay can move without this repository seeing it
-# (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`). The scientific constants ride along
-# because they are numbers a deployment can move too, and a pod computing with a moved one is the
-# thing an operator most needs to be able to read off a probe.
+# Report every resolved number for `/healthz`, scientific constants included.
 report_settings(settings)

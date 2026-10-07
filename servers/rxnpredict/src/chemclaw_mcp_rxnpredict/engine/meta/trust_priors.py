@@ -1,19 +1,10 @@
 """Per-model and per-class trust priors: the weights every vote in the aggregator is scaled by.
 
-A trust prior says how much this server believes a given predictor, optionally per reaction class —
-`reaction_t5_v2` is excellent on USPTO-MIT overall and that says little about how it does on a
-Suzuki coupling specifically, which is the whole point of gating by class.
-
-**The priors are a vendored dataset here, not a file in a home directory.** Upstream wrote them to
-`~/.cache/chemclaw2_forward/trust_priors.json` and loaded them on startup if present, which meant
-the numbers driving every ranking had no licence, no checksum, and no record of which calibration
-run produced them. They are now read through `mcp_server_kit.load_dataset`, so a swapped or
-truncated file fails with both hashes in the message — on the `/healthz` probe, which is what takes
-the pod out of its Service and shows an operator the reason. It used to fail at *import*, which
-showed them `CrashLoopBackOff`.
-
-Calibration itself stays where it belongs — `scripts/calibrate_rxnpredict_priors.py`, run by a
-person outside the serving image, whose output is reviewed in a pull request.
+Per-class gating matters because a predictor's overall benchmark says little about a specific class.
+The priors are a vendored dataset read through `mcp_server_kit.load_dataset`, so a swapped or
+truncated file fails the `/healthz` probe with both hashes. Calibration is
+`scripts/calibrate_rxnpredict_priors.py`, run outside the serving image and reviewed in a pull
+request.
 """
 
 from __future__ import annotations
@@ -36,9 +27,7 @@ PRIORS_FILE = "trust_priors.json"
 def priors_dataset(directory: Path) -> Dataset:
     """The vendored `trust_priors.json`, checksum-verified. Cached: the checksum is paid once.
 
-    Split out of `load_vendored_priors` so `app.py`'s `/healthz` readiness check can name the
-    version of the table this pod serves without re-reading and re-hashing the file — the same
-    reason `load_dataset` calls are `lru_cache`d everywhere else in this fleet.
+    Separate so `/healthz` can name the table's version without re-hashing.
     """
     return load_dataset(directory, records_file=PRIORS_FILE)
 
@@ -58,24 +47,19 @@ def _coerce(data: object, source: str) -> dict[str, dict[str, float]]:
 def load_vendored_priors(directory: Path) -> dict[str, dict[str, float]]:
     """The per-class priors shipped with this server, verified against their checksum.
 
-    Cached, because this is now on the serving path rather than read once into `Settings` at
-    startup: `Settings.class_priors()` calls it per aggregation, and re-reading and re-parsing the
-    file for every prediction would be the cost the eager load was paying to avoid. The checksum is
-    still paid exactly once, by `priors_dataset`.
+    Cached, because `Settings.class_priors()` calls it on every aggregation.
 
     Args:
         directory: The server's `data/` directory — `dataset.json` plus `trust_priors.json`.
 
     Returns:
-        `{reaction_class: {model_name: weight}}`. Empty when no calibration has been run, which is
-        the shipped state: the aggregator then falls back to the global priors in `Settings`.
+        `{reaction_class: {model_name: weight}}`. Empty when no calibration has been run (the
+            shipped state); the aggregator then uses the global priors.
 
     Raises:
-        DatasetError: the file is missing, unlisted, or not the one the manifest approved. This is
-            deliberately fatal — a ranking weight that silently reverted to a default is a change
-            in every answer nobody would notice. It is raised *here* rather than at import, so the
-            pod answers 503 from `/healthz` naming the file and both hashes instead of crash-looping
-            (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`).
+        DatasetError: The file is missing, unlisted, or not the approved one. Fatal on purpose,
+            since a silently defaulted weight changes every answer; raised here rather than at
+            import so `/healthz` answers 503.
     """
     dataset = priors_dataset(directory)
     priors = _coerce(json.loads(dataset.records_path.read_text(encoding="utf-8")), str(directory))
@@ -85,11 +69,7 @@ def load_vendored_priors(directory: Path) -> dict[str, dict[str, float]]:
 
 
 def load_priors_file(path: Path) -> dict[str, dict[str, float]]:
-    """Read a priors JSON file directly, with no checksum. For the calibration script only.
-
-    The serving path uses `load_vendored_priors`; this exists so the script can read back what it
-    just wrote without a `dataset.json` having been regenerated yet.
-    """
+    """Read a priors JSON file directly, with no checksum. For the calibration script only."""
     if not path.exists():
         return {}
     try:
@@ -115,8 +95,7 @@ def effective_prior(
 ) -> float:
     """The most specific prior available for `(model_name, reaction_class)`.
 
-    Falls back through per-class → global → `default`. `CLASS_OTHER` never selects a per-class
-    weight, because "we could not classify this reaction" is not a class a prior can be about.
+    Falls back per-class → global → `default`. `CLASS_OTHER` never selects a per-class weight.
     """
     if reaction_class and reaction_class != CLASS_OTHER:
         class_map = per_class_priors.get(reaction_class)

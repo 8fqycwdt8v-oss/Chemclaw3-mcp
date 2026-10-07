@@ -75,9 +75,9 @@ def test_build_reaction_smiles_canonicalises_both_sides() -> None:
 def test_canonical_smiles_refuses_a_megamolecule_not_crash() -> None:
     """A 20k-atom SMILES is refused before `MolToSmiles`, which would segfault the process.
 
-    `MolToSmiles` overflows the C stack (uncatchable SIGSEGV) on a large linear molecule; the bound
-    in `canonical_smiles` (via `mcp_server_kit.limits`) turns it into a `ValueError`. This process
-    surviving to assert is the regression proof. The atom bound also bites under the char bound.
+    The bound in `canonical_smiles` (via `mcp_server_kit.limits`) turns an uncatchable C-stack
+    overflow into a `ValueError`; this process surviving to assert is the proof. The atom bound also
+    bites under the character bound.
     """
     with pytest.raises(ValueError):
         canonical_smiles("C" * 20000)

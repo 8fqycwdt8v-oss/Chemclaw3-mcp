@@ -1,16 +1,11 @@
 """What the tools answer, and — the half that matters more — what they refuse.
 
-No transport is imported here: these call the engine the way `tools.py` does, so the chemistry is
-proven without a server running. `test_server.py` is where the wire is tested.
-
-Three refusals carry most of the value in this file, and each of them was a real defect somewhere
-before it was a rule:
+No transport is imported; `test_server.py` tests the wire. The key refusals:
 
 - an **unknown name resolves to nothing**, never to a fabricated structure;
-- an **unresolvable solvent is an error**, not a dropped row, because a missing solvent leaves a
-  table that looks complete while halving every mass metric derived from it;
-- a **mass balance that does not close is refused**, because a negative E-factor reads as an
-  implausibly green process rather than as the data error it is.
+- an **unresolvable solvent is an error**, not a dropped row that leaves a complete-looking table;
+- a **mass balance that does not close is refused**, since a negative E-factor reads as a green
+  process rather than a data error.
 """
 
 from __future__ import annotations
@@ -66,11 +61,10 @@ class TestResolveCompound:
 
     @pytest.mark.parametrize("written", ["aniline", "4-bromoanisole", "phenylboronic acid"])
     def test_a_miss_says_so_and_says_what_would_resolve(self, written: str) -> None:
-        """The live case: three common substrates came back as an empty string, audited `ok`.
+        """A miss says so and says what would resolve.
 
-        The miss now names itself, the corpus searched, the absence of any name service, and the
-        way forward. It offers no suggestion for a name the table simply does not hold — a nearest
-        neighbour of "aniline" would be a substitution dressed as a hint.
+        It names the corpus searched, the absence of any name service, and the way forward, without
+        a nearest-neighbour suggestion that would be a substitution dressed as a hint.
         """
         miss = describe_miss(written)
         assert miss.recognised is False
@@ -106,10 +100,8 @@ class TestResolveCompound:
     ) -> None:
         """`CO` is what a chemist writes for a gas and what RDKit reads as methanol.
 
-        Measured before this refusal existed: `stoichiometry_table(basis="Brc1ccccc1",
-        basis_mass_g=100, reagents=["CO"], equivalents=[1.5])` returned a complete table with an
-        empty `unresolved`, naming methanol at MW 32.042 and instructing 30.61 g of a liquid to be
-        weighed out for a gas. Carbon monoxide is 28.010.
+        A formula that also parses as SMILES is refused by name, rather than producing a complete
+        table for the wrong substance.
         """
         with pytest.raises(ValueError, match=formula_reading) as refusal:
             resolve_compound_name(written)
@@ -130,13 +122,10 @@ class TestResolveCompound:
         assert (match.smiles, match.name, match.source) == ("CO", "methanol", "synonym")
 
     def test_a_metal_complex_resolves_to_a_spelling_that_survives_resubmission(self) -> None:
-        """The live defect: a palladacycle came back as `[Pd]2(<-[NH2]...)` and did not survive.
+        """A metal complex resolves to a spelling that survives resubmission.
 
-        The query is the Josiphos-type Pd G3 precatalyst exactly as the agent sent it on
-        2026-10-02. RDKit perceives its Pd-N bond as dative and writes `<-`; the agent re-typed
-        that as `<-NH2`, which nothing parses, and two `similar_molecules` calls failed on it. The
-        answer now carries no arrow, and resolving the answer returns the answer — which is the
-        property the agent was unsure of when it told the chemist the id might change.
+        RDKit writes a perceived dative bond as `<-`, which agents mangle; the answer carries no
+        arrow, and resolving the answer returns the answer.
         """
         query = (
             "CC(P(C(C)(C)C)C(C)(C)C)C1=C(C([Fe]C2C=CC=C2)C=C1)[P]([Pd]3(OS(C)(=O)=O)C4=CC=CC=C4"
@@ -175,11 +164,10 @@ class TestChargeTable:
         [("CC(=O)O", 60.05), ("C1CCOC1", 72.11), ("ClCCl", 84.93)],
     )
     def test_the_molecular_weight_is_the_average_one(self, smiles: str, expected: float) -> None:
-        """Literal weights, because every mass in a charge table is one of these times a number.
+        """Literal average molecular weights, since every charge-table mass derives from them.
 
-        Also the coverage behind the one `type: ignore` in `engine/chem.py`: `rdkit-stubs` omits
-        `Descriptors.MolWt`, so this is what says the ignored call still returns the right number —
-        and the *average* one, which is why dichloromethane is here at 84.93 rather than 83.95.
+        Also covers the `type: ignore` on `Descriptors.MolWt` in `engine/chem.py`; dichloromethane
+        is 84.93 (average), not 83.95 (monoisotopic).
         """
         assert round(molecular_weight(smiles), 2) == expected
 
@@ -323,13 +311,10 @@ class TestDepiction:
 
 
 class TestAQuantityIsPositiveOrItIsRefused:
-    """`charge_table`'s own `Raises` clause promises a `ValueError` when a quantity is not positive.
+    """A quantity is positive or it is refused, `equivalents` included.
 
-    `basis_mass_g` and every volume were checked; `equivalents` was not, and an equivalent count is
-    a quantity. Measured: `stoichiometry_table("toluene", 100, ["triethylamine"], [-2.0])` returned
-    a complete table whose reagent row read **-219.65 g** at -2170.6 mmol — a charge list that
-    reads as authoritative. The one guard that would have caught it downstream reports it as a
-    mass-balance problem rather than as the bad input.
+    A negative equivalent count would produce an authoritative-looking charge list with a negative
+    mass.
     """
 
     @pytest.mark.parametrize("equivalents", [[-2.0], [0.0], [1.2, -0.1]])
@@ -340,11 +325,10 @@ class TestAQuantityIsPositiveOrItIsRefused:
 
 
 class TestAChargeRowSaysWhereItsNumbersCameFrom:
-    """ "Every result carries `source`" is this fleet's rule, and the charge table dropped it.
+    """Every charge row says where its numbers came from.
 
-    A charge list is pasted into a batch record, and "THF, 0.889 g/mL" with no attribution leaves
-    the reader unable to tell a curated table value from a name that resolved only because the
-    string happened to parse as a SMILES.
+    A charge list is pasted into a batch record, and the reader must tell a curated value from a
+    name that merely parsed as SMILES.
     """
 
     def test_a_named_reagent_and_a_typed_structure_are_told_apart(self) -> None:
@@ -359,13 +343,10 @@ class TestAChargeRowSaysWhereItsNumbersCameFrom:
 
 
 class TestAReactionDrawingIsTheWholeReaction:
-    """The molecule path refuses embedded whitespace; the reaction path branched before that check.
+    """A reaction drawing is the whole reaction.
 
-    `_reaction`'s own docstring records that `"CCO junk>>CC=O"` raises — measured, and true, because
-    RDKit rejects a *reactant* it cannot read. What was never measured is whitespace in the **last**
-    component, which it truncates instead: `"CCO>>CC=O CCCCCCBr"` drew `CCO >> CC=O`, a well-formed
-    and plausible picture of a different reaction, and a drawing is the one form in which the
-    model's choice is supposed to become checkable by a human.
+    RDKit truncates whitespace in the last component, drawing a plausible different reaction, so
+    embedded whitespace is refused as on the molecule path.
     """
 
     @pytest.mark.parametrize(

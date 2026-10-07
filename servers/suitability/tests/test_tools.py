@@ -1,12 +1,8 @@
 """The tool surface: what it answers, what it refuses, and what every answer carries with it.
 
-The engine tests cover the arithmetic. What is left for this file is the layer between the
-arithmetic and the model — the `basis` contract, the composition in the report, and the boundary
-where a tool declines to invent a criterion nobody declared.
-
-Note that `@server.tool()` returns the undecorated function, so calls here skip pydantic argument
-validation. Anything that is only enforced by the schema is asserted in `test_server.py`, over the
-wire, where a caller actually meets it.
+Covers the `basis` contract, the report's composition, and refusing to invent undeclared
+criteria. `@server.tool()` returns the undecorated function, so schema-only bounds are asserted
+over the wire in `test_server.py`.
 """
 
 from __future__ import annotations
@@ -16,11 +12,10 @@ from chemclaw_mcp_suitability import tools
 
 
 def test_every_tool_returns_a_basis_that_names_its_formula() -> None:
-    """Asserted over the set, so a *new* tool without a basis fails here rather than in review.
+    """Every tool returns a `basis` naming its formula, asserted over the whole set.
 
-    A number without the model it came out of is not something anybody can put in a report, and on
-    this server it is worse than that: the same peak has two plate counts and two resolutions, so
-    a bare number is not even comparable with the limit it is being checked against.
+    The same peak has two plate counts and two resolutions, so a bare number is not comparable with
+    its limit; a new tool without a basis fails here.
     """
     answers = [
         tools.replicate_precision([100.0, 101.0, 99.0]),
@@ -46,11 +41,10 @@ def test_the_basis_names_the_convention_that_was_actually_used() -> None:
 
 
 def test_the_adjustment_basis_says_a_monograph_overrides_it() -> None:
-    """The limit on what that answer means, carried with the answer rather than in a docstring.
+    """The adjustment basis says a monograph overrides it.
 
-    <621>'s section opens "unless otherwise specified in the individual monograph", and this
-    server cannot read the monograph. A model that is not told will present a general-chapter
-    allowance as the applicable one.
+    <621> defers to the individual monograph, which this server cannot read; without saying so a
+    model would present a general-chapter allowance as the applicable one.
     """
     basis = tools.permitted_method_adjustment("flow_rate", 1.0, 1.2).basis
     assert "monograph" in basis
@@ -60,9 +54,7 @@ def test_the_adjustment_basis_says_a_monograph_overrides_it() -> None:
 def test_the_report_introduces_no_arithmetic_of_its_own() -> None:
     """Every number in the report equals what the standalone tool gives for the same input.
 
-    The property that makes the composite safe to offer beside the primitives: if it drifted, a
-    chemist would get two different answers to one question depending on which tool the model
-    happened to call.
+    Otherwise one question would have two answers depending on which tool the model called.
     """
     peaks = [
         tools.PeakInput(
@@ -119,11 +111,10 @@ def test_an_undeclared_criterion_is_not_checked_and_does_not_appear_in_failures(
 
 
 def test_the_report_flags_a_short_series_separately_from_a_failed_limit() -> None:
-    """Two independent verdicts a single pass/fail would conflate.
+    """The report flags a short series separately from a failed limit.
 
-    Five injections at a 3.0% limit: the RSD passes and the series is one short of what <621>
-    requires for a limit that size. Both matter and they are different remedies — one is re-develop
-    the method, the other is inject again.
+    They have different remedies (re-develop the method vs inject again), which one pass/fail would
+    conflate.
     """
     report = tools.system_suitability_report(
         [tools.PeakInput(name="main", retention_time_min=4.0)],

@@ -1,0 +1,267 @@
+{
+  "date": "2026-10-07",
+  "python": "3.11.17",
+  "round_trips": 5,
+  "servers": {
+    "calc": {
+      "cold_import_ms": 1901.23,
+      "healthz_status": 200,
+      "healthz_ms_first": 26.27,
+      "healthz_ms_median": 7.65,
+      "tools": 20,
+      "mcp_initialize_list_tools_ms_median": 78.18,
+      "mcp_initialize_list_tools_ms_first": 123.32,
+      "calculation_key_ms_median": 19.44
+    },
+    "chem": {
+      "cold_import_ms": 983.87,
+      "healthz_status": 200,
+      "healthz_ms_first": 5.33,
+      "healthz_ms_median": 1.53,
+      "tools": 13,
+      "mcp_initialize_list_tools_ms_median": 79.89,
+      "mcp_initialize_list_tools_ms_first": 121.9
+    },
+    "kinetics": {
+      "cold_import_ms": 636.81,
+      "healthz_status": 200,
+      "healthz_ms_first": 161.87,
+      "healthz_ms_median": 103.55,
+      "tools": 6,
+      "mcp_initialize_list_tools_ms_median": 85.56,
+      "mcp_initialize_list_tools_ms_first": 105.81
+    },
+    "props": {
+      "cold_import_ms": 559.08,
+      "healthz_status": 200,
+      "healthz_ms_first": 28.41,
+      "healthz_ms_median": 3.55,
+      "tools": 6,
+      "mcp_initialize_list_tools_ms_median": 106.59,
+      "mcp_initialize_list_tools_ms_first": 143.43
+    },
+    "pyexec": {
+      "cold_import_ms": 786.65,
+      "healthz_status": 200,
+      "healthz_ms_first": 78.18,
+      "healthz_ms_median": 1.43,
+      "tools": 1,
+      "mcp_initialize_list_tools_ms_median": 107.09,
+      "mcp_initialize_list_tools_ms_first": 107.09
+    },
+    "rxnlabel": {
+      "cold_import_ms": 1097.24,
+      "healthz_status": 200,
+      "healthz_ms_first": 56.17,
+      "healthz_ms_median": 3.4,
+      "tools": 5,
+      "mcp_initialize_list_tools_ms_median": 66.61,
+      "mcp_initialize_list_tools_ms_first": 174.23
+    },
+    "rxnpredict": {
+      "cold_import_ms": 627.01,
+      "healthz_status": 200,
+      "healthz_ms_first": 9.76,
+      "healthz_ms_median": 4.75,
+      "tools": 6,
+      "mcp_initialize_list_tools_ms_median": 64.94,
+      "mcp_initialize_list_tools_ms_first": 117.52
+    },
+    "safety": {
+      "cold_import_ms": 967.19,
+      "healthz_status": 200,
+      "healthz_ms_first": 142.91,
+      "healthz_ms_median": 4.1,
+      "tools": 3,
+      "mcp_initialize_list_tools_ms_median": 76.21,
+      "mcp_initialize_list_tools_ms_first": 109.62
+    },
+    "suitability": {
+      "cold_import_ms": 692.71,
+      "healthz_status": 200,
+      "healthz_ms_first": 10.46,
+      "healthz_ms_median": 1.93,
+      "tools": 7,
+      "mcp_initialize_list_tools_ms_median": 73.73,
+      "mcp_initialize_list_tools_ms_first": 73.73
+    },
+    "thermalsafety": {
+      "cold_import_ms": 627.05,
+      "healthz_status": 200,
+      "healthz_ms_first": 7.69,
+      "healthz_ms_median": 1.92,
+      "tools": 7,
+      "mcp_initialize_list_tools_ms_median": 69.45,
+      "mcp_initialize_list_tools_ms_first": 69.45
+    },
+    "unitops": {
+      "cold_import_ms": 553.2,
+      "healthz_status": 200,
+      "healthz_ms_first": 10.14,
+      "healthz_ms_median": 2.06,
+      "tools": 7,
+      "mcp_initialize_list_tools_ms_median": 76.27,
+      "mcp_initialize_list_tools_ms_first": 80.5
+    }
+  },
+  "prose": {
+    "rev": "4af1fdc",
+    "total": {
+      "prose_lines": 16248,
+      "non_blank_lines": 34595,
+      "share": 0.4697
+    },
+    "per_package": {
+      "conftest.py": {
+        "prose_lines": 48,
+        "non_blank_lines": 108,
+        "share": 0.4444
+      },
+      "packages/mcp_server_kit": {
+        "prose_lines": 3032,
+        "non_blank_lines": 5550,
+        "share": 0.5463
+      },
+      "scripts": {
+        "prose_lines": 47,
+        "non_blank_lines": 165,
+        "share": 0.2848
+      },
+      "servers/calc": {
+        "prose_lines": 4042,
+        "non_blank_lines": 7369,
+        "share": 0.5485
+      },
+      "servers/chem": {
+        "prose_lines": 1961,
+        "non_blank_lines": 4078,
+        "share": 0.4809
+      },
+      "servers/kinetics": {
+        "prose_lines": 837,
+        "non_blank_lines": 2044,
+        "share": 0.4095
+      },
+      "servers/props": {
+        "prose_lines": 473,
+        "non_blank_lines": 1093,
+        "share": 0.4328
+      },
+      "servers/pyexec": {
+        "prose_lines": 775,
+        "non_blank_lines": 1356,
+        "share": 0.5715
+      },
+      "servers/rxnlabel": {
+        "prose_lines": 974,
+        "non_blank_lines": 1923,
+        "share": 0.5065
+      },
+      "servers/rxnpredict": {
+        "prose_lines": 1196,
+        "non_blank_lines": 3460,
+        "share": 0.3457
+      },
+      "servers/safety": {
+        "prose_lines": 634,
+        "non_blank_lines": 1215,
+        "share": 0.5218
+      },
+      "servers/suitability": {
+        "prose_lines": 535,
+        "non_blank_lines": 1646,
+        "share": 0.325
+      },
+      "servers/thermalsafety": {
+        "prose_lines": 665,
+        "non_blank_lines": 1658,
+        "share": 0.4011
+      },
+      "servers/unitops": {
+        "prose_lines": 1029,
+        "non_blank_lines": 2930,
+        "share": 0.3512
+      }
+    }
+  },
+  "prose_working_tree": {
+    "rev": "working tree",
+    "total": {
+      "prose_lines": 8776,
+      "non_blank_lines": 27342,
+      "share": 0.321
+    },
+    "per_package": {
+      "conftest.py": {
+        "prose_lines": 25,
+        "non_blank_lines": 85,
+        "share": 0.2941
+      },
+      "packages/mcp_server_kit": {
+        "prose_lines": 1241,
+        "non_blank_lines": 3759,
+        "share": 0.3301
+      },
+      "scripts": {
+        "prose_lines": 73,
+        "non_blank_lines": 410,
+        "share": 0.178
+      },
+      "servers/calc": {
+        "prose_lines": 2124,
+        "non_blank_lines": 5451,
+        "share": 0.3897
+      },
+      "servers/chem": {
+        "prose_lines": 1040,
+        "non_blank_lines": 3157,
+        "share": 0.3294
+      },
+      "servers/kinetics": {
+        "prose_lines": 510,
+        "non_blank_lines": 1717,
+        "share": 0.297
+      },
+      "servers/props": {
+        "prose_lines": 297,
+        "non_blank_lines": 917,
+        "share": 0.3239
+      },
+      "servers/pyexec": {
+        "prose_lines": 401,
+        "non_blank_lines": 982,
+        "share": 0.4084
+      },
+      "servers/rxnlabel": {
+        "prose_lines": 500,
+        "non_blank_lines": 1449,
+        "share": 0.3451
+      },
+      "servers/rxnpredict": {
+        "prose_lines": 674,
+        "non_blank_lines": 2938,
+        "share": 0.2294
+      },
+      "servers/safety": {
+        "prose_lines": 395,
+        "non_blank_lines": 976,
+        "share": 0.4047
+      },
+      "servers/suitability": {
+        "prose_lines": 403,
+        "non_blank_lines": 1514,
+        "share": 0.2662
+      },
+      "servers/thermalsafety": {
+        "prose_lines": 402,
+        "non_blank_lines": 1395,
+        "share": 0.2882
+      },
+      "servers/unitops": {
+        "prose_lines": 691,
+        "non_blank_lines": 2592,
+        "share": 0.2666
+      }
+    }
+  }
+}

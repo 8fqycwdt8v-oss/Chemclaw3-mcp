@@ -1,12 +1,8 @@
 """A NaN or an infinity in a tool argument is refused, on both of the channels it arrives by.
 
-The wire half is the one that had to be driven rather than argued: JSON has no NaN, so the natural
-belief is that none can arrive. The bodies below are written by hand because an MCP client *cannot*
-send one — pydantic serialises a NaN as `null` — and a test through the client would pass whether
-or not the server refused anything. What arrives is decided by the server's parser, which accepts
-the literals, and by its session loop, which then rewrites them to `null`: driven before
-`NonFiniteLiteralRefusal`, `limit: NaN` reached an optional argument as `None` and the call
-answered `isError: false`.
+The wire bodies are hand-written because an MCP client cannot send one (pydantic serialises NaN
+as `null`). The server's parser accepts the literals and its session loop rewrites them to
+`null`, so without `NonFiniteLiteralRefusal` an optional argument would silently become `None`.
 """
 
 from __future__ import annotations

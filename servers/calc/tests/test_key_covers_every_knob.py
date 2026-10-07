@@ -1,52 +1,19 @@
 """Every setting that can move a number moves a key — derived from `CalcSettings.model_fields`.
 
-`xtb_spec.py`'s module docstring states the rule this file enforces: "someone adds a knob and
-forgets to key on it, and the next run silently serves a result computed under the old setting". The
-`model_dump()` derivation makes a *spec field* keyed by construction; it does nothing at all for a
-setting a compute path reads out of `settings` directly.
+Spec fields are keyed by construction via `model_dump()`, but a setting a compute path reads
+directly from `settings` is not. Missing one makes a cache hit serve a result computed under a
+different configuration, and `structure_id` propagates the fork down the chain.
 
-**Measured before the first fix**, same input structure, same key, different geometry and different
-energy:
+`test_every_setting_that_can_move_a_key_does` perturbs each setting and re-derives every key the
+server can derive: every tool identity, and every `XtbSpec` subclass on both backends over every
+task. A setting that moves no key must be named in `UNKEYED_BY_DESIGN` with its reason. New
+settings, spec classes and tools are covered the day they are added.
 
-    floor=1.0    key=xtb.opt@…:389b625b3220108a:5e9dada5819590e9  E=-11.394329102251229  steps=9
-    floor=0.005  key=xtb.opt@…:389b625b3220108a:5e9dada5819590e9  E=-11.394339129461754  steps=25
+**A refusal is not a key**: only probes answering a real key on both sides are compared.
 
-That is a wrong-answer cache on the caller's side, which is the worst thing this seam can produce: a
-`relax_structure` row written by one pod is served to another whose configuration would never have
-produced that geometry, and `structure_id` is the `input_hash` of every downstream Hessian,
-properties and scan key — so the fork propagates through the whole chain.
-
-## Why this file is a measurement and no longer a list
-
-It used to open by saying "three did", name those three, and stop. That sentence describes what the
-tree looked like the week somebody wrote it, and it was wrong: `xtb_bond_order_threshold` was the
-fourth, read inside `compute_properties` and in no key at all — measured on acetic acid with a real
-tblite SCF, 7 bonds at 0.5 and 9 at 0.05 under a byte-identical
-`xtb.properties@…:e67f316106051ef5:74c818075e77fec2`. A hand-written enumeration cannot fail on the
-commit that adds a fifth, because the enumeration *is* the thing that would have to change.
-
-So `test_every_setting_that_can_move_a_key_does` takes the setting names from
-`CalcSettings.model_fields` and, for each one, perturbs it and re-derives **every** key this server
-can derive: the identity of every tool in `identity.COMPUTE_TOOLS`, and the cache key of every
-concrete `XtbSpec` subclass on both backends over every task it accepts. A setting whose
-perturbation moves no key must be named in `UNKEYED_BY_DESIGN` with the reason it cannot; anything
-else fails. A new setting is therefore covered the day it is added, and so is a new spec class or a
-new tool.
-
-**A refusal is not a key.** Perturbing an admission bound to 1 makes every probe refuse, and a
-refusal compared against a key looks exactly like a key that moved — which reported `xtb_max_atoms`
-as keyed while measuring nothing. Only probes that answer a real key on *both* sides of the
-perturbation are compared.
-
-## The directional tests below are not the completeness guard
-
-They stay because they say something the measurement cannot: **which** key a knob moves, and — the
-half that is a false-*miss* rather than a false hit — which key it must leave alone. A knob that
-reaches the calculation must move the key (a false hit is a wrong answer); a knob that cannot reach
-it must not (a false miss is CPU spent for nothing, and on this server a repeat is minutes to
-hours). Which of the two a knob is depends on the resolved backend, because that is what decides
-whether the binary or the in-process library runs — so `unkeyed_fields` reads the resolved engine
-and these tests read it with it.
+The directional tests below say which key a knob moves and which it must leave alone: a false hit
+is a wrong answer, a false miss is a needless minutes-long recompute. Which applies depends on the
+resolved backend.
 """
 
 from __future__ import annotations
@@ -79,28 +46,15 @@ WATER = Structure(
 # is allowed to find empty-handed; everything else must move a key or fail. Each entry is a claim
 # about the code rather than a note, so it says which *kind* of claim it is.
 UNKEYED_BY_DESIGN: dict[str, str] = {
-    # Keyed through `calc_version`, and unmeasurable from here. `backend_version` reads
-    # `xtb_cli.binary_version()` / `crest_cli.binary_version()`, which resolve *this* setting to a
-    # path — so naming a different build is a different version string on a deployment that has one.
-    # Neither binary is installed in this suite's environment and both readers are `lru_cache`d, so
-    # every name answers `"absent"` here and no perturbation can move anything.
+    # Keyed through `calc_version` (`binary_version()` resolves this path), but unmeasurable here:
+    # neither binary is installed and both readers are cached, so every name answers `"absent"`.
     "xtb_binary": "selects the program `backend_version` reads a version from: keyed through "
     "calc_version wherever the binary exists, unmeasurable where it does not",
     "crest_binary": "selects the program `CrestSpec.calc_version` reads a version from; the same "
     "case as xtb_binary",
-    # The same case as `xtb_binary`, and it *used* to look measurable here for a reason that was
-    # itself the defect. Selecting `xtb` routes to the CLI, whose real version enters `calc_version`
-    # — so on a deployment holding the binary this setting is keyed through it, exactly as
-    # `xtb_binary` is. This suite ships no `xtb`, so before
-    # `_refuse_a_key_naming_a_program_this_image_lacks` the perturbation "moved" the key only by
-    # substituting the literal `xtb-absent` into it: a well-formed key naming a program the pod
-    # cannot run, which is the thing that refusal now prevents. The measurement below excludes it
-    # under its own stated rule — "a refusal is not a key" — so what is left is unmeasurable from
-    # here rather than unkeyed. Measured on `relax_structure` over water with a binary simulated
-    # present: `tblite` gives params_hash 5e9dada5819590e9 against `xtb`'s 6f5a0168eb3e9a1c, and
-    # calc_version moves with it (`+tblite+tblite-0.7.0` against `+xtb+xtb-6.7.1`) — so both halves
-    # of the key move where the program exists. On this image `tblite` and `auto` key normally and
-    # `xtb` refuses, which is the whole of what is unmeasurable.
+    # Like `xtb_binary`: selecting `xtb` routes to the CLI, whose version enters `calc_version`, so
+    # it is keyed where the binary exists. This suite ships no `xtb`, so that choice refuses, and a
+    # refusal is not a key; `tblite` and `auto` key normally.
     "xtb_engine": "selects the backend whose version `calc_version` reads: keyed through it "
     "wherever the binary exists, and refused rather than keyed where it does not, which "
     "`test_no_tool_keys_a_program_this_image_lacks_under_an_explicit_engine_setting` holds",
@@ -120,13 +74,10 @@ UNKEYED_BY_DESIGN: dict[str, str] = {
     "xtb_max_atoms": "a refusal bound: it decides whether the calculation runs at all",
     "xtb_hessian_max_atoms": "a refusal bound, as above",
     "calc_max_concurrent_requests": "an admission bound: it decides whether the call is accepted",
-    # **Not a refusal bound, and worth reading before this entry is copied.** Above this atom count
-    # an ensemble member travels with `smiles=None` instead of a perceived label, so it does move
-    # the payload — the shape `xtb_bond_order_threshold` was fixed for. It is not keyed because a
-    # CREST ensemble is already not a function of its key: the search is stochastic and no seed is
-    # set, so `search_conformer_ensemble` is reproducible only through the cache, first writer wins
-    # (`CrestSpec`). Adding a deterministic field to the key of a payload that is not deterministic
-    # buys nothing and re-addresses the most expensive rows in the system.
+    # Not a refusal bound: above it a member travels with `smiles=None`, which moves the payload. It
+    # is unkeyed because a CREST ensemble is already not a function of its key (unseeded and
+    # stochastic, first writer wins), so keying it would re-address the most expensive rows for
+    # nothing.
     "crest_perceive_max_atoms": "moves an ensemble member's label, on a payload that is already "
     "not key-determined because the search is stochastic — see CrestSpec",
     # logD is the one calculation on this server with no key at all, and says so in a `caveat`
@@ -136,10 +87,8 @@ UNKEYED_BY_DESIGN: dict[str, str] = {
     "logd_negligible_ionised_fraction": "logD has no cache key, as above",
 }
 
-# The one setting whose alternative value cannot be derived from its type. Every other string here
-# is free text that lands in a version string, so `<value>-perturbed` is a valid perturbation;
-# `pka_solvent` is validated against ALPB's own table, so a made-up name is *refused* rather than
-# keyed differently, and a refusal is not a measurement.
+# `pka_solvent` is validated against ALPB's table, so a made-up value would be refused rather than
+# keyed; it needs an explicit alternative.
 PERTURBATIONS: dict[str, Any] = {"pka_solvent": "methanol"}
 
 _REFUSED = "refused"
@@ -160,9 +109,8 @@ def _import_every_engine_module() -> None:
 def _spec_probes() -> list[XtbSpec]:
     """Every concrete spec this server can build, on both backends.
 
-    The tool identities alone are not enough: `identity` builds each spec with the *configured*
-    engine, so on an image without the xtb binary nothing would ever probe a binary-only knob such
-    as `opt_level`. Naming both engines explicitly is what keeps those measurable everywhere.
+    Tool identities use the configured engine, so without both engines a binary-only knob such as
+    `opt_level` would never be probed.
     """
     _import_every_engine_module()
     classes: list[type[XtbSpec]] = [XtbSpec]
@@ -230,10 +178,8 @@ def _within_bounds(field: FieldInfo, value: Any) -> bool:
 def _candidates(name: str, field: FieldInfo) -> list[Any]:
     """Values to try for `name`, derived from its declared type and its own constraints.
 
-    More than one, because a single guess can be wrong in the direction that hides the answer:
-    perturbing `xtb_engine` from `"auto"` to `"tblite"` moves nothing on an image with no xtb
-    binary, while `"xtb"` moves every dispatching task's key. So a setting counts as keyed if *any*
-    valid alternative moves a key.
+    Several, because one guess can hide the answer; a setting counts as keyed if any valid
+    alternative moves a key.
     """
     if name in PERTURBATIONS:
         return [PERTURBATIONS[name]]
@@ -299,16 +245,9 @@ def test_the_unkeyed_allowlist_names_only_real_settings() -> None:
 
 
 def test_the_probe_answers_in_both_directions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The control: a detector that only ever said "keyed" would pass the guard above forever.
+    """The control: the probe can answer both "keyed" and "unkeyed".
 
-    Two settings whose answers are settled by the directional tests below — the optimizer's trust
-    radius reaches every optimisation's key, and the inline budget reaches nothing — so this asserts
-    the measurement can produce both answers rather than one.
-
-    It used to name `xtb_anc_curvature_floor` here, which was the right choice while there was an
-    ANC preconditioner to have a curvature floor. geomeTRIC builds real internal coordinates and has
-    no analogue, so the setting and the `OptSpec` field are gone; `xtb_opt_trust_radius` is the
-    surviving optimizer knob that moves the answer, and it always did.
+    The trust radius reaches every optimisation's key and the inline budget reaches none.
     """
     fields = CalcSettings.model_fields
     assert _moves_a_key("xtb_opt_trust_radius", fields["xtb_opt_trust_radius"], monkeypatch)
@@ -322,13 +261,8 @@ def test_the_trust_radius_moves_the_optimisation_key(
 ) -> None:
     """The ceiling on one step decides which stationary point is reached, so it is in the key.
 
-    Measured on ethanol, 0.35 and 0.05 relax to different geometries and different energies — and a
-    `structure_id` is a hash of the coordinates, so every downstream key is derived from the answer
-    this setting moves.
-
-    **This test replaced one about `xtb_anc_curvature_floor`**, which made the same argument about
-    the ANC preconditioner's floor. That preconditioner is gone with geomeTRIC's arrival and the
-    setting with it; the argument is unchanged and now rests on the knob that survived.
+    Different trust radii relax ethanol to different geometries, and `structure_id` derives every
+    downstream key from that geometry.
     """
     monkeypatch.setattr(settings, "xtb_opt_trust_radius", 0.35)
     default = OptSpec(engine="tblite").cache_key(WATER)
@@ -354,10 +288,7 @@ def test_the_cli_accuracy_moves_the_key_of_every_calculation_the_binary_runs(
 ) -> None:
     """`--acc` scales xtb's SCF and integral thresholds, so it produces the numbers being stored.
 
-    The per-atom panel *is* those numbers — charges, coordination numbers, C6 coefficients and
-    polarisabilities — and the surface potential is a grid computed under the same threshold. Both
-    tasks are binary-only (`_FIXED_BACKEND`), so there is no configuration in which the knob is
-    inert here.
+    Both tasks are binary-only (`_FIXED_BACKEND`), so the knob is never inert for them.
     """
     monkeypatch.setattr(settings, "xtb_cli_accuracy", 1.0)
     loose = XtbSpec(task=task, engine="xtb").cache_key(WATER)  # type: ignore[arg-type]
@@ -369,11 +300,10 @@ def test_the_cli_accuracy_moves_the_key_of_every_calculation_the_binary_runs(
 def test_the_cli_accuracy_moves_a_hessian_key_only_where_the_binary_takes_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A Hessian dispatches, so the same knob is keyed on one backend and inert on the other.
+    """A Hessian dispatches, so `--acc` is keyed on the binary backend and inert in process.
 
-    Both halves in one test because they are one statement: the key names what runs. The in-process
-    finite-difference path never passes `--acc` to anything — tblite has no such knob — so keying on
-    it there would recompute every stored Hessian for a setting that could not have touched it.
+    The key names what runs; tblite has no such knob, so keying it there would recompute for
+    nothing.
     """
     monkeypatch.setattr(settings, "xtb_cli_accuracy", 1.0)
     binary_loose = HessianSpec(engine="xtb").cache_key(WATER)
@@ -388,17 +318,8 @@ def test_a_knob_no_backend_of_this_calculation_reads_stays_out_of_its_key(
 ) -> None:
     """`sp`, `properties` and `fukui` are in-process whatever is configured, and crest reads none.
 
-    The first three are pinned to tblite by `_FIXED_BACKEND`, so `--acc` cannot reach them; a CREST
-    search shells out to `crest`, which this server hands no accuracy flag. Over-keying costs a
-    recompute rather than a wrong answer, and on this server a recompute is minutes to hours.
-
-    **The reason this test used to give was the pre-correction sentence of the file it cites.** It
-    said `xtb.sp`'s key is "pinned byte-for-byte against Chemclaw3's own derivation" in
-    `test_key_contract.py`. That test now says the opposite in as many words: the strings are
-    *this* repository's, measured against its own installed tblite and RDKit, and no cross-repo
-    agreement is asserted anywhere — `remote_key` deliberately re-derives nothing on that side. The
-    exclusion stands on its own merits, which are `_FIXED_BACKEND` pinning these three to tblite,
-    a library with no `--acc`.
+    `_FIXED_BACKEND` pins the three to tblite, which has no `--acc`, and crest gets no accuracy
+    flag. Over-keying costs a minutes-long recompute.
     """
     monkeypatch.setattr(settings, "xtb_cli_accuracy", 1.0)
     before = [XtbSpec(task=task).cache_key(WATER) for task in ("sp", "properties", "fukui")]
@@ -412,12 +333,8 @@ def test_a_knob_no_backend_of_this_calculation_reads_stays_out_of_its_key(
 def test_a_frozen_atom_optimisation_is_keyed_as_the_backend_that_really_runs_it() -> None:
     """The binary cannot hold an atom fixed, so a constrained spec resolves in-process.
 
-    `_optimize_with_binary` falls back to the Cartesian path whenever `frozen_atoms` is set — that
-    is the only way frozen atoms work at all — but the fallback happened *after* the key was
-    derived, so a scan point on a deployment with the binary was stored under a `calc_version`
-    naming a program that had not run. `for_structure`'s whole job is to answer "what will actually
-    run", and this is the third thing it has to answer it about, beside the fixed-backend tasks and
-    the open-shell fallback.
+    The fallback must be decided before the key is derived, or a scan point would be keyed under a
+    program that did not run. `for_structure` answers what will actually run.
     """
     free = OptSpec(engine="xtb")
     constrained = OptSpec(engine="xtb", frozen_atoms=(0,))
@@ -428,12 +345,10 @@ def test_a_frozen_atom_optimisation_is_keyed_as_the_backend_that_really_runs_it(
 
 
 def test_one_solvent_spelled_five_ways_is_one_calculation() -> None:
-    """The name is matched case- and whitespace-insensitively, then hashed *as written*.
+    """One solvent spelled five ways is one calculation.
 
-    So `"water"`, `"Water"` and `" water"` were three cache rows for one ALPB calculation, and
-    `"h2o"` — the same entry in tblite's own table — was a fourth. On this server's cost profile
-    that is the expensive kind of waste: a solvated Hessian or CREST search is minutes to hours,
-    paid again for a number already on disk.
+    The name is matched case- and whitespace-insensitively, with aliases such as `"h2o"`, so it is
+    hashed in canonical form; otherwise each spelling is a separate expensive row.
     """
     keys = {
         PropertiesSpec(solvent=name).cache_key(WATER).params_hash
@@ -445,17 +360,10 @@ def test_one_solvent_spelled_five_ways_is_one_calculation() -> None:
 def test_the_bond_order_threshold_moves_the_electronic_properties_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """It **filters the payload**, so a shared key is a wrong answer rather than a stale one.
+    """The bond-order threshold filters the payload, so it must move the properties key.
 
-    Measured on acetic acid with a real tblite SCF, before `PropertiesSpec` existed:
-
-        threshold=0.5   bonds=7  key=xtb.properties@…:e67f316106051ef5:74c818075e77fec2
-        threshold=0.05  bonds=9  key=xtb.properties@…:e67f316106051ef5:74c818075e77fec2
-
-    `_bond_orders` read the setting inside `compute_properties`, outside every spec, so
-    `model_dump()` never saw it. Two bonds are missing from the first pod's answer and nothing on
-    the row says so — which is the case `identity._site_reactivity` already forbids in as many
-    words: an argument outside the key may permute the answer and may not remove from it.
+    A shared key would be a wrong answer: rows would be missing bonds with nothing saying so. An
+    argument outside the key may permute the answer but not remove from it.
     """
     monkeypatch.setattr(settings, "xtb_bond_order_threshold", 0.5)
     default = PropertiesSpec().cache_key(WATER)
@@ -465,13 +373,10 @@ def test_the_bond_order_threshold_moves_the_electronic_properties_key(
 
 
 def test_two_thresholds_are_two_payloads_and_therefore_two_keys() -> None:
-    """The whole defect in one assertion, driven through a real SCF rather than through a hash.
+    """Two thresholds are two payloads and therefore two keys, driven through a real SCF.
 
-    Keying the field is only half of it: a spec field defaulted from `settings` and then ignored by
-    the calculator would key one threshold and apply another, which is the same fork wearing a
-    passing test. So this runs both, compares the *payloads*, and only then compares the keys —
-    which is the order the failure happened in. Acetic acid because that is what the finding was
-    measured on: 7 bonds at 0.5, 9 at 0.05.
+    Payloads are compared before keys, so a field keyed but ignored by the calculator also fails.
+    Acetic acid gives a different bond count at 0.5 and 0.05.
     """
     spec, structure = xtb_props.properties_inputs("CC(=O)O")
     default = xtb_props.compute_properties(spec, structure)

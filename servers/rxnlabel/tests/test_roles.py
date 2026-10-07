@@ -1,12 +1,8 @@
 """The role rules, on reactions a chemist would recognise.
 
-Every assertion here is a chemistry claim, so each test says which one. The two that matter most
-are the context-dependent pair — a phosphine is a ligand or a reagent depending on the rest of the
-flask — because they are the reason this operates on a reaction rather than on a molecule, and
-because getting either wrong puts a wrong row at the top of a frequency table somebody quotes.
-
-These run without the optional models, which is the point: the classification below is what a
-deployment gets from RDKit alone, and the atom map only refines it.
+Each test names its chemistry claim. The context-dependent pair (a phosphine is a ligand or a
+reagent depending on the rest of the flask) is why this operates on a reaction rather than a
+molecule. These run without the optional models: this is what RDKit alone gives.
 """
 
 from __future__ import annotations
@@ -91,11 +87,10 @@ def test_a_suzuki_separates_the_same_four_with_different_structures() -> None:
 
 
 def test_the_same_phosphine_is_a_ligand_with_a_metal_and_not_without_one() -> None:
-    """The chemistry claim this server's shape exists for.
+    """The same phosphine is a ligand with a metal and not without one.
 
-    Triphenylphosphine is a ligand in a Suzuki and a stoichiometric reagent in a Mitsunobu. The
-    structure is byte-identical; only the rest of the flask distinguishes them. A per-molecule
-    classifier cannot get this right in both places, which is why `assign` takes a reaction.
+    Triphenylphosphine is a ligand in a Suzuki and a reagent in a Mitsunobu; only the rest of the
+    flask distinguishes them, which is why `assign` takes a reaction.
     """
     ppd = "c1ccc(P(c2ccccc2)c2ccccc2)cc1"
     assert _roles_of(SUZUKI, [ppd])[ppd] == roles.LIGAND
@@ -103,12 +98,10 @@ def test_the_same_phosphine_is_a_ligand_with_a_metal_and_not_without_one() -> No
 
 
 def test_a_ferrocenyl_phosphine_is_a_ligand_and_not_a_catalyst() -> None:
-    """dppf contains iron and is a ligand — so the ligand rule must be consulted before the metal
-    one.
+    """dppf contains iron and is a ligand, so the ligand rule is consulted before the metal one.
 
-    The failure this pins is a plausible ordering bug: "contains a transition metal, therefore
-    catalyst" is right for Pd(OAc)2 and wrong for every ferrocene-backboned ligand on the shelf,
-    which would then be counted as catalysts and never as ligands.
+    "Contains a transition metal, therefore catalyst" is right for Pd(OAc)2 and wrong for every
+    ferrocene-backboned ligand.
     """
     # One ferrocenyl phosphine arm, in the form RDKit reads: cyclopentadienide as an
     # aromatic anion. The full dppf has two; one is enough to state the rule.
@@ -148,11 +141,10 @@ def test_a_species_the_reaction_does_not_contain_is_unknown_not_guessed() -> Non
 
 
 def test_roles_are_matched_by_structure_and_not_by_position() -> None:
-    """The caller's ordinals come from its own record, which orders species differently.
+    """Roles are matched by structure, not position: the answer is invariant under shuffling.
 
-    A record lists inputs then outcomes; the reaction string groups the agents in the middle. Any
-    reaction with a solvent has the two orders disagreeing, so a positional match would mislabel
-    all of them — this asserts the answer is invariant under shuffling the request.
+    The caller's record orders species differently from the reaction string, which groups agents in
+    the middle, so a positional match would mislabel every reaction with a solvent.
     """
     structures = ["CC#N", "c1ccc(NC2CCCCC2)cc1", "CC(=O)O[Pd]OC(C)=O", "Brc1ccccc1"]
     forwards = _roles_of(BUCHWALD, structures)
@@ -178,12 +170,10 @@ def test_every_functional_group_pattern_compiles(name: str, smarts: str) -> None
 
 
 def test_a_multi_component_species_is_matched_component_wise() -> None:
-    """A salt or a complex is one species the caller charged and several dot-separated tokens.
+    """A multi-component species (salt, complex) is matched component-wise.
 
-    Until this was caught on dppf, every ferrocenyl phosphine and every alkali-metal salt came back
-    `unknown`: the whole string was compared against the slot's individual tokens and matched
-    neither. The rule is that a species belongs to a slot when *every* component is written there —
-    which reduces to plain membership for the ordinary single-component case.
+    A species belongs to a slot when every dot-separated component is written there, which reduces
+    to plain membership for a single-component species.
     """
     salt = "[K+].[O-]C(=O)[O-].[K+]"
     reaction = f"COc1ccc(Br)cc1.OB(O)c1ccccc1>{salt}.[Pd]>COc1ccc(-c2ccccc2)cc1"
@@ -196,12 +186,11 @@ def test_a_multi_component_species_is_matched_component_wise() -> None:
 
 
 class TestABaseIsRecognisedByAPatternThatMatchesIt:
-    """A misclassified base is a wrong *count* in a frequency table somebody then quotes.
+    """A base is recognised by a pattern that actually matches it.
 
-    The bicarbonate pattern demanded `[OX2H0-]` — an oxygen with two connections *and* a negative
-    charge — and bicarbonate is `OC(=O)[O-]`, whose anionic oxygen has one connection. It matched
-    no bicarbonate written any way, so every `NaHCO3` reaction in a Suzuki corpus fell through to
-    `additive`. The aromatic-nitrogen bases had no rule at all.
+    A misclassified base is a wrong count in a frequency table. Bicarbonate's anionic oxygen has one
+    connection, so the pattern must not demand two; aromatic-nitrogen bases need a rule of their
+    own.
     """
 
     @pytest.mark.parametrize(
@@ -254,12 +243,10 @@ class TestABaseIsRecognisedByAPatternThatMatchesIt:
 
 
 class TestASpeciesIsParsedWholeOrNotAtAll:
-    """RDKit reads `"CCO junk"` as ethanol, and this server eats free text for a living.
+    """A species is parsed whole or not at all.
 
-    The sister `chem` server has `require_molecule` for exactly this: the parser treats whitespace
-    as the end of the structure and ignores the rest, so a concatenated ELN cell does not fail — it
-    narrows to a *different, smaller molecule* than the caller submitted, and that molecule is what
-    gets stored as the label.
+    RDKit treats whitespace as the end of a SMILES, so `"CCO junk"` would silently narrow to ethanol
+    and be stored as the label for a concatenated ELN cell.
     """
 
     @pytest.mark.parametrize(

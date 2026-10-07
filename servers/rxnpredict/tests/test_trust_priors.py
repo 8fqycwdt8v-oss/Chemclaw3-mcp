@@ -75,11 +75,10 @@ _PRIORS_ENV = "CHEMCLAW_RXNPREDICT_MODEL_TRUST_PRIORS"
 def test_an_env_prior_adjusts_the_table_rather_than_replacing_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The measured defect: one named weight used to leave every other predictor unweighted.
+    """An environment prior adjusts the default table rather than replacing it.
 
-    Driven through the real environment source, because the replacement happened there — a test
-    constructing `Settings(model_trust_priors=...)` would not show which path pydantic-settings
-    takes to the validator.
+    Driven through the real environment source, since that is the path pydantic-settings takes to
+    the validator.
     """
     monkeypatch.setenv(_PRIORS_ENV, '{"parrot": 9.9}')
     priors = Settings().model_trust_priors
@@ -135,11 +134,10 @@ _CALIBRATED = {
 def test_a_class_prior_adjusts_the_corpus_rather_than_replacing_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One named `(class, predictor)` pair used to drop every other calibrated class weight.
+    """A class prior adjusts the corpus rather than replacing it.
 
-    Driven through the real environment source, as the global-table test is, with the corpus
-    patched where `class_priors()` reads it — the shipped file is `{}`, and a merge onto nothing
-    cannot tell a merge from a replacement.
+    Driven through the environment with the corpus patched where `class_priors()` reads it, since
+    the shipped file is `{}` and a merge onto nothing cannot tell merge from replacement.
     """
     from chemclaw_mcp_rxnpredict.engine.meta import trust_priors
 
@@ -154,7 +152,7 @@ def test_a_class_prior_adjusts_the_corpus_rather_than_replacing_it(
     }
     assert corpus == _CALIBRATED, "the cached corpus was edited in place by an override"
     # Where it is read: the class the operator did not name keeps its calibrated weight, not the
-    # global 0.80 the old whole-table replacement fell through to.
+    # global default.
     global_priors = dict(DEFAULT_MODEL_TRUST_PRIORS)
     assert effective_prior("megan", "suzuki_coupling", global_priors, merged) == 0.7
 

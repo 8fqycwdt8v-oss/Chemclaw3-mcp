@@ -2,14 +2,8 @@
 
     uvicorn chemclaw_mcp_rxnlabel.app:app --host 127.0.0.1 --port 8865
 
-`CHEMCLAW_RXNLABEL_TOKEN` is the environment variable this server's `connector.yaml` declares and
-the one Chemclaw3's `rxnlabel_server_token_env` points at by default. Enforced rather than made
-conditional on the address: the manifest declares bearer auth, so a missing token fails closed with
-401 rather than serving the surface anonymously.
-
-`on_start` logs what actually loaded. This server's answers differ depending on which optional
-extras are installed, and an operator looking at a corpus that came back unnamed needs to be able
-to see, in the first lines of the log, whether the classifier was there at all.
+Bearer auth on `CHEMCLAW_RXNLABEL_TOKEN`, as `connector.yaml` declares; an unset token fails closed
+with 401. `on_start` logs which optional components loaded, since answers depend on them.
 """
 
 from __future__ import annotations
@@ -46,11 +40,8 @@ async def _report_components() -> None:
 def _readiness() -> list[Dataset]:
     """Prove this pod can label, and that no component it installed is silently broken.
 
-    No dataset: this server vendors no corpus, so the list is empty and `/healthz` publishes
-    `datasets: []` rather than omitting the field. `on_start` above *logs* what loaded, which an
-    operator has to go and read; this decides whether the pod takes traffic at all. The two are
-    deliberately not the same decision — see `engine/readiness.py` for why an *installed* component
-    that will not construct is a failure while an absent one is not.
+    No vendored corpus, so the dataset list is empty. See `engine/readiness.py` for why an installed
+    component that will not construct fails readiness while an absent one does not.
     """
     return list(verify_labeller())
 

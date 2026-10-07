@@ -1,10 +1,8 @@
 """What a bond-cleavage enumeration must get right for the survey that consumes it.
 
-The field names asserted here are a **cross-repository contract**: Chemclaw3's `BondCleavageSpec`
-has `atoms`, `bond` and `fragments`, and its `bond-strength-survey` template passes this tool's
-output through unchanged, with a comment recording that a template cannot rename a field. A
-near-miss here does not fail loudly — it needs a model in the middle to re-type the list, which is
-the failure this file exists to make impossible.
+The field names are a cross-repository contract: Chemclaw3's `BondCleavageSpec` has `atoms`,
+`bond` and `fragments`, and its survey template passes this output through unchanged and cannot
+rename a field.
 """
 
 from __future__ import annotations
@@ -67,9 +65,8 @@ def test_a_heterolysis_gives_the_electrons_to_the_more_electronegative_end() -> 
 def test_symmetry_equivalent_bonds_collapse_to_one_entry() -> None:
     """Three methyl C-H bonds are one bond by symmetry, and three reaction energies by cost.
 
-    **The cost is the point and the correctness follows it.** Enumerated separately, the survey
-    pays one reaction energy each for three identical numbers, and then reports three joint-weakest
-    bonds — which a reader cannot distinguish from a genuine degeneracy.
+    Enumerated separately, the survey would pay three times and report three joint-weakest bonds
+    indistinguishable from a real degeneracy.
     """
     ethanol = enumerate_cleavages("CCO")
 
@@ -118,11 +115,8 @@ def test_a_string_that_is_not_a_molecule_is_refused() -> None:
 class TestTheIndicesAddressTheMoleculeThatIsReturned:
     """`atoms` and `parent` must describe one molecule, because the caller only receives `parent`.
 
-    This is the failure `describe_atom_sites` records for phenol and `torsion_handle` exists to
-    remove, recurring in the one enumerator that had neither guard: the indices were into
-    `AddHs(<the caller's spelling>)` while `parent` was the canonical SMILES, and the field
-    description claimed the opposite. Chemclaw3's survey copies `atoms` straight into
-    `DissociatedBond.atoms`, which is what the chemist reads beside "this is the weakest bond".
+    Indices are into the returned canonical parent, not the caller's spelling; Chemclaw3 copies
+    `atoms` straight into what the chemist reads as the weakest bond.
     """
 
     @pytest.mark.parametrize(

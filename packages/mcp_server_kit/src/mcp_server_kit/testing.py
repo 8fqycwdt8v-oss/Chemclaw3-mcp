@@ -1,32 +1,12 @@
-"""Test helpers — chiefly the checks every server in this repository must pass, written once.
+"""Test helpers — the checks every server in this repository must pass, written once.
 
-`served_tools` opens a real MCP session against the app (in-process, over ASGI, no socket) and
-returns what the server actually advertises. That is the only honest input to the manifest mirror
-test: a `connector.yaml` is a *claim* about the tool surface, and Chemclaw3's own history is a
-list of claims that outlived the code they described.
-
-`assert_manifest_matches` is the check itself, kept here rather than copied into each server's
-tests so it cannot drift into seven slightly different assertions.
-
-`assert_bearer_is_enforced` is the other one, and it is here for the same anti-drift reason plus a
-sharper one: `connector_app` is shared, so a single proof of the bearer check *looks* sufficient —
-and that is the inference a mount bypass defeats, since a mounted MCP surface is precisely the route
-an enclosing app's declared credential does not reach. Nothing but a request against a running
-server can tell the two apart, so the helper takes a base URL rather than an app.
-
-**It checked names and never arguments, and the claim that rests on the arguments is load-bearing.**
-`MODULES.md` makes `chem` and `safety` drop-in *replacements* for Chemclaw3's in-tree bundles on
-the grounds of "same manifest `name`, same tools, same arguments" — and nothing in either
-repository read an `inputSchema`. A renamed argument keeps every name-level check green: the tool
-is declared, it is served, it is classified. It reaches the model as a tool that advertises,
-validates, and rejects every call written against the old name.
-
-So a server may hand this function the served `Tool` objects instead of their names, and the
-argument surface is then checked against a `tool-surface.json` recorded beside the manifest. **A
-golden file rather than a manifest key, and that was checked rather than assumed**: Chemclaw3's
-`HttpEndpoint` is `ConfigDict(extra="forbid")`, so an `arguments:` key under `endpoint:` would abort
-the other repository's startup on the very manifest it was meant to enrich. A file beside the
-manifest costs it nothing and is read in the same diff as the change that moves it.
+- `served_tools` opens a real MCP session and returns what the server advertises — the only honest
+  input to the manifest check.
+- `assert_manifest_matches` holds `connector.yaml` and the served surface together, including each
+  tool's arguments against a recorded `tool-surface.json` beside the manifest (a separate file
+  because Chemclaw3's manifest model forbids extra keys).
+- `assert_bearer_is_enforced` drives a *running* server, because a mounted MCP surface can bypass a
+  credential the enclosing app declares, and only a real request shows it.
 """
 
 from __future__ import annotations
@@ -40,9 +20,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, Self
 
-# `[testing]`-extra only: this module drives a *running* server, and a serving image never
-# imports it. `TID253` is the belt over `no_egress.network_imports`, whose per-server scan does
-# not read this package at all.
+# `[testing]`-extra only: drives a running server and is never imported by a serving image.
 import httpx  # noqa: TID253
 import yaml
 from mcp import ClientSession
@@ -78,35 +56,11 @@ SURFACE_UPDATE_ENV = "MCP_UPDATE_TOOL_SURFACE"
 def reimported(module: ModuleType) -> ModuleType:
     """Execute `module`'s source again, under the environment in force now, as a separate object.
 
-    What it is for: a server's admission ceiling and batch bound are read from the environment
-    **at import**, so the only honest way to show that the variable is what built them is to
-    build them again with the variable set to something else and read the *module's* value back.
-
-    Every server that tried to assert that instead re-typed the expression under test into its own
-    test — `int(os.environ.get("CHEMCLAW_RXNLABEL_MAX_BATCH", "500"))` compared to `(7, 9)`, which
-    is how that bound was spelled before `env_bound` and is quoted here as the *defect*, not as a
-    line anybody can still grep for — which asserts that `os.environ.get` works. Measured:
-    replacing the module's read with a hardcoded constant left 209 tests green in one server and
-    203 in another, and `tests/test_fleet.py`'s
-    inventory of numeric bounds could not catch it either, because that inventory is *derived from
-    the source* and a removed read simply shrinks it.
-
-    `importlib.reload` would do the reading and is the wrong tool: it rebinds the entry in
-    `sys.modules`, so every other module that did `from ...tools import server` at import keeps a
-    reference to the old object while new callers get a different one. This executes the same
-    source into a throwaway module instead, so nothing outside the assertion can see it.
-
-    **It is registered in `sys.modules` for the duration of the execution and removed afterwards**,
-    which reads like a contradiction of the paragraph above and is not: the name is the throwaway
-    one, so no existing importer can reach it, and it is gone before this returns. It has to be
-    there because a module is not self-contained while it executes — `dataclasses` resolves a
-    string annotation by looking its own class's module up in `sys.modules`, and with
-    `from __future__ import annotations` in force every annotation is a string. Driven on
-    `servers/props`' `correlations.py`, whose `VapourPressure` is a `slots=True` dataclass: without
-    the registration the re-execution dies with `AttributeError: 'NoneType' object has no attribute
-    '__dict__'` from inside `dataclasses`, which names neither this function nor the module it was
-    given. `finally`, so a module that raises on purpose — which is what every bound test asks for
-    — does not leave the name behind for the next test to find.
+    For asserting that an environment variable read at import is what built a bound: rebuild with a
+    different value and read the module's own result, rather than re-typing the expression in the
+    test. Not `importlib.reload`, which rebinds `sys.modules` under existing importers. The
+    throwaway name is registered in `sys.modules` only during execution (dataclasses resolve string
+    annotations through it) and removed in a `finally`.
     """
     if module.__spec__ is None or module.__spec__.origin is None:  # pragma: no cover - not a file
         raise ValueError(f"{module.__name__} has no source file to re-execute")
@@ -211,15 +165,11 @@ class HttpEndpoint(BaseModel):
         return self
 
 
-#: The cap `Chemclaw3` puts on every manifest text field
-#: (`core.manifest_io.MAX_MANIFEST_TEXT_CHARS`). A literal here because this repository may not
-#: import that one, and held against the real value by `tests/test_consumer_agreement.py` whenever
-#: a consumer checkout is on the machine.
+#: Chemclaw3's cap on every manifest text field (`core.manifest_io.MAX_MANIFEST_TEXT_CHARS`),
+#: checked against it by `tests/test_consumer_agreement.py` when a checkout is available.
 MAX_MANIFEST_TEXT_CHARS = 4_000
 
-#: The shape `Chemclaw3`'s `ConnectorManifest.name` requires. A bundle's name is a directory name,
-#: a `CHEMCLAW_CONNECTOR_URLS` key and a metric label over there, which is why it is constrained at
-#: all.
+#: The shape Chemclaw3's `ConnectorManifest.name` requires.
 CONNECTOR_NAME_PATTERN = r"^[a-z][a-z0-9-]*$"
 
 
@@ -275,19 +225,15 @@ class ConnectorManifest(BaseModel):
     profiles: list[str] = Field(default_factory=list)
     note_types: list[str] = Field(default_factory=list)
     relations: list[str] = Field(default_factory=list)
-    #: The consumer's switch for a bundle that is declared but not bound unless a deployment names
-    #: it (`D-2026-09-20-declaring-a-capability-and-binding-it-are-different-decisions` there). A
-    #: fleet manifest that shadows a consumer copy declaring `false` has to be able to say `false`
-    #: too, or the shadow silently binds every tool schema it carries on every model call.
+    #: The consumer's declared-but-not-bound switch; a fleet manifest shadowing a consumer copy
+    #: must be able to say `false` too, or it binds every tool schema on every model call.
     default_enabled: bool = True
 
 
 def load_manifest(path: Path) -> ConnectorManifest:
     """Parse and validate a `connector.yaml`.
 
-    Raises `ValueError` rather than returning `{}` for an empty, non-mapping or invalid file —
-    `ValidationError` is a `ValueError`, so the contract the callers were written against is
-    unchanged and the diagnosis is better.
+    Raises `ValueError` (a `ValidationError` is one) for an empty, non-mapping or invalid file.
     """
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict):
@@ -302,10 +248,8 @@ async def served_tools(base_url: str, *, token: str | None = None) -> list[str]:
     """The tool names a running server advertises, via a real MCP handshake.
 
     Args:
-        base_url: The server's MCP endpoint, e.g. `http://127.0.0.1:8850/mcp`. Loopback, so the
-            egress guard permits it.
-        token: The bearer token, when the server declares one. Passed on a caller-supplied httpx
-            client because that is the only way this version of the MCP client takes headers.
+        base_url: The server's MCP endpoint on loopback, e.g. `http://127.0.0.1:8850/mcp`.
+        token: The bearer token, when the server declares one.
 
     Returns:
         The advertised tool names, sorted.
@@ -324,11 +268,8 @@ async def served_tools(base_url: str, *, token: str | None = None) -> list[str]:
 def _argument_type(schema: dict[str, Any]) -> str:
     """One argument's type, as a short stable string a reader can compare across a diff.
 
-    Deliberately lossy and deliberately *not* the schema itself. What has to fail loudly is a
-    renamed, retyped, or newly required argument; what must not fail is a reworded description or a
-    reordered `$defs` block, because a golden that churns on prose is a golden people regenerate
-    without reading. A `$ref` to a nested model is `object` for the same reason — its own fields are
-    that model's contract, not this tool's argument list.
+    Deliberately lossy: renames, retypes and new required arguments must fail; reworded descriptions
+    or reordered `$defs` must not. A `$ref` to a nested model is `object`.
     """
     declared = schema.get("type")
     if isinstance(declared, str):
@@ -348,13 +289,12 @@ def tool_surface(tools: Iterable[Tool]) -> dict[str, dict[str, dict[str, Any]]]:
     """The argument surface a server advertises: per tool, per argument, type and requiredness.
 
     Args:
-        tools: The `Tool` objects a real `tools/list` returned. The schemas have to come from the
-            transport rather than from the Python function, because what Chemclaw3 binds is the
-            served `inputSchema` and nothing else.
+        tools: The `Tool` objects a real `tools/list` returned — the served `inputSchema` is what
+            Chemclaw3 binds.
 
     Returns:
-        `{tool: {argument: {"type": ..., "required": ..., "default": ...}}}`, with `default` present
-        only where the schema declares one. JSON-serialisable and stable under re-serving.
+        `{tool: {argument: {"type": ..., "required": ..., "default": ...}}}`, `default` only where
+        declared. JSON-serialisable and stable.
     """
     surface: dict[str, dict[str, dict[str, Any]]] = {}
     for tool in tools:
@@ -378,8 +318,7 @@ def tool_surface(tools: Iterable[Tool]) -> dict[str, dict[str, dict[str, Any]]]:
 def _assert_surface_unchanged(surface_path: Path, tools: Sequence[Tool]) -> None:
     """Assert the served argument surface is the recorded one, or record it when asked to.
 
-    Recording is an explicit act (`MCP_UPDATE_TOOL_SURFACE=1`) precisely because the file is the
-    contract: a mechanism that regenerated itself on mismatch would report every rename as clean.
+    Recording is explicit (`MCP_UPDATE_TOOL_SURFACE=1`), so a mismatch is never silently accepted.
     """
     served = tool_surface(tools)
     if os.environ.get(SURFACE_UPDATE_ENV):
@@ -408,28 +347,17 @@ def assert_manifest_matches(
 ) -> None:
     """Assert the manifest and the served surface agree, in both directions.
 
+    Checks that every served tool is declared (else it is reachable but invisible in review), every
+    declared tool is served, every tool is classified exactly once as `read_only` or
+    `state_changing` (an omission fails open past the plan gate), and — when `Tool` objects are
+    passed — every tool's argument names, types and requiredness match the recorded surface.
+
     Args:
         manifest_path: The server's `connector.yaml`.
-        tools: The served tool *names*, or — preferred — the `Tool` objects a real `tools/list`
-            returned. Names alone check everything below except the arguments, which no schema
-            reaches; passing the objects is a one-word change at the call site and is what makes an
-            accidental rename fail in CI.
-        surface_path: Where the recorded argument surface lives. Defaults to `tool-surface.json`
-            beside the manifest, which is where it belongs — the manifest declares the tools and
-            this declares their arguments.
-
-    Checks four things, because each has its own failure:
-
-    1. Every served tool is declared. An undeclared tool is reachable by anything that can open a
-       socket to the pod while looking, in review, like it does not exist.
-    2. Every declared tool is served. A manifest naming a tool nobody serves makes Chemclaw3
-       advertise a capability that fails at call time.
-    3. Every tool is classified exactly once as `read_only` or `state_changing` — the same rule
-       Chemclaw3's `HttpEndpoint` enforces (D-167). Getting it wrong by omission fails *open*:
-       the plan gate would let an unapproved plan call a state-changing tool.
-    4. Every tool's argument names, types and requiredness are the recorded ones (when `Tool`
-       objects are passed). Names alone cannot see this, and it is the check `MODULES.md`'s
-       drop-in-replacement claim actually rests on.
+        tools: The served tool names, or (preferred) the `Tool` objects, which enable the argument
+            check.
+        surface_path: The recorded argument surface; defaults to `tool-surface.json` beside the
+            manifest.
     """
     endpoint = load_manifest(manifest_path).endpoint
     declared = sorted(endpoint.tools)
@@ -452,9 +380,7 @@ def assert_manifest_matches(
 def _tools_list(mcp_url: str, headers: dict[str, str]) -> httpx.Response:
     """One `tools/list` POST at `/mcp`, sent exactly as an MCP client's first call would be.
 
-    A raw POST rather than an MCP session because what is under test is the ASGI stack *in front*
-    of the transport: a refusal happens before a session can exist, so a client that insists on a
-    handshake cannot observe one.
+    Raw, because a refusal happens before any session could exist.
     """
     return httpx.post(
         mcp_url,
@@ -467,59 +393,19 @@ def _tools_list(mcp_url: str, headers: dict[str, str]) -> httpx.Response:
 async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token: str) -> None:
     """Drive a **running** server's `/mcp` through every arm of the bearer rule, and its probes.
 
-    `CLAUDE.md` states the rule in the imperative — *"Bearer auth enforced on `/mcp` itself … verify
-    against a running server; do not read it off the source"* — because the failure it guards
-    against is invisible in the source. An MCP surface is *mounted*, and a mount bypasses the
-    enclosing app's dependencies: the credential can be declared, reviewed, and applied to
-    everything except the one route that matters. `connector_app` is shared, so one proof arguably
-    covers all seven servers — but "the helper is shared, so it must be applied" is exactly the
-    inference a mount bypass defeats, and every one of that helper's documented traps is a case
-    where its behaviour was not what its source suggested.
+    Verified against a running server because a mount can bypass the enclosing app's credential.
+    Arms: no header, wrong token, right secret under the wrong scheme (all 401); the right token
+    (served); the variable unset and whitespace-only (fail closed, then restored and re-served);
+    surrounding whitespace on the offered and the provisioned side (served). `/healthz` must answer
+    without a credential.
 
     Args:
         base_url: A running server's base URL on loopback, e.g. `http://127.0.0.1:8850`.
-        manifest_path: That server's `connector.yaml`. The declared `token_env` is read from it
-            rather than passed in, so this also checks the *serving* side enforces the variable
-            Chemclaw3 was told to send — two names that agree today and are not held together by
-            anything else.
-        token: The value the fixture put in that variable. Asserted to *be* what the variable
-            holds: a check that offers a token the server was never given proves nothing by
-            refusing it.
-
-    The arms, each of which fails on its own:
-
-    1. No `authorization` header at all — the anonymous handshake Chemclaw3 once completed.
-    2. A wrong token — so the 401 above is the credential being checked rather than the header
-       being required.
-    3. The right secret under the wrong scheme, which a `startswith`-shaped check would serve.
-    4. The right token — or a refusal proves nothing, since a server that refuses everything is
-       indistinguishable from one that enforces a credential.
-    5. The declared variable **unset**, with the right token still offered: fail closed. Chemclaw3
-       mounted a secret, recorded the control as enabled, and served every tool to anything that
-       could reach the pod, because the serving side never checked. The variable is read per
-       request, so this arm needs no second server — and it is restored and re-served afterwards,
-       which is what makes the 401 attributable to the unset variable rather than to a wedged
-       process.
-    6. The variable holding **only whitespace**, which is the shape an empty secret template
-       produces. Fail closed, for the same reason as 5 — and it is a separate arm because the
-       normalisation below is what could have turned it into an empty secret rather than an
-       absent one.
-    7. **Whitespace around the credential, on both sides.** `auth.py` strips it from the offered
-       header *and* from the provisioned variable, so this asserts the tolerance in the direction
-       it exists for (a secret written by `echo`, carrying a trailing newline, still authenticates
-       an unpadded caller) and in the direction a caller controls (a padded header against an
-       unpadded secret). It was asserted in neither direction while the offered side alone was
-       stripped, which is how the asymmetry survived. The refusal arms above keep this from
-       widening into "anything close enough": a token differing by one non-whitespace byte is
-       already arm 2.
-
-    `/healthz` is driven through the same arm: a kubelet probe carries no identity, so the failure
-    mode where a token problem takes the pod out of the cluster as well as off the network is one
-    this has to exclude.
+        manifest_path: That server's `connector.yaml`, from which the declared `token_env` is read,
+            so the serving side is held to the variable Chemclaw3 was told to send.
+        token: The value the fixture put in that variable; asserted to be what it holds.
     """
-    # The model makes `mode: bearer` and a non-empty `token_env` unrepresentable otherwise, so what
-    # is left to assert here is the half a model cannot see: that the variable the manifest names
-    # is the one this fixture actually provisioned.
+    # The model already guarantees bearer mode and a `token_env`; check it is the one provisioned.
     token_env = load_manifest(manifest_path).endpoint.auth.token_env
     assert os.environ.get(token_env) == token, (
         f"{manifest_path} declares {token_env}, which is the variable the running server reads on "
@@ -544,13 +430,9 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
     served = await served_tools(mcp_url, token=token)
     assert served, f"{mcp_url} served no tools to the declared credential"
 
-    # Whitespace, both ways round. The padded *secret* is the arm that matters operationally: a
-    # Kubernetes Secret written with `echo` carries a trailing newline, and before this the server
-    # refused every request including one offering exactly those bytes.
-    # The padded header is padded on the *inside* (`Bearer  <tok>`) rather than trailing: h11
-    # refuses to send a field value with leading or trailing whitespace, so the trailing-tab
-    # variant a raw socket found is not expressible through an HTTP client at all. This arm still
-    # reaches the same `offered.strip()`.
+    # Whitespace both ways round; the padded secret is the operational case (an `echo`-written
+    # Secret). The header is padded inside (`Bearer  <tok>`) because h11 refuses trailing
+    # whitespace.
     for description, provisioned, offered in (
         ("a padded header against the provisioned secret", token, f" {token}"),
         ("an unpadded header against a newline-provisioned secret", f"{token}\n", token),
@@ -585,10 +467,8 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
             "credential whose variable is missing must refuse every request: a misconfigured "
             "deployment has to serve nothing, never everything."
         )
-        # ASYNC210: a blocking call in an async function. The server this drives is a uvicorn in
-        # its own thread with its own loop (see each server's `test_server.py`), so blocking this
-        # loop cannot stall the thing being probed - and `_tools_list` beside it is sync for the
-        # same reason. An in-process ASGI transport would make this a deadlock rather than a smell.
+        # ASYNC210: the server runs in its own thread and loop, so blocking here cannot stall it; an
+        # in-process ASGI transport would deadlock instead.
         probe = httpx.get(f"{base_url.rstrip('/')}/healthz", timeout=15.0)  # noqa: ASYNC210
         assert probe.status_code != 401, (
             f"/healthz answered 401 with {token_env} unset. A kubelet probe and a Prometheus "

@@ -1,33 +1,13 @@
 """The logD domain-check contract with Chemclaw3, written as literal strings and numbers.
 
-`D-2026-08-16-the-physics-leaves-the-cache-stays` decomposed `predict_logd`: the pKa physics stayed
-here (`engine/pka.py`), but Chemclaw3 never calls this server's `predict_logd` tool. Instead it
-takes a *cached* `PkaResult` — however it was obtained, in production a call to this server's own
-`predict_pka` — and composes logD client-side in `chemclaw.science.calc.logd`: a Crippen LogP sum,
-one Henderson-Hasselbalch term, and a domain check (`ionisable_sites` over the `_ACIDIC_SITE` and
-`_BASIC_SITE` patterns, then `_require_a_single_equilibrium`) that decides which molecules a single
-equilibrium term can honestly describe. This sentence named `_lone_pair_is_available` for a wave —
-a function that had been replaced by a recursive SMARTS on **both** sides and exists in neither
-repository, so the one document pointing a reader at the duplicated arithmetic named a third of it
-by a name nothing answers to. That domain-check arithmetic is therefore duplicated verbatim across
-the repository boundary — this server's copy lives in `engine/pka.py` (site enumeration) and
-`engine/logd.py` (the single-equilibrium refusal); Chemclaw3's copy is inlined into
-`science/calc/logd.py` because it has no `pka.py` left to import from. Nothing before this file
-pinned the two copies together.
+Chemclaw3 composes logD client-side from a cached `PkaResult` (Crippen LogP, one
+Henderson-Hasselbalch term, and a single-equilibrium domain check), duplicating this server's
+`engine/pka.py` site enumeration and `engine/logd.py` refusal. Two kinds of duplication, pinned
+two ways:
 
-**Two different kinds of duplication, tested two different ways.**
-
-1. **The composition arithmetic** (`ionisable_sites`, `_require_a_single_equilibrium`, Crippen,
-   Henderson-Hasselbalch) runs on *both* sides once a `PkaResult` exists, so it is where the two
-   repositories could silently disagree while both look correct in isolation.
-   `COMPOSITION_CONTRACT` below pins it against **frozen, literal** `PkaResult` inputs —
-   deliberately not a fresh `predict_pka` call, because GFN2-xTB's SCF is not bit-reproducible
-   across runs (measured: pyridine pKa 5.399777721199..., varying in the 9th significant figure
-   between repeated calls on identical input on this machine). Freezing the pKa as data removes
-   that noise and isolates exactly the arithmetic this file exists to pin. Each row's
-   `predict_logd` value is reproduced here by monkeypatching `predict_pka` to return the frozen
-   result, and each expected value was produced by feeding the identical frozen `PkaResult` to
-   Chemclaw3's own `logd_from_pka`:
+1. **Composition arithmetic.** `COMPOSITION_CONTRACT` pins it on frozen, literal `PkaResult`
+   inputs (GFN2-xTB is not bit-reproducible), with `predict_pka` monkeypatched. Expected values
+   come from Chemclaw3's own function, e.g.:
 
        cd /path/to/Chemclaw3 && uv run --no-sync python -c "
        from chemclaw.science.calc.models import PkaResult
@@ -37,26 +17,12 @@ pinned the two copies together.
            ph=7.4)
        print(r.clogp, r.log_d)"
 
-   Run once per row in `COMPOSITION_CONTRACT`, substituting that row's `smiles`/`site`/`pka`/
-   `uncertainty`/`ph`. Pyridine's numbers are the ones this table (and the task that produced it)
-   measured live: `clogp=1.0816`, `log_d=1.0772808264400353`.
+2. **Site enumeration.** `SITE_CONTRACT` pins `ionisable_sites` against literal `(acidic, basic)`
+   counts from `chemclaw.science.calc.logd.ionisable_sites`.
 
-2. **`ionisable_sites`' structural enumeration** needs no pKa at all — it is pure RDKit graph
-   inspection — so `SITE_CONTRACT` pins it directly against literal `(acidic, basic)` counts,
-   produced the same way:
-
-       cd /path/to/Chemclaw3 && uv run --no-sync python -c "
-       from chemclaw.science.calc.logd import ionisable_sites
-       s = ionisable_sites('c1ccncc1'); print(s.acidic, s.basic)"
-
-**A third class of refusal has no Chemclaw3 counterpart to pin at all**, and that is itself part of
-the finding: an unparseable SMILES, a net-charged input, and an aliphatic amine are all refused
-inside `predict_pka` (`engine/pka.py`), *before* a `PkaResult` ever exists — so Chemclaw3 never
-receives one to compose from and runs no arithmetic of its own on these inputs; in production it
-would see this server's `predict_pka` tool call fail and the refusal would propagate as-is. There is
-therefore nothing on the Chemclaw3 side to run and no second copy to disagree. `PKA_REFUSAL_CASES`
-below pins that this server's own `predict_logd` refuses on exactly the inputs `predict_pka` does,
-which is the behaviour Chemclaw3 actually depends on (a refusal it relays, not one it decides).
+Refusals inside `predict_pka` (unparseable, net-charged, aliphatic amine) happen before any
+`PkaResult` exists, so Chemclaw3 only relays them; `PKA_REFUSAL_CASES` pins that this server's
+`predict_logd` refuses on exactly those inputs.
 """
 
 from __future__ import annotations
@@ -92,11 +58,8 @@ def test_ionisable_sites_matches_chemclaw3(smiles: str, counts: tuple[int, int])
     assert (sites.acidic, sites.basic) == counts
 
 
-# A frozen `PkaResult` (never recomputed by `predict_pka` — see the module docstring) paired with
-# the pH to compose at, and the expected `predict_logd` outcome: either `(clogp, log_d)` or a
-# substring that must appear in the raised `CalculationDomainError`. Every non-`None` numeric pair
-# and every error substring was produced by feeding the identical frozen inputs to Chemclaw3's
-# `logd_from_pka`.
+# A frozen `PkaResult`, the pH to compose at, and the expected outcome: `(clogp, log_d)` or a
+# substring of the raised `CalculationDomainError`, each produced by Chemclaw3's `logd_from_pka`.
 COMPOSITION_CONTRACT: list[tuple[str, str, float, float, float, tuple[float, float] | str]] = [
     # -- in-domain bases (aromatic/aryl nitrogen) --
     ("c1ccncc1", "base", 5.3997777211992215, 1.0, 7.4, (1.0816, 1.0772808264400353)),
@@ -127,11 +90,10 @@ def test_predict_logd_composition_matches_chemclaw3(
     ph: float,
     expected: tuple[float, float] | str,
 ) -> None:
-    """One row of the arithmetic half of the contract, on a frozen (never recomputed) pKa.
+    """One row of the arithmetic half of the contract, on a frozen pKa.
 
-    `predict_pka` is monkeypatched rather than called, so this pins the domain-check and
-    Henderson-Hasselbalch arithmetic alone — the piece duplicated across the repository boundary —
-    with none of GFN2-xTB's run-to-run float noise able to move a comparison this exact.
+    `predict_pka` is monkeypatched, so only the duplicated domain-check and Henderson-Hasselbalch
+    arithmetic is compared, free of SCF noise.
     """
     frozen = PkaResult(
         calc_version="contract-test",
@@ -171,9 +133,7 @@ PKA_REFUSAL_CASES: list[tuple[str, str]] = [
 def test_predict_logd_relays_the_upstream_pka_refusal(smiles: str, substring: str) -> None:
     """`predict_logd` refuses on exactly what `predict_pka` refuses on — no local override.
 
-    This is single-sided by construction (see the module docstring): Chemclaw3 has no local pKa
-    engine to run these SMILES through and would see this same refusal arrive from a real
-    `predict_pka` call, so pinning it here is pinning the contract Chemclaw3 actually depends on.
+    Single-sided by construction: Chemclaw3 relays this refusal from `predict_pka`.
     """
     with pytest.raises((ValueError, CalculationDomainError), match=substring):
         predict_logd(LogdInput(smiles=smiles, ph=7.4))

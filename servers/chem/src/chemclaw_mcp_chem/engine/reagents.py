@@ -1,26 +1,10 @@
 """Resolve the names chemists actually write to the structures every tool demands.
 
-Every chemistry capability in this fleet speaks SMILES — `solvent_properties(name)` is the
-exception, not the rule, and Chemclaw3's own calculators all take structures. Chemists write
-`Pd(dppf)Cl2`, `DIPEA`, `2-MeTHF`, `TBTU`, and ELN free text writes the same. This is the bridge:
-`resolve_compound` is it made a tool, and the charge table calls it once per charged species.
-
-**Deliberately a committed table, not a network call** — which in this repository is not a choice
-but the rule (`CLAUDE.md`, "No egress. Ever."). It is also the right design on its own terms: the
-reagents a process-chemistry group uses daily are a small, stable, high-value set, and a table is
-deterministic, reviewable in a pull request, and citable.
-
-Resolution is **conservative**: an unknown name returns no match rather than a guess, and a name
-that reads as two different substances is refused outright rather than resolved to one of them (see
-`_AMBIGUOUS_FORMULAS`). Fabricating a structure from a name is the one failure worse than the gap —
-a wrong structure propagates silently into a calculation, a search, and eventually a chemist's batch
-record.
-
-The corpus is `data/records.csv`, one row per substance, ported from Chemclaw3's
-`chemclaw.core.reagents`. Its three indices are built once on first use and fail loudly rather than
-dropping a row: a SMILES that does not parse, a spelling claimed by two substances, and two
-substances that canonicalize to one structure are all errors there, because all three are silent
-at call time.
+A committed table (`data/records.csv`), not a network call — no server makes one at request time.
+Resolution is conservative: an unknown name returns no match, and a name that reads as two
+substances is refused (`_AMBIGUOUS_FORMULAS`), because a fabricated structure propagates silently
+into calculations and batch records. The indices are built once and fail loudly on an unparsable
+SMILES, a spelling claimed twice, or two rows with one structure.
 """
 
 from __future__ import annotations
@@ -48,9 +32,8 @@ __all__ = [
 ]
 
 
-# How an identity was established. A `Literal` rather than a bare `str` because the charge table
-# carries it onto every row as provenance, and a third value nobody declared would arrive there as
-# an attribution a reader cannot check.
+# How an identity was established; a `Literal` because the charge table carries it onto every row
+# as provenance.
 ResolutionSource = Literal["synonym", "smiles"]
 
 
@@ -88,28 +71,16 @@ class UnrecognisedCompound(BaseModel):
     suggestions: list[str]
 
 
-# How close a table spelling must be to the folded query to be offered as "did you mean". 0.8 on
-# `difflib`'s ratio catches a transposed or dropped letter in a short abbreviation (`dipaa` ->
-# `dipea`, `tetrahydrofurane` -> `tetrahydrofuran`) and offers nothing for a name the table simply
-# does not hold (`aniline`, `4-bromoanisole`).
+# `difflib` ratio a table spelling must reach to be offered as "did you mean": catches a transposed
+# or dropped letter, offers nothing for a name the table does not hold.
 _SUGGESTION_CUTOFF = 0.8
 _MAX_SUGGESTIONS = 3
 
 
-# **The tokens that are a formula to a chemist and a different substance to RDKit.** Each row is
-# `written -> (what a chemist means, its structure, what the SMILES parser reads instead)`, and each
-# was checked against the installed RDKit rather than reasoned about: these are exactly the
-# formula-shaped strings that parse. `CO2`, `SO2`, `H2O` and `NH3` are not here because they do not
-# parse at all, which is why the gap looked honest — only the holes that happen to parse fail
-# silently.
-#
-# The harm is not hypothetical and it is not small. `stoichiometry_table` with `reagents=["CO"]`
-# returned a complete charge table with an empty `unresolved`, naming methanol at MW 32.042 and
-# instructing 30.61 g to be weighed out for a gas whose MW is 28.010 — and `green_metrics` built
-# from that `mass_g` column inherited it.
-#
-# So this is a refusal rather than a resolution, per the fleet's "refuse rather than approximate":
-# only the caller knows which reading was meant, and a `ValueError` reaches the model verbatim.
+# Tokens that are a formula to a chemist and a different substance to RDKit (`CO` parses as
+# methanol): `written -> (meaning, its structure, what the parser reads)`. Refused rather than
+# resolved, since only the caller knows which reading was meant; the `ValueError` reaches the model
+# verbatim.
 _AMBIGUOUS_FORMULAS: dict[str, tuple[str, str, str]] = {
     "CO": ("carbon monoxide", "[C-]#[O+]", "methanol"),
     "NO": ("nitric oxide", "[N]=O", "hydroxylamine"),
@@ -132,9 +103,7 @@ _AMBIGUOUS_FORMULAS: dict[str, tuple[str, str, str]] = {
 def _normalize(name: str) -> str:
     """Fold a written name to its lookup key: case, whitespace and separator punctuation.
 
-    `2-MeTHF`, `2 methf` and `2_MeTHF` are one key; `Hünig's base` and `hunigsbase` are not, because
-    the apostrophe folds away and the umlaut does not — the table therefore carries the spelling a
-    keyboard produces. Everything dropped here is punctuation a chemist varies without meaning to.
+    Non-ASCII is not folded, so the table carries the spelling a keyboard produces.
     """
     folded = name.strip().lower()
     # The curly apostrophe is here on purpose and is not a typo for the straight one: a name
@@ -159,17 +128,15 @@ def _split(raw: str) -> list[str]:
 def _index() -> tuple[dict[str, tuple[str, str]], dict[str, str], dict[str, float]]:
     """Build the three lookups the module answers from, canonicalizing every structure once.
 
-    Returned together and cached as one unit because they are three views of one file, and a
-    partially rebuilt set of them would be a table that disagreed with itself.
+    Cached as one unit, since they are three views of one file.
 
     Returns:
-        The spelling -> (canonical SMILES, display name) table; the reverse canonical SMILES ->
-        display name map, which is what lets a caller who typed a structure get a name back; and
-        the canonical SMILES -> density map for the substances that can be charged by volume.
+        Spelling -> (canonical SMILES, display name); canonical SMILES -> display name; and
+        canonical SMILES -> density for substances charged by volume.
 
     Raises:
         ValueError: a row's SMILES does not parse, two rows claim one spelling, or two rows
-            canonicalize to one structure. All three are silent at call time and loud here.
+            canonicalize to one structure.
     """
     table: dict[str, tuple[str, str]] = {}
     by_structure: dict[str, str] = {}
@@ -205,23 +172,18 @@ def _index() -> tuple[dict[str, tuple[str, str]], dict[str, str], dict[str, floa
 def resolve_compound_name(name: str) -> ResolvedCompound | None:
     """Resolve a written reagent name (or a SMILES) to a canonical structure, or `None`.
 
-    Returns `None` rather than guessing: a fabricated structure propagates silently into a
-    calculation, a similarity search, and eventually a chemist's batch record, which is strictly
-    worse than an honest miss.
+    `None` rather than a guess: a fabricated structure is worse than an honest miss.
     """
     table, by_structure, _ = _index()
     lookup = table.get(_normalize(name))
     if lookup is not None:
         smiles, display = lookup
         return ResolvedCompound(query=name, smiles=smiles, name=display, source="synonym")
-    # After the curated table and before the parser, so a reviewed spelling always decides and
-    # only the strings nobody has ruled on are refused. Case-sensitive on the query as typed,
-    # because that is what tells an element symbol from a name.
+    # After the curated table and before the parser, so a reviewed spelling always decides.
+    # Case-sensitive, since case tells an element symbol from a name.
     _refuse_an_ambiguous_formula(name)
-    # A caller may already hold a structure; accepting it here means one entry point for "give me
-    # the canonical form of whatever the chemist typed". The strict canonicalizer is essential: a
-    # lenient one returns its input unparsed, which would resolve every unknown name to itself as
-    # a fabricated structure — exactly the failure this module exists to prevent.
+    # Accept a structure too. The canonicalizer must be strict: a lenient one would resolve every
+    # unknown name to itself.
     try:
         canonical = require_dative_free_smiles(name)
     except InvalidSmilesError:
@@ -237,10 +199,8 @@ def resolve_compound_name(name: str) -> ResolvedCompound | None:
 def describe_miss(name: str) -> UnrecognisedCompound:
     """The explicit answer for a name `resolve_compound_name` did not resolve.
 
-    Honest about the limit as well as the miss: this server holds a small committed table and has
-    no name-to-structure service — no server in this fleet calls out at request time — so an
-    arbitrary compound name (a substrate, a building block, a product) cannot be resolved here at
-    all, and the way forward is a SMILES rather than a re-spelling.
+    States the limit as well as the miss: there is no name-to-structure service, so the way forward
+    for an arbitrary compound is a SMILES.
     """
     table, _, _ = _index()
     manifest = dataset()
@@ -273,10 +233,7 @@ def describe_miss(name: str) -> UnrecognisedCompound:
 def _refuse_an_ambiguous_formula(name: str) -> None:
     """Refuse a token that reads as one substance to a chemist and another to the SMILES parser.
 
-    Both readings are named, and so is the structure of the one the parser will not give you, so
-    the caller can say which was meant in a form that cannot be misread. The alternative is what
-    this used to do: resolve it to the parser's reading, with a confident display name and
-    `source="smiles"`, and let a mass reach a batch record.
+    Names both readings and both structures, so the caller can say which was meant unambiguously.
 
     Raises:
         ValueError: `name` is one of the reviewed formula/SMILES collisions.
@@ -296,19 +253,9 @@ def _refuse_an_ambiguous_formula(name: str) -> None:
 def density_of(name: str) -> float | None:
     """Ambient density in g/mL for a substance that can be charged by volume, or `None`.
 
-    Takes whatever the chemist wrote (a name, an abbreviation, or a SMILES) and resolves it the
-    same way every other entry point does, so `THF`, `tetrahydrofuran` and `C1CCOC1` agree.
-
-    `None` is the load-bearing answer, and it means two things a caller must keep apart: the name
-    is unknown, or it is a known substance that is not charged by volume. Either way the caller
-    must refuse to convert a volume into a mass rather than assume 1 g/mL — a guessed density is a
-    weighing error that looks like an answer, and for the principal solvent it silently rewrites
-    every mass metric derived from it.
-
-    Note what this does **not** say. Having a density is a fact about a substance; being charged by
-    volume is a fact about one experiment. Acetic acid at 1.5 equiv, water in a hydrolysis, DMSO as
-    the Swern oxidant and DMF as the Vilsmeier reagent all have a density on file and are all
-    routinely charged by molar equivalent, so this must never be read as "is it a solvent?".
+    Resolves names, abbreviations and SMILES alike. `None` means unknown or not charged by volume;
+    either way the caller must refuse the conversion rather than assume 1 g/mL. Having a density
+    does not mean a substance is a solvent in a given experiment.
     """
     match = resolve_compound_name(name)
     return None if match is None else _index()[2].get(match.smiles)

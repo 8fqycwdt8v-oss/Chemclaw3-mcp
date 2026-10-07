@@ -40,9 +40,8 @@ class RxnInsightConditions(BaseConditionsPredictor):
     def predict_sync(self, reactants: str, product: str, top_k: int) -> list[ConditionsPrediction]:
         rxn_smiles = build_reaction_smiles(reactants=reactants, product=product)
 
-        # Rxn-INSIGHT exposes its main entrypoint as `Reaction` and a
-        # `suggest_conditions()` helper, but the API surface has shifted between
-        # versions. Try the high-level helper first, then fall back to the class.
+        # Rxn-INSIGHT's API has shifted between versions; `_invoke_rxn_insight` tries the helper,
+        # then the class.
         suggestions = _invoke_rxn_insight(self._insight_module, rxn_smiles, top_k)
 
         preds: list[ConditionsPrediction] = []
@@ -101,10 +100,7 @@ try:
     import rxn_insight  # noqa: F401
 
     register_conditions(RxnInsightConditions())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         RxnInsightConditions.name,

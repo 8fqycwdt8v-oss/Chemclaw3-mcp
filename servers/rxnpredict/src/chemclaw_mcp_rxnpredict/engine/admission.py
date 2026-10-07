@@ -1,63 +1,20 @@
 """How much of this pod may be predicting at once — shed at admission, never queued.
 
-This is the heaviest server in the fleet by memory (`deploy/deployment.yaml` requests 2Gi and
-limits 4Gi) and until this gate nothing counted how much of it was in flight. Every predictor's
-`predict` hands its forward pass to `asyncio.to_thread` and awaits it, so the only ceiling was
-whatever the caller happened to send.
+One tool call is not one thread: the ensemble tools `asyncio.gather` over every enabled predictor,
+each offloading separately, and each torch forward pass may itself use `torch.get_num_threads()`
+cores (the image pins `OMP_NUM_THREADS=1`, but a deployment can raise it). So `acquire` takes a cost
+in slots, where a slot is a core:
 
-**One tool call is not one thread, and that is the finding this file exists for.**
-`predict_forward_reaction` and `predict_reaction_conditions` are *ensembles*: they
-`asyncio.gather` over every enabled predictor, each of which offloads separately. Measured against
-six deterministic doubles that each sleep, driven through the real tool: one call finished in
-0.468 s where serial would have been 2.4 s, with **six worker threads in flight simultaneously**.
-So a call-counting ceiling of two on this server admits two times the predictor count, which is a
-number the *deployment's* enabled-model list decides and the ceiling never sees.
-
-**And each of those threads can itself be wider than one core.** These predictors are torch
-models, and torch's intra-op width is `torch.get_num_threads()` — sized from the machine's
-physical cores, not from the container's cgroup. Unpinned, on a 64-core node a pod limited to two
-cores gives one forward pass 64 runnable threads, which is why the image now pins
-`OMP_NUM_THREADS=1` (`D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass`) and why the cost
-below is still read from torch rather than assumed: a deployment can raise the pin. That is
-`servers/calc`'s lesson arriving twice over: there a call-counting ceiling of four admitted sixteen
-CREST threads on a four-core pod because `CHEMCLAW_CREST_THREADS` was set and not counted; here the
-fan-out and the thread width are both multipliers a call count cannot see.
-
-So `acquire` takes a **cost** in slots, where a slot is a core:
-
-- an ensemble call costs `enabled predictors x inference_threads()` — computed from the
-  deployment's own enabled list rather than from the caller's `models` argument, deliberately, so
-  the charge cannot be lowered by a caller and is the same for every caller of that tool;
+- an ensemble call costs `enabled predictors x inference_threads()`, from the deployment's enabled
+  list rather than the caller's `models` argument, so a caller cannot lower it;
 - a single-model call costs `inference_threads()`;
-- a cost above the whole ceiling is **clamped** to it rather than refused, so an ensemble wider
-  than the pod runs exclusively instead of being a tool configuration has deleted.
+- a cost above the ceiling is clamped, so a wide ensemble runs exclusively rather than never.
 
-At the shipped ceiling that makes a full ensemble exclusive on this pod, which is the intended
-answer rather than a side effect: two ensembles over five models is ten torch forward passes on two
-cores, every one of them slower than it would have been alone, and the second caller's answer is
-not worth the first caller's latency.
-
-**What is outside this gate is what a caller needs answerable while the pod is full.**
-`list_available_models` is how a client learns which predictors this build has — refusing it under
-load would leave a caller unable to find out *why* it was refused — and `classify_reaction` is a
-SMARTS match with no offload at all. Both are `def` rather than `async def`, which is the
-structural reason as well as the operational one: nothing they do reaches a worker thread.
-`tests/test_admission.py` checks the gated set against the *served surface* rather than against a
-list kept here, so a predicting tool added next year is gated or the suite says so.
-
-**Refused rather than queued**, for the reason `servers/calc` and `servers/chem` give: a prediction
-held at the back of a queue comes back after `connector.yaml`'s `request_timeout` has expired,
-computed at the expense of one somebody is still waiting for. A `ValueError` is the family
-`connector_app` passes to the caller verbatim, so the model is told the pod is full rather than
-being told its chemistry was the problem.
-
-**This is admission control and deliberately not a clock.** Cancelling the awaiting coroutine does
-not stop the worker thread, so a per-call wall clock returns an error to a caller who has gone
-while the CPU burn continues. Refusing before any work starts is the other thing entirely.
-
-The shape is copied from `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` rather than
-imported — one server never imports another, and the refusal has to name this server's own tool and
-knob.
+`list_available_models` and `classify_reaction` are ungated plain `def`s: neither offloads, and a
+caller must be able to ask what is available while the pod is full. `tests/test_admission.py` checks
+the gated set against the served surface. A full pod refuses with a `ValueError` (passed verbatim)
+rather than queueing past `request_timeout`. This is admission control, not a clock: cancellation
+would not stop the worker thread.
 """
 
 from __future__ import annotations
@@ -66,28 +23,20 @@ from mcp_server_kit.limits import Admission as KitAdmission
 
 __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_PREDICTIONS", "Admission"]
 
-# The attribute `tools._admitted` stamps on a gated tool, and the only thing that tells the coverage
-# test which tools are gated. A name rather than a hand-kept list, because the thing that must not
-# be forgotten is exactly the thing a forgetful change adds.
+# The attribute `tools._admitted` stamps on a gated tool; the coverage test reads it instead of a
+# hand-kept list.
 ADMISSION_MARKER = "__admission_gated__"
 
-#: How many cores' worth of inference may be in flight, and **two because
-#: `deploy/deployment.yaml` gives this pod `limits.cpu: "2"`**. A slot is a core, so the ceiling is
-#: the pod's own allowance: admitting past it makes every prediction slower than it would have been
-#: alone without producing one extra answer, and admitting fewer leaves a core idle while a caller
-#: is refused. Overridable with `CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS`, read in
-#: `tools.py`; the number lives here beside the argument for it, and `tests/test_admission.py`
-#: reads the shipped Deployment so a change to `limits.cpu` lands on an assertion rather than on
-#: this sentence.
+#: Cores' worth of inference that may be in flight; equals `deploy/deployment.yaml`'s `limits.cpu`,
+#: which `tests/test_admission.py` checks. Overridable with
+#: `CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS`, read in `tools.py`.
 DEFAULT_MAX_CONCURRENT_PREDICTIONS = 2
 
 
 class Admission(KitAdmission):
     """A budget of concurrent inference slots, refused rather than queued past it.
 
-    The counter, the clamp and the lock are `mcp_server_kit.limits.Admission`'s; what stays here is
-    the sentence, because the levers it names are this server's. See that class for why nothing
-    waits, why the cost is clamped, and why the refusal is not shared.
+    The mechanics are `mcp_server_kit.limits.Admission`'s; this subclass words the refusal.
     """
 
     unit = "prediction"
@@ -97,18 +46,14 @@ class Admission(KitAdmission):
         """Take `cost` slots, or refuse in terms the caller can act on.
 
         Args:
-            what: The tool being asked for, named in the refusal — the caller's levers are which
-                tool it called and when, so the message has to say which one was turned away.
-            cost: How many slots this call occupies. Clamped into `1..limit` by the base class, so
-                a wide ensemble takes the pod exclusively rather than becoming unadmittable.
+            what: The tool being asked for, named in the refusal.
+            cost: Slots this call occupies, clamped into `1..limit` by the base class.
 
         Returns:
-            The slots actually taken, which is what `release` must be given back — the clamp means
-            that is not always `cost`.
+            The slots actually taken, which `release` must be given back.
 
         Raises:
-            AtCapacityError: the budget does not have room. Worded for its receiver — an agent
-                reading a tool error, or Chemclaw3 backing off.
+            AtCapacityError: The budget has no room.
         """
         taken = self.take(cost)
         if taken.charged is None:

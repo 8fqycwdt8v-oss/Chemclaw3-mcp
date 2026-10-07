@@ -1,39 +1,18 @@
 """Per-peak chromatographic metrics: plate count, tailing, resolution, retention.
 
-Every formula here is USP General Chapter <621> *Chromatography*, and each is stated with the
-**width convention it is defined over**, because that is the part a chemist gets wrong and a
-number carries no label. USP defines the plate count two ways that disagree on a real peak:
+All formulas are USP General Chapter <621>, each stated with its width convention, since the
+conventions disagree on a real peak:
 
-    N = 16 (t_R / W)^2          tangent width, the baseline intercepts of the tangents
-    N = 5.54 (t_R / W_0.5)^2    width at half height
-
-They agree exactly for a Gaussian peak and diverge as it tails, so a plate count quoted without
-its convention cannot be compared with a limit quoted with one. Both are offered and each answer
-says which it used; nothing converts between them, because the conversion is only valid under the
-Gaussian assumption the divergence already violates.
-
-The same split governs resolution:
-
-    Rs = 2 (t_R2 - t_R1) / (W_1 + W_2)        tangent widths
+    N = 16 (t_R / W)^2                              tangent width
+    N = 5.54 (t_R / W_0.5)^2                        width at half height
+    Rs = 2 (t_R2 - t_R1) / (W_1 + W_2)              tangent widths
     Rs = 1.18 (t_R2 - t_R1) / (W_0.5,1 + W_0.5,2)   half-height widths
+    T = W_0.05 / (2 f)                              tailing at 5% height
 
-where 1.18 is 2 sqrt(2 ln 2) / 2 — the half-height form is the tangent form with the Gaussian
-relation W = W_0.5 / 1.18 substituted in, so it is an *approximation* on a tailing peak while the
-tangent form is a definition. Chemists use the half-height form because a data system reports it
-without asking, and it is the optimistic one on exactly the peaks where resolution is in doubt.
-
-The tailing (symmetry) factor is measured at 5% of peak height:
-
-    T = W_0.05 / (2 f)
-
-with `W_0.05` the full width at 5% height and `f` the distance from the leading edge to the peak
-maximum at that height. T = 1 is symmetric; T > 1 is tailing; T < 1 is fronting, which this module
-reports rather than treats as an error, because a fronting peak is a real and different fault
-(overload or a mismatched injection solvent) and rounding it to "symmetric enough" hides it.
-
-**Nothing here integrates a chromatogram.** Every input is a number a chemist or a data system
-already reported. This module cannot find a peak, assign a baseline or resolve a shoulder, and a
-retention time it is handed is taken as given.
+The forms agree only for a Gaussian peak; the half-height resolution substitutes the Gaussian width
+relation and is optimistic on tailing peaks. Each answer names its convention and nothing converts
+between them. T < 1 (fronting) is reported, not treated as symmetric. Nothing here integrates a
+chromatogram: inputs are numbers already reported, taken as given.
 """
 
 from __future__ import annotations
@@ -57,29 +36,25 @@ __all__ = [
     "symmetry_factor",
 ]
 
-#: 2 sqrt(2 ln 2) / 2 — relates a Gaussian peak's half-height width to its tangent width, and is
-#: the whole of the difference between the two resolution forms below. USP <621> writes it 1.18.
+#: 2 sqrt(2 ln 2) / 2, relating a Gaussian's half-height width to its tangent width; USP <621>
+#: writes it 1.18.
 GAUSSIAN_HALF_HEIGHT_FACTOR = 1.18
 
-#: Which width a caller measured. There is no default: the two conventions give different numbers
-#: on the same peak, and guessing one would publish a plate count nobody can compare to a limit.
+#: Which width a caller measured. No default: the conventions give different numbers on one peak.
 WidthConvention = Literal["tangent", "half_height"]
 
 
 class PeakError(ValueError):
     """A peak measurement that cannot be interpreted as written.
 
-    `ValueError` deliberately: `mcp_server_kit` lets this family through to the model verbatim, so
-    the message is written for a chemist reading it in a chat rather than for a log.
+    A `ValueError` so `mcp_server_kit` passes the chemist-facing message to the model verbatim.
     """
 
 
 def _positive(value: float, what: str) -> float:
     """A width, a time or a height that must be finite and greater than zero to mean anything.
 
-    Finite first: `value <= 0.0` is False for NaN and infinity alike, and the MCP JSON parser
-    accepts both as literals, so a NaN width used to come back as a NaN plate count — `null` in the
-    answer — rather than a refusal.
+    Finite first: `value <= 0.0` is False for NaN and infinity, which JSON input can carry.
     """
     if not math.isfinite(value):
         raise PeakError(f"{what} must be a finite number; got {value}.")
@@ -95,17 +70,14 @@ def _positive(value: float, what: str) -> float:
 class PlateCount:
     """A column efficiency, with the convention that produced it.
 
-    `convention` is part of the answer rather than metadata: 16 (t_R/W)^2 and 5.54 (t_R/W_0.5)^2
-    are the same number only for a Gaussian peak, so a limit and a measurement must agree on
-    which was meant before they can be compared.
+    The convention is part of the answer: the two forms agree only for a Gaussian peak.
     """
 
     plates: float
     convention: WidthConvention
     retention_time_min: float
     width_min: float
-    #: Plates per metre, when the caller said how long the column is. `None` when they did not —
-    #: not zero, because "nobody said" and "a zero-length column" are different facts.
+    #: Plates per metre when a column length was given; `None` (not zero) otherwise.
     plates_per_metre: float | None
 
 
@@ -114,9 +86,8 @@ class Symmetry:
     """A USP tailing factor at 5% height, and which way the peak is skewed."""
 
     tailing_factor: float
-    #: "tailing" (T > 1), "fronting" (T < 1) or "symmetric" (T == 1 exactly). Reported rather
-    #: than folded into the number, because a fronting peak has a different cause from a tailing
-    #: one and a caller comparing |T - 1| to a threshold would treat them as one fault.
+    #: "tailing" (T > 1), "fronting" (T < 1) or "symmetric" (T == 1 exactly); the two faults have
+    #: different causes.
     shape: Literal["tailing", "fronting", "symmetric"]
     width_at_5_percent_min: float
     leading_half_width_min: float
@@ -130,8 +101,7 @@ class Resolution:
     convention: WidthConvention
     first_retention_min: float
     second_retention_min: float
-    #: True when the caller's widths were half-height ones, so the answer used the 1.18 Gaussian
-    #: relation and is an approximation on a peak that is not Gaussian.
+    #: True when half-height widths were used, so the answer rests on the Gaussian 1.18 relation.
     assumes_gaussian: bool
 
 
@@ -142,8 +112,7 @@ class RetentionFactor:
     retention_factor: float
     retention_time_min: float
     void_time_min: float
-    #: True when the peak elutes at or before the void time, which means k <= 0: the compound is
-    #: not retained and the method is not separating it from anything.
+    #: True when k <= 0: the compound is not retained and nothing is being separated.
     unretained: bool
 
 
@@ -308,11 +277,10 @@ def separation_factor(first: RetentionFactor, second: RetentionFactor) -> float:
         second: The later-eluting peak's retention factor.
 
     Returns:
-        The separation factor, which is 1.0 when the two co-elute and greater otherwise.
+        The separation factor: 1.0 when the two co-elute, greater otherwise.
 
     Raises:
-        PeakError: If either peak is unretained, since alpha is undefined when k1 <= 0 — and a
-            ratio computed anyway would be negative or infinite while looking like a selectivity.
+        PeakError: Either peak is unretained, since alpha is undefined when k1 <= 0.
     """
     if first.unretained or second.unretained:
         raise PeakError(

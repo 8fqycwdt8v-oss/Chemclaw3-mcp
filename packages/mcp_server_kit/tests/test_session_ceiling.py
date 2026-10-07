@@ -1,26 +1,13 @@
 """How many MCP sessions this pod will hold, and what it does with the handshake that arrives full.
 
-`test_sessions.py` covers the *reaper* — how long one session lives. This covers the other half of
-the same resource: how many exist at once. They are different controls and neither implies the
-other, which is why nothing here reads the idle timeout and nothing there reads the ceiling.
+`test_sessions.py` covers how long one session lives; this covers how many exist at once.
+Upstream admits sessions without bound and an idle timeout cannot see a burst, so without a
+ceiling the pod is OOMKilled. Properties:
 
-The gap these tests close: upstream's `_server_instances` is a plain dict with no admission at all,
-a session is 56.6 kB that is refunded no earlier than `MCP_SESSION_IDLE_TIMEOUT_SECONDS` later, and
-one authenticated client on loopback opens 261 of them a second. An idle timeout cannot see that —
-nothing has been idle long enough to reap — so the pod reaches its memory limit and is OOMKilled,
-taking every session on it down together.
-
-Four properties, each with its own failure:
-
-- **The refusal is prompt.** A full pod turns a handshake away before it mints anything, rather
-  than holding it until a session frees up. A queued handshake returns after the caller's own
-  timeout, which is the failure `servers/calc/engine/admission.py` argues at length one layer down.
-- **The refusal mints nothing.** If the count still went up, the ceiling would be a log line.
-- **A full pod still serves the sessions it has.** The bound is on *new* sessions; refusing a tool
-  call on an established session would turn a memory bound into an outage.
-- **A session costs what the ceiling was derived from.** The default is 1,024 because a session is
-  56.6 kB and an eighth of the smallest pod's 512Mi is the budget. If a session started costing ten
-  times that, the derivation would be wrong and nothing else in this file would notice.
+- **The refusal is prompt** — no queueing until a session frees.
+- **The refusal mints nothing.**
+- **A full pod still serves the sessions it has.**
+- **A session costs what the ceiling was derived from**, checked by measurement.
 """
 
 from __future__ import annotations
@@ -63,16 +50,9 @@ PROBE_BURST = 12
 #: and a width of ceiling-plus-one could only ever show one extra.
 BURST_WIDTH = PROBE_CEILING * 8
 
-#: How much slower than an *admitted* handshake a refused one may be. A ratio rather than a wall
-#: clock, and that is the whole point: measured, a 12-way burst of refusals took 487 ms at the
-#: median and a 12-way burst of *admissions* against an unbounded pod took 552 ms — both of them
-#: almost entirely the probe's own thread and connection setup. Against one shared connection,
-#: where the harness is out of the way, a refusal is 0.95 ms and an admission 3.16 ms. So an
-#: absolute bound here would be measuring this runner; the comparison measures the server, and it
-#: is the assertion the design actually makes — a refusal does no work, so it cannot be slower than
-#: the admission it replaced. The slack is for scheduling noise between two bursts, not for a queue:
-#: a queued refusal waits for a session to free, which in this fleet is up to
-#: `MCP_SESSION_IDLE_TIMEOUT_SECONDS`, three orders of magnitude away.
+#: How much slower than an admitted handshake a refused one may be. A ratio, because the harness's
+#: own thread and connection setup dominate any absolute time; a refusal does no work, so it cannot
+#: be slower than an admission. The slack is for scheduling noise, not a queue.
 MAX_REFUSAL_OVER_ADMISSION = 2.0
 
 #: Sessions opened by the cost probe, and the warm-up that precedes them so the allocator's own
@@ -105,9 +85,7 @@ def full_pod(
 ) -> Iterator[tuple[str, FastMCP]]:
     """A server at `PROBE_CEILING`, saturated, with its own `FastMCP` for counting.
 
-    The ceiling is read when `connector_app` builds the app, so the variable is set before that
-    rather than patched afterwards — the number a gate enforces and the number it was built from
-    must be the same number.
+    The ceiling is read when `connector_app` builds the app, so the variable is set before that.
     """
     monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
     server = _probe_server("ceiling")
@@ -121,9 +99,8 @@ def full_pod(
 def _handshake(base: str, client: httpx.Client | None = None) -> httpx.Response:
     """One raw `initialize` POST — the request that mints a session, with no client library.
 
-    `client` is threaded through for the cost probe alone, which opens hundreds: a fresh connection
-    per handshake makes that probe four times slower and measures the *client's* socket churn
-    alongside the server's session. Every other probe here wants an independent connection.
+    `client` is shared only by the cost probe, which opens hundreds; every other probe wants an
+    independent connection.
     """
     post = client.post if client is not None else httpx.post
     return post(
@@ -166,12 +143,10 @@ def _rss_bytes() -> int:
 
 
 def test_the_default_is_derived_from_the_smallest_pod_and_the_measured_session_cost() -> None:
-    """The ceiling is arithmetic over two measured numbers, not a figure somebody liked.
+    """The default ceiling is re-derived from the session cost and the smallest pod's budget.
 
-    Re-derived here rather than transcribed, so lowering `SESSION_COST_BYTES` or raising
-    `DEFAULT_MAX_SESSIONS` without the other cannot pass. The budget is an eighth of the smallest
-    pod's memory limit; `tests/test_fleet.py` is what checks that limit against the shipped
-    Deployments, because the kit cannot see a server.
+    Changing `SESSION_COST_BYTES` or `DEFAULT_MAX_SESSIONS` alone fails. The fleet tests check the
+    smallest pod limit against shipped Deployments.
     """
     assert SESSION_BACKLOG_BUDGET_BYTES == SMALLEST_POD_MEMORY_LIMIT_BYTES // 8
     assert DEFAULT_MAX_SESSIONS * SESSION_COST_BYTES <= SESSION_BACKLOG_BUDGET_BYTES, (
@@ -201,9 +176,7 @@ def test_the_ceiling_is_an_environment_variable_and_zero_turns_it_off(
 def _burst(base: str, width: int) -> list[tuple[int, float]]:
     """`width` handshakes arriving together, each on its own connection, with their latencies.
 
-    Concurrent rather than sequential because the failure this bound exists for is a burst: one
-    client on loopback opens 261 handshakes a second, and a ceiling that only holds against a polite
-    serial caller holds against nobody.
+    Concurrent, because the failure this bound exists for is a burst.
     """
     results: list[tuple[int, float]] = []
     lock = threading.Lock()
@@ -231,19 +204,11 @@ def _median(values: list[float]) -> float:
 def test_a_full_pod_refuses_the_next_handshakes_promptly_and_counts_every_one(
     monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
 ) -> None:
-    """The driven saturation probe: N held, N+1..N+12 arrive together, all refused fast.
+    """A full pod refuses the next handshakes promptly and counts every one.
 
-    Three things are asserted about the same burst and they are not the same claim. The status is
-    what a client acts on. The latency is what separates a refusal from a queue — a queued
-    handshake comes back when a session frees, which here is up to the idle timeout. The counter is
-    what makes a refusing pod visible to an operator; without it a pod at its ceiling looks
-    identical to one nobody is calling.
-
-    **"Promptly" is measured against an admission rather than against a clock**, and a second pod
-    with the ceiling off is what supplies the comparison. The first draft of this test asserted a
-    wall clock and passed at 487 ms per refusal — a figure that turned out to be the probe's own
-    twelve threads, since twelve *admitted* handshakes through the same harness cost 552 ms. A
-    bound that large would have passed a refusal that queued for half a second, which is the defect.
+    Status is what a client acts on, latency separates a refusal from a queue, and the counter makes
+    a refusing pod visible. "Promptly" is measured against admissions on a second, unbounded pod,
+    since the harness itself dominates any wall clock.
     """
     monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
     bounded = _probe_server("ceiling")
@@ -292,10 +257,7 @@ def test_the_refusal_says_which_bound_it_hit_and_that_it_is_worth_retrying(
 ) -> None:
     """503 plus `Retry-After`, and a body that is not upstream's "session not found".
 
-    The status is the machine-readable channel — unlike a refused *tool call*, which the protocol
-    flattens into one untyped text block and which is why `servers/calc` needs a marker token. Here
-    404 already means "unknown session id" and 200 means served, so a third status is unambiguous
-    and the body needs to carry no convention at all.
+    404 already means unknown session and 200 means served, so the status alone is unambiguous.
     """
     base, _ = full_pod
     response = _handshake(base)
@@ -340,13 +302,10 @@ def _server_ids(server: FastMCP) -> list[str]:
 
 
 def test_a_session_that_says_goodbye_frees_its_slot(full_pod: tuple[str, FastMCP]) -> None:
-    """The ceiling reopens, and it reopens through the sweep rather than through the reaper.
+    """A session that says goodbye frees its slot, through the ceiling's sweep.
 
-    A politely-terminated session stays in `_server_instances` — upstream's own cleanup skips a
-    terminated transport — so without `_drop_terminated_sessions` running before the count, a pod
-    whose callers all said goodbye would refuse at a ceiling of corpses. That is why this test is
-    here and not in `test_sessions.py`: the sweep already existed, and the ceiling is what makes
-    its absence fatal rather than merely wasteful.
+    Upstream's cleanup skips a terminated transport, so without `_drop_terminated_sessions` before
+    the count a pod would refuse at a ceiling of dead sessions.
     """
     base, server = full_pod
     assert _handshake(base).status_code == AT_CAPACITY_STATUS
@@ -367,17 +326,10 @@ def test_a_session_that_says_goodbye_frees_its_slot(full_pod: tuple[str, FastMCP
 async def test_the_ceiling_reclaims_goodbyes_even_with_the_idle_reaper_turned_off(
     monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
 ) -> None:
-    """The ceiling's own sweep, in the one configuration where nothing else is sweeping.
+    """The ceiling reclaims goodbyes even with the idle reaper turned off.
 
-    `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0` is a supported setting — it restores upstream's unbounded
-    reaping, which a deployment would ask for only deliberately — and it turns
-    `apply_session_idle_timeout` off entirely, taking `_reclaim_after_every_request` with it.
-    Upstream's own cleanup skips a *terminated* transport, so with both sweeps gone a politely
-    deleted session stays in `_server_instances` forever and the ceiling fills with corpses: every
-    caller refused, permanently, on a pod nobody is using.
-
-    Written because the mutation that removes the ceiling's sweep left every other test in this file
-    green. The reclaim sweep runs on the shipped configuration and hid it.
+    `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0` disables the reaper and its reclaim sweep, so the ceiling's
+    own sweep is the only one left; without it the pod would refuse everyone permanently.
     """
     monkeypatch.setenv("MCP_SESSION_IDLE_TIMEOUT_SECONDS", "0")
     monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
@@ -408,24 +360,12 @@ async def test_the_ceiling_reclaims_goodbyes_even_with_the_idle_reaper_turned_of
 async def test_a_refused_request_leaves_no_session_behind_even_with_the_idle_reaper_off(
     monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
 ) -> None:
-    """The other half of `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0`, and the one nothing covered.
+    """A refused request leaves no session behind, even with the idle reaper off.
 
-    Upstream mints a session on the *absence* of the session-id header and nothing else, so a bare
-    `DELETE /mcp` is answered **400** with a fully registered session behind it. That session can
-    never be used by anybody, and it is **not** `is_terminated` — so neither an idle deadline nor
-    `apply_session_ceiling`'s own sweep can reach it. `_settle_a_minted_session` discards it, and it
-    was installed only from inside the reaping branch, so with reaping off nothing did.
-
-    Driven on `servers/props` before this: with the timeout off and `MCP_MAX_SESSIONS=8`, seven bare
-    `DELETE /mcp` left `live = 7`, one real handshake took the eighth slot, and every later
-    handshake was 503 **for the life of the process** — `/healthz` and `/livez` both answering 200,
-    so
-    Kubernetes never restarts it. The cheapest request anybody can construct, and no clock that
-    undoes it.
-
-    The arm above this one covers a *polite* goodbye with the reaper off; that session is terminated
-    and the ceiling's sweep finds it. This one is the request the pod refused, which is a different
-    object in `_server_instances` and needed a different control.
+    Upstream mints a session whenever the session-id header is absent, so a bare `DELETE /mcp` is
+    answered 400 with a registered, unusable, non-terminated session behind it.
+    `_settle_a_minted_session` must discard it in every configuration, or cheap requests fill the
+    ceiling for the life of the process while the probes stay green.
     """
     monkeypatch.setenv("MCP_SESSION_IDLE_TIMEOUT_SECONDS", "0")
     monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
@@ -485,16 +425,9 @@ def test_a_session_costs_about_what_the_ceiling_was_derived_from(
 ) -> None:
     """`SESSION_COST_BYTES` is a measurement, and this is the measurement.
 
-    Driven rather than reasoned: 400 un-deleted handshakes against a real server under uvicorn,
-    with the process's own RSS read from `/proc` before and after. The band is wide — an eighth to
-    three times the constant — because an allocator is not a ruler and this runner is shared. It is
-    still the assertion that matters: the default ceiling is `SESSION_BACKLOG_BUDGET_BYTES` divided
-    by this constant, so a session that started costing ten times as much would put the shipped
-    default 10x over the memory budget it was derived from, and every other test in this file would
-    still pass.
-
-    Measured when written, on the real `chem` app in its own process: 56.6 kB per session, flat to
-    three digits at every 200-session mark from 200 to 1,000.
+    Hundreds of un-deleted handshakes against a real server, RSS read from `/proc` before and after.
+    The band is wide (an eighth to three times) because an allocator is not a ruler; it still
+    catches a tenfold cost change that would push the default ceiling over its memory budget.
     """
     monkeypatch.setenv("MCP_MAX_SESSIONS", "0")
     server = _probe_server("cost")
@@ -523,12 +456,8 @@ def test_a_session_costs_about_what_the_ceiling_was_derived_from(
 def _simultaneous_burst(base: str, width: int) -> list[int]:
     """`width` handshakes released from one barrier, so they are in flight together.
 
-    `_burst` above starts its threads in a loop, which is concurrent enough to compare two
-    latencies and *not* enough to open a check-then-act window reliably: the first request can be
-    served before the last thread has started. Here every thread blocks on the barrier until the
-    last one reaches it, so the requests leave together and the server sees them before it has
-    answered any of them — which is what one client on loopback does at 261 handshakes a second,
-    and the only arrival pattern that can catch an admission decision taken before the mint.
+    Unlike `_burst`, every request leaves before the server has answered any, the only arrival
+    pattern that can catch an admission decision taken before the mint.
     """
     gate = threading.Barrier(width)
     statuses: list[int] = []
@@ -551,21 +480,11 @@ def _simultaneous_burst(base: str, width: int) -> list[int]:
 def test_a_simultaneous_burst_against_an_empty_pod_cannot_admit_past_the_ceiling(
     monkeypatch: pytest.MonkeyPatch, token: None, serving: Callable[..., Any]
 ) -> None:
-    """The ceiling holds against the arrival pattern it was written for, not only a serial caller.
+    """A simultaneous burst against an empty pod cannot admit past the ceiling.
 
-    The shipped ceiling read `len(_server_instances)` on the ASGI entry, but upstream registers a
-    session inside `_handle_stateful_request` behind `async with self._session_creation_lock` —
-    several awaits later. So every request in a burst observed the *pre-burst* count and every one
-    of them was admitted. Measured against this app before the fix: a ceiling of 8 admitted 64 of
-    64 and held 64 live sessions; a ceiling of 64 admitted 256 of 256.
-
-    Nothing in this file caught it, and the reason is worth writing down: the saturation probe
-    above fills the pod one handshake at a time and only bursts against an *already-full* pod, so
-    the window between the check and the mint is never open when the burst arrives. This test
-    bursts against an **empty** one.
-
-    Asserted on the live count as well as on the statuses, because they are different claims: the
-    statuses say what the pod told its callers, and `_server_instances` says what it actually did.
+    Upstream registers a session several awaits after the ASGI entry, so a check on entry would let
+    a whole burst see the pre-burst count. Bursting against an empty pod opens that window. Asserted
+    on the live count as well as the statuses.
     """
     monkeypatch.setenv("MCP_MAX_SESSIONS", str(PROBE_CEILING))
     server = _probe_server("burst")
@@ -590,19 +509,11 @@ def test_a_simultaneous_burst_against_an_empty_pod_cannot_admit_past_the_ceiling
 def test_the_refusals_status_and_retry_interval_are_what_a_client_is_told(
     full_pod: tuple[str, FastMCP],
 ) -> None:
-    """The two numbers on the wire, pinned as literals rather than through their own constants.
+    """The refusal's status and `Retry-After` are pinned as literals, not their own constants.
 
-    Every other assertion in this file compares `response.status_code` to `AT_CAPACITY_STATUS`,
-    which compares the constant to itself: setting it to 200 left all nine of them green, so the
-    status a client actually reads was unpinned while looking thoroughly asserted. The JSON-RPC
-    code beside it was already a literal, so the pattern was known and applied to one of the two
-    channels. Both are a contract with a caller this repository does not own, which is exactly the
-    kind of number a test transcribes rather than imports.
-
-    `Retry-After` is 10 s because a refusal costs this pod 0.8 ms and the slots it is holding are
-    refunded no sooner than `MCP_SESSION_UNUSED_TIMEOUT_SECONDS`. It shipped at 1 s, which every
-    displaced caller can obey for free and the pod cannot: 1,024 of them retrying every second
-    spend 0.8 of a core on being told no.
+    They are a contract with a caller this repository does not own. `Retry-After` is 10 s because
+    held slots refund no sooner than the unused-session timeout, and a 1 s retry would make
+    displaced callers cost the pod real CPU.
     """
     base, _ = full_pod
     response = _handshake(base)
@@ -615,14 +526,10 @@ def test_the_refusals_status_and_retry_interval_are_what_a_client_is_told(
 def test_a_pod_that_is_refusing_says_so_once_an_interval_and_not_once_a_refusal(
     full_pod: tuple[str, FastMCP], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The counter is per refusal; the log is per operator, and the two are not the same channel.
+    """A refusing pod logs once per interval with a count, not once per refusal.
 
-    A refusal costs this pod 0.8 ms, and it now tells the client to retry in 10 s, so a pod that is
-    genuinely full is refused by everything it displaced — hundreds of times a second at the shipped
-    ceiling. A `logger.warning` each buries every other line in the pod's log, including the ones an
-    operator needs in order to find out *why* it is full. `chemclaw_mcp_sessions_refused_total` is
-    the exact channel and is asserted by the burst probe above; this asserts the other one stays
-    readable, and that the line it prints says how many refusals it stood in for.
+    A full pod is refused by every displaced caller; a warning each would bury the lines explaining
+    why. The counter is the exact per-refusal channel.
     """
     base, _ = full_pod
     caplog.clear()

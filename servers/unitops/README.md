@@ -130,7 +130,7 @@ which is structure rather than an absolute speed.
 ## Concurrency
 
 No `engine/admission.py`, and the exemption is argued with its measurement in
-`tests/test_fleet.py::CEILING_IS_ARGUED_ABSENT`. Measured 2026-09-16, engine CPU per call:
+`tests/test_fleet_manifests.py::CEILING_IS_ARGUED_ABSENT`. Measured 2026-09-16, engine CPU per call:
 **1.4 µs** (`crystallisation_yield`) to **12.2 µs** (`shortcut_distillation`, whose 200-step
 Underwood bisection is the widest thing here), and 3.4-14.0 µs through the pydantic result models.
 A whole call over a real MCP session on loopback is **8.49 ms** median, so about 0.1% of a call is

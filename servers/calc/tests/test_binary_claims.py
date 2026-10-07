@@ -1,22 +1,11 @@
 """The prose about which binaries this image carries, checked against the image that carries them.
 
-**A tool docstring is the prompt.** Argument names, defaults and this prose are what an agent reads
-before deciding whether to call a tool, and two of them told it, in bold, that the image ships no
-`crest` and that the call would refuse — while `Containerfile` installs crest 3.0.2 and xtb 6.7.1
-and `crest_search.require_crest` says the opposite in its own message. The consequence is not a
-wrong number, it is a capability described as unavailable: by those same docstrings the tautomer
-search is "the search that matters most … a pKa, a Fukui ranking and a reaction energy all describe
-whichever tautomer was drawn", so the tool that removes the largest silent error on this server was
-the one being talked out of.
+A tool docstring is the prompt: telling the agent the image ships no `crest` while the
+`Containerfile` installs it talks the agent out of the tautomer search. The module docstrings
+about the `xtb` binary are swept too.
 
-The three `xtb`-binary paragraphs are the same staleness with a smaller blast radius — they are
-module docstrings rather than prompts — and they are swept here too, because a reader who finds one
-false claim has no way to know which of the others still holds.
-
-This checks the claims that were actually made rather than every claim that could be: the phrases
-below are literal, taken from the text that was wrong. A test is evidence about a known failure, not
-a proof that prose is true — what makes it worth keeping is that both halves are read from the
-repository, so restoring either half of the contradiction fails.
+The phrases checked are literal ones that were wrong; both halves are read from the repository,
+so restoring either side of the contradiction fails.
 """
 
 from __future__ import annotations
@@ -70,13 +59,7 @@ def test_no_module_tells_a_caller_the_image_lacks_a_binary_it_installs() -> None
 
 
 def test_the_refusal_a_trimmed_deployment_gets_is_still_worded_for_one() -> None:
-    """The refusal path stays, and says what it means: the image carries it, this deployment does
-    not.
-
-    Rewriting the docstrings must not turn into deleting the refusal — an operator who trims the
-    image is exactly who needs it, and `require_crest`'s message is the one that already gets this
-    right.
-    """
+    """The refusal path stays, worded for a deployment that trimmed the binary from the image."""
     from chemclaw_mcp_calc.engine import crest_search
 
     assert crest_search.require_crest.__doc__

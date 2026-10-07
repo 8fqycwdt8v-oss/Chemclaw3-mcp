@@ -1,29 +1,12 @@
 """Canonical SMILES and the strict parse: "is this the same structure?", for this server's keys.
 
-**Chemclaw3's `chemclaw/core/chem.py` is the authority for this definition, not this file.** This
-is a copy — the *third* in this repository, after `servers/chem/` and `servers/safety/` — and it
-exists for the rule this repository is arranged around: a server is a dependency closure, one
-server never imports another, and none may import Chemclaw3.
+A copy of Chemclaw3's `chemclaw/core/chem.py` (the authority), because servers never import each
+other or Chemclaw3. Here it feeds cache keys — the canonical SMILES becomes a structure's
+`input_hash` — so a divergence would address rows that do not exist;
+`tests/test_canonicalization_contract.py` pins it against Chemclaw3's own outputs.
 
-**The bound the other two copies carry does not apply here, and that is the difference worth
-naming.** Both of them say "nothing here derives a cache key". This server does: `structure.py`
-canonicalizes before embedding, and the resulting geometry's `structure_id` is the `input_hash` of
-an `xtb.*` key; `pka`, `solubility` and `descriptors` hash the canonical SMILES directly. So on
-this server, a divergence in this function would not merely make two systems echo two spellings —
-it would produce a `CalculationKey` addressing a row that does not exist, and Chemclaw3 would
-record a prediction the ledger never reconciles.
-
-`tests/test_canonicalization_contract.py` makes that detectable: the same table
-`servers/chem/` and `servers/safety/` carry, as literal strings derived by running Chemclaw3's own
-function, so whichever copy moves first turns a test red instead of quietly answering differently.
-
-**What was deliberately left behind**, so nobody restores it believing it was an oversight:
-Chemclaw3's module also carries the `standardize` pipeline that answers the *other* question, "is
-this the same compound?" (salts stripped, charges neutralized, one tautomer per set) plus
-`compound_id` built on it. Nothing here asks that question — and it must not: an anion is a
-different calculation from its conjugate acid, and `Structure` validates a declared charge against
-its SMILES, so standardizing a submitted acetate into acetic acid would compute a different
-molecule under the caller's key.
+`standardize` ("is this the same compound?") is deliberately absent: an anion and its conjugate
+acid are different calculations.
 """
 
 from __future__ import annotations
@@ -48,46 +31,22 @@ __all__ = [
 class InvalidSmilesError(ValueError):
     """A SMILES string RDKit cannot parse, or will only parse by silently truncating it.
 
-    A `ValueError` on purpose, and load-bearing rather than stylistic:
-    `mcp_server_kit.connector_app` lets a `ValueError` reach the model verbatim and replaces every
-    other exception with a generic notice. These messages quote the string that was rejected, and a
-    refusal has to be actionable — a chemist told "internal error" would re-ask the same malformed
-    question.
+    A `ValueError` so `connector_app` passes the actionable message to the model verbatim.
     """
 
 
 def require_molecule(smiles: str) -> Chem.Mol:
     """The parsed molecule, raising `InvalidSmilesError` unless RDKit reads `smiles` **whole**.
 
-    The one definition of "RDKit accepts this string, all of it". Three inputs RDKit accepts and
-    this rejects, each measured against a real build in Chemclaw3 before being written down:
+    The size bounds from `mcp_server_kit.limits` come first: canonicalising a long linear molecule
+    overflows the C stack and kills the pod. Then refused, though RDKit would accept them:
 
-    - **A string with embedded whitespace.** The parser treats any whitespace as the end of the
-      structure and ignores the rest, so `"CCO junk"` is ethanol. That is the silent-truncation
-      class, and on a calculator it is worse than a parse error: the energy returned is a real,
-      converged energy — of a *different, smaller molecule* than the caller submitted, stored under
-      a key naming the string they typed.
-    - **The empty string**, which parses to a molecule with no atoms — a structure for nothing.
-    - **A string carrying a non-ASCII character at either end.** SMILES is printable ASCII, and
-      RDKit skips a run of non-ASCII bytes at the *edges* while failing on one between two atoms:
-      `"°C"` is methane, `"CC°"` is ethane, `"C°C"` is a parse error. Prose is what produces this —
-      a note reading `` `80 °C` `` offers `°C` as a candidate structure, and a bare parse calls it
-      methane. Tested on the string rather than on the parsed molecule, because once RDKit has
-      skipped the character nothing about the molecule says it was ever there.
+    - embedded whitespace (RDKit stops at it, so `"CCO junk"` would compute ethanol under the
+      caller's key);
+    - the empty string (a molecule with no atoms);
+    - non-ASCII at either end (RDKit skips it, so `"°C"` would be methane).
 
-    Surrounding whitespace is stripped rather than refused: a leading newline is a copy-paste
-    artifact, not a second molecule. The message quotes the caller's own string, not the stripped
-    one, so what is echoed back is what was typed — bounded by `mcp_server_kit.limits.echo`.
-
-    **The two structural bounds come first, and on this server they are not optional.**
-    `MolToSmiles` recurses over the molecular graph and overflows the C stack on a long enough
-    linear molecule: the process dies with `SIGSEGV`, which no `except` can catch, so one ~20 kB
-    authenticated `tools/call` — far inside the 1 MB body cap — takes the pod down and every CREST
-    search running on it. `mcp_server_kit.limits` is where that pair lives because four other
-    servers apply it; this was the last SMILES-taking one that did not, and the heaviest, because
-    only here does a pod hold minutes-old work to lose. The length check is before the parse so a
-    megastring never reaches it; the atom check is after the parse and before any canonicalisation,
-    which is the call that actually recurses.
+    Surrounding whitespace is stripped. Messages quote the caller's string through `limits.echo`.
 
     Raises:
         InvalidSmilesError: `smiles` is too long or too large, empty, holds whitespace or
@@ -112,12 +71,8 @@ def require_molecule(smiles: str) -> Chem.Mol:
 def require_canonical_smiles(smiles: str) -> str:
     """RDKit canonical SMILES, raising `InvalidSmilesError` if `smiles` does not parse.
 
-    Spelling only: `"CCO"` and `"OCC"` collapse to one string, while an anion and its conjugate acid
-    stay two. That distinction is the reason this and not `standardize` keys a calculation —
-    computing the conjugate acid of a submitted anion would answer a question nobody asked.
-
-    Canonicalizing *before* embedding is what makes two spellings of one molecule produce the same
-    3D geometry, and therefore the same `structure_id` and the same key.
+    Spelling only: `"CCO"` and `"OCC"` collapse, an anion and its conjugate acid stay two.
+    Canonicalising before embedding gives two spellings the same geometry and the same key.
     """
     return str(Chem.MolToSmiles(require_molecule(smiles)))
 
@@ -125,10 +80,8 @@ def require_canonical_smiles(smiles: str) -> str:
 def atomic_numbers(symbols: Sequence[str]) -> list[int]:
     """Atomic numbers for element symbols, rejecting one the periodic table does not know.
 
-    The inverse of `Structure.symbols`, and it exists because a CREST ensemble file is the one
-    input to this server whose *element list* is not already known: a protonation search adds or
-    removes an atom and presorts the rest, so the elements have to be read from the file rather
-    than inherited from the structure that was sent in.
+    Needed for CREST ensemble files, whose element list may differ from the input (a protonation
+    search adds or removes an atom).
 
     Raises:
         ValueError: naming the symbol RDKit's periodic table refuses.
@@ -146,32 +99,12 @@ def atomic_numbers(symbols: Sequence[str]) -> list[int]:
 def perceive_smiles(
     elements: Sequence[int], positions: Sequence[Sequence[float]], charge: int
 ) -> str | None:
-    """Best-effort SMILES for a bare geometry: *which* molecule is this one?
+    """Best-effort canonical SMILES for a bare geometry (`elements`, `positions` in Angstrom).
 
-    A CREST protonation, deprotonation or tautomer search returns structures whose constitution is
-    not the input's — that is the whole point of running it — so the SMILES the caller sent in is
-    the wrong label for every member. Without perception the ensemble is a list of anonymous
-    geometries, and the question a chemist actually asked ("which site comes off first?") is
-    unanswerable from the result. Measured on phenol's deprotomer ensemble: `[O-]c1ccccc1`, in 4 ms.
-
-    **Best-effort by construction, and never a guess.** Bond orders are inferred from interatomic
-    distances plus the *known* charge, and that inference fails on exactly the structures where it
-    would be most misleading — a transition-metal complex, a fragment mid-dissociation, a geometry
-    whose bonding is genuinely ambiguous. On any failure this answers `None` and the member travels
-    without a label, because a wrong constitution reported confidently is worse than no label: it
-    would name the wrong protonation site in a pKa.
-
-    The atom-count ceiling is a real bound rather than caution: bond-order assignment is
-    combinatorial over the conjugated system, and an unbounded call inside an ensemble loop is a
-    hang rather than a slow answer.
-
-    Args:
-        elements: Atomic numbers, parallel to `positions`.
-        positions: Cartesian coordinates in Angstrom.
-        charge: The species' net charge — an input, not something perception may decide.
-
-    Returns:
-        The canonical SMILES, or `None` when the geometry cannot be read as one molecule.
+    A protonation, deprotonation or tautomer search changes constitution, so ensemble members need
+    their own label. Bond orders are inferred from distances and the known `charge`; on any failure
+    (or above the atom ceiling, since assignment is combinatorial) this returns `None` rather than a
+    possibly wrong constitution.
     """
     if len(elements) > settings.crest_perceive_max_atoms:
         return None

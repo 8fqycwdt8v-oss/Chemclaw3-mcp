@@ -1,15 +1,10 @@
-"""Crystallisation yield, cake filtration and batch drying — the three isolation correlations.
+"""Crystallisation yield, cake filtration and batch drying, each against its published closed form.
 
-One file because the three share a shape: each is a textbook model with a closed form somebody else
-wrote down, and each is checked against that closed form rather than against a value recorded from a
-run of this code.
-
-- The **crystallisation** yield of a saturated charge is `1 - (S_cold/S_hot)(1 - E/W)`, which the
-  mass balance does not contain.
-- **Cake filtration** at constant pressure is parabolic in the filtrate volume, and the
-  instantaneous rate it reports must be the derivative of the time it reports.
-- The two **drying** periods are both `m_s·X_c/(A·N_c)` over their own characteristic span, by two
-  separately written expressions, so they must agree at the critical moisture.
+- Crystallisation yield of a saturated charge is `1 - (S_cold/S_hot)(1 - E/W)`.
+- Constant-pressure cake filtration is parabolic in filtrate volume, and the reported rate must
+  be the derivative of the reported time.
+- The two drying periods are separately written expressions that must agree at the critical
+  moisture.
 """
 
 from __future__ import annotations
@@ -198,10 +193,8 @@ def test_doubling_the_area_quarters_a_cake_limited_filtration() -> None:
 def test_a_missing_cake_resistance_cannot_be_defaulted() -> None:
     """alpha is the answer, so a caller without a filtration test gets a TypeError, not a guess."""
     with pytest.raises(TypeError):
-        # The omission is the assertion: `specific_cake_resistance_m_per_kg` has no default, and
-        # this call is here to prove a caller cannot leave it out. mypy reports exactly that, which
-        # is why the ignore names `call-arg` — if the parameter ever gained a default the ignore
-        # would go unused and this test would go red with it.
+        # The omission is the assertion: `specific_cake_resistance_m_per_kg` has no default. If it
+        # ever gained one, the `call-arg` ignore would go unused and this test would fail.
         filtration.filtration_time(  # type: ignore[call-arg]
             filtrate_volume_m3=0.25,
             filter_area_m2=0.456,
@@ -296,10 +289,10 @@ def test_a_wet_basis_percentage_entered_as_a_target_is_refused() -> None:
 
 
 def test_a_target_above_the_critical_moisture_is_answered_as_a_constant_rate_dry() -> None:
-    """The cycle never reaches the falling-rate leg, and the model answers that case exactly.
+    """A target above the critical moisture is answered as a constant-rate dry.
 
-    It used to be refused, with a docstring calling it "past the point the model describes" while
-    the message itself called it possible. `m_s/(A·N_c)` = 133 333 s per unit, x (0.5 - 0.2).
+    The cycle never reaches the falling-rate leg, which the model answers exactly:
+    `m_s/(A·N_c)` = 133 333 s per unit, x (0.5 - 0.2).
     """
     found = drying.drying_time(
         **DRYER,
@@ -315,7 +308,7 @@ def test_a_target_above_the_critical_moisture_is_answered_as_a_constant_rate_dry
 
 @pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
 def test_a_non_finite_input_is_refused_by_every_guard(bad: float) -> None:
-    """`value <= 0` is False for NaN and for +inf, so both used to pass and answer with nulls."""
+    """`value <= 0` is False for NaN and +inf, so every guard must refuse them explicitly."""
     for guard in (positive, non_negative, fraction, kelvin):
         with pytest.raises(UnitOpsInputError, match="finite"):
             guard(bad, "the input")
@@ -339,11 +332,10 @@ def test_a_finite_input_that_overflows_a_power_law_is_refused_by_name() -> None:
 
 
 def test_a_medium_time_that_overflows_is_refused_rather_than_answered_as_infinity() -> None:
-    """Only the cake term was guarded, so an overflowing medium term came back as `inf`/`null`.
+    """A medium-resistance time that overflows is refused rather than answered as infinity.
 
-    Measured before the guard: `medium_resistance_per_m=1e308` with a viscosity of 10 answered an
-    infinite total time beside a cake fraction, an average flux and a final rate of exactly zero —
-    plausible-looking zeros next to a null.
+    Otherwise an infinite total would sit beside a cake fraction, flux and final rate of exactly
+    zero.
     """
     with pytest.raises(UnitOpsInputError, match="medium filtration time"):
         filtration.filtration_time(
@@ -354,7 +346,7 @@ def test_a_medium_time_that_overflows_is_refused_rather_than_answered_as_infinit
 
 
 def test_a_filtration_time_that_underflows_to_zero_is_refused_rather_than_divided_by() -> None:
-    """A total of exactly 0.0 used to reach `cake_time / total` as a bare `ZeroDivisionError`."""
+    """A filtration total that underflows to 0.0 is refused, not divided by."""
     with pytest.raises(UnitOpsInputError, match="underflow"):
         filtration.filtration_time(
             filtrate_volume_m3=0.1,

@@ -1,14 +1,7 @@
 """Developability descriptor panel — closed-form RDKit, zero extra dependencies.
 
-Chemists routinely need the panel itself — molecular weight, lipophilicity, polar surface area,
-H-bond counts, rotatable bonds, sp3 fraction, QED — to screen a candidate's developability (Lipinski
-Rule-of-Five, Veber's oral-bioavailability rule) before committing bench time. Every descriptor here
-is a closed-form RDKit computation, so this ships with no new dependency and no offline risk, unlike
-a trained model.
-
-**Ported without `run_cached_descriptor_profile`.** Its two behaviours beyond the store lookup are
-kept inside `compute_descriptor_profile`: canonicalize first, then compute on the canonical form, so
-two spellings of one molecule produce one key *and* one identical panel.
+Molecular weight, lipophilicity, TPSA, H-bond counts, rotatable bonds, sp3 fraction and QED, for
+Lipinski/Veber triage. Canonicalised first, so two spellings share one key and one panel.
 """
 
 from __future__ import annotations
@@ -65,21 +58,14 @@ class DescriptorProfile(Keyed):
 
 
 def calc_version() -> str:
-    """Version tying the panel to the RDKit build.
-
-    Every descriptor here is a pure RDKit computation, so an RDKit upgrade is the only thing that
-    can shift a value; versioning on it is enough. Public where Chemclaw3 kept it private, because
-    after the split the string has to leave this process.
-    """
+    """Version tying the panel to the RDKit build, the only thing that can shift a value."""
     return f"rdkit-{version('rdkit')}"
 
 
 def cache_key(job: DescriptorInput) -> CalculationKey:
     """The versioned identity of `job`'s descriptor panel — the only place this key is assembled.
 
-    Read by both `compute_descriptor_profile` and `identity.calculation_identity`, so the string a
-    caller looks the answer up under and the string the answer comes back carrying are one
-    definition rather than two that agree today.
+    Shared by `compute_descriptor_profile` and `identity.calculation_identity`.
     """
     return CalculationKey.build(
         calc_type=CALC_TYPE,
@@ -91,10 +77,8 @@ def cache_key(job: DescriptorInput) -> CalculationKey:
 def compute_descriptor_profile(job: DescriptorInput) -> DescriptorProfile:
     """Compute the developability descriptor panel for one molecule.
 
-    Raises `ValueError` on an unparseable SMILES rather than returning a bogus panel.
-
-    Canonicalizes first and computes on the canonical form, so two spellings of the same molecule
-    share one key *and* one panel.
+    Canonicalises first, so spellings share a key and a panel; raises `ValueError` on an unparseable
+    SMILES.
     """
     canonical = require_canonical_smiles(job.smiles)
     mol = Chem.MolFromSmiles(canonical)
