@@ -1,19 +1,7 @@
 """The `props` MCP tool surface: solvent properties, vapour pressure, and swap shortlists.
 
-**These docstrings are the prompt.** Argument names, defaults and this prose are what the agent
-reads before deciding whether to call a tool and what to pass it — so each one says what the tool is
-for, what units it speaks, and what it is *not* evidence of. A tool whose docstring omits the last
-of those gets used outside its range, and the resulting number reaches a chemist with no warning
-attached.
-
-Every answer carries `source`: this server's numbers come from one vendored, checksummed table and
-nowhere else, and a property without its provenance is not something anybody can put in a report.
-
-Everything here is a dictionary lookup and a few floating-point operations — microseconds — so the
-tools are synchronous. That is a measured statement about *this* server rather than a house style:
-Chemclaw3's `chem` connector pushes its RDKit work to `asyncio.to_thread` because 2D-coordinate
-generation holds the GIL for tens of milliseconds and flattened its throughput under load. Nothing
-here does that; a server that starts doing real work must revisit this.
+Every answer carries `source`: the numbers come from one vendored, checksummed table. Every tool is
+a lookup plus a few floating-point operations on bounded input, so the tools are synchronous.
 """
 
 from __future__ import annotations
@@ -27,31 +15,14 @@ from chemclaw_mcp_props.engine import correlations, records, selection
 
 server = FastMCP("props")
 
-# How many solvents one `compare_solvent_properties` call may name: the size of the table, because
-# a comparison naming more solvents than exist cannot be a comparison, only duplicates or unknowns.
+# How many solvents one `compare_solvent_properties` call may name: the size of the table. An
+# unbounded list held the event loop for seconds.
 #
-# It exists because the unbounded version was measured, not imagined: 100 000 x "dcm" was a 700 KB
-# request — 70% of `DEFAULT_MAX_REQUEST_BYTES`, so accepted — that returned 81 601 345 B after
-# 14.83 s, during which a `/healthz` probe waited 14.47 s. The body is synchronous, so that was the
-# event loop held in one block, and this module's own opening paragraph ("a dictionary lookup and a
-# few floating-point operations — microseconds — so the tools are synchronous") was false for as
-# long as the input could be any length. Bounding the input is what makes it true again.
-#
-# **Declared here and checked against the corpus by a test, rather than computed from it at import**
-# (`D-2026-09-18-a-corpus-that-cannot-be-read-is-a-probe-s-answer-not-an-import-error`). It was
-# `len(records.all_solvents())`, on the argument that a derived number cannot go stale when a row is
-# added — true, and it cost the whole server its readiness answer: loading the corpus here means
-# *verifying* it here, so a `records.csv` that failed its checksum raised `DatasetError` out of
-# `import chemclaw_mcp_props.tools` and the pod never started. Driven on this commit, that is
-# `CrashLoopBackOff` and a container log where `chem` and `safety` answer 503 from `/healthz` naming
-# the file and both hashes. The staleness the derivation guarded against is what
-# `servers/props/tests/test_tools.py::test_the_compare_bound_is_the_size_of_the_table` guards
-# against now — it derives the live count and fails on any row added or removed — and the number is
-# not restated anywhere else, because it is only ever read from this name.
-#
-# Reading the file *without* verifying it was the other option and is worse than either: the bound
-# is part of the tool schema Chemclaw3 advertises, and deriving an advertised schema from a corpus
-# nobody approved is the one thing `mcp_server_kit.datasets` exists to prevent.
+# Declared rather than computed from the corpus, because loading the corpus at import would verify
+# it at import and turn a bad checksum into a crash instead of a 503.
+# `servers/props/tests/test_tools.py::test_the_compare_bound_is_the_size_of_the_table` keeps it
+# equal
+# to the live row count.
 MAX_COMPARED_SOLVENTS = 44
 
 

@@ -1,39 +1,12 @@
 """The `kinetics` MCP tool surface: rate and ideal-reactor arithmetic from supplied parameters.
 
-**These docstrings are the prompt**, and the thing they must get across here is what this server
-*cannot* do, because its name promises more than it delivers and the gap is exactly where a number
-would be invented.
+Nothing here fits anything: every tool takes a rate constant, activation energy and order the
+chemist already has. Every reactor is ideal and isothermal, so a conversion is what the kinetics
+predict, not what the vessel will do. This server extrapolates `k` of the reaction being run;
+decomposition hazards (TMR, T_D24) belong to `servers/thermalsafety`. Every answer carries `basis`.
 
-**Nothing here fits anything.** Every tool takes a rate constant, an activation energy and an order
-that a chemist already has — from their own kinetic study, from a literature value, or from a
-supervisor's estimate. There is no regression, no time-course data, no fitting and no goodness of
-fit. A question of the form "here is my concentration-against-time data, what is the rate law" is
-one this server refuses to answer, and the refusal is the honest response rather than a limitation
-to work around: fitting is a different operation with a different dependency closure, and it is
-deliberately not built (see `README.md`).
-
-**Every reactor here is ideal and isothermal.** Perfect mixing, no dispersion, no mass-transfer
-limitation, constant temperature. Real reactors depart from all four, and the departures are what
-scale-up problems are usually made of — so a conversion from this server is what the *kinetics*
-predict, not what the vessel will do.
-
-**The boundary against `servers/thermalsafety` is deliberate and narrow.** That server already
-extrapolates along Arrhenius — of `q`, the specific heat-release rate of a *decomposition*, inside
-a TMR_ad inversion, returning a temperature. This server extrapolates `k`, the rate constant of the
-reaction being run, and returns a rate constant. Nothing here returns a TMR, a T_D24, a criticality
-class or an adiabatic rise; ask that server. The two activation energies are different numbers
-about different processes, and keeping the tools apart is what stops one being quoted as the other.
-
-Every answer carries `basis`: the equation it came out of and the assumption that equation makes.
-
-The five closed-form tools are synchronous and cost microseconds. The integrator is the one that
-does real work, and its cost is set by the caller's rate constant and dose time: the RK4 step count
-is derived from the problem up to `reactors.MAX_INTEGRATION_STEPS`, so the worst legal call is
-seconds of pure-Python CPU. Past that ceiling the dose goes to an L-stable scheme at a fixed
-`reactors.STABLE_INTEGRATION_STEPS`, which costs a tenth of a second whatever the rate. It therefore
-owes what `CLAUDE.md` says a slow tool owes — a bound on its input (that step ceiling), an offload
-so it does not run on the event loop, and a ceiling on how many run at once. `engine/admission.py`
-has the measurement and the derivation.
+The closed-form tools are synchronous and cost microseconds. The semi-batch integrator is bounded
+in steps, offloaded to a thread and admission-gated (`engine/admission.py`).
 """
 
 from __future__ import annotations
@@ -74,10 +47,9 @@ _T = TypeVar("_T")
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how many integrations run at once, refusing promptly when the pod is full.
 
-    The same shape as `servers/chem`'s gate: stamped with `ADMISSION_MARKER` so a test checks the
-    gated set against the served surface, and held through `Admission.admit` so the slot is released
-    when the worker thread finishes rather than when the caller stops waiting. `functools.wraps` is
-    what lets FastMCP read the real signature through `__wrapped__` for the tool's argument schema.
+    Stamped with `ADMISSION_MARKER` so a test checks the gated set against the served surface; the
+    slot is released when the worker thread finishes, not when the caller stops waiting.
+    `functools.wraps` lets FastMCP read the real signature for the tool's argument schema.
     """
 
     @functools.wraps(work)
@@ -511,9 +483,8 @@ def continuous_reactor_conversion(
     return ContinuousResult(
         plug_flow_conversion=plug,
         stirred_tank_conversion=tank,
-        # A zero-conversion CSTR only happens at zero residence time, which is refused above; the
-        # guard is here so a future change to that bound cannot turn this into a ZeroDivisionError,
-        # which would reach the model as an opaque error id rather than as a number.
+        # Zero residence time is refused above; this guard keeps a later change to that bound from
+        # becoming a ZeroDivisionError.
         plug_flow_advantage=plug / tank if tank > 0.0 else 1.0,
         basis=(
             f"ideal isothermal reactors at order {order:g}: PFR by the integrated batch rate law "

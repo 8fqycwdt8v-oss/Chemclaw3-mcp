@@ -1,16 +1,8 @@
-"""The bounds a run happens inside, in one place, so nothing hard-codes one of them.
+"""The bounds a run happens inside, in one frozen object.
 
-Every field here is a number that decides what a hostile or careless program can cost. They are
-gathered into one frozen object rather than spread across `sandbox.py` and `runner.py` because the
-two processes must agree about them: the parent serialises this into the payload, the child applies
-it, and a value that existed in only one of those places would be a bound that silently did not
-apply.
-
-**Why the defaults are what they are.** An analysis in a conversation turn is seconds of arithmetic
-over a table a tool just returned — not a simulation. So the wall clock is short enough that a stuck
-run is noticed inside one turn, and the memory ceiling is generous enough that importing pandas and
-RDKit does not itself trip it. A ceiling that a legitimate import trips is a ceiling that gets
-raised without thought the first time somebody hits it, which is worse than a slightly loose one.
+The parent serialises this into the payload and the child applies it, so both processes agree on
+every bound. Defaults fit seconds of arithmetic in a conversation turn: a short wall clock, and a
+memory ceiling generous enough that importing pandas and RDKit does not trip it.
 """
 
 from __future__ import annotations
@@ -24,36 +16,26 @@ __all__ = ["Limits", "container_memory_limit", "default_memory_bytes"]
 
 logger = logging.getLogger(__name__)
 
-# Where a container's own memory limit is written, newest first. cgroup v2 is what OpenShift 4.13+
-# and any RHEL 9 node uses; v1 is still what a Docker-on-older-kernel dev box gives, and this
-# repository's own sandbox is one — so both are read rather than the one that happens to be here.
+# The container's memory limit file, cgroup v2 then v1; both are read.
 _CGROUP_V2_MAX = Path("/sys/fs/cgroup/memory.max")
 _CGROUP_V1_MAX = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
 
-# What the server process itself needs beside the runs: the interpreter, FastMCP, the live MCP
-# sessions and the request bodies. Measured at 58 MiB of RSS for this server's own imports; 256 MiB
-# is that with room for the sessions and the payloads, which are what grow with load.
+# Memory the server process itself needs beside the runs: interpreter, MCP sessions, request bodies.
 SERVER_HEADROOM_BYTES = 256 * 1024**2
 
-# The bound when no cgroup limit can be read — a bare `python -m pytest`, a dev box, a container
-# run without `--memory`. Deliberately the value this file shipped with, so an unconstrained
-# environment behaves exactly as it did before the derivation existed.
+# The per-run bound when no cgroup limit can be read (a dev box, a container without `--memory`).
 UNCONSTRAINED_MEMORY_BYTES = 2 * 1024**3
 
-# Below this a legitimate program cannot run: 629 MiB of address space is what one importing numpy,
-# pandas, scipy, sklearn, sympy, matplotlib, RDKit and OpenBabel and drawing a plot actually
-# reached, measured. A derivation that lands under it means the pod is too small for the ceiling it
-# was given, and that is a deployment defect worth a WARNING rather than a silently unusable tool.
+# Below this a program importing the full scientific stack cannot run; a derivation landing under
+# it means the pod is too small for its ceiling, and is logged at WARNING.
 MINIMUM_VIABLE_MEMORY_BYTES = 768 * 1024**2
 
 
 def container_memory_limit() -> int | None:
     """This process's own cgroup memory limit in bytes, or `None` when it is unbounded.
 
-    The number Linux will OOM-kill this container over — which is the only honest basis for a bound
-    that exists to fire *before* it. Both cgroup generations write "no limit" differently: v2 writes
-    the literal `max`, v1 writes a number so large it is the kernel's page-counter maximum rather
-    than a real limit, so a plain "is it big" test is what distinguishes them.
+    v2 writes "no limit" as `max`; v1 writes the kernel's page-counter maximum, so an implausibly
+    large value also means unbounded.
     """
     for path in (_CGROUP_V2_MAX, _CGROUP_V1_MAX):
         try:
@@ -75,22 +57,14 @@ def container_memory_limit() -> int | None:
 def default_memory_bytes(max_concurrent_runs: int) -> int:
     """The per-run address-space bound, derived from the pod's own limit and the run ceiling.
 
-    **This is the fix for a guard that could never fire.** `RLIMIT_AS` shipped at a flat 2 GiB
-    inside a pod limited to 512Mi — four times the container's own ceiling — so the sandbox's memory
-    bound was unreachable: what actually fired was the container OOMKiller, which kills the *pod*
-    and every other in-flight MCP session with it, rather than refusing the one offending call. Two
-    independently written numbers cannot be kept consistent by review, so only one of them is
-    written down now: the pod's limit is the input, and this is the arithmetic over it.
-
-    `RLIMIT_AS` bounds address space, which is always at least resident set, so bounding N runs at
-    `(limit - headroom) / N` guarantees they cannot collectively reach the limit the kernel kills
-    over. It is conservative in the safe direction — a program is refused at a mapping it might
-    never have touched — which is the coarseness `Limits.memory_bytes` has always documented.
+    `RLIMIT_AS` must fire before the container OOM-killer, which would kill the whole pod rather
+    than
+    the one call. Address space is at least resident set, so `(limit - headroom) / N` keeps N runs
+    together under the kernel's limit — conservative in the safe direction.
 
     Args:
         max_concurrent_runs: The admission ceiling, i.e. how many of these bounds may be held at
-            once. Deriving from it is what makes the guarantee about the *pod* rather than about
-            one call.
+        once.
 
     Returns:
         The per-run `RLIMIT_AS` value in bytes.

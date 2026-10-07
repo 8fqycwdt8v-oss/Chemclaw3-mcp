@@ -1,20 +1,9 @@
 """Solvent swaps: filter on what must hold, then rank on how close the replacement is.
 
-The question this answers is the everyday one — *"we run this in dichloromethane and we cannot take
-it into the plant; what else?"* — and the shape of the answer matters as much as its content.
-
-**Filter first, rank second, and never trade the two off against each other.** A single score that
-mixed "how similar is the solvation" with "how bad is the hazard profile" would let a small
-solubility gain buy a class-1 carcinogen, and would hide that it had. So the constraints a chemist
-states — do not get greener-band-worse, stay above this boiling point, no peroxide formers — are
-*filters*, and what survives them is ranked by Hansen distance alone. A candidate that fails a
-filter is still returned, with the filter it failed named, because "toluene is the closest match but
-it is reprotoxic cat 2" is the sentence the chemist actually needs.
-
-**Hansen distance is a solubility argument and nothing else.** It has no opinion on whether the
-replacement is inert to the chemistry, dissolves the base, survives the temperature, or crystallises
-the product. Those are the chemist's call, and the docstrings say so rather than implying that a
-shortlist is a decision.
+Constraints (greenness band, boiling range, peroxide formers, ICH class) are filters and never
+traded against similarity, so a solubility gain cannot buy a hazard. Survivors are ranked by Hansen
+distance alone; a candidate failing a filter is still returned, naming the filter. Hansen distance
+is a solubility argument and says nothing about reactivity.
 """
 
 from __future__ import annotations
@@ -97,20 +86,15 @@ def swap_candidates(
 
     Args:
         reference: The solvent being replaced.
-        top_n: How many candidates to return. Candidates that fail a filter are returned too, and
-            always after the ones that pass, so the caller can see what a constraint cost.
-        allow_worse_greenness: When false (the default), a candidate in a worse greenness band is
-            marked blocked. A swap that makes the hazard profile worse is a decision somebody
-            should take explicitly.
-        min_bp_c: Reject candidates boiling below this — the constraint behind "it has to survive
-            reflux at 80 °C".
-        max_bp_c: Reject candidates boiling above this — the constraint behind "it has to come off
-            on the rotovap".
+        top_n: How many candidates to return; blocked ones come after passing ones.
+        allow_worse_greenness: When false, a candidate in a worse greenness band is blocked.
+        min_bp_c: Reject candidates boiling below this, in °C.
+        max_bp_c: Reject candidates boiling above this, in °C.
         exclude_peroxide_formers: Reject ethers and other peroxide formers outright.
-        require_water_miscibility: One of `miscible`, `partial`, `immiscible` — the aqueous-workup
-            constraint.
-        max_ich_class: `1`, `2` or `3`. Rejects anything in a *worse* ICH Q3C class; solvents the
-            guideline does not list are never rejected by this filter, and are flagged instead.
+        require_water_miscibility: One of `miscible`, `partial`, `immiscible`.
+        max_ich_class: `1`, `2` or `3`; rejects a worse ICH Q3C class. Unlisted solvents are
+        flagged,
+            never rejected.
 
     Returns:
         Up to `top_n` candidates, passing ones first and each ordered by Hansen distance.

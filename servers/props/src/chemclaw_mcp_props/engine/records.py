@@ -1,15 +1,8 @@
 """The solvent table: what a row is, and how a chemist's spelling finds one.
 
-The corpus is the engine here. There is no live service behind these numbers and there is not going
-to be: a process chemist asking "what is the flash point of 2-MeTHF" is asking a question with a
-settled answer, and the useful thing an agent can do with it is have it *to hand*, cited, in the
-same turn as the decision that depends on it.
-
-**Lookup is by any name a chemist would actually type.** `2-MeTHF`, `MeTHF` and
-`2-methyltetrahydrofuran` are the same row; so are `DCM`, `MDC` and `methylene chloride`. An
-unrecognised name returns nothing rather than the nearest match — a wrong solvent silently
-substituted into a swap recommendation is worse than no answer, and Chemclaw3's `resolve_compound`
-takes the same line for the same reason.
+Lookup is by any name a chemist would type (`2-MeTHF`, `MeTHF`, `2-methyltetrahydrofuran`). An
+unrecognised name returns nothing rather than the nearest match: a silently substituted solvent is
+worse than no answer.
 """
 
 from __future__ import annotations
@@ -33,9 +26,8 @@ GreennessBand = Literal["recommended", "problematic", "hazardous", "highly_hazar
 class Solvent:
     """One solvent, exactly as the vendored table records it.
 
-    Optional fields are genuinely absent rather than zero: `flash_point_c` is `None` for
-    dichloromethane because it *has* no flash point, and reporting 0 °C there would be a fire-safety
-    error rather than a rounding one. Every consumer must handle `None` explicitly.
+    Optional fields are absent rather than zero (dichloromethane *has* no flash point), so every
+    consumer must handle `None` explicitly.
     """
 
     name: str
@@ -59,9 +51,8 @@ class Solvent:
     flash_point_c: float | None = None
     ich_limit_ppm: float | None = None
     antoine: tuple[float, float, float] | None = None
-    # The temperature window, in kelvin, the Antoine constants beside it were fitted over. It is
-    # part of the constants rather than a note about them: a fit evaluated outside its own range is
-    # not the quantity its caveat describes, so `correlations` refuses there and falls back.
+    # The temperature window, in kelvin, the Antoine constants were fitted over; `correlations`
+    # refuses outside it and falls back.
     antoine_range_k: tuple[float, float] | None = None
     hvap_kj_mol: float | None = None
     # Filled by `_index` so every answer can name its own source without the caller threading it.
@@ -81,9 +72,8 @@ def _split(raw: str) -> tuple[str, ...]:
 
 def _row_to_solvent(row: dict[str, str], provenance: str) -> Solvent:
     """Build one `Solvent` from a CSV row, failing loudly on a malformed required column."""
-    # A, B, C and the fitted range are one unit: constants whose validity window is unknown
-    # cannot be kept out of an extrapolation, so a row missing any of the five carries no fit at
-    # all and answers through the Clausius-Clapeyron route the tools already label as weaker.
+    # A, B, C and the fitted range are one unit: a row missing any of the five carries no fit and
+    # answers through the Clausius-Clapeyron route.
     antoine_keys = ("antoine_a", "antoine_b", "antoine_c", "antoine_tmin_k", "antoine_tmax_k")
     antoine_parts = [_optional_float(row[key]) for key in antoine_keys]
     complete = all(part is not None for part in antoine_parts)
@@ -118,11 +108,7 @@ def _row_to_solvent(row: dict[str, str], provenance: str) -> Solvent:
 
 
 def _key(name: str) -> str:
-    """Normalise a name for lookup: case, punctuation and spacing all stop mattering.
-
-    `2-MeTHF`, `2 methyl thf` and `2-methyltetrahydrofuran` are three spellings of one row only if
-    the key ignores what varies between them. Everything that is not a letter or a digit is dropped,
-    which also makes `N,N-dimethylformamide` and `NN dimethylformamide` agree.
+    """Normalise a name for lookup by dropping everything that is not a letter or a digit, lowercased.
     """
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
@@ -137,9 +123,7 @@ def dataset() -> Dataset:
 def _index() -> tuple[tuple[Solvent, ...], dict[str, Solvent]]:
     """Every solvent, plus the lookup map from every spelling to its row.
 
-    A duplicate key is a hard error rather than a last-write-wins: two rows answering to `DCM`
-    would make the answer depend on file order, which is the kind of defect that shows up once, in
-    production, in a number nobody re-derives.
+    A duplicate key is a hard error, so an answer can never depend on file order.
     """
     loaded = dataset()
     solvents = tuple(
@@ -164,11 +148,7 @@ def all_solvents() -> tuple[Solvent, ...]:
 
 
 def find(name: str) -> Solvent | None:
-    """The solvent a chemist means by `name`, or `None` if the table does not have it.
-
-    `None` is a real answer: say the solvent is not in the table rather than guessing, because a
-    silently substituted solvent corrupts every number downstream of it.
-    """
+    """The solvent a chemist means by `name`, or `None` if the table does not have it."""
     return _index()[1].get(_key(name))
 
 
@@ -176,7 +156,7 @@ def require(name: str) -> Solvent:
     """`find`, but raising the message the agent should see when the name is unknown.
 
     Raises:
-        ValueError: with the closest spellings the table does know, so the next call can succeed.
+        ValueError: with the closest spellings the table does know.
     """
     found = find(name)
     if found is not None:

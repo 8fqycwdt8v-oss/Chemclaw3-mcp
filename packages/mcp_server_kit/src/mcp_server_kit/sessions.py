@@ -1,96 +1,19 @@
-"""Reap MCP sessions nobody is using, and never reap one that is still computing.
+"""Bound MCP sessions in lifetime and number, and never reap one that is still computing.
 
-`FastMCP` runs stateful streamable-HTTP: every `initialize` mints a session that holds an entry in
-`StreamableHTTPSessionManager._server_instances`, a live anyio task blocked in `Server.run(...)`,
-and two memory object streams. Upstream will expire an idle one — `StreamableHTTPSessionManager`
-takes `session_idle_timeout`, its own docstring recommends 1800 s "for most deployments" — but
-`FastMCP.streamable_http_app()` constructs the manager without passing it, and the parameter
-defaults to `None`. So in this fleet, as shipped, **nothing removed a session at all** — and the
-sentence here used to say "removed only by an explicit `DELETE`", which measured false in the
-direction that made nobody look. A `DELETE` does not remove one either: upstream's only
-unconditional removal is guarded by `not http_transport.is_terminated`, and `terminate()` sets
-that flag first, so the polite close takes the branch that skips it. `_drop_terminated_sessions`
-is the half that was missing; the timeout below is the half for a client that never says goodbye.
+Every `initialize` mints a session (an instance-map entry, a live task, two streams), and as
+`FastMCP` ships nothing ever removes one: no idle timeout is passed, and upstream skips its own
+cleanup for a session a `DELETE` terminated. Each un-deleted session costs ~57 kB of RSS. This
+module adds:
 
-That is a leak with a real arrival rate rather than a theoretical one. Chemclaw3 opens a session
-per turn per connector, so a pod sees roughly one session open per second at 200 users, and the
-client's `DELETE` is in a `finally` that a cancelled turn, a front-door restart or a dropped
-connection does not reach. Measured on `chem`: 500 sessions opened and never deleted took RSS from
-138.3 MB to 166.0 MB — **56.6 kB each**, never recovered — and a session whose client had exited,
-whose TCP connection was gone, still answered HTTP 200 ten seconds later.
-
-(That figure read **149 kB** here until it was re-measured for the ceiling below, against the same
-server by the same method, and it is corrected rather than quietly dropped. The direction matters
-in both halves: the leak is two and a half times cheaper per session than this file claimed, which
-makes the *reaper* less urgent than it read — and the ceiling below more so, because the number of
-sessions one caller can hold inside a 512Mi pod is two and a half times larger than anyone
-reading this paragraph would have assumed.)
-
-**Upstream's "idle" means "no HTTP request arrived", and for this fleet that is not the same thing
-as idle.** The deadline is pushed forward when a request for the session arrives; a tool call is
-*one* request whose SSE body is written when the work finishes. `servers/calc` runs CREST searches
-with a 14,400 s budget, so a plain 1800 s idle timeout would cancel the session — and with it the
-calculation — four hours before its own timeout, from inside the transport, while the chemist is
-still waiting. So the deadline is held open for the duration of every tool call, and reset when the
-last concurrent call on that session returns. `idle` then means what the word says, and the same
-timeout is safe for the server that answers in microseconds and the one that answers in hours.
-
-**Holding it off from inside the call is not enough, and believing it was is what this module
-shipped.** Upstream pushes the deadline on *every* request for an existing session — a ping, a
-`tools/list`, a reconnecting GET stream — at
-`StreamableHTTPSessionManager._handle_stateful_request`, which overwrites `math.inf` with
-`now + timeout` and hands the calculation exactly the cancellation the hold-open exists to prevent.
-Measured with a 1 s timeout and a 2.5 s tool: the call answers in 2.5 s when nothing else speaks on
-the session, and is cut at ~1.5 s with **zero bytes and no JSON-RPC error** if anything does. The
-trigger is this family's own client: Chemclaw3's `core/mcp_session.py` sends a `PingRequest` as a
-cancellation flush when one call of a fan-out times out, so a `calc` session doing what it was
-designed to do would destroy the CREST search running beside it. So the hold is *re-asserted* after
-upstream's push, on the transport's own request handler — the one seam that runs after the push and
-before the request is served — for as long as that session has a call in flight.
-
-**And the failure it prevents is a hang, not an error**, which is why it is part of this fix rather
-than a refinement of it. Measured against a server with the timeout set and no hold-open: expiring
-the session cancels `Server.run` and terminates the transport, so the SSE stream the `tools/call`
-was being answered on just stops. No JSON-RPC error is ever written. The caller waits until *its*
-own timeout with no idea anything happened, and the only trace on the server is one line reading
-"idle timeout". `tests/test_sessions.py` drives that counterfactual, so the hold-open tests
-beside it are evidence that the timeout is armed rather than that it is absent.
-
-**A timeout bounds how long a session lives and nothing bounded how many there are**, which is a
-different control and the one this module was still missing. `_server_instances` is a plain dict
-that upstream adds to on every `initialize` with no admission of any kind: a session's cost is paid
-at creation and refunded, at the earliest, `MCP_SESSION_IDLE_TIMEOUT_SECONDS` later, so the reaper
-sets the *steady state* and the arrival rate sets the *peak*. Measured against the real `chem` app
-under uvicorn, the server in its own process so the figures are the pod's and not a client's:
-un-deleted sessions cost **56.6 kB each** and grow strictly linearly (55,292 kB over 1,000
-sessions, and the per-session figure is flat to three digits at every 200-session mark), and one
-client on loopback opens **261 of them per second**. A session that has been *used* — handshake,
-GET stream, `tools/list`, one `tools/call`, then abandoned — costs more at first and converges on
-the same marginal figure: 126 kB at 50 sessions falling to 87 kB at 300, whose last three
-increments are 56, 64 and 60 kB.
-
-Two consequences, and the second is why a ceiling is not optional. At Chemclaw3's own ~1
-session/s the reaper holds a fully-abandoned pod at about 1,800 sessions, which is ~102 MB — large
-but survivable. At the rate one authenticated caller can actually dial, the same 30-minute window
-is hundreds of thousands of sessions: the smallest pod in this fleet is limited to 512Mi and every
-one of them is an OOMKill, which takes down every other session sharing the pod, including a CREST
-search four hours in. **An idle timeout cannot see that at all**, because nothing has been idle
-long enough to reap.
-
-So `MCP_MAX_SESSIONS` is a ceiling on how many sessions exist at once, enforced on the request that
-would mint one, and a pod at its ceiling refuses **promptly** rather than queueing — the same
-argument `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` makes for a calculation, one layer
-down. It belongs here rather than beside that one because a session is the *transport's* object:
-every server in this fleet has the same one, pays the same 56.6 kB for it, and none of them can see
-it from a tool body. An admission ceiling on calls and a ceiling on sessions are not the same bound
-and neither implies the other — `props` gates no call at all and still holds sessions.
-
-**The refusal is an HTTP status, not a worded string, and that is the difference from the tool
-path.** `servers/calc` needs `AT_CAPACITY_MARKER` because a refused *tool call* has no channel but
-its own text: the protocol flattens every exception into one `isError=True` text block with no
-code. A refused handshake is a plain HTTP response on `/mcp`, so it carries a real status —
-**503** with `Retry-After` — which no other outcome on that path returns. A client that reads the
-status needs nothing from the body; the body says what happened for a human reading a capture.
+- **An idle timeout** (`MCP_SESSION_IDLE_TIMEOUT_SECONDS`), held off while any tool call on the
+  session runs — and re-asserted after upstream pushes the deadline on every request — because
+  expiring a session mid-call silently cuts the SSE stream with no error.
+- **A short lease for a session never used after its handshake**, and immediate discard of a
+  session upstream minted for a request it refused.
+- **A sweep of terminated sessions** after every request.
+- **A ceiling** (`MCP_MAX_SESSIONS`): a timeout cannot stop one caller opening sessions faster than
+  they expire, so a handshake past the ceiling is refused promptly with **503** and `Retry-After`
+  before any session exists.
 """
 
 from __future__ import annotations
@@ -133,20 +56,13 @@ __all__ = [
     "session_unused_timeout",
 ]
 
-# Upstream's own recommendation, and comfortably longer than the gap between two tool calls in one
-# Chemclaw3 turn. It bounds how long an orphaned session occupies a pod, not how long a call may
-# take — a call in flight holds the deadline off entirely (see `_hold_open_during_tool_calls`).
+# Upstream's recommendation, well above the gap between tool calls in one turn. Bounds an orphan's
+# lifetime, not a call's: a call in flight holds the deadline off.
 DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800.0
 
-#: How long a session that has been minted and *never used again* may hold its slot. A handshake
-#: is not a conversation: upstream pushes the deadline forward on every request for an existing
-#: session, so any client that goes on to do anything at all — an MCP client sends
-#: `notifications/initialized` microseconds later — is promoted to the full idle timeout by
-#: upstream's own code with nothing here to do. What is left holding the short lease is exactly
-#: the session nobody ever came back for: an aborted handshake, a client that died between
-#: `initialize` and its first call, or a flood. Sixty seconds is four orders of magnitude above
-#: the gap a real client leaves and thirty times below the idle timeout, which is what turns the
-#: ceiling from a thirty-minute wedge into a minute-long one.
+# : How long a session minted and never used again may hold its slot. Any real client's next request
+# : promotes it to the idle timeout via upstream's own push, so only aborted handshakes and floods
+# : keep this lease — which makes a filled ceiling recover in a minute, not thirty.
 DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS = 60.0
 
 # Marks a transport whose request handler already re-asserts the hold, so a second concurrent
@@ -158,76 +74,44 @@ _REASSERTED = "_chemclaw_hold_reasserted"
 _USED = "_chemclaw_session_used"
 
 
-#: What one un-deleted session costs this process, in bytes of RSS. Measured on the real `chem`
-#: app under uvicorn in its own process: 1,000 raw `initialize` handshakes, never deleted, took RSS
-#: from 133,428 kB to 188,720 kB — 56.6 kB each, flat to three digits at every 200-session mark, so
-#: the growth is linear rather than amortising. A *used* session (GET stream, `tools/list`, one
-#: `tools/call`) starts higher and converges on the same marginal figure: 126 kB at 50 falling to
-#: 87 kB at 300, with its last three 50-session increments at 56, 64 and 60 kB. The conservative
-#: half of that range is the one written down.
+# : RSS cost of one un-deleted session, in bytes: measured ~56.6 kB on `chem`, linear in count; a
+# : used session converges on the same marginal cost. The conservative end is used.
 SESSION_COST_BYTES = 57_900
 
-#: The smallest `resources.limits.memory` any pod in this fleet runs under — `props`, `chem` and
-#: `safety` are all 512Mi. It is the pod a fleet-wide default has to be safe on, and
-#: `tests/test_fleet.py` re-reads it from the shipped Deployments rather than trusting this line,
-#: because a server whose limit is lowered below it moves the derivation below.
+# : The smallest pod memory limit in the fleet, which the default must be safe on;
+# : `tests/test_fleet.py` re-reads it from the shipped Deployments.
 SMALLEST_POD_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
 
-#: How much of that limit a *backlog of sessions* may hold. A session is overhead, not work: it is
-#: what is left over from turns nobody finished, and the pod's memory is for the corpus it serves
-#: and the calls in flight. An eighth is the budget, which leaves the reaper's own steady state
-#: (~1,800 sessions at Chemclaw3's ~1/s arrival and a 1,800 s timeout) above the ceiling — that is
-#: deliberate and is the trade this bound exists to make: a pod that is *fully* abandoned refuses
-#: new handshakes, and losing one turn is cheaper than the OOMKill that takes every session in the
-#: pod with it, a four-hour CREST search included.
+# : How much of that limit a backlog of sessions may hold. Sessions are leftovers, not work; a fully
+# : abandoned pod refusing handshakes is cheaper than an OOMKill taking every session with it.
 SESSION_BACKLOG_BUDGET_BYTES = SMALLEST_POD_MEMORY_LIMIT_BYTES // 8
 
-#: The ceiling on concurrent sessions, derived from the two numbers above and rounded *down* to a
-#: round figure so the budget is a bound rather than a target: 1,024 sessions is 59.3 MB against a
-#: 64 MiB budget. Overridable with `MCP_MAX_SESSIONS`; `0` turns the ceiling off, which is the
-#: shape a deployment would choose only to reproduce the unbounded behaviour deliberately.
-#: `tests/test_sessions.py` re-derives it, so lowering `SESSION_COST_BYTES` or raising this
-#: without the other cannot pass.
+# : The ceiling on concurrent sessions: the budget over the per-session cost, rounded down.
+# : `MCP_MAX_SESSIONS` overrides it; `0` turns it off. `tests/test_sessions.py` re-derives it.
 DEFAULT_MAX_SESSIONS = 1024
 
-#: What a refused handshake answers with. 503 is the only status `/mcp` returns for this reason —
-#: upstream answers 404 for an unknown session, 200 for a served one, 401/413 from the middleware
-#: above — so a client needs nothing from the body to tell the cases apart. `Retry-After` says the
-#: refusal is transient, which is the one thing a caller can act on.
+# : A refused handshake's status — the only reason `/mcp` returns 503 — with `Retry-After` marking
+# it
+# : transient.
 AT_CAPACITY_STATUS = 503
 
-#: What `Retry-After` tells a refused caller, in seconds. It shipped at **1**, which is the one
-#: value the pod cannot honour: the slots a full pod is holding are refunded no earlier than
-#: `MCP_SESSION_UNUSED_TIMEOUT_SECONDS` (a handshake nobody followed up) or
-#: `MCP_SESSION_IDLE_TIMEOUT_SECONDS` (a conversation that stopped), and until then every retry is
-#: refused again. Derived rather than chosen: a refusal costs this pod 0.8 ms of its own CPU
-#: (measured over one shared connection against the real app, 50 refusals, median 0.792 ms), so
-#: `DEFAULT_MAX_SESSIONS` displaced callers all retrying on this interval spend
-#: `1024 x 0.0008 / R` of a core on being told no. At the shipped 1 s that is **0.8 of a core** —
-#: on a pod limited to two, the refusal path becomes the load and starves the sessions that are
-#: still working. 10 s holds it under a tenth of a core, and is short enough that a caller whose
-#: turn is still worth having has not given up. It is *not* raised to the reclaim horizon: a pod
-#: that is merely busy frees slots as callers finish, in seconds, and a minute-long `Retry-After`
-#: would turn a two-second saturation into a minute-long outage for every client that obeyed it.
+# : `Retry-After` for a refused caller, in seconds. Long enough that a full ceiling of retrying
+# : callers costs the pod under a tenth of a core (a refusal is ~0.8 ms), short enough that a merely
+# : busy pod's freed slots are reused promptly.
 AT_CAPACITY_RETRY_AFTER_SECONDS = 10
 
-#: How often a pod that is refusing handshakes says so in its log. The counter is exact and
-#: per-refusal; the log is for a human, and at the arrival rates this ceiling exists to survive a
-#: line per refusal is hundreds a second of one repeated sentence.
+# : How often a refusing pod logs it; the counter is exact per refusal.
 REFUSAL_LOG_INTERVAL_SECONDS = 10.0
 
-#: JSON-RPC reserves -32000..-32099 for server-defined errors. Upstream spends `INVALID_REQUEST`
-#: (-32600) on "session not found", and re-using it would make a full pod indistinguishable from a
-#: stale session id in the body — which is exactly the confusion the status code avoids, so the
-#: body must not reintroduce it.
+# : A server-defined JSON-RPC code; upstream's -32600 means "session not found", which a full pod
+# : must not be confused with.
 _AT_CAPACITY_CODE = -32000
 
 
 def session_idle_timeout() -> float | None:
     """Seconds a session may go unused before it is terminated, or `None` for no reaping.
 
-    `MCP_SESSION_IDLE_TIMEOUT_SECONDS` is the knob; `0` restores upstream's unbounded default,
-    which is the shape a deployment would want only to reproduce a leak deliberately.
+    `MCP_SESSION_IDLE_TIMEOUT_SECONDS`; `0` restores upstream's unbounded default.
     """
     raw = os.environ.get("MCP_SESSION_IDLE_TIMEOUT_SECONDS", "").strip()
     if not raw:
@@ -247,11 +131,8 @@ def session_idle_timeout() -> float | None:
 def session_unused_timeout(idle: float) -> float:
     """Seconds a just-minted session may sit unused before it is reaped.
 
-    `MCP_SESSION_UNUSED_TIMEOUT_SECONDS` is the knob. It is clamped to `idle` rather than allowed
-    to exceed it — a "first lease" longer than the ordinary one is not a shorter lease, and a
-    deployment that wants the old behaviour asks for it by setting the two equal. Unparseable
-    values fall back and say so, the shape both knobs above use; `0` means "no separate first
-    lease", which is that same request spelled differently.
+    `MCP_SESSION_UNUSED_TIMEOUT_SECONDS`, clamped to `idle`; `0` means no separate first lease.
+    Unparseable values fall back to the default and log it.
     """
     raw = os.environ.get("MCP_SESSION_UNUSED_TIMEOUT_SECONDS", "").strip()
     if not raw:
@@ -271,11 +152,8 @@ def session_unused_timeout(idle: float) -> float:
 def _current_transport(server: FastMCP) -> tuple[str, Any] | None:
     """The session id and transport of the session this tool call is being served on.
 
-    `request_ctx` is set per JSON-RPC message and carries the ASGI request, which is where the
-    session id lives; the transport holding the idle scope is only reachable through the session
-    manager's own instance map. Returns `None` whenever any of that is absent — a direct call in a
-    test, a stateless server, or a deployment that has turned reaping off — so the caller runs the
-    tool unchanged.
+    `None` when unavailable (a direct call in a test, a stateless server, reaping off), and the tool
+    then runs unchanged.
     """
     headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
     if headers is None:
@@ -296,15 +174,9 @@ def _current_transport(server: FastMCP) -> tuple[str, Any] | None:
 def _reassert_hold_after_upstreams_push(transport: Any, *, held: Callable[[], bool]) -> None:
     """Put the hold back after every request upstream pushes the deadline for.
 
-    Upstream's push runs at the top of `_handle_stateful_request` and then delegates to
-    `transport.handle_request`, so wrapping *that* is the only seam that runs after the deadline has
-    been overwritten and before the request is served. Wrapping the manager instead would run
-    before the push and be undone by it, which is the shape of the defect rather than its fix.
-
-    Installed once per transport, when that session first takes a hold, and it dies with the
-    transport — a set of session ids in a closure would outlive them, which is the leak this module
-    exists to close. `held` is read at request time, not at install time: the wrapper stays for the
-    life of the session and writes nothing once the last call has returned.
+    Upstream pushes the deadline in `_handle_stateful_request` and then calls
+    `transport.handle_request`; wrapping the latter is the only seam after the push and before the
+    request is served. Installed once per transport, dying with it; `held` is read at request time.
     """
     if getattr(transport, _REASSERTED, False):
         return
@@ -323,15 +195,8 @@ def _reassert_hold_after_upstreams_push(transport: Any, *, held: Callable[[], bo
 def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
     """Suspend a session's idle deadline while any tool call on it is running.
 
-    Wraps `_tool_manager.call_tool`, the seam `connector_app`'s other per-call behaviours already
-    use, and lands outside them because the session manager it needs only exists once
-    `streamable_http_app()` has been called. Ordering is immaterial here: every one of those
-    wrappers brackets the same tool body, and this one is not describing the call, only keeping its
-    session alive while it runs.
-
-    The count is per session because one session may carry concurrent calls: the deadline is
-    restored by the last one to return, not the first. It is also what the re-assert reads, so the
-    two writers agree on one number rather than each keeping its own.
+    Counted per session, so concurrent calls restore the deadline only when the last returns; the
+    re-assert reads the same count.
     """
     manager = getattr(server, "_tool_manager", None)
     if manager is None:  # pragma: no cover - see `app._bind_caller_per_tool_call`
@@ -363,22 +228,10 @@ def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
 def _drop_terminated_sessions(server: FastMCP) -> None:
     """Reclaim sessions a polite `DELETE` terminated, which upstream's own cleanup will not.
 
-    **The reaper closes the abandoned half and nothing closed the polite one**, which is the
-    happy path: Chemclaw3 sends its `DELETE` from a `finally`. Upstream's only unconditional
-    removal is in `run_server`'s `finally`, guarded by `and not http_transport.is_terminated` —
-    and `terminate()` sets that flag as its first statement, so the DELETE path takes exactly the
-    branch that skips the `del`. The entry, its transport and everything they hold stay in
-    `_server_instances` for the life of the process, and no idle deadline can reach them because
-    the scope's task is already gone.
-
-    Measured before this: 300 sessions, each `initialize` + `tools/call` + `DELETE`, left
-    **300 of 300** in the map, every one `is_terminated`. An abandoned session in the same run was
-    reaped correctly, which is why the half that works hid the half that does not.
-
-    A sweep rather than a hook on `terminate`, for two reasons. It covers a session that never
-    called a tool, which the per-transport wrappers above never see; and it needs no second
-    guess about which of upstream's paths set the flag. It is O(live sessions) on a map this
-    function is what keeps small, so the cost is bounded by its own effect.
+    Upstream removes a session only if it is *not* `is_terminated`, and `terminate()` sets that flag
+    first, so a `DELETE`d session stays in the map forever. A sweep, not a hook on `terminate`, so
+    it
+    also covers sessions that never called a tool; O(live sessions).
     """
     try:
         instances = server.session_manager._server_instances
@@ -395,10 +248,7 @@ def _drop_terminated_sessions(server: FastMCP) -> None:
 def _reclaim_after_every_request(server: FastMCP) -> None:
     """Sweep terminated sessions once per request, on the manager's own ASGI entry.
 
-    The manager's `handle_request` is the one seam every request passes through — including a
-    `DELETE` on a session that never called a tool, which is why this is here rather than on the
-    per-transport wrapper `_reassert_hold_after_upstreams_push` installs. After the sweep runs,
-    the request that terminated a session is the request that reclaims it.
+    Every request passes here, so the request that terminates a session also reclaims it.
     """
     manager = server.session_manager
     wrapped = manager.handle_request
@@ -415,23 +265,10 @@ def _reclaim_after_every_request(server: FastMCP) -> None:
 async def _discard_an_unusable_session(server: FastMCP, session_id: str) -> None:
     """Close a session upstream minted for a request it then refused.
 
-    Upstream mints on the *absence* of the session-id header and nothing else — not the method, not
-    the body — so a bare `DELETE /mcp`, a bare `GET /mcp`, a `ping` with no session id and a
-    malformed body each answer **400 Bad Request** and each leave a fully-registered session
-    behind. Measured against the real app: `live 0 -> 1` for every one of those four, and a bare
-    `DELETE` at **476 requests/s**, which fills the shipped 1,024-session ceiling in about two
-    seconds using the cheapest request anybody can construct. Not one of those sessions can ever be
-    used: the caller was told its request was bad, and a session whose `initialize` never succeeded
-    serves nothing.
-
-    They are nameable, which is what makes this exact rather than a heuristic: upstream puts
-    `mcp-session-id` on the 400 as well as on the 200, so the response names the session it just
-    orphaned and no before/after diff of the instance map — which another request may have written
-    to concurrently — is needed.
-
-    `terminate()` first and then the `pop`, in that order and both: the pop alone would leave the
-    session's anyio task blocked in `Server.run` forever, and `terminate()` alone is what
-    `_drop_terminated_sessions` exists because upstream does not follow with a `del`.
+    Upstream mints whenever the session-id header is absent, so a bare `DELETE`/`GET`, a sessionless
+    `ping` or a malformed body each answer 400 and leave an unusable session that would fill the
+    ceiling. The 400 carries the minted `mcp-session-id`, so it is named exactly. `terminate()` then
+    `pop`: both are needed to end the task and free the entry.
     """
     try:
         instances = server.session_manager._server_instances
@@ -447,39 +284,11 @@ async def _discard_an_unusable_session(server: FastMCP, session_id: str) -> None
 def _settle_a_minted_session(server: FastMCP, *, unused: float | None) -> None:
     """Give a just-minted session a short lease, and discard one that was minted by mistake.
 
-    **A handshake is not a conversation.** The idle timeout is 1,800 s because that is the right
-    bound on a session a chemist is between tool calls on; it is three orders of magnitude too
-    generous for one that was minted and never spoken to again. That gap is what makes the ceiling
-    one caller's denial-of-service rather than a memory bound: measured, 1,024 handshakes take
-    about four seconds to open and the slots are refunded no earlier than thirty minutes later,
-    during which every other caller is refused. Shortening only the *unused* lease costs a real
-    client nothing, because upstream already pushes the deadline to the full timeout on every
-    request for an existing session, and an MCP client sends `notifications/initialized`
-    microseconds after the handshake returns.
-
-    So this wrapper does two things to a minting request, both decided from the response upstream
-    wrote: if it was an error, the session it minted is unusable and is discarded on the spot; if
-    it was served, the session starts on the short lease and upstream's own push promotes it.
-
-    **`unused=None` asks for the discard alone, and that is not a convenience.** This wrapper was
-    installed only from inside `apply_session_idle_timeout`'s reaping branch, so
-    `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0` — which `apply_session_ceiling`'s own docstring calls a
-    *supported* configuration — installed neither half. A session upstream mints for a request it
-    then answers 400 is unusable whether or not anything is reaping, and it is not `is_terminated`,
-    so the ceiling's own sweep cannot see it either. Driven on `servers/props` with the timeout off
-    and `MCP_MAX_SESSIONS=8`: seven bare `DELETE /mcp` left `live = 7`, one real handshake took the
-    eighth slot, and every handshake after that was **503 for the life of the process** — with
-    `/healthz` and `/livez` both answering 200, so nothing restarts the pod. There is no lease to
-    shorten when nothing reaps, which is why the second half stays off rather than being given a
-    number it cannot enforce.
-
-    A session that has received any request at all is marked, and the short lease is never applied
-    to a marked one — that is not decoration, it is what closes the window between the mint
-    response being written and this code running. A client that read its session id off that
-    response and immediately started a tool call would otherwise have the hold-open deadline
-    (`math.inf`) overwritten with 60 s, and the call cancelled from inside the transport with no
-    error written anywhere, which is the exact failure `_hold_open_during_tool_calls` exists to
-    prevent.
+    Decided from upstream's response: an error response's session is discarded; a served one starts
+    on the `unused` lease, which upstream's push on the next request promotes to the idle timeout.
+    `unused=None` installs the discard alone, which is needed even with reaping off. A session that
+    has received any further request is marked and never shortened, so a call started immediately
+    after the handshake cannot have its hold overwritten.
     """
     manager = server.session_manager
     wrapped = manager.handle_request
@@ -535,10 +344,7 @@ def _start_the_short_lease(server: FastMCP, session_id: str, *, unused: float) -
 def max_sessions() -> int | None:
     """How many sessions this process will hold at once, or `None` for no ceiling.
 
-    `MCP_MAX_SESSIONS` is the knob; `0` restores the unbounded behaviour, which a deployment would
-    ask for only to reproduce the exhaustion this bound exists to stop. A value that is not an
-    integer is a misconfiguration rather than a licence to serve unbounded, so it falls back to the
-    default and says so — the same shape `session_idle_timeout` uses one function up.
+    `MCP_MAX_SESSIONS`; `0` is unbounded. A non-integer falls back to the default and logs it.
     """
     raw = os.environ.get("MCP_MAX_SESSIONS", "").strip()
     if not raw:
@@ -554,11 +360,8 @@ def max_sessions() -> int | None:
 def _would_mint_a_session(scope: Scope) -> bool:
     """Whether this request is one that creates a session rather than using an existing one.
 
-    Upstream's `_handle_stateful_request` branches on the `mcp-session-id` header alone: absent, it
-    mints a transport and registers it; present, it either serves that session or answers 404. So
-    the header is the whole test, and it is read here rather than inferred from the method or the
-    JSON-RPC body — a `GET` or a `DELETE` with no session id takes the same minting branch, and
-    reading the body would mean consuming the ASGI receive channel before upstream needs it.
+    Upstream mints exactly when the `mcp-session-id` header is absent, whatever the method or body,
+    so the header is the whole test and the body is never read.
     """
     return scope.get("type") == "http" and _session_id_in(scope.get("headers", [])) is None
 
@@ -566,9 +369,7 @@ def _would_mint_a_session(scope: Scope) -> bool:
 def _session_id_in(headers: Iterable[tuple[bytes, bytes]]) -> str | None:
     """The `mcp-session-id` an ASGI header list carries, or `None`. Case-insensitive, as HTTP is.
 
-    Used for both directions of one request: the id a caller presents (absent means a session is
-    about to be minted) and the id upstream puts on the response (which names the session that
-    request just minted, on an error response as much as on a served one).
+    Read from both the request (absent means a mint) and the response (names the minted session).
     """
     for name, value in headers:
         if name.decode("latin-1").lower() == MCP_SESSION_ID_HEADER.lower():
@@ -605,59 +406,20 @@ async def _refuse(scope: Scope, receive: Receive, send: Send, *, ceiling: int) -
 def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
     """Refuse a new session once `max_sessions()` of them are already open.
 
-    Installed on the session manager's own ASGI entry, which is the last seam that runs before
-    upstream decides whether to mint a transport — and the only one where a refusal costs nothing,
-    because no session, no task and no memory object stream exist yet. That is what makes this
-    admission control rather than a clock: nothing is abandoned mid-flight, because nothing was
-    started.
+    Installed on the session manager's ASGI entry, before upstream mints anything, so a refusal
+    costs
+    nothing. Terminated sessions are swept first, which matters when reaping is off.
 
-    **Terminated sessions are swept before the count is taken, and the reason is narrower than it
-    first looks.** `_reclaim_after_every_request` already sweeps after every served request, so on
-    the shipped configuration this one finds nothing — a `DELETE` is reclaimed by the request that
-    performed it, long before the next handshake counts anything. The case it exists for is
-    `MCP_SESSION_IDLE_TIMEOUT_SECONDS=0`: that turns `apply_session_idle_timeout` off entirely, and
-    the reclaim sweep goes with it, so without this line a pod whose callers all said goodbye would
-    refuse at a ceiling of corpses — a ceiling turning a *supported* configuration into a
-    permanently full pod. It is written down this way because it was first written down the other
-    way, and a mutation removing the call left every test green.
-
-    The sweep is O(live sessions) on a map this ceiling is what keeps small.
-
-    Wrapped *outside* `_reclaim_after_every_request` so a refused request never reaches it — there
-    is nothing to reclaim on a request that was not served, and the sweep above has already run.
-
-    **The slot is taken before the await, not derived from a dict upstream fills afterwards**, and
-    the first version of this function got that wrong in the one way that matters. `live` was
-    `len(manager._server_instances)` alone, read on the ASGI entry — but upstream registers the
-    session inside `_handle_stateful_request`, behind `async with self._session_creation_lock`,
-    several awaits later. Every concurrent handshake therefore observed the *pre-burst* count and
-    every one of them was admitted. Measured against the real app under uvicorn, all handshakes
-    released from one `threading.Barrier`: a ceiling of 8 admitted **64 of 64** and held 64 live
-    sessions, and a ceiling of 64 admitted **256 of 256**. A serial caller was bounded correctly,
-    which is why every test passed — the saturation probe filled the pod one handshake at a time
-    and only burst against an already-full pod, so it never opened the window. A burst is the exact
-    adversary the ceiling was written for: one client on loopback opens 261 handshakes a second.
-
-    So an admitted handshake takes a *reservation* — an integer this function owns, incremented
-    under a `threading.Lock` with no `await` between the read and the increment, the same shape
-    `servers/calc/src/chemclaw_mcp_calc/engine/admission.py` uses one layer down — and the
-    reservation is handed over to `_server_instances` the moment upstream sends the response,
-    because upstream registers the transport strictly before it can write a byte. `send` is watched
-    for that handover rather than the request's return, so a request that holds its connection open
-    (a sessionless `GET`, which upstream mints for) does not hold a second slot for the life of the
-    stream.
-
-    **The count stays derived from the map, and that is what keeps a reservation from leaking.**
-    The reservation covers only the window between the check and the registration — it is released
-    in a `finally` as well, so an exception, a cancellation or a client hang-up cannot strand one —
-    and everything after that window is `len(_server_instances)`, which a reap, a `DELETE` or a
-    crash empties on its own. A counter that *replaced* the map would have to be decremented on
-    every one of those paths, and the one it missed would wedge the pod permanently.
+    Upstream registers a session several awaits after the entry, so concurrent handshakes would all
+    see the pre-burst count. An admitted handshake therefore takes a reservation under a
+    `threading.Lock` with no await between check and increment; it is released when upstream sends
+    the response (by which point the session is in the map) or in a `finally`. The live count is
+    otherwise derived from the instance map, so a reap, `DELETE` or crash can never leak a slot.
 
     Args:
-        server: The `FastMCP` whose session manager is being bounded. Must already have had
-            `streamable_http_app()` called on it, which is what builds that manager.
-        name: The server's name, for the metric labels and the one log line an operator reads.
+        server: The `FastMCP` whose session manager is bounded; `streamable_http_app()` must have
+            been called already.
+        name: The server's name, for the metric labels and log line.
 
     Returns:
         The ceiling applied, or `None` if a deployment has turned it off.
@@ -680,13 +442,8 @@ def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
     def warn_that_the_pod_is_full() -> None:
         """Say the pod is full, at most once per `REFUSAL_LOG_INTERVAL_SECONDS`.
 
-        A refusal costs the pod 0.8 ms and the client is told to come back in
-        `AT_CAPACITY_RETRY_AFTER_SECONDS`, so a pod that is genuinely full is refusing everything
-        it displaced — hundreds of times a second at the shipped ceiling. A line each would bury
-        every other line in the pod's log, including the ones that say *why* it is full. The exact
-        per-refusal number is `chemclaw_mcp_sessions_refused_total`, which is incremented whether
-        or not this prints; no count is restated here, because a count of a window that has not
-        closed yet is a number nobody can act on.
+        The exact count is `chemclaw_mcp_sessions_refused_total`; a line per refusal would bury the
+        log.
         """
         nonlocal warned_at
         now = time.monotonic()
@@ -755,31 +512,24 @@ def apply_session_ceiling(server: FastMCP, *, name: str) -> int | None:
 def apply_session_idle_timeout(server: FastMCP) -> float | None:
     """Give `server`'s session manager an idle timeout, and hold it off during tool calls.
 
-    Called after `FastMCP.streamable_http_app()`, which is what constructs the manager lazily.
-    Setting the attribute rather than rebuilding the manager with the keyword is deliberate: every
-    other constructor argument is upstream's business and restating them here would silently drop
-    whichever one upstream adds next. Both readers of `session_idle_timeout` — the request handler
-    that pushes the deadline and the session task that arms it — read the attribute at run time.
-
-    Stateless servers are skipped: upstream refuses the combination outright, because a stateless
-    transport keeps no session to expire. No server in this fleet is stateless today.
+    Called after `streamable_http_app()` builds the manager; sets the attribute rather than
+    rebuilding, so upstream's other constructor arguments are untouched. Stateless servers are
+    skipped
+    (upstream refuses the combination).
 
     Returns:
-        The timeout applied, or `None` if reaping is off or the server is stateless. `None` no
-        longer means nothing was installed: with reaping off, the discard of sessions upstream mints
-        for requests it refuses still is, because that is a correctness fix rather than a reaping
-        policy.
+        The timeout applied, or `None` if reaping is off or the server is stateless. With reaping
+        off
+        the discard of mis-minted sessions is still installed.
     """
     if server.settings.stateless_http:  # pragma: no cover - no stateless server in this fleet
         return None
     timeout = session_idle_timeout()
     report_bound("MCP_SESSION_IDLE_TIMEOUT_SECONDS", timeout)
     if timeout is None:
-        # **Reaping off is not "install nothing", and it used to be.** The discard of a session
-        # upstream minted for a request it then refused is not a reaping policy — that session can
-        # never be used by anybody and is not `is_terminated`, so neither the idle deadline nor
-        # `apply_session_ceiling`'s sweep would ever reach it. See `_settle_a_minted_session`, which
-        # carries the measurement: seven bare `DELETE /mcp` wedged an eight-session pod permanently.
+        # Reaping off still installs the discard: a mis-minted session is reachable by neither the
+        # idle
+        # deadline nor the ceiling's sweep, and would fill the ceiling permanently.
         _settle_a_minted_session(server, unused=None)
         return None
     server.session_manager.session_idle_timeout = timeout

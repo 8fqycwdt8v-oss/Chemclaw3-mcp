@@ -1,64 +1,16 @@
 """How many semi-batch integrations this server accepts at once — a caller past it is refused.
 
-`semibatch_accumulation_profile` is the one tool here that does real work. The other five are closed
-form and cost microseconds; this one integrates, and since `reactors._steps_for_stability` derives
-the step count from the problem rather than fixing it, its cost is set by the *caller's* rate
-constant and dose time. The argument that this server owed no concurrency ceiling was made at a
-fixed 200 steps and 0.83 ms (`reactors.DEFAULT_INTEGRATION_STEPS`' comment), and it stopped being
-true of every dose when the floor arrived: the worst legal call runs just under
-`reactors.MAX_INTEGRATION_STEPS`.
+`semibatch_accumulation_profile` is the one tool that does real work: its RK4 step count is set by
+the caller's rate constant and dose time, so the worst legal call costs about
+`WORST_INTEGRATION_SECONDS` of CPU. The tool offloads with `asyncio.to_thread` so it never blocks
+the event loop (and `/healthz`); a pure-Python integration holds the GIL, so admitted ones run
+effectively one at a time and the server scales by replicas.
 
-**Measured, in the `cc3-gate` Linux image on a loaded 8-thread host (2026-09-26)**, a 1 h dose of
-5 mol into 0.10 volume against a co-reagent at 60, CPU time per call:
-
-    k = 0.02    1,552 steps    24 ms
-    k = 0.05    3,878 steps    58 ms
-    k = 0.5    38,780 steps   585 ms
-    k = 2.578 199,946 steps   1.8-3.4 s   (worst legal call; 49.6 MB traced, pre-sampling)
-
-The backlog row that queued this measured the same ceiling at ~1.2 s on a quieter machine, so the
-cost is a range and `WORST_INTEGRATION_SECONDS` is taken from the top of it rather than the bottom.
-
-**Two defects, not one, and the first is the one a ceiling alone would not have fixed.** The tool
-was a plain `def`, and FastMCP 1.x calls a synchronous tool *on the event loop*
-(`FuncMetadata.call_fn_with_arg_validation`: `return fn(**arguments)` with no thread hop). So one
-worst-case call stopped every other request on the process — every other tool call and the kubelet's
-`/healthz` probe, whose `timeoutSeconds` is 3 — for as long as it ran. A ceiling on a tool that runs
-on the loop would never trip, because two of them cannot be in flight at once; they queue on the
-loop instead, which is the thing this fleet's admission gates exist to refuse. So the tool now
-offloads with `asyncio.to_thread`, like every heavy tool in the fleet, and *then* the ceiling means
-something.
-
-**A pure-Python integration holds the GIL, so admitted integrations run one at a time** — the same
-shape `servers/chem/src/chemclaw_mcp_chem/engine/admission.py` measured for RDKit, for a different
-reason: CPython hands the GIL between CPU-bound threads every switch interval (5 ms), so N of them
-share one core's worth of interpreter however many cores the pod has. The offload buys latency
-isolation (the loop and the probe keep answering between switch intervals) and no throughput; this
-server scales by replicas.
-
-**So the ceiling is derived from the caller's budget.** N admitted worst-case integrations finish,
-serialised, after N x `WORST_INTEGRATION_SECONDS`; keeping that under half of `connector.yaml`'s
-`request_timeout` leaves the other half to the transport and to a slower node than the one measured.
-At 15 s and 2 s that is three. Memory does not enter it: the 49.6 MB traced above was one
-`AccumulationPoint` per step, and the integrator now keeps at most `reactors.PROFILE_POINTS` of them
-and tracks the peak inside its loop, so what an integration holds no longer scales with the step
-count the caller's rate constant sets. `tests/test_admission.py` holds the arithmetic against the
-manifest rather than a transcription of it.
-
-**This is admission control, not a clock**, for the reason `CLAUDE.md` gives: cancelling the
-awaiting coroutine does not stop the worker thread, so a wall clock would answer a caller who has
-gone while the integration kept burning. Refusing before any work starts orphans nothing, and a
-refusal is a `ValueError`, which `connector_app` passes to the caller verbatim.
-
-**The stable scheme came later and changes none of this arithmetic.** A dose past
-`MAX_INTEGRATION_STEPS` used to be refused; it is now integrated by an L-stable SDIRK at a fixed
-`reactors.STABLE_INTEGRATION_STEPS`
-(`D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused`). Below the ceiling RK4
-still answers, so the worst legal call is still the RK4 one above — re-measured 1,272 ms median on a
-loaded laptop against 1,292 ms before the change — and the newly answered band costs 46-89 ms a call
-on the same machine whatever the rate constant, well inside `WORST_INTEGRATION_SECONDS`. It did not
-remove the need for this gate, for the reason the gate's own record gave: the realistic `k = 0.5`
-case already sits at hundreds of milliseconds.
+The ceiling is derived from the caller's budget: N serialised worst-case integrations must finish
+inside half of `connector.yaml`'s `request_timeout` (`tests/test_admission.py` holds this against
+the manifest). It is admission control, not a clock: cancelling the awaiting coroutine does not
+stop the worker thread, while refusing before work starts orphans nothing. A refusal is a
+`ValueError`, which `connector_app` passes to the caller verbatim.
 """
 
 from __future__ import annotations
@@ -80,17 +32,16 @@ ADMISSION_MARKER = "__admission_gated__"
 #: docstring, rounded to the measurement's precision rather than to its best run.
 WORST_INTEGRATION_SECONDS = 2.0
 
-#: How many integrations may be in flight. Derived in the module docstring from the request budget:
-#: `floor(request_timeout / (2 * WORST_INTEGRATION_SECONDS))` at a 15 s budget. Overridable with
-#: `CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`, read in `tools.py`.
+# How many integrations may be in flight:
+# `floor(request_timeout / (2 * WORST_INTEGRATION_SECONDS))` at a 15 s budget. Overridable with
+# `CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`, read in `tools.py`.
 DEFAULT_MAX_CONCURRENT_INTEGRATIONS = 3
 
 
 class Admission(KitAdmission):
     """A count of integrations allowed in flight at once, refused rather than queued past it.
 
-    The counter, the clamp and the lock are `mcp_server_kit.limits.Admission`'s; what stays here is
-    the sentence, because the lever it names is this server's.
+    The counter and lock are `mcp_server_kit.limits.Admission`'s; this class supplies the wording.
     """
 
     unit = "integration"
@@ -106,8 +57,7 @@ class Admission(KitAdmission):
             The slot taken, for `Admission.admit` to give back when the work ends.
 
         Raises:
-            AtCapacityError: the ceiling is already reached. Worded for its receiver — an agent
-                reading a tool error, or Chemclaw3 backing off.
+            AtCapacityError: the ceiling is already reached.
         """
         charged = self.take().charged
         if charged is None:

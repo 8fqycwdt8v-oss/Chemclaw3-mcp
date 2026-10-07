@@ -1,24 +1,13 @@
 """Reading a species string, whole or not at all.
 
-**The parser is lenient in the one direction that matters here.** RDKit treats whitespace as the
-end of a structure and ignores the rest, so `"CCO junk"` is ethanol and `"CCO (2 vol)"` is ethanol —
-a malformed or concatenated string does not fail, it narrows to a *different, smaller molecule* than
-the caller submitted. It also skips a run of non-ASCII bytes at a string's edges, so `"°C"` is
-methane: prose is what produces that, and an ELN cell reading `` `80 °C` `` offers it as a
-structure.
+RDKit stops at whitespace and skips non-ASCII bytes at a string's edges, so `"CCO (2 vol)"` parses
+as ethanol and `"°C"` as methane. This server reads ELN and patent free text, so it must refuse such
+strings. The rules mirror `chem`'s `require_molecule`, transcribed because servers do not import
+each other.
 
-This server is the one that eats a multi-million-row corpus of ELN and patent-extracted free text —
-which is to say it is the one place concatenated strings actually come from — so it is the last
-place that should parse leniently. The rules are the sister `chem` server's
-(`chemclaw_mcp_chem.engine.chem.require_molecule`), transcribed rather than imported because the two
-are separate processes with separate dependency closures.
-
-**What differs is the answer to a bad string, and deliberately.** `chem` raises, because a chemist
-typed the string and is waiting. Here nothing raises: a patent extract's fiftieth species may be an
-OCR artefact and losing the other forty-nine over it is a worse answer than losing that one's
-(`roles._canonical_set` records the same argument). So this returns `None`, and every caller must
-keep "could not be read" distinguishable from "read it, and it carries nothing" — an empty group
-list stored for an unreadable species is counted as a negative by every later query.
+Unlike `chem`, a bad string returns `None` rather than raising, so one OCR artefact does not lose a
+whole reaction. Every caller must keep "could not be read" distinct from "read, and carries
+nothing", or an unreadable species is counted as a negative.
 """
 
 from __future__ import annotations
@@ -32,21 +21,16 @@ __all__ = ["read_molecule"]
 def read_molecule(smiles: str) -> Chem.Mol | None:
     """The parsed molecule, or `None` unless RDKit reads `smiles` **whole**.
 
-    Surrounding whitespace is stripped rather than refused: a leading newline is a copy-paste
-    artefact, not a second molecule. Whitespace *inside* the string is refused, because that is the
-    silent-truncation case; so is a non-ASCII character, tested on the string rather than on the
-    parsed molecule, since once RDKit has skipped the character nothing about the molecule says it
-    was ever there.
+    Surrounding whitespace is stripped; internal whitespace and any non-ASCII character are refused
+    (checked on the string, since the parsed molecule cannot show what RDKit skipped).
     """
     stripped = smiles.strip()
     if not stripped or any(character.isspace() for character in stripped):
         return None
     if not stripped.isascii():
         return None
-    # A megastring or a megamolecule is treated as "could not be read", the same lenient answer
-    # this server gives any unusable species — but the bound must precede canonicalisation, since
-    # `MolToSmiles` on a large linear molecule overflows the C stack (an uncatchable SIGSEGV) and
-    # one such row in a corpus scan would take the whole server down. See `mcp_server_kit.limits`.
+    # The size bound must precede canonicalisation: `MolToSmiles` on a huge linear molecule
+    # overflows the C stack (SIGSEGV) and would take the server down. See `mcp_server_kit.limits`.
     if smiles_length_error(stripped) is not None:
         return None
     mol = Chem.MolFromSmiles(stripped)

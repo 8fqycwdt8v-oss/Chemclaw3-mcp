@@ -1,11 +1,7 @@
 """`pyexec`: run a short Python analysis in a bounded, offline child process.
 
-One tool. The agent sends a program and a JSON payload; the program runs with numpy, pandas, scipy,
-matplotlib, sympy, scikit-learn, RDKit and OpenBabel importable, in a process that is killed by
-process group on a wall clock, holds no credential in its environment, and has no route off the pod.
-A jailed `open()` lets it read and write files under that one call's own scratch directory; nothing
-written there survives past the call.
-
-`engine/` is the whole capability and imports no transport. See `README.md` for the control list and
-— more importantly — for which of those controls are the security boundary and which are not.
+One tool. The program runs with the scientific stack importable, in a child killed by process group
+on a wall clock, with no credential in its environment and no route off the pod. A jailed `open()`
+confines file access to the call's own scratch directory, which does not outlive the call.
+`engine/` imports no transport. `README.md` says which controls are the security boundary.
 """
