@@ -1,10 +1,7 @@
 """ReactionT5 v2 forward predictor.
 
-Sagawa et al. 2024 — HuggingFace `sagawa/ReactionT5v2-forward`.
-Top-1 ≈ 97.5% on USPTO-MIT (the strongest published open transformer baseline).
-
-The model takes a reaction SMILES with empty product half: `REACTANTS>AGENTS>`,
-and emits the predicted product as the decoded sequence.
+Sagawa et al. 2024 — HuggingFace `sagawa/ReactionT5v2-forward`. Takes reactants and agents and emits
+the predicted product as the decoded sequence.
 """
 
 from __future__ import annotations
@@ -22,10 +19,9 @@ from ..base import BaseForwardPredictor
 logger = logging.getLogger(__name__)
 
 _MODEL_ID = "sagawa/ReactionT5v2-forward"
-# The immutable commit the build baked (see `scripts/fetch_models.py`). Loading pins the same SHA so
-# the served weights are provably the reviewed ones, and `local_files_only=True` forbids any hub
-# call at load — a metadata check an "offline" server would otherwise still make on first use, which
-# the armed guard turns into an error. Keep this in sync with `fetch_models.MODELS`.
+# The immutable commit the build baked; keep in sync with `fetch_models.MODELS`. Loading pins it,
+# with `local_files_only=True`, so the served weights are the reviewed ones and no hub call (which
+# the egress guard would refuse) is made.
 _MODEL_REVISION = "933114058cb2604dc1bf536dbebdfcefbe83d4fc"
 
 
@@ -127,10 +123,7 @@ try:
     import transformers  # noqa: F401
 
     register_forward(ReactionT5V2Forward())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         ReactionT5V2Forward.name,

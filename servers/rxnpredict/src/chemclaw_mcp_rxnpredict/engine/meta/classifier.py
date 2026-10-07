@@ -1,16 +1,8 @@
 """Lightweight SMARTS-based reaction classifier.
 
-Used by the meta-model to look up per-class trust priors (Mixture-of-Experts
-gating). Returns a single canonical class label for a (reactants, optional
-product) pair, or `None` when no rule matches.
-
-This is intentionally simple. For richer classification, swap in Rxn-INSIGHT's
-classifier when available (it's already a registered conditions predictor and
-exposes a `Reaction.get_class()` method on the wrapped object).
-
-The labels here mirror the buckets we publish per-class priors for in
-`Settings.model_trust_priors_by_class`. Add new entries as new classes are
-calibrated.
+Gives the meta-model one coarse class label per (reactants, optional product) for per-class trust
+priors, or `CLASS_OTHER` when no rule matches. Labels mirror the classes priors are published for;
+add one when a new class is calibrated.
 """
 
 from __future__ import annotations
@@ -40,10 +32,8 @@ CLASS_OTHER = "other"
 class _Rule:
     """A reaction-class rule.
 
-    All `reactant_smarts` patterns must match at least one reactant molecule.
-    When `product_smarts` is non-empty AND a product is supplied, each pattern
-    must additionally match the product. Each entry in the tuples is a single
-    SMARTS string (no rule-level OR — express OR by adding another _Rule).
+    Every `reactant_smarts` pattern must match some reactant; when `product_smarts` is non-empty and
+    a product is supplied, each must also match the product. Express OR as another rule.
     """
 
     label: str
@@ -51,9 +41,8 @@ class _Rule:
     product_smarts: tuple[str, ...] = ()
 
 
-# Every label a rule can produce, plus `other`. Exported because the vendored trust-priors file
-# names classes, and a typo there would silently give that class no weighting rather than failing —
-# `tests/test_dataset.py` checks the priors against this set.
+# Every label a rule can produce, plus `other`. `tests/test_dataset.py` checks the vendored priors
+# against it, since a misspelt class would silently get no weighting.
 ALL_CLASSES: frozenset[str] = frozenset(
     {
         CLASS_AMIDE_FORMATION,
@@ -127,10 +116,8 @@ _RULES: tuple[_Rule, ...] = (
             "[OX2H2]",
         ),
     ),
-    # Generic nucleophilic substitution on an alkyl halide. This rule has no
-    # product gate and matches broadly (any alkyl halide + anion), so it is
-    # placed LAST — it only fires as a fallback when no more-specific named
-    # reaction above matched, avoiding false positives on spectator halides.
+    # Generic SN on an alkyl halide: no product gate and broad, so it is last, a fallback that does
+    # not claim spectator halides.
     _Rule(
         label=CLASS_NUCLEOPHILIC_SUBSTITUTION,
         reactant_smarts=("[CX4][Cl,Br,I]", "[N-,O-,S-]"),
@@ -189,26 +176,9 @@ def _rule_matches(rule: _Rule, reactant_mols: list[Any], product_mols: list[Any]
 def _compiled(smarts: str) -> Any | None:
     """One SMARTS, compiled once per process. `None` for a pattern RDKit will not parse.
 
-    `Chem.MolFromSmarts` used to run on **every** invocation, for every pattern of every rule tried
-    until one matched — and `classify_reaction` is called per reaction by the aggregator's
-    trust-prior gating, so the parse was paid on the hot path of the thing this module exists for.
-    `servers/safety`'s `screen.py::_load_rules` is `lru_cache`d over its whole rule table for
-    exactly this reason, and says so: "every SMARTS is compiled exactly once per process rather
-    than on every screened molecule".
-
-    **What it is worth is a measurement and it is not large.** Measured at the commit that added
-    the cache: an amide-forming reaction, which matches the first rule and therefore compiles four
-    patterns, goes 113 µs → 102 µs (**1.11x**); a reaction that matches nothing, and so tries every
-    rule, goes 399 µs → 219 µs (**1.83x**). The honest reading is that this is the worst case being
-    halved rather than a hot loop being fixed, and the reason to do it anyway is that a per-call
-    parse is a cost that grows with the rule table while nothing about the call site changes.
-
-    Cached on the string rather than pre-compiled at import, because the rules are tried in order
-    and an early-matching reaction should not pay to compile the rest of the table. `@cache` is
-    unbounded and bounded in fact: the keys are the literals in `_RULES`.
-
-    The warning stays on the miss path and is now issued once per bad pattern rather than once per
-    call, which is the difference between a log line and a log flood.
+    `classify_reaction` runs per reaction during aggregation, so patterns are not re-parsed per
+    call. Cached lazily on the string so an early match does not pay for the rest of the table; the
+    key set is the literals in `_RULES`. A bad pattern warns once rather than per call.
     """
     from rdkit import Chem
 

@@ -1,23 +1,10 @@
 """Which bonds of a molecule can be broken, and what the two fragments are.
 
-**The consumer decides the shape.** Chemclaw3's `survey_bond_strengths` job takes a list of
-`BondCleavageSpec` — `atoms`, `bond`, `fragments` — and its calling template passes this tool's
-output straight through with a comment saying why: *"The field names on each cleavage match the
-job's own spec exactly, so this list passes through unchanged — a template cannot rename a field,
-and a near-miss here would need a model in the middle to re-type it."* So the field names below are
-a cross-repository contract, not a local choice, and `tests/test_cleavage.py` pins them.
-
-**Fragments carry their open shell explicitly.** A homolysis produces two radicals and the SMILES
-says so (`[CH3]`, `[OH]`), which is what lets the calculation run without a separately declared
-spin state — the job spec's own docstring records this as the reason. A heterolysis produces an
-anion and a cation, and which end takes the electrons is decided by electronegativity rather than
-left to the caller.
-
-**Only acyclic single bonds, and that is a real restriction rather than a simplification.** Breaking
-one bond of a ring does not produce two fragments; it produces one open-chain biradical, whose
-energy is not a bond dissociation energy in the sense anyone asks about ("which bond breaks first").
-Reporting ring bonds here would put entries in the survey that the survey's own arithmetic — a
-balanced reaction per bond — cannot express.
+The field names (`atoms`, `bond`, `fragments`) match Chemclaw3's `BondCleavageSpec` so the output
+passes straight into `survey_bond_strengths`; they are a cross-repository contract pinned by
+`tests/test_cleavage.py`. Homolysis fragments carry their radicals in the SMILES (`[CH3]`);
+heterolysis gives the electrons to the more electronegative end. Only acyclic single bonds:
+breaking a ring bond gives one biradical, not two fragments.
 """
 
 from __future__ import annotations
@@ -34,17 +21,12 @@ __all__ = ["MAX_CLEAVAGES", "BondCleavage", "CleavageSet", "enumerate_cleavages"
 
 CleavageMode = Literal["homolytic", "heterolytic"]
 
-# The bound on a whole-molecule survey. Every entry costs one reaction energy downstream — the job
-# spec calls a drug-sized survey "the expensive case this job exists for" — so past this the caller
-# should be naming the bonds rather than asking for all of them. A refusal, not a truncation: a
-# ranking over "the first 48 bonds the traversal reached" would report a weakest bond that is only
-# the weakest of an arbitrary subset.
+# The bound on a whole-molecule survey; each entry costs one reaction energy downstream. Refused,
+# never truncated: a ranking over an arbitrary subset would misreport the weakest bond.
 MAX_CLEAVAGES = 48
 
-# Pauling electronegativities, for deciding which fragment of a heterolysis keeps the electrons.
-# Only the elements a bench organic molecule breaks bonds between; an element absent here falls
-# back to the atomic-number comparison below, which orders the halogens and chalcogens correctly
-# and is the property that actually matters.
+# Pauling electronegativities, deciding which heterolysis fragment keeps the electrons; an absent
+# element falls back to the atomic-number comparison.
 _ELECTRONEGATIVITY: dict[str, float] = {
     "H": 2.20,
     "B": 2.04,
@@ -103,9 +85,7 @@ class CleavageSet(BaseModel):
 def _pair(mol: Chem.Mol, bond: Chem.Bond) -> tuple[Chem.Atom, Chem.Atom]:
     """The bond's two atoms, ordered so the *more* electronegative one comes second.
 
-    Ties break on atomic number, then on index, so the ordering is total and the same molecule
-    always yields the same fragment assignment — a heterolysis whose anion depended on traversal
-    order would give two different answers for one bond.
+    Ties break on atomic number, then index, so the fragment assignment never depends on traversal.
     """
 
     def key(atom: Chem.Atom) -> tuple[float, int, int]:
@@ -123,9 +103,7 @@ def _pair(mol: Chem.Mol, bond: Chem.Bond) -> tuple[Chem.Atom, Chem.Atom]:
 def _fragment_smiles(mol: Chem.Mol, bond: Chem.Bond, mode: CleavageMode) -> list[str] | None:
     """The two fragments as SMILES, or None if RDKit cannot make them into molecules.
 
-    None rather than an exception, because a bond whose fragments will not sanitise is one bond of
-    a survey and not a failed call — the caller drops it and keeps the rest, which is what makes a
-    whole-molecule survey robust on an unusual substrate.
+    None so the caller drops that one bond and keeps the rest of the survey.
     """
     donor, acceptor = _pair(mol, bond)
     broken = Chem.FragmentOnBonds(mol, [bond.GetIdx()], addDummies=False)
@@ -175,11 +153,7 @@ def _apply_mode(assignment: list[tuple[str, Chem.Mol]], mode: CleavageMode) -> l
 
 
 def _breakable(bond: Chem.Bond) -> bool:
-    """Whether this bond is one a dissociation survey can express.
-
-    Single, acyclic, and between two real atoms. The ring exclusion is argued in the module
-    docstring; the single-bond one is the same argument — breaking one component of a double bond
-    is not a dissociation into two fragments.
+    """Whether this bond is one a dissociation survey can express: single, acyclic, between real atoms.
     """
     return bond.GetBondType() == Chem.BondType.SINGLE and not bond.IsInRing()
 
@@ -187,19 +161,10 @@ def _breakable(bond: Chem.Bond) -> bool:
 def _distinct(mol: Chem.Mol, bonds: list[Chem.Bond]) -> list[Chem.Bond]:
     """One representative per symmetry-equivalent class of bond.
 
-    **This is a cost decision with a correctness consequence, not a tidiness one.** Ethanol has
-    three methyl C-H bonds that are the same bond by symmetry; enumerated separately they are three
-    entries in the survey, and `survey_bond_strengths` pays *one reaction energy each* for three
-    identical numbers. Worse than the waste: the ranking then reports three joint-weakest bonds and
-    a chemist reading it cannot tell whether that means "a degenerate set" or "the calculation ran
-    three times".
-
-    Equivalence is RDKit's canonical ranking with `breakTies=False`, which is the same mechanism
-    `torsions.py` uses to mint a stable handle — atoms related by symmetry share a rank. Two bonds
-    are one class when their ranked endpoints match as an unordered pair.
-
-    The representative is the lowest-indexed member, so the answer does not depend on traversal
-    order.
+    Equivalent bonds would each cost a reaction energy and show up as joint-weakest entries.
+    Equivalence is RDKit's canonical ranking with `breakTies=False`; two bonds are one class when
+    their ranked endpoints match as an unordered pair. The representative is the lowest-indexed
+    member.
     """
     ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
     seen: dict[tuple[int, int], Chem.Bond] = {}
@@ -215,23 +180,17 @@ def _distinct(mol: Chem.Mol, bonds: list[Chem.Bond]) -> list[Chem.Bond]:
 def enumerate_cleavages(smiles: str, mode: CleavageMode = "homolytic") -> CleavageSet:
     """Every acyclic single bond of `smiles`, with the fragments breaking it produces.
 
-    Hydrogens are made explicit first, because C-H bonds are the ones a radical-abstraction
-    question is usually about and an implicit-hydrogen graph has none of them to break.
+    Hydrogens are made explicit first so C-H bonds can be broken.
 
     Raises:
         InvalidSmilesError: `smiles` is not a molecule.
         ValueError: more breakable bonds than `MAX_CLEAVAGES`.
     """
-    # **Canonicalised before anything is enumerated, and that is the whole join.** `parent` is the
-    # only molecule the caller receives, so an index derived from the caller's own spelling names a
-    # different atom of it: measured, `OCC` reported `atoms=[0, 1], bond="O-C"`, and atoms 0 and 1
-    # of the returned `CCO` are C0-C1 — really bonded, in range, no error anywhere. That is the
-    # same failure `describe_atom_sites` records for phenol, and the reason it canonicalises first.
+    # Canonicalise before enumerating: the indices returned must address `parent`, the only molecule
+    # the caller receives, not the caller's own spelling.
     parent = require_canonical_smiles(smiles)
     mol = Chem.AddHs(require_molecule(parent))
-    # Each atom remembers its own index before fragmentation, which is how a fragment is matched
-    # back to the end of the bond it came from. RDKit renumbers within a fragment, so nothing else
-    # survives the split.
+    # Each atom records its index before fragmentation, since RDKit renumbers within a fragment.
     for atom in mol.GetAtoms():
         atom.SetIntProp("_bond_origin_idx", atom.GetIdx())
 

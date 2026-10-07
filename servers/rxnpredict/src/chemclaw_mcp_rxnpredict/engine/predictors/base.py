@@ -1,8 +1,7 @@
 """Predictor abstract base classes.
 
-Caching is transparent: when the prediction cache is enabled the base class
-serves cached results and writes new ones on a miss. Subclasses only need to
-implement `predict_sync` (and `load`).
+The base class serves and fills the in-process prediction cache when enabled; subclasses implement
+`predict_sync` and `load`.
 """
 
 from __future__ import annotations
@@ -26,15 +25,9 @@ class BasePredictor(ABC):
 
     def __init__(self) -> None:
         self._loaded = False
-        # The lazy load must happen once, not once per coroutine that arrived first.
-        #
-        # `if not self._loaded: await to_thread(self.load); self._loaded = True` straddles an await
-        # with nothing holding the gap, so three requests in the seconds after a restart measured
-        # three `load()` calls. For `reaction_t5_v2` that is three `from_pretrained` allocations of
-        # one checkpoint in a pod sized for one — an OOMKill, restarting into the same window — and
-        # the later loads rebind `_model`/`_tokenizer` under an earlier request already inside
-        # `predict_sync`. Constructed here rather than lazily because 3.10+ binds no loop at
-        # construction, so one lock per predictor instance is safe to build at import time.
+        # The lazy load must happen once, not once per coroutine that arrived first: concurrent
+        # loads of one checkpoint can OOM the pod and rebind the model under a running prediction.
+        # Safe to construct at import, since an `asyncio.Lock` binds no loop at construction.
         self._load_lock = asyncio.Lock()
 
     async def ensure_loaded(self) -> None:
@@ -64,14 +57,12 @@ class BaseForwardPredictor(BasePredictor):
     async def predict(self, reactants: str, top_k: int) -> list[ForwardPrediction]:
         """Async wrapper; offloads sync inference to a worker thread.
 
-        Wraps with the disk-backed prediction cache when enabled.
+        Served from and stored to the prediction cache when it is enabled.
         """
         from ..cache import get_cache  # local import to avoid early settings load
 
         cache = get_cache()
-        # One derivation per prediction. Asking the cache to derive it again on the way out
-        # canonicalises the same reaction twice, and counts one degraded answer twice when
-        # canonicalisation is the thing that is broken — see `cache`'s module docstring.
+        # One key derivation per prediction, so a broken canonicaliser is counted once.
         key = cache.key_forward(self.name, reactants, top_k)
         cached = cache.get(key)
         if cached is not None:
@@ -80,9 +71,8 @@ class BaseForwardPredictor(BasePredictor):
         await self.ensure_loaded()
         result = await asyncio.to_thread(self.predict_sync, reactants, top_k)
 
-        # Only cache non-empty results: an empty list usually signals a transient
-        # soft failure (e.g. an LLM returning unparseable JSON), and caching it
-        # would silently drop the predictor from the ensemble for the whole TTL.
+        # Only cache non-empty results: an empty list is usually a transient soft failure, and
+        # caching it would drop the predictor from the ensemble until the entry is evicted.
         if result:
             cache.set(key, [p.model_dump() for p in result])
         return result

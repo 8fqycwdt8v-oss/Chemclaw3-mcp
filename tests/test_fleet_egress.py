@@ -67,22 +67,39 @@ def test_the_lint_ban_names_its_exemptions_and_they_are_the_scan_s_own_boundary(
 # this code's own doing rather than a component going missing. A `record()` there would publish a
 # degradation every time a caller sent an oversized body.
 BLIND_ANSWER_IS_ARGUED = {
-    "packages/mcp_server_kit/src/mcp_server_kit/auth.py:432",
+    "packages/mcp_server_kit/src/mcp_server_kit/auth.py::BodySizeLimit.__call__",
 }
 
 
 _BLIND = {"Exception", "BaseException"}
 
 
+def _enclosing(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> str:
+    """The dotted name of the classes and functions around `node`, stable across line moves."""
+    names: list[str] = []
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.append(node.name)
+    return ".".join(reversed(names)) or "<module>"
+
+
 def _blind_handlers_that_answer(roots: list[Path]) -> list[str]:
-    """Every blind `except` under `roots` that can return without re-raising and says nothing."""
+    """Every blind `except` under `roots` that can return without re-raising and says nothing.
+
+    Reported as `path::Qualified.name`, so an edit that moves lines does not move the allowlist.
+    """
     offences: list[str] = []
     for root in roots:
         for source in sorted(root.rglob("*.py")):
             relative = source.relative_to(ROOT).as_posix()
             text = source.read_text(encoding="utf-8")
             lines = text.splitlines()
-            for node in ast.walk(ast.parse(text, filename=str(source))):
+            tree = ast.parse(text, filename=str(source))
+            parents = {
+                child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+            }
+            for node in ast.walk(tree):
                 if not isinstance(node, ast.ExceptHandler):
                     continue
                 caught = (
@@ -105,7 +122,7 @@ def _blind_handlers_that_answer(roots: list[Path]) -> list[str]:
                     if isinstance(call, ast.Call)
                 ):
                     continue
-                offences.append(f"{relative}:{node.lineno}")
+                offences.append(f"{relative}::{_enclosing(node, parents)}")
     return sorted(offences)
 
 

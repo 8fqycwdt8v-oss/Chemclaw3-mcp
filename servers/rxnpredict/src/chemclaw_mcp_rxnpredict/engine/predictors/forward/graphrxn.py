@@ -1,9 +1,7 @@
 """GraphRXN forward predictor (placeholder wrapper).
 
-`jidushanbojue/GraphRXN` — graph neural network on 2D reaction structures
-(Yan et al. 2023, J. Cheminform.). Not on PyPI; users install the repo and
-checkpoints manually. This wrapper provides the plumbing so it slots into
-the meta-model once the repo is on PYTHONPATH.
+`jidushanbojue/GraphRXN` (Yan et al. 2023), a GNN on 2D reaction structures. Not on PyPI; it slots
+into the ensemble once the repo and checkpoints are installed.
 """
 
 from __future__ import annotations
@@ -43,8 +41,8 @@ class GraphRxnForward(BaseForwardPredictor):
                 f"GraphRXN checkpoint not found at {ckpt}. "
                 "Clone jidushanbojue/GraphRXN and place a trained model.pt at $GRAPHRXN_MODEL_PATH."
             )
-        # The official repo doesn't expose a clean Python API; users typically
-        # invoke `predict.py` as a script. We do a similar thing in-process.
+        # The repo has no clean Python API (it is usually run as `predict.py`); this does the same
+        # in-process.
         from graphrxn.model import GraphRXNPredictor  # type: ignore
 
         self._model = GraphRXNPredictor.load(ckpt)
@@ -55,8 +53,7 @@ class GraphRxnForward(BaseForwardPredictor):
         for i, item in enumerate(results[:top_k]):
             smi = item.get("smiles") if isinstance(item, dict) else item[0]
             score = item.get("score") if isinstance(item, dict) else item[1]
-            # A backend row with no SMILES or no score is dropped rather than crashing the
-            # ensemble: one malformed prediction must not cost the other models' votes.
+            # A malformed row is dropped so it cannot cost the other models' votes.
             if smi is None or score is None:
                 continue
             try:
@@ -78,10 +75,7 @@ try:
     import torch  # noqa: F401
 
     register_forward(GraphRxnForward())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         GraphRxnForward.name,

@@ -1,25 +1,16 @@
 """Meta-model aggregators for forward and conditions predictions.
 
-Strategy: Borda-style weighted rank voting with optional Mixture-of-Experts
-gating by reaction class.
+Borda-style weighted rank voting with optional gating by reaction class:
 
-  - For each candidate (canonical product SMILES or canonical condition tuple),
-    sum a contribution from every model that ranked it:
-        weight = effective_prior(model, class) * model_score * 1/rank
-  - `effective_prior` looks up per-class trust priors first (when a class can
-    be assigned), falling back to global priors.
-  - Sort candidates by total weight, descending.
-  - Ties broken by higher vote count.
-  - `consensus_score` is the candidate's share of the weight it *could* have had: every
-    voting model ranking it first at full confidence, i.e. `sum(effective_prior(m))`.
+  - Each candidate (canonical product SMILES or canonical condition tuple) sums, over every model
+    that ranked it, `effective_prior(model, class) * model_score * 1/rank`.
+  - `effective_prior` prefers per-class priors when a class is assigned, else global priors.
+  - Candidates sort by total weight, ties broken by vote count.
+  - `consensus_score` is the candidate's share of the attainable weight (every voter ranking it
+    first at full confidence, `sum(effective_prior(m))`), so a unanimous vote and a lone
+    low-confidence guess do not both score 1.0.
 
-That denominator is the whole point of the field. It used to be the top candidate's own
-weight, which made rank 1 score exactly 1.0 by construction — a five-model unanimous vote and
-a lone predictor that guessed a product at a per-token probability of 1e-4 came back with the
-identical `consensus_score: 1.0`. A confidence that cannot vary does not measure anything, and
-it was the field named `consensus_score` that an agent would quote.
-
-This requires no training data and degrades gracefully when models are missing.
+Needs no training data and degrades gracefully when models are missing.
 """
 
 from __future__ import annotations
@@ -40,9 +31,7 @@ from ..schemas import (
 from .classifier import CLASS_OTHER, classify_reaction
 from .trust_priors import effective_prior
 
-# The unit a condition vote is cast on: catalysts, solvents, reagents and a bucketed temperature,
-# flattened to something hashable. Named because it appears in three parallel dicts below, and an
-# anonymous `tuple` there says nothing about what the aggregator is counting.
+# The unit a condition vote is cast on: catalysts, solvents, reagents and a bucketed temperature.
 ConditionKey = tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], int | None]
 
 logger = logging.getLogger(__name__)
@@ -74,14 +63,12 @@ def aggregate_forward(
         if reaction_class == CLASS_OTHER:
             reaction_class = None
 
-    # `class_priors()` rather than the field: the field is the env override alone, and the
-    # vendored table is read lazily behind it so no import verifies a corpus.
+    # `class_priors()`, not the field: it lays the env override over the lazily read corpus.
     per_class = settings.class_priors()
 
     weights: dict[str, float] = defaultdict(float)
     voters: dict[str, set[str]] = defaultdict(set)
-    # The weight a candidate every voter ranked first at full confidence would carry. Summed over
-    # the models that actually answered, so a crashed predictor costs its vote and not the scale.
+    # Summed over models that answered, so a crashed predictor costs its vote, not the scale.
     attainable = 0.0
 
     for model_name, preds in per_model.items():
@@ -138,9 +125,7 @@ def _canon_set(items: Iterable[str]) -> tuple[str, ...]:
 def _temperature_bucket(t: float | None) -> int | None:
     """Bucket temperature into 10 °C bins using floor division.
 
-    floor() avoids round-half-to-even surprises near bin boundaries (where
-    e.g. 25 and 28 would otherwise land in different bins). Negative
-    temperatures stay correctly bucketed (-15 → -20, not -10).
+    Floor avoids round-half-to-even surprises and buckets negatives correctly (-15 → -20).
     """
     if t is None:
         return None
@@ -157,10 +142,9 @@ def aggregate_conditions(
 ) -> list[AggregatedConditionsPrediction]:
     """Borda-weighted voting across condition predictors.
 
-    Conditions are higher-dimensional than products. We treat the whole
-    (catalysts, solvents, reagents, temperature_bucket) tuple as the voting unit
-    so that "the same recipe" gets reinforced, and bucket temperature into 10 °C
-    bins to avoid trivial mismatches drowning out agreement.
+    The whole (catalysts, solvents, reagents, temperature bucket) tuple is the voting unit, so the
+    same recipe is reinforced; 10 °C bins keep trivial temperature differences from splitting
+    agreement.
     """
     reaction_class: str | None = None
     if reactants and settings.use_class_priors:
@@ -168,15 +152,13 @@ def aggregate_conditions(
         if reaction_class == CLASS_OTHER:
             reaction_class = None
 
-    # `class_priors()` rather than the field: the field is the env override alone, and the
-    # vendored table is read lazily behind it so no import verifies a corpus.
+    # `class_priors()`, not the field: it lays the env override over the lazily read corpus.
     per_class = settings.class_priors()
 
     weights: dict[ConditionKey, float] = defaultdict(float)
     voters: dict[ConditionKey, set[str]] = defaultdict(set)
     temps_for_key: dict[ConditionKey, list[float]] = defaultdict(list)
-    # See aggregate_forward: the denominator of consensus_score is what a candidate could
-    # attain, not what the winner attained.
+    # The `consensus_score` denominator is the attainable weight; see `aggregate_forward`.
     attainable = 0.0
 
     for model_name, preds in per_model.items():

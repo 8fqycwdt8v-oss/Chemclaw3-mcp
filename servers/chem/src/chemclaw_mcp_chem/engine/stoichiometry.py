@@ -1,12 +1,8 @@
 """Charge-table and green-metric arithmetic: what to weigh out, and what it costs in waste.
 
-Two calculations that share one input and are therefore written in one module: the charge table
-produces a `mass_g` per species, and the green metrics are computed from exactly those masses.
-Keeping them apart invited the mistake they are both vulnerable to — leaving the solvent out — and
-the row shape below is what stops it.
-
-Nothing here touches a transport. The wire models are pydantic because the values cross a tool
-boundary as structured content, which is a serialisation concern rather than a transport one.
+One module because the green metrics are computed from exactly the charge table's masses, and the
+row shape keeps the solvent from being left out of either. Pydantic models here are for the wire
+format, not a transport.
 """
 
 from __future__ import annotations
@@ -49,10 +45,9 @@ class ChargeRow(BaseModel):
     # Populated for solvents only — a reagent charged by mass has no volume to measure out.
     density_g_per_ml: float | None = None
     volume_ml: float | None = None
-    # **How this row's identity was established**, which is the fleet's "return provenance with the
-    # answer" applied where it matters most: a charge list is pasted into a batch record, and a
-    # reader cannot otherwise tell a curated table entry (`synonym`) from a structure the caller
-    # typed and this table has never seen (`smiles`). `ResolvedCompound.source`, carried through.
+    # How this row's identity was established (`ResolvedCompound.source`): tells a curated table
+    # entry (`synonym`) from a structure the caller typed (`smiles`) once pasted into a batch
+    # record.
     source: ResolutionSource
     # The dataset the density was read from, for the solvent rows that have one. A number a chemist
     # measures a volume against is not something to hand over unattributed.
@@ -112,9 +107,7 @@ def charge_table(
     if basis_mass_g <= 0:
         raise ValueError("basis_mass_g must be positive")
     if any(equiv <= 0 for equiv in equivalents):
-        # An equivalent count is a quantity, and it was the one quantity nobody checked: a
-        # transposed sign produced a row instructing the chemist to charge -219.65 g, in a table
-        # that otherwise reads as authoritative.
+        # A sign error would otherwise produce a negative mass in an authoritative-looking table.
         raise ValueError("every entry of equivalents must be positive")
     if any(volume <= 0 for volume in volumes):
         raise ValueError("every entry of volumes must be positive")
@@ -162,12 +155,10 @@ def charge_table(
 
 
 def _solvent_row(solvent: str, volumes: float, basis_mass_g: float, basis_mmol: float) -> ChargeRow:
-    """One solvent charge, converted from volumes to a real mass — or an honest refusal.
+    """One solvent charge, converted from volumes to a real mass — or a refusal.
 
-    Both refusals are errors rather than an `unresolved` entry, unlike an unrecognised reagent. The
-    asymmetry is deliberate: a chemist reads a charge list line by line and sees a missing reagent,
-    whereas a missing solvent leaves a table that looks complete and quietly halves the E-factor
-    and PMI computed from its masses. Neither a zero nor a guessed 1 g/mL is an acceptable stand-in.
+    Errors rather than an `unresolved` entry: a missing solvent leaves a table that looks complete
+    and understates E-factor and PMI. Neither zero nor a guessed density is an acceptable stand-in.
     """
     match = resolve_compound_name(solvent)
     if match is None:
@@ -201,13 +192,12 @@ def _solvent_row(solvent: str, volumes: float, basis_mass_g: float, basis_mmol: 
 def green_metrics(input_masses_g: list[float], product_mass_g: float) -> GreenMetrics:
     """E-factor and PMI from the charged masses and the isolated product mass.
 
-    E-factor is kg waste per kg product (Sheldon); PMI is total input mass per kg product, and the
-    two differ by exactly 1 by construction.
+    E-factor is kg waste per kg product (Sheldon); PMI is total input mass per kg product; the two
+    differ by exactly 1.
 
     Raises:
         ValueError: the product mass is not positive, an input mass is negative, or the total input
-            is below the product mass — mass cannot appear from nowhere, and silently reporting the
-            resulting negative E-factor would read as an implausibly green process.
+            is below the product mass.
     """
     if product_mass_g <= 0:
         raise ValueError("product_mass_g must be positive")

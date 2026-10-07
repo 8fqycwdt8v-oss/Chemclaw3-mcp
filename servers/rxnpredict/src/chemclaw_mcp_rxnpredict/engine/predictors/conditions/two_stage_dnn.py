@@ -1,15 +1,8 @@
-"""Two-stage DNN condition predictor (Chen & Li 2024).
+"""Two-stage DNN condition predictor (Chen & Li, J. Cheminform. 2024, 16:11).
 
-"Enhancing chemical synthesis: a two-stage deep neural network for predicting
-feasible reaction conditions" — J. Cheminform. 2024, 16:11.
-Pipeline:
-  Stage 1: multi-label classifier for reagent/solvent suggestion
-  Stage 2: ranking model that scores candidate combinations.
-73% top-10 exact match, temperature within ±20°C in 89% of cases.
-
-Upstream code is on the authors' supplementary materials; this wrapper assumes
-a `two_stage_dnn` Python package or local source on PYTHONPATH that exposes
-a `TwoStageConditionPredictor.predict(rxn_smiles, top_n)` API.
+Stage 1 is a multi-label classifier suggesting reagents and solvents; stage 2 ranks candidate
+combinations. Assumes a `two_stage_dnn` package on PYTHONPATH exposing
+`TwoStageConditionPredictor.predict(rxn_smiles, top_n)`.
 """
 
 from __future__ import annotations
@@ -78,10 +71,7 @@ try:
     import torch  # noqa: F401
 
     register_conditions(TwoStageDNNConditions())
-# BLE001: a module-level guard around an optional predictor's imports and construction.
-# Blind is the point - `mark_unavailable` classifies `exc` through
-# `mcp_server_kit.degradation` rather than reading its text, so an absent extra, a refused
-# egress and a broken checkpoint are three different causes and not one log line.
+# BLE001: guard around an optional predictor; `mark_unavailable` classifies `exc`.
 except Exception as exc:  # noqa: BLE001
     mark_unavailable(
         TwoStageDNNConditions.name,
