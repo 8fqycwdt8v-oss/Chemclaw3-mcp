@@ -121,11 +121,16 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 - [A resolved structure is written without a dative arrow](D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow.md)
 - [An unrecognised name is said in words](D-2026-10-02-an-unrecognised-name-is-said-in-words.md)
 
+## The record
+
+- [The record gets lean: decisions in ADRs, rules in CLAUDE.md, architecture in tests](D-2026-10-07-the-record-gets-lean.md)
+
 ## Retired
 
-Records about policing prose (counts, citations and paths in documents). Chemclaw3's
-`D-2026-10-07-the-architecture-programme` (decision 5) retired the tests behind them; they
-stay as history and bind nothing.
+Records about policing prose (counts, citations and paths in documents).
+[`D-2026-10-07-the-record-gets-lean`](D-2026-10-07-the-record-gets-lean.md), adopting Chemclaw3's
+`D-2026-10-07-the-architecture-programme` (decision 5), retired the tests behind them; they stay as
+history and bind nothing.
 
 - [A citation a squash merge retires is not provenance](D-2026-09-14-a-citation-a-squash-merge-retires-is-not-provenance.md)
 - [A citation with no path check sends the reader to the wrong file](D-2026-09-14-a-citation-with-no-path-check-sends-the-reader-to-the-wrong-file.md)

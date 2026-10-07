@@ -1,7 +1,6 @@
 # CLAUDE.md
 
-Current rules only. The *why* lives in [`docs/decisions/`](docs/decisions/), indexed on one page by
-[`docs/decisions/CURRENT.md`](docs/decisions/CURRENT.md).
+Current rules only; the *why* is in [`docs/decisions/CURRENT.md`](docs/decisions/CURRENT.md).
 
 ## What this repository is
 
@@ -33,8 +32,7 @@ package suffix (`chemclaw_mcp_<name>`), the manifest's `name:`, and the `CHEMCLA
 key. Required files: [`docs/adding-a-server.md`](docs/adding-a-server.md#the-files).
 
 A server hosted elsewhere (e.g. `retro`) owes the same contract: a classified manifest here, bearer
-auth on `/mcp` itself (verified against a running server — a mount bypasses parent dependencies), no
-egress, `/mcp` answering its Service name, and a `MODULES.md` row.
+on `/mcp` itself (verified live), no egress, `/mcp` answering its Service name, a `MODULES.md` row.
 
 ## Inside a server
 
@@ -53,8 +51,8 @@ transport installed; `tools.py` is the MCP surface; `app.py` is three lines over
 
 ## Authentication, identity and health
 
-- Bearer on `/mcp`; `/healthz`, `/livez`, `/metrics` are open and carry nothing about a caller (no
-  actor/session/argument label; a tool name only clamped to the served surface).
+- Bearer on `/mcp`; `/healthz`, `/livez`, `/metrics` are open and carry no actor, session or
+  argument label (a tool name only clamped to the served surface).
 - Every manifest declares `auth: {mode: bearer, token_env: ...}`, even on loopback; an unset
   `token_env` refuses every request. Each server's `tests/test_server.py` drives
   `assert_bearer_is_enforced` and `assert_manifest_matches` against its running listener.
@@ -70,13 +68,16 @@ transport installed; `tools.py` is the MCP surface; `app.py` is three lines over
 Data is on disk at build time or mounted read-only. **No outbound call at request time.** Four layers:
 
 1. **Runtime guard** (`mcp_server_kit/egress.py`, armed on import): refuses non-loopback connects,
-   sends and lookups (`arm()` is the list), logs, counts on `chemclaw_mcp_egress_refused_total` and
-   raises `EgressForbidden`. A path that answers with a component missing classifies the exception
-   through `mcp_server_kit/degradation.py`. Outside it by construction: child processes, `ctypes`,
-   `_socket.socket`, compiled extensions. `MCP_EGRESS_ALLOW` is empty in every shipped deployment.
-2. **Static scan** (`mcp_server_kit/no_egress.py`), AST-based, one test per server.
+   sends and lookups (`arm()` is the list), logs, counts on `chemclaw_mcp_egress_refused_total`,
+   raises `EgressForbidden`; a path answering with a component missing classifies it through
+   `degradation.py`. Outside it: child processes, `ctypes`, `_socket.socket`, compiled extensions.
+   `MCP_EGRESS_ALLOW` is empty in every shipped deployment; the `chemclaw_mcp_egress_guard_armed`
+   gauge makes a deployment with `MCP_EGRESS_GUARD=off` visible from a scrape.
+2. **Static scan** (`mcp_server_kit/no_egress.py`), AST-based, one test per server. A computed
+   `import_module(name)` is an offence until that server's test justifies it at its call site.
 3. **The suite runs with the guard armed** (root `conftest.py`); `make offline-run` removes the
-   network namespace and is the only cover for child processes and `ctypes`.
+   network namespace and is the only cover for child processes and `ctypes`. `make check` runs it
+   where the kernel allows an unprivileged network namespace and names it where it cannot.
 4. **Default-deny egress NetworkPolicy** per server, held fleet-wide by `tests/test_deploy_shape.py`.
 
 A capability that needs a live third-party API is rejected or rebuilt around a build-time snapshot
@@ -97,15 +98,15 @@ with every answer and `method` when there is more than one; refuse rather than a
 ## Cost and statelessness
 
 A server is **stateless request/response**: no job record, no resumption, no progress channel. A
-loop with state (a composite whose key names its own output) is a durable job in Chemclaw3; its parts
-ship here as separately keyed primitives (`servers/calc` is the example). A slow tool owes: a bound
-on its input, a `request_timeout` stating the real budget, a docstring saying what it costs, a
+loop with state (a composite whose key names its own output) is a durable job in Chemclaw3; its
+parts ship here as separately keyed primitives (`servers/calc` is the example). A slow tool owes: a
+bound on its input, a `request_timeout` stating the real budget, a docstring saying what it costs, a
 `calculation_key`-style probe if callers cache it, and an admission ceiling that counts what the pod
 spends (threads, not calls) and refuses promptly when full. Bounds live in the engine; a subprocess
-runs in its own process group, killed whole on timeout. The kit bounds sessions (`MCP_MAX_SESSIONS`).
-
-**Ports.** `MODULES.md` is the only port registry; claim the next free port in **8850–8899** there,
-in the PR that adds the server.
+runs in its own process group, killed whole on timeout. The kit bounds sessions
+(`MCP_MAX_SESSIONS`). Whether a tool is admission-gated does not follow the manifest's
+`read_only`/`state_changing` split. **Ports:** `MODULES.md` is the only registry; claim the next
+free port in **8850–8899** there, in the PR that adds the server.
 
 ## Never duplicate a Chemclaw3 capability
 
@@ -120,30 +121,29 @@ in the PR that adds the server.
 
 No DFT tier: no tool shelling out to ORCA/Psi4/Gaussian/NWChem or calling a hosted QM API. A
 capability leaves Chemclaw3 only as a *replacement* (same `name`, tools, arguments). Deliberate
-overlap is argued in the server's README.
+overlap is argued in the server's README. The two `CALCULATION_EPOCH` constants compose
+(`remote_key` folds Chemclaw3's over `calc`'s `params_hash`): a bump on either side invalidates all.
 
 ## The record and the queue
 
-- `docs/decisions/` — one file per decision, `D-YYYY-MM-DD-<slug>.md`, row in its README, from
-  [`TEMPLATE.md`](docs/decisions/TEMPLATE.md) (Context, Options, Decision, Consequences,
-  `Revisit when:`). An ADR is for a choice between options or a decline; a defect fix is a commit and
-  a test. A merged record is never edited except to add a `Superseded-by:` line. Every record ends
-  with `## What keeps it true` naming the tests that hold it.
+- `docs/decisions/` — one `D-YYYY-MM-DD-<slug>.md` per choice or decline (a defect fix is a commit
+  and a test), from [`TEMPLATE.md`](docs/decisions/TEMPLATE.md), row in its README; never edited
+  except to add `Superseded-by:`; ends with `## What keeps it true` naming its tests.
 - `docs/BACKLOG.md` — a queue, not a log: a closed row is deleted in the commit that closes it; every
   row names an anchor in the tree. No document here states a count of itself.
 
 ## Working here
 
 ```sh
-make install                # uv sync
 make check                  # lint + mypy --strict + suite with coverage + offline lane + audit
 make architecture-baseline  # import/handshake latency and prose share, to docs/
 make run-<server>           # one server on its manifest's port with a dev token
 ```
 
-- Python ≥ 3.11, `uv` workspace, `ruff` (line 100; `S`, `ASYNC`, `BLE`), `mypy --strict` incl. tests.
-- A blind `except Exception` that answers anyway classifies through `degradation`, carries the
-  `# noqa: BLE001` ruff asked for, or is argued in the fleet test's allowlist.
+- Python ≥ 3.11, `uv` workspace (`make install`), `ruff` (line 100; `S`, `ASYNC`, `BLE`),
+  `mypy --strict` incl. tests. A blind `except Exception` that answers anyway classifies through
+  `degradation`, carries the `# noqa: BLE001` ruff asked for, or is argued in the fleet test's
+  allowlist. `RUF100` is selected, so a `noqa` ruff did not ask for is itself an error.
 - **No `assert` in serving code** (`python -O` deletes it); use `if ...: raise`.
 - Images install `uv export --frozen` with `--require-hashes`; publishing needs the gate on that
   revision (Jenkins `Preflight`). The `mcp` SDK stays on 1.x, matching Chemclaw3.

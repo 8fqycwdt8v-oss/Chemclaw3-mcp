@@ -118,5 +118,6 @@ index of what is in force.
 | [D-2026-10-02-an-unrecognised-name-is-said-in-words](D-2026-10-02-an-unrecognised-name-is-said-in-words.md) | An unrecognised name is said in words |
 | [D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name](D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name.md) | The rebinding guard stays on and is told the Service name |
 | [D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads](D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads.md) | A Deployment reads its bearer from the Secret its caller reads |
+| [D-2026-10-07-the-record-gets-lean](D-2026-10-07-the-record-gets-lean.md) | The record gets lean: decisions in ADRs, rules in CLAUDE.md, architecture in tests |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

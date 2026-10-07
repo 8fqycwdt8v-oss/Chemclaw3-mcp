@@ -351,8 +351,8 @@ def enumerate_tautomer_set(smiles: str) -> SpeciesSet:
 # Inclusive by design, since a missing site is a form nobody sees.
 #
 # `servers/calc/src/chemclaw_mcp_calc/engine/pka.py` perceives sites too, deliberately narrow and
-# frozen because its calibration was fitted over it. The two disagree on purpose (an amide N-H is acidic here, never
-# basic there); neither may be "corrected" to match the other.
+# frozen because its calibration was fitted over it. The two disagree on purpose (an amide N-H is
+# acidic here, never basic there); neither may be "corrected" to match the other.
 _ACIDIC: tuple[tuple[str, str], ...] = (
     ("carboxylic acid", "[OX2H1][CX3]=O"),
     ("sulfonic acid", "[OX2H1][SX4](=O)=O"),
