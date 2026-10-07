@@ -69,6 +69,10 @@ no-egress: ## The no-egress checks alone — the static scan, the runtime guard,
 manifest-validate: ## Every connector.yaml parses, is classified, and matches its running server.
 	$(UV) run pytest -q -k "manifest or test_server"
 
+.PHONY: architecture-baseline
+architecture-baseline: ## Cold import, /healthz and MCP handshake latency per server, plus source prose share.
+	$(UV) run python scripts/architecture_baseline.py
+
 .PHONY: offline-run
 offline-run: ## Prove every server answers with the network taken away (needs unshare; Linux).
 	unshare --user --map-root-user --net -- $(UV) run python scripts/offline_check.py -q
