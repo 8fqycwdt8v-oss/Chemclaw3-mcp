@@ -1,24 +1,9 @@
 """The `rxnlabel` MCP tool surface: what a reaction is made of, and what it is called.
 
-**These docstrings are the prompt** — for the one caller that is a model. In practice the caller is
-Chemclaw3's background labelling drain, which calls the two *batch* tools and nothing else: a
-multi-million-row corpus at one round trip per reaction is a multi-million round trips, and at a
-batch of two hundred it is a few tens of thousands. The single-reaction tools exist for a person
-asking about one reaction, and for the fleet's own dev harness.
-
-**Everything here is honest about absence.** RXNMapper and Rxn-INSIGHT are optional extras — the
-image installs them, a developer's checkout does not — and each answer says what it could not
-compute rather than guessing. What makes that safe rather than a silent quality gradient is
-`labeller_version`: it names which components were present, so rows labelled without one go stale
-the moment a deployment installs it and the corpus repairs itself.
-
-**Nothing here is cached.** The caller's row *is* the cache — a label is stored against a reaction
-and re-derived only when the version moves — and a second cache in front of that would answer from
-a superseded labeller while the row said it was stale.
-
-The work is CPU-bound and holds the GIL: RDKit SMARTS matching over a few dozen species, and a
-transformer forward pass where the mapper is installed. So every tool offloads to a worker thread,
-the call `chem` makes for the same reason.
+The main caller is Chemclaw3's background labelling drain, using the batch tools; the
+single-reaction tools serve a person or the dev harness. Answers state what an absent optional
+component could not compute, and `labeller_version` records which were present. Nothing is cached:
+the caller's stored row is the cache. Work is CPU-bound, so every tool offloads to a worker thread.
 """
 
 from __future__ import annotations
@@ -42,19 +27,8 @@ from chemclaw_mcp_rxnlabel.engine.admission import (
 
 server = FastMCP("rxnlabel")
 
-# One request may carry at most this many reactions; `engine/admission.py` carries the measurement
-# the default rests on. Read from the environment for the reason every other bound in this fleet
-# is: a magic number is a bound nobody can loosen for a genuinely larger drain without editing
-# code, and being readable is also what puts it in `tests/test_fleet.py`'s derived inventory of
-# what a deployment can move.
-#
-# The refusal below `1` was three hand-written copies of one check across this fleet before
-# `D-2026-09-16-a-bound-with-no-off-refuses-at-import-in-one-place` moved the mechanism into
-# `mcp_server_kit.limits.env_bound` and left this server its own sentence. What it caught here is
-# worth keeping in view: `0` is the value an operator is most likely to try, because
-# `MCP_MAX_SESSIONS=0` means "no ceiling" one layer down, and here it means the opposite and used
-# to say nothing — every batch was refused with "0 reactions in one request exceeds the batch
-# limit of 0", on a pod that started cleanly and passed its readiness probe.
+# Maximum reactions per request; the default is argued in `engine/admission.py`. `env_bound` refuses
+# values below `1` at import, since `0` would refuse every batch on a pod that looks healthy.
 MAX_BATCH = env_bound(
     "CHEMCLAW_RXNLABEL_MAX_BATCH",
     default=DEFAULT_MAX_BATCH,
@@ -62,13 +36,8 @@ MAX_BATCH = env_bound(
     consequence="every batch this server is asked for would be refused",
 )
 
-# The pod's ceiling on concurrent labelling, built at import like the batch bound above; a test that
-# needs a different ceiling replaces this attribute rather than the variable, because the number a
-# gate enforces and the number it was built from must be the same number.
-#
-# `Admission` refuses a ceiling below `1` too, and its message names the ceiling rather than the
-# variable that set it — which leaves an operator with a CrashLoopBackOff and a number they have to
-# guess the source of. Same argument as the batch bound above.
+# The pod's ceiling on concurrent labelling, built at import so the number the gate enforces is the
+# one it was built from; a test replaces this attribute, not the variable.
 _MAX_CONCURRENT_BATCHES = env_bound(
     "CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES",
     default=DEFAULT_MAX_CONCURRENT_BATCHES,
@@ -84,10 +53,7 @@ _T = TypeVar("_T")
 def _batch_slots() -> int:
     """What one labelling call costs, in cores — `mapping.inference_threads()`, never a call count.
 
-    One where no mapper is installed, because the RDKit path is measured GIL-bound; the mapper's
-    configured intra-op width where one is, because torch releases the GIL and sizes itself from the
-    node rather than from the container. `engine/admission.py` has the measurement and the argument,
-    and it is read at call time so an operator and the gate see the same number.
+    Read at call time so the gate and an operator see the same number.
     """
     return mapping.inference_threads()
 
@@ -95,19 +61,10 @@ def _batch_slots() -> int:
 def _admitted(work: Callable[_P, Awaitable[_T]]) -> Callable[_P, Coroutine[Any, Any, _T]]:
     """Bound how much CPU is labelling at once, refusing promptly when the pod is full.
 
-    Applied under `@server.tool()` so the served callable is the guarded one, and stamped with
-    `ADMISSION_MARKER` so `tests/test_admission.py` can check the gated set against the served
-    surface instead of against a second hand-kept list here.
-
-    **The slot is released when the work finishes, not when the caller stops waiting**, and
-    `asyncio.shield` is what buys that. Cancelling the awaiting coroutine does not stop the worker
-    thread underneath it, so releasing on cancellation would hand a slot to the drain's retry while
-    the original batch was still burning — which is the precise failure this gate is for.
-
-    `functools.wraps` is load-bearing rather than polite: FastMCP builds each tool's argument schema
-    from `inspect.signature`, which follows `__wrapped__` back to the real signature and resolves
-    its annotations against *that* function's module. Without it every tool here would advertise
-    `(*args, **kwargs)`.
+    Stamped with `ADMISSION_MARKER` so `tests/test_admission.py` checks the gated set against the
+    served surface. `asyncio.shield` releases the slot when the work finishes, not when the caller
+    stops waiting, since cancellation does not stop the worker thread. `functools.wraps` is
+    required: FastMCP builds the argument schema from the wrapped signature.
     """
 
     @functools.wraps(work)
@@ -392,9 +349,7 @@ async def name_reactions(reactions: list[NamingRequest]) -> NameBatch:
 def _check_batch(reactions: Sequence[object]) -> None:
     """Refuse an oversized batch by saying how much to ask for.
 
-    A `ValueError`, because `mcp_server_kit` re-raises that cause untouched while replacing every
-    other exception with an internal-error notice — so this reaches the caller as the worded
-    refusal it is, and is classified there as bad data rather than as an outage to retry.
+    A `ValueError`, which `mcp_server_kit` passes to the caller verbatim as bad data.
     """
     if len(reactions) > MAX_BATCH:
         raise ValueError(
@@ -412,17 +367,9 @@ def _version() -> LabellerVersion:
 def _the_one_answer(answers: list[_T], reaction_smiles: str) -> _T:
     """The single-reaction form of a batch call that *drops* what it cannot read.
 
-    The batch tools are deliberately lenient — a corpus-labelling drain wants what could be read
-    and a list of what could not, rather than one bad row failing ten thousand good ones — so
-    `_represent` and `_name` skip a reaction that is not `reactants>agents>products`. The
-    single-reaction tools then took `[0]` of that list, and an unreadable input came back as
-    `IndexError: list index out of range`: not a `ValueError`, so `connector_app` replaced it with
-    an opaque `error_id` and the model was told a fault had occurred rather than that its input was
-    malformed. Refuse in the caller's terms instead, which is what every other refusal in this
-    fleet does.
-
-    The offending string is quoted back because it is the caller's own, and truncated because a
-    tool argument has no bound a message wants to inherit.
+    The batch helpers skip unreadable reactions, so an empty result is refused here with a
+    `ValueError` quoting the (truncated) input, rather than an `IndexError` the transport would hide
+    behind an `error_id`.
     """
     if answers:
         return answers[0]
@@ -438,10 +385,8 @@ def _the_one_answer(answers: list[_T], reaction_smiles: str) -> _T:
 def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]:
     """Represent each reaction, skipping the ones RDKit cannot read.
 
-    **The stamp is per row, not per batch, and only because a row can be degraded.** A reaction the
-    mapper raised on carries `mapper@failed` rather than the mapper's version, so it is stale
-    against a healthy pod and re-labels; every other row carries the batch's own stamp, computed
-    once. See `engine/version._component`.
+    The version stamp is per row: a reaction the mapper raised on carries `mapper@failed` so it
+    re-labels; other rows carry the batch's stamp, computed once.
     """
     stamp = _version().version
     answers = []
@@ -449,9 +394,8 @@ def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]
         canonical = _canonical_reaction(request.reaction_smiles)
         if canonical is None:
             continue
-        # **Mapped once.** `roles.assign` needs the map for the reactant-versus-reagent split and
-        # the answer carries it as a field; deriving it in both places ran the transformer twice
-        # per reaction, which is the cost `MAX_BATCH` was set against.
+        # Mapped once: `roles.assign` and the answer both use it, and a forward pass is what
+        # `MAX_BATCH` is priced against.
         attempt = mapping.map_reaction(request.reaction_smiles)
         mapped = attempt.mapped
         degraded = [mapping.COMPONENT] if attempt.failure is not None else []
@@ -481,12 +425,8 @@ def _represent(reactions: list[ReactionRequest]) -> list[ReactionRepresentation]
 def _unreadable(request: ReactionRequest) -> list[str]:
     """Every species string of this request RDKit could not read, in the order it was written.
 
-    Skipping an unreadable species is right and argued (`roles._canonical_set`): a patent extract's
-    fiftieth species may be an OCR artefact, and losing the other forty-nine over it is the worse
-    answer. **Reporting the loss is the half that was missing** — the canonical reaction came back
-    looking complete, so a later "how many reactions used three components" query over the stored
-    form is quietly wrong, and no version bump repairs it because the input was never recorded as
-    partial. Chemclaw3 states the rule as `D-2026-08-08-a-partial-answer-must-say-so`.
+    Unreadable species are skipped, so the answer must report them, or the stored canonical reaction
+    looks complete when it is partial.
     """
     written = [
         token
@@ -504,8 +444,7 @@ def _unreadable(request: ReactionRequest) -> list[str]:
 def _name(reactions: list[NamingRequest]) -> list[ReactionNaming]:
     """Classify each reaction; a miss is a result with null fields, not an omission.
 
-    A *failure* is a result with null fields too, and `degraded` plus a `namer@failed` stamp is what
-    tells the two apart — see `_represent` for the same argument on the mapper.
+    A failure also has null fields; `degraded` and a `namer@failed` stamp tell the two apart.
     """
     stamp = _version().version
     answers = []
@@ -537,9 +476,8 @@ def _all_species(reaction_smiles: str) -> list[str]:
 def _canonical_reaction(reaction_smiles: str) -> str | None:
     """The reaction re-written from its canonical parts, or `None` if it is not a reaction.
 
-    Species-wise rather than through RDKit's reaction parser, because the record form routinely
-    carries things a reaction parser rejects — an unbalanced extract, a bare ion, a species written
-    with no atoms to map — and this server's job is to label those, not to refuse them.
+    Species-wise rather than via RDKit's reaction parser, which rejects unbalanced extracts and bare
+    ions this server must still label.
     """
     parts = reaction_smiles.split(">")
     if len(parts) != 3:

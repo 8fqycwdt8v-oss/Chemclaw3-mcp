@@ -29,14 +29,14 @@ __all__ = [
     "representable",
 ]
 
-# J/(mol·K). Written here so the dependency closure stays the MCP transport alone.
+#: J/(mol·K). Written here so the dependency closure stays the MCP transport alone.
 GAS_CONSTANT_J_PER_MOL_K = 8.314462618
 
 #: °C at 0 K. The one conversion every function here starts with.
 ABSOLUTE_ZERO_C = -273.15
 
-# Beyond this an extrapolation is reported with its distance named, not refused: whether the
-# mechanism changes is not something arithmetic can know.
+#: Beyond this an extrapolation is reported with its distance named, not refused: whether the
+#: mechanism changes is not something arithmetic can know.
 _EXTRAPOLATION_NOTICE_K = 50.0
 
 
@@ -113,11 +113,11 @@ def _positive(value: float, what: str) -> float:
 class RateConstant:
     """A rate constant at a temperature, with how far it was carried to get there."""
 
-    # In the unit of the reference rate constant; that unit depends on the reaction order, so it is
-    # never named here.
+    #: In the unit of the reference rate constant; that unit depends on the reaction order, so it is
+    #: never named here.
     rate_constant: float
     temperature_c: float
-    # Signed gap from the measured temperature, in kelvin: extrapolating up is less safe than down.
+    #: Signed gap from the measured temperature, in kelvin: extrapolating up is less safe than down.
     extrapolated_by_k: float
     #: True when the gap is wide enough that a second measured point is the honest answer.
     far_from_the_measurement: bool
@@ -131,20 +131,20 @@ class ArrheniusPair:
     """An activation energy determined by two measured points, and the pre-exponential with it."""
 
     activation_energy_kj_per_mol: float
-    # ln A, in the unit of the rate constants; A itself routinely overflows a float.
+    #: ln A, in the unit of the rate constants; A itself routinely overflows a float.
     ln_pre_exponential: float
     lower_temperature_c: float
     upper_temperature_c: float
-    # The temperature span of the two points, in kelvin; measurement error in E_a scales with its
-    # reciprocal.
+    #: The temperature span of the two points, in kelvin; measurement error in E_a scales with its
+    #: reciprocal.
     span_k: float
     #: True when the two points are close enough together that the determination is dominated by
     #: measurement error rather than by the temperature dependence.
     span_is_narrow: bool
 
 
-# Below this span ordinary error in the two rate constants dominates E_a (5% per k gives ~35%
-# over 5 K at 300 K).
+#: Below this span ordinary error in the two rate constants dominates E_a (5% per k gives ~35%
+#: over 5 K at 300 K).
 _NARROW_SPAN_K = 10.0
 
 

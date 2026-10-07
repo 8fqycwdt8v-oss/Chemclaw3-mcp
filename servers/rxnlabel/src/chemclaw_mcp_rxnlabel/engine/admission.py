@@ -21,13 +21,13 @@ __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_BATCHES", "Admission"]
 # hand-kept list.
 ADMISSION_MARKER = "__admission_gated__"
 
-# : Cores' worth of labelling that may be in flight; equals `deploy/deployment.yaml`'s `limits.cpu`,
-# which `tests/test_admission.py` checks. Overridable with
-# `CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES`, read in `tools.py`.
+#: Cores' worth of labelling that may be in flight; equals `deploy/deployment.yaml`'s `limits.cpu`,
+#: which `tests/test_admission.py` checks. Overridable with
+#: `CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES`, read in `tools.py`.
 DEFAULT_MAX_CONCURRENT_BATCHES = 2
 
-# : How many reactions one request may carry, so one call stays well inside the caller's timeout.
-# Overridable with `CHEMCLAW_RXNLABEL_MAX_BATCH`, read in `tools.py`.
+#: How many reactions one request may carry, so one call stays well inside the caller's timeout.
+#: Overridable with `CHEMCLAW_RXNLABEL_MAX_BATCH`, read in `tools.py`.
 DEFAULT_MAX_BATCH = 500
 
 

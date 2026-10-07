@@ -31,8 +31,8 @@ CONSTANTS_VERSION = "1.1.0"
 #: than as 3.909 so the check cannot be satisfied by somebody updating a literal.
 _NINETY_PERCENT = 0.9
 
-# Refining by 2.5x must improve a fourth-order answer by about 2.5^4 = 39; a first-order defect
-# gives 2.5, so 20 separates them with room either side.
+#: Refining by 2.5x must improve a fourth-order answer by about 2.5^4 = 39; a first-order defect
+#: gives 2.5, so 20 separates them with room either side.
 _FOURTH_ORDER_FLOOR = 20.0
 
 _DOSE = {

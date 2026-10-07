@@ -38,8 +38,8 @@ from typing import Any
 #: `<string>` — which reads, to a chemist, as though something went wrong inside the tool.
 ANALYSIS_FILENAME = "<analysis>"
 
-# : Root module names an analysis may import. Everything else is refused by name; an allowlist
-# : because a name missing from it fails closed.
+#: Root module names an analysis may import. Everything else is refused by name; an allowlist
+#: : because a name missing from it fails closed.
 ALLOWED_IMPORTS: frozenset[str] = frozenset(
     {
         # The reason this server exists.
@@ -92,9 +92,9 @@ ALLOWED_IMPORTS: frozenset[str] = frozenset(
     }
 )
 
-# : Builtins removed from the namespace a program runs in: interactive ones, ones fatal to the
-# : runner, and `eval`/`exec`/`compile`, which would skip the guarded `__import__`. `__import__` and
-# : `open` are replaced rather than withheld; `__build_class__` stays so `class` works.
+#: Builtins removed from the namespace a program runs in: interactive ones, ones fatal to the
+#: : runner, and `eval`/`exec`/`compile`, which would skip the guarded `__import__`. `__import__` and
+#: : `open` are replaced rather than withheld; `__build_class__` stays so `class` works.
 WITHHELD_BUILTINS: frozenset[str] = frozenset(
     {"input", "help", "breakpoint", "exit", "quit", "eval", "exec", "compile"}
 )
@@ -276,8 +276,8 @@ def _restricted_builtins(jail: Path, opened: list[Any]) -> dict[str, Any]:
 # Run it, and encode what came back.
 
 
-# : The envelope a raw `bytes`/`bytearray` value is wrapped in to cross the JSON boundary; the
-# : caller decodes it with `base64.b64decode(value["__b64__"])`, as `tools.py` documents.
+#: The envelope a raw `bytes`/`bytearray` value is wrapped in to cross the JSON boundary; the
+#: : caller decodes it with `base64.b64decode(value["__b64__"])`, as `tools.py` documents.
 BYTES_ENVELOPE_KEY = "__b64__"
 
 

@@ -28,15 +28,15 @@ SERVER = "rxnlabel"
 COMPONENT = "reaction_namer"
 degradation.register_components(COMPONENT)
 
-# : How long a transient construction failure waits before it is tried again; aliased from
-# `engine/construction.py` so both components share one window.
+#: How long a transient construction failure waits before it is tried again; aliased from
+#: `engine/construction.py` so both components share one window.
 CONSTRUCTION_RETRY_SECONDS = construction.RETRY_SECONDS
 
 _LOCK = threading.Lock()
 _NAMER: Any | None = None
 _TRIED = False
-# : When the last construction attempt ran. A transient failure is retried; a permanent cause
-# latches; an absent extra is not a failure.
+#: When the last construction attempt ran. A transient failure is retried; a permanent cause
+#: latches; an absent extra is not a failure.
 _ATTEMPTED_AT: float | None = None
 # The cause the last construction attempt failed with, read by `readiness._probe`. Classified the
 # same way as `mapping`'s so both components behind one probe report a fault alike.

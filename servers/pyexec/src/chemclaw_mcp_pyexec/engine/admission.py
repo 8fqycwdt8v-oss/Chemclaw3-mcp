@@ -18,8 +18,8 @@ __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_RUNS", "Admission"]
 # Stamped by `tools._admitted` on a gated tool; the coverage test reads it to find the gated tools.
 ADMISSION_MARKER = "__admission_gated__"
 
-# Default ceiling, and divisor of the pod's memory: one slot per core the Deployment grants.
-# Overridable with `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` (read in `tools.py`).
+#: Default ceiling, and divisor of the pod's memory: one slot per core the Deployment grants.
+#: Overridable with `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` (read in `tools.py`).
 DEFAULT_MAX_CONCURRENT_RUNS = 2
 
 

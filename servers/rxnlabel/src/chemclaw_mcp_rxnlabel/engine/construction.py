@@ -15,8 +15,8 @@ from mcp_server_kit import degradation
 
 __all__ = ["RETRY_SECONDS", "retry_due"]
 
-# : Seconds a transiently failed construction waits before it is retried: no tight reload loop under
-# memory pressure, yet readiness recovers within a few probe cycles.
+#: Seconds a transiently failed construction waits before it is retried: no tight reload loop under
+#: memory pressure, yet readiness recovers within a few probe cycles.
 RETRY_SECONDS = 60.0
 
 

@@ -36,16 +36,16 @@ __all__ = ["Outcome", "run"]
 
 _RUNNER = Path(__file__).with_name("runner.py")
 
-# : Environment variables copied into the child, and the complete list: `PATH` to find the
-# interpreter, the locale pair for deterministic text handling. Everything else is set in
-# `_environment`.
+#: Environment variables copied into the child, and the complete list: `PATH` to find the
+#: interpreter, the locale pair for deterministic text handling. Everything else is set in
+#: `_environment`.
 _INHERITED = ("PATH", "LANG", "LC_ALL")
 
-# : `prctl(2)`'s `PR_SET_DUMPABLE`; the standard library has no `prctl` binding.
+#: `prctl(2)`'s `PR_SET_DUMPABLE`; the standard library has no `prctl` binding.
 _PR_SET_DUMPABLE = 4
 
-# : How much of the child's stderr the parent reads back when a run left no result. Bounds this
-# process's read so a program flooding fd 2 cannot choose the size of its error message.
+#: How much of the child's stderr the parent reads back when a run left no result. Bounds this
+#: process's read so a program flooding fd 2 cannot choose the size of its error message.
 _STDERR_TAIL_BYTES = 4096
 
 

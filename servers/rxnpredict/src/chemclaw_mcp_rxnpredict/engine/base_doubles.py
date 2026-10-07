@@ -1,19 +1,9 @@
 """Deterministic predictor doubles, shipped with the engine rather than hidden in the tests.
 
-They live here, in the package, for two reasons. A test-only class in `tests/` cannot be used by
-anything else, and the thing that most wants one is *an operator* — `CHEMCLAW_RXNPREDICT_ENABLED_
-FORWARD_MODELS=fake_a` gives a running server with a working tool surface and no model weights,
-which is exactly what a deployment rehearsal or a Chemclaw3 integration test wants.
-
-They are never registered automatically. `discover_predictors()` does not import this module, so a
-double only exists when someone asks for one *by name* — a fake predictor that could appear in a
-production ensemble by accident would be far worse than no fake at all.
-
-Asking by name is what `register_requested()` below does, and until it existed the operator half of
-the paragraph above was not true: only `tests/conftest.py` ever constructed a double, so setting
-`CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a` against a real uvicorn registered nothing at
-all and the server came up with an empty tool surface. The env var was documented, inert, and
-silent about it.
+In the package so an operator can run a server with a working tool surface and no weights
+(`CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a`), for rehearsals and integration tests. Never
+registered automatically: `discover_predictors()` does not import this module, and only
+`register_requested()` adds a double, by exact name.
 """
 
 from __future__ import annotations
@@ -105,9 +95,8 @@ class FakeConditionsPredictor(BaseConditionsPredictor):
         ]
 
 
-# The catalogue of doubles an operator may ask for, by exact name. Factories rather than instances
-# so that two registrations never share one object, and so that nothing is constructed unless it is
-# actually requested.
+# The doubles an operator may ask for, by exact name. Factories, so nothing is shared or constructed
+# unless requested.
 _FORWARD_DOUBLES: dict[str, Callable[[], BaseForwardPredictor]] = {
     "fake_a": lambda: FakeForwardPredictor("fake_a", ["CC(=O)Nc1ccccc1", "CCOC(C)=O"]),
     "fake_b": lambda: FakeForwardPredictor("fake_b", ["CC(=O)Nc1ccccc1", "CC(=O)OC(C)=O"]),
@@ -126,36 +115,22 @@ _CONDITIONS_DOUBLES: dict[str, Callable[[], BaseConditionsPredictor]] = {
 def register_requested(settings: Settings | None = None) -> list[str]:
     """Register exactly the doubles the enabled-model settings name, and return their names.
 
-    This is the operator-facing half of this module: it is what makes
-    `CHEMCLAW_RXNPREDICT_ENABLED_FORWARD_MODELS=fake_a` mean something against a real server
-    instead of being a documented no-op.
-
-    Two properties are deliberate and load-bearing:
-
-    * **Never on `"*"`.** `parse_enabled` returns `None` for `*` and for empty, which is this
-      module's "registered by accident" case and the one its header forbids. A `None` list
-      registers nothing, so the default configuration cannot grow a fake predictor.
-    * **Exact names only.** A name that is not a known double is ignored here rather than raising,
-      because the enabled list legitimately names real predictors too — it is a filter over
-      everything available, not a list of doubles.
-
-    Already-registered names are skipped, so calling this after `discover_predictors()` cannot
-    collide with a real predictor that happens to share a name, and calling it twice is harmless.
+    Never on `"*"` or empty (`parse_enabled` returns `None`), so the default configuration cannot
+    grow a fake predictor. Names that are not doubles are ignored, since the list also names real
+    predictors. Already-registered names are skipped, so this is idempotent and cannot shadow a real
+    predictor.
 
     Args:
         settings: Settings to read; the process-wide settings when omitted.
 
     Returns:
-        The names actually registered, in the order they were registered — empty when the
-        configuration asked for no doubles, which is the normal production case.
+        The names registered, in order; empty in normal production.
     """
     resolved = settings if settings is not None else get_settings()
     known = _known_names()
     registered: list[str] = []
 
-    # Two explicit blocks rather than one loop over (catalogue, register) pairs: the two registries
-    # take different predictor types, and looping over both erases that into a union which the
-    # registration functions rightly reject.
+    # Two blocks rather than one loop: the registries take different predictor types.
     forward = resolved.parse_enabled(resolved.enabled_forward_models)
     if forward is not None:
         for name in sorted(forward & (_FORWARD_DOUBLES.keys() - known)):

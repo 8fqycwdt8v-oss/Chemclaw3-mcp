@@ -32,9 +32,9 @@ ADMISSION_MARKER = "__admission_gated__"
 #: docstring, rounded to the measurement's precision rather than to its best run.
 WORST_INTEGRATION_SECONDS = 2.0
 
-# How many integrations may be in flight:
-# `floor(request_timeout / (2 * WORST_INTEGRATION_SECONDS))` at a 15 s budget. Overridable with
-# `CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`, read in `tools.py`.
+#: How many integrations may be in flight:
+#: `floor(request_timeout / (2 * WORST_INTEGRATION_SECONDS))` at a 15 s budget. Overridable with
+#: `CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS`, read in `tools.py`.
 DEFAULT_MAX_CONCURRENT_INTEGRATIONS = 3
 
 
