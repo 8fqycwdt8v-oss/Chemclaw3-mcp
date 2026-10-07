@@ -38,7 +38,7 @@ COPY servers/rxnpredict /build/servers/rxnpredict
 # PyTorch's CPU index for Linux, and `uv export` has no flag that writes an index into the
 # requirements file, so pip has to be told where that one wheel lives. It cannot choose anything
 # with it: `--require-hashes` rejects any artefact whose digest the lock did not record, whichever
-# index offered it. `tests/test_fleet.py::test_no_image_installs_what_the_lock_did_not_hash`
+# index offered it. `tests/test_fleet_images.py::test_no_image_installs_what_the_lock_did_not_hash`
 # accepts an index flag only in this shape and only naming a registry `uv.lock` records.
 #
 # `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
@@ -140,7 +140,7 @@ ENV OMP_NUM_THREADS=1 \
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
 # caller learns which build answered without a second endpoint. Left unsupplied it reports
 # `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the
-# field and its test both present and no build ever setting the variable. So `tests/test_fleet.py`
+# field and its test both present and no build ever setting the variable. So `tests/test_fleet_*.py`
 # asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
 # nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
 ARG CHEMCLAW_REVISION=unknown

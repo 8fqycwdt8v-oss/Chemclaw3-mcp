@@ -42,7 +42,7 @@ endpoint:
     - list_available_models
     - classify_reaction
   # The four inference calls this server gates, queued by Chemclaw3 rather than refused when the pod
-  # is full — exactly the gated set, which `tests/test_fleet.py` holds.
+  # is full — exactly the gated set, which `tests/test_fleet_*.py` holds.
   queued:
     inline_wait_seconds: 45
     tools:

@@ -116,7 +116,7 @@ gets wrong silently, which is the case for spending the tokens rather than the c
 ## Concurrency
 
 No `engine/admission.py`, and the exemption is argued with its measurement in
-`tests/test_fleet.py::CEILING_IS_ARGUED_ABSENT` — 1.9 µs to 4.9 µs for the six single-peak tools
+`tests/test_fleet_manifests.py::CEILING_IS_ARGUED_ABSENT` — 1.9 µs to 4.9 µs for the six single-peak tools
 and 29.8 µs for the report, most of which is pydantic building the result model. No subprocess, no
 pinned thread. The two list inputs are bounded (`MAX_INJECTIONS`, `MAX_PEAKS`) so the cost cannot
 run away unpriced, which is a different bound from a concurrency ceiling and the one this server

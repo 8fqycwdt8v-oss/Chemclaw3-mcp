@@ -3,9 +3,9 @@
 `ich.py` needs `THF`, `2-MeTHF`, `IPA` and `C1CCOC1` to reach the guideline's spelling without
 copying bench synonyms or structures into the transcribed tables. A second copy of `servers/chem`'s
 reagent lookup, because servers never import each other; `tests/test_dataset.py` and
-`tests/test_fleet.py` pin `data/reagents/records.csv` byte-identical to `chem`'s (its unread density
-column included). Resolution is conservative: an unknown name returns no match, never a guess that
-would attach a real ICH citation to the wrong substance.
+`tests/test_fleet_*.py` pin `data/reagents/records.csv` byte-identical to `chem`'s (its unread
+density column included). Resolution is conservative: an unknown name returns no match, never a
+guess that would attach a real ICH citation to the wrong substance.
 """
 
 from __future__ import annotations

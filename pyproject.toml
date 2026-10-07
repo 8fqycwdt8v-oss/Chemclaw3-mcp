@@ -128,7 +128,7 @@ target-version = "py311"
 #   it. **What it does not land on** is a handler that logs with `logging.exception` and returns, or
 #   one that re-raises conditionally, and `RUF100` (selected below) rejects a `# noqa: BLE001` on
 #   those lines as unused, so the reason cannot even be written there. That half is
-#   `tests/test_fleet.py::test_every_blind_handler_that_answers_anyway_is_argued`
+#   `tests/test_fleet_egress.py::test_every_blind_handler_that_answers_anyway_is_argued`
 #   (`D-2026-09-14-a-lint-rule-that-does-not-fire-is-not-the-control-it-was-read-as`).
 # - **`S`** catches a credential or an `exec` reaching source. Most of what it finds here is a
 #   naming collision with this fleet's own vocabulary (`token_env` holds an environment variable's
@@ -139,7 +139,7 @@ target-version = "py311"
 #   worth one line each.
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S", "ASYNC", "BLE", "TID253"]
 # `S101` (`assert`) is off fleet-wide and the reason is that something stricter already holds it.
-# `tests/test_fleet.py::test_no_serving_module_enforces_an_invariant_with_assert` scans every
+# `tests/test_fleet_source.py::test_no_serving_module_enforces_an_invariant_with_assert` scans every
 # `packages/*/src` and `servers/*/src` and carries the argument for its two exemptions —
 # `mcp_server_kit`'s `testing.py` and `no_egress.py`, whose *product* is an assertion failure.
 # Turning `S101` on would mean transcribing that exemption list into a `per-file-ignores` block,
@@ -168,7 +168,7 @@ ignore = ["S101"]
 # as it was. `D-2026-09-13-the-rule-that-would-have-caught-it-was-not-the-one-asked-for` refused
 # precisely this trade for `S101` — two declarations of one rule with nothing reconciling them is
 # worse than one — so the condition for adding it here is that something reconciles them:
-# `tests/test_fleet.py::test_the_lint_ban_and_the_static_scan_name_the_same_modules` reads this list
+# `tests/test_fleet_egress.py::test_the_lint_ban_and_the_static_scan_name_the_same_modules` reads this list
 # against `FORBIDDEN_MODULES` in both directions, and a module added to either alone is red.
 #
 # What each half sees that the other does not, measured rather than assumed:
@@ -292,7 +292,7 @@ suppressions = [
 # and the comment asserting completeness is what made that invisible. A count of a list, written
 # beside the list, is the shape `D-2026-08-01-the-count-lives-in-the-test-not-in-the-prose` is
 # about; so the sentence no longer carries one and
-# `tests/test_fleet.py::test_the_coverage_basis_is_every_distribution_this_workspace_ships` derives
+# `tests/test_fleet_layout.py::test_the_coverage_basis_is_every_distribution_this_workspace_ships` derives
 # the set from the tree instead. A floor that silently narrows is worse than a lower floor.
 source_pkgs = [
     "mcp_server_kit",
@@ -337,7 +337,7 @@ source_pkgs = [
 #   inside the jail, which this process cannot trace. Its behaviour is covered - by
 #   `servers/pyexec/tests/test_sandbox.py` driving the real jail - and none of that lands here.
 # - **This measures the source tree, never an image.** What an image installs is
-#   `tests/test_fleet.py::test_every_image_installs_the_closure_the_audit_read`'s subject, and what
+#   `tests/test_fleet_images.py::test_every_image_installs_the_closure_the_audit_read`'s subject, and what
 #   it *answers* is the Jenkins verify stage's.
 fail_under = 89
 show_missing = true

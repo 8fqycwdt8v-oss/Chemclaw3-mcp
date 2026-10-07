@@ -79,7 +79,7 @@ _USED = "_chemclaw_session_used"
 SESSION_COST_BYTES = 57_900
 
 #: The smallest pod memory limit in the fleet, which the default must be safe on;
-#: `tests/test_fleet.py` re-reads it from the shipped Deployments.
+#: `tests/test_fleet_*.py` re-reads it from the shipped Deployments.
 SMALLEST_POD_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
 
 #: How much of that limit a backlog of sessions may hold. Sessions are leftovers, not work; a fully

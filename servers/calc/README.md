@@ -110,7 +110,7 @@ the state:
 | every `jobs:` entry | solvent screens, conformer ensembles, reaction energetics, relaxed scans, host–guest complexes, on Temporal |
 
 The name is still `calc`, because this repository requires the directory, the package suffix and the
-manifest `name` to be one string (`tests/test_fleet.py`). So registering this directory as a
+manifest `name` to be one string (`tests/test_fleet_*.py`). So registering this directory as a
 connector would let a *partial* port win the name collision — first directory wins, **with no
 error** — and take those six tools, `compute_thermochemistry` and every durable job off the agent's surface. The manifest here
 is this repository's own declaration of the served surface, checked against the running server by

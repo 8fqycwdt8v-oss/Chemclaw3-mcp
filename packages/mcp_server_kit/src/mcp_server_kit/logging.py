@@ -60,7 +60,7 @@ def register_secret_env(name: str) -> None:
 
 
 # Secret-shaped values this repository publishes (the `make run-*` default token), so not secrets;
-# redacting them only corrupts logs. `tests/test_fleet.py` holds this against the Makefile.
+# redacting them only corrupts logs. `tests/test_fleet_*.py` holds this against the Makefile.
 _PUBLISHED_VALUES = frozenset({"dev-token"})
 
 

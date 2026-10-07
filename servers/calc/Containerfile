@@ -74,7 +74,7 @@ COPY servers/calc /build/servers/calc
 # `--no-build-isolation` is safe to apply to the whole requirements file because everything else in
 # this closure ships a wheel and is therefore never built. *Which* entries are built is derived from
 # `uv.lock` rather than written down here, by
-# `tests/test_fleet.py::test_a_sdist_only_dependency_builds_under_a_pinned_backend` — which requires
+# `tests/test_fleet_images.py::test_a_sdist_only_dependency_builds_under_a_pinned_backend` — which requires
 # this shape of any server whose closure grows a wheel-less dependency, and refuses it of any server
 # whose closure has none.
 #
@@ -189,7 +189,7 @@ ENV CHEMCLAW_CREST_THREADS=4
 # carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
 # caller learns which build answered without a second endpoint. Left unsupplied it reports
 # `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the
-# field and its test both present and no build ever setting the variable. So `tests/test_fleet.py`
+# field and its test both present and no build ever setting the variable. So `tests/test_fleet_*.py`
 # asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
 # nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
 ARG CHEMCLAW_REVISION=unknown

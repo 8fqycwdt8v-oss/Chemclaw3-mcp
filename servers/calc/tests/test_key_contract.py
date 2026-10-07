@@ -10,8 +10,7 @@
     from chemclaw.science.calc.store import CALCULATION_EPOCH, CalculationKey
     print(CALCULATION_EPOCH, stable_hash('CCO'), stable_hash({'smiles': 'CCO'}))
     print(CalculationKey.build(
-        calc_type='solubility',
-        calc_version='esol-delaney@2004/rdkit-2026.3.5/u-0.75',
+        calc_type='solubility', calc_version='esol-delaney@2004/rdkit-2026.3.5/u-0.75',
         inputs={'smiles': 'CCO'}).as_str())
     print(list(CalculationKey.model_fields))"
 
