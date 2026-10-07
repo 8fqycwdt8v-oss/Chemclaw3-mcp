@@ -397,10 +397,9 @@ async def test_the_charge_does_not_follow_the_callers_models_argument(
 
 
 def test_the_ceiling_is_the_pods_own_core_count() -> None:
-    """A slot is a core, so the default has to equal `limits.cpu` in the shipped Deployment.
+    """A slot is a core, so the default ceiling equals `limits.cpu` in the shipped Deployment.
 
-    Read from the file rather than transcribed, for `servers/pyexec`'s reason: two transcribed
-    copies of a Deployment's CPU limit agreed with each other while the pod was resized under them.
+    Read from the file rather than transcribed, so changing either side alone fails here.
     """
     manifest = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
     containers = manifest["spec"]["template"]["spec"]["containers"]

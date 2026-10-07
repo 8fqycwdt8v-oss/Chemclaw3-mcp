@@ -35,9 +35,8 @@ from pydantic import ValidationError
 #: them all — `conftest.py::pytest_terminal_summary` matches on it.
 CONSUMER_SKIP = "[no Chemclaw3 checkout]"
 
-#: The canonical checkout name, in the casing GitHub publishes it and the casing a clone usually
-#: lands in. Both, because a single hardcoded default was measured wrong either way in
-#: `Chemclaw3/infra/live/siblings.sh`, whose header records exactly that.
+#: The canonical checkout name, in GitHub's casing and the casing a clone usually lands in; both,
+#: as `Chemclaw3/infra/live/siblings.sh` searches.
 CONSUMER_NAMES = ("Chemclaw3", "chemclaw3")
 
 #: Every environment variable that may name the consumer checkout, most specific first.
@@ -291,7 +290,7 @@ def _queued(**queued: object) -> dict[str, object]:
 #: per side so a difference has to be typed out.
 _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
     ("a plain manifest", _manifest(), True, True),
-    # The false accepts, measured at 6c6a0eb: both of these validated here and abort startup there.
+    # False accepts: both validate in the stand-in and would abort startup in the consumer.
     ("a name that is not a slug", _manifest(name="Calc_Server!"), False, False),
     ("a name with an underscore", _manifest(name="calc_server"), False, False),
     ("a description past the cap", _manifest(description="x" * 20_000), False, False),

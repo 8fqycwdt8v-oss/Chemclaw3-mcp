@@ -127,8 +127,7 @@ async def _call_whoami(url: str, headers: dict[str, str]) -> dict[str, str]:
 async def test_a_tool_body_reads_every_header_chemclaw3_sends(probe_url: str) -> None:
     """All three identity values reach the tool body under the sender's own spellings.
 
-    The regression this pins: `correlation` came back `""` here while the other two were fine, so
-    any test that checked "identity arrives" without naming each field would have passed.
+    Each field is named, since a check that "identity arrives" would pass with one field empty.
     """
     seen = await _call_whoami(
         probe_url,

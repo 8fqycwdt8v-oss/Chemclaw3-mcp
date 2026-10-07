@@ -78,9 +78,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # asserted fleet-wide. `datasets` is present and empty (no corpus); its presence shows a
     # `readiness` callable ran. See `engine/readiness.py`.
     body = response.json()
-    # The bounds this pod is running with, so an overlay that moved the batch bound or the
-    # admission ceiling is readable from the probe
-    # (`D-2026-09-26-a-pod-reports-the-bounds-it-is-running-with`).
+    # The bounds this pod runs with, so an overlay that moved the batch bound or admission ceiling
+    # is readable from the probe.
     bounds = body.pop("bounds")
     assert bounds["CHEMCLAW_RXNLABEL_MAX_BATCH"] >= 1
     assert bounds["CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES"] >= 1
@@ -105,7 +104,7 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """The bearer credential is enforced on the mounted MCP surface, driven against the running server.
+    """The bearer credential is enforced on the mounted MCP surface, against the running server.
 
     `/mcp` is mounted, and a mount bypasses the enclosing app's dependencies, so this cannot be read
     off the source. `assert_bearer_is_enforced` drives every arm (anonymous, wrong token, wrong

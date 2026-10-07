@@ -15,7 +15,7 @@ from mcp_server_kit.testing import reimported
 
 
 def test_a_temperature_above_the_estimated_critical_point_is_refused() -> None:
-    """The three numbers this test names are the ones that used to come back as pressures."""
+    """A temperature far above the estimated critical point is refused, not answered."""
     toluene = records.require("toluene")
     for temperature_c in (600.0, 1000.0, 5000.0):
         with pytest.raises(ValueError, match="critical"):

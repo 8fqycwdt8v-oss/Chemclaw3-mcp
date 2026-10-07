@@ -233,7 +233,7 @@ def test_the_type_gate_reads_the_test_tree_and_not_only_the_source() -> None:
 
 
 def test_the_type_gate_narrows_no_check_it_was_argued_out_of() -> None:
-    """`[tool.mypy]` does not carry the narrowing that was measured and rejected."""
+    """`[tool.mypy]` does not carry a narrowing that was argued out."""
     import tomllib
 
     # Nothing outranks the table this reads: mypy's discovery order is `mypy.ini`, `.mypy.ini`, then

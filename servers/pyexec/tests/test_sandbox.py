@@ -225,11 +225,12 @@ def test_a_chdir_does_not_relocate_the_jail() -> None:
 
 
 def test_open_does_not_accept_a_custom_opener() -> None:
-    """A regression test for a second bypass: `open()`'s own `opener=` callback receives `(name,
-    flags)` and may return a descriptor for any path, ignoring `name` entirely — forwarding it would
-    let a harmless-looking, in-jail `file=` argument be paired with an opener that reads or writes
-    somewhere else altogether. The guarded `open()`'s signature has no `**kwargs`, so passing
-    `opener` fails before any path is even checked."""
+    """`open()` does not accept a custom `opener`.
+
+    An `opener` receives `(name, flags)` and may open any path, so forwarding it would bypass the
+    jail behind an in-jail `file=`. The guarded signature has no `**kwargs`, so it fails before any
+    path is checked.
+    """
     outcome = run(
         "import uuid\nos = uuid.os\n"
         "def sneaky(path, flags):\n"
@@ -244,11 +245,11 @@ def test_open_does_not_accept_a_custom_opener() -> None:
 
 
 def test_a_self_referential_result_degrades_to_repr_instead_of_crashing_the_runner() -> None:
-    """A regression test: recursing into `dict`/`list`/`tuple` to find nested bytes (see `_encode`)
-    means a cyclic container now recurses forever unless it is caught explicitly. Before that cycle
-    guard existed, this raised an uncaught `RecursionError` that killed the runner before it could
-    write any result at all — for a caller mistake that `json.dumps`'s own cycle detection used to
-    turn into a graceful `repr()` fallback."""
+    """A self-referential result degrades to `repr()` instead of crashing the runner.
+
+    `_encode` recurses into containers to find nested bytes, so a cycle must be caught explicitly or
+    a `RecursionError` would kill the runner before it writes any result.
+    """
     outcome = run("result = []\nresult.append(result)", limits=_fast())
     assert outcome.error is None, outcome.error
     assert not outcome.timed_out
@@ -256,11 +257,11 @@ def test_a_self_referential_result_degrades_to_repr_instead_of_crashing_the_runn
 
 
 def test_leaked_file_handles_are_closed_before_the_result_is_written() -> None:
-    """A regression test: `open()` existing at all means a careless (not malicious) program can
-    exhaust `RLIMIT_NOFILE` by never closing what it opens — and before this fix, the *runner's
-    own* final write of `result.json` shared that same exhausted budget and failed right after the
-    caller's program had already computed a perfectly good answer, discarding it. Opened handles
-    are now closed once `exec()` returns, reclaiming the budget before the runner needs it."""
+    """Leaked file handles are closed before the result is written.
+
+    A program that never closes what it opens can exhaust `RLIMIT_NOFILE`; handles are closed once
+    `exec()` returns so the runner's own `result.json` write still has budget.
+    """
     outcome = run(
         "fs = []\n"
         "try:\n"

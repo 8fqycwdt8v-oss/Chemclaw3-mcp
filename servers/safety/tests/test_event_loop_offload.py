@@ -49,7 +49,7 @@ def test_a_single_structure_screen_runs_off_the_event_loop(monkeypatch: pytest.M
 
 
 def test_a_reaction_screen_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The path whose cost is quadratic in a caller-supplied list — the one that was measured."""
+    """The reaction screen, whose cost is quadratic in a caller-supplied list, runs off the loop."""
     seen: list[int] = []
     monkeypatch.setattr(
         safety_tools, "screen_reaction", _thread_recording(screen.screen_reaction, seen)

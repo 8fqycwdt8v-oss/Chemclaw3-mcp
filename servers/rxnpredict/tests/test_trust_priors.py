@@ -152,7 +152,7 @@ def test_a_class_prior_adjusts_the_corpus_rather_than_replacing_it(
     }
     assert corpus == _CALIBRATED, "the cached corpus was edited in place by an override"
     # Where it is read: the class the operator did not name keeps its calibrated weight, not the
-    # global 0.80 the old whole-table replacement fell through to.
+    # global default.
     global_priors = dict(DEFAULT_MODEL_TRUST_PRIORS)
     assert effective_prior("megan", "suzuki_coupling", global_priors, merged) == 0.7
 

@@ -144,7 +144,7 @@ def test_livez_answers_without_consulting_anything(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """The bearer credential is enforced on the mounted MCP surface, driven against the running server.
+    """The bearer credential is enforced on the mounted MCP surface, against the running server.
 
     A mount bypasses the enclosing app's dependencies, so this cannot be read off the source.
     `assert_bearer_is_enforced` drives every arm once for the whole fleet.

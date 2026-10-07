@@ -289,10 +289,10 @@ def test_a_wet_basis_percentage_entered_as_a_target_is_refused() -> None:
 
 
 def test_a_target_above_the_critical_moisture_is_answered_as_a_constant_rate_dry() -> None:
-    """The cycle never reaches the falling-rate leg, and the model answers that case exactly.
+    """A target above the critical moisture is answered as a constant-rate dry.
 
-    It used to be refused, with a docstring calling it "past the point the model describes" while
-    the message itself called it possible. `m_s/(A·N_c)` = 133 333 s per unit, x (0.5 - 0.2).
+    The cycle never reaches the falling-rate leg, which the model answers exactly:
+    `m_s/(A·N_c)` = 133 333 s per unit, x (0.5 - 0.2).
     """
     found = drying.drying_time(
         **DRYER,
@@ -308,7 +308,7 @@ def test_a_target_above_the_critical_moisture_is_answered_as_a_constant_rate_dry
 
 @pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
 def test_a_non_finite_input_is_refused_by_every_guard(bad: float) -> None:
-    """`value <= 0` is False for NaN and for +inf, so both used to pass and answer with nulls."""
+    """`value <= 0` is False for NaN and +inf, so every guard must refuse them explicitly."""
     for guard in (positive, non_negative, fraction, kelvin):
         with pytest.raises(UnitOpsInputError, match="finite"):
             guard(bad, "the input")
@@ -346,7 +346,7 @@ def test_a_medium_time_that_overflows_is_refused_rather_than_answered_as_infinit
 
 
 def test_a_filtration_time_that_underflows_to_zero_is_refused_rather_than_divided_by() -> None:
-    """A total of exactly 0.0 used to reach `cake_time / total` as a bare `ZeroDivisionError`."""
+    """A filtration total that underflows to 0.0 is refused, not divided by."""
     with pytest.raises(UnitOpsInputError, match="underflow"):
         filtration.filtration_time(
             filtrate_volume_m3=0.1,

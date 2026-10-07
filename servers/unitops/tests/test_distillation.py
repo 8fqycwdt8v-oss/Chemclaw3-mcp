@@ -53,7 +53,7 @@ def test_fenske_is_symmetric_in_the_two_end_specifications() -> None:
 
 
 def test_underwood_reproduces_the_hand_computed_root_and_minimum_reflux() -> None:
-    """θ = 1.42857 and R_min = 1.100, both written down before this module existed."""
+    """θ = 1.42857 and R_min = 1.100, the values computed by hand in the module docstring."""
     minimum_reflux, theta = distillation.underwood_minimum_reflux(
         relative_volatility=2.5, light_key_in_feed=0.5, light_key_in_distillate=0.95
     )
@@ -282,13 +282,13 @@ def test_a_reflux_a_hair_above_the_minimum_is_refused_rather_than_divided_by_zer
 
 @pytest.mark.parametrize("bad", [math.inf, math.nan])
 def test_a_non_finite_explicit_reflux_ratio_is_refused(bad: float) -> None:
-    """`inf` used to come back as an infinite reflux beside NaN stage counts."""
+    """A non-finite explicit reflux ratio is refused, not answered with NaN stage counts."""
     with pytest.raises(UnitOpsInputError, match="the reflux ratio must be a finite number"):
         distillation.shortcut_column(**COLUMN, reflux_ratio=bad)
 
 
 @pytest.mark.parametrize("bad", [math.inf, -math.inf, math.nan])
 def test_a_non_finite_feed_quality_is_refused_by_name(bad: float) -> None:
-    """A NaN `q` used to walk Underwood's root onto an edge and blame the composition instead."""
+    """A non-finite `q` is refused by name, rather than walking Underwood's root onto an edge."""
     with pytest.raises(UnitOpsInputError, match="feed quality"):
         distillation.shortcut_column(**COLUMN, feed_quality=bad)

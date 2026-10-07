@@ -107,7 +107,7 @@ async def test_an_unbuilt_component_is_unready_whatever_the_cause_said(
 def test_a_transient_construction_failure_is_retried_rather_than_latched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A transient construction failure is retried after its window, not latched for the process life.
+    """A transient construction failure is retried after its window, not latched forever.
 
     Otherwise the 503 above is a restart dressed as readiness.
     """

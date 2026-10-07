@@ -267,10 +267,10 @@ def test_a_temperature_below_absolute_zero_is_refused_everywhere_it_is_taken() -
     ["heat_of_reaction_kj_per_mol", "moles", "mass_kg", "specific_heat_kj_per_kg_k"],
 )
 def test_a_non_finite_input_to_the_adiabatic_rise_is_refused(argument: str, bad: float) -> None:
-    """NaN and infinity used to come back as a NaN or infinite rise — `null` over JSON.
+    """A non-finite input to the adiabatic rise is refused.
 
-    Measured before the guard: `moles=NaN` answered NaN and `moles=Infinity` answered infinity,
-    because `value <= 0` is False for both. A safety number is a refusal or a number.
+    `value <= 0` is False for NaN and infinity, which would otherwise return a NaN or infinite rise
+    (`null` over JSON). A safety number is a refusal or a number.
     """
     arguments = {
         "heat_of_reaction_kj_per_mol": -150.0,

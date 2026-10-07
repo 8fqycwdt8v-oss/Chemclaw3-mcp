@@ -45,8 +45,8 @@ def test_both_halves_of_a_stereodefined_double_bond_are_covered(smiles: str) -> 
 @pytest.mark.parametrize(
     ("smiles", "dropped"),
     [
-        # Selenium written outside brackets: `Se` matches `S` and the `e` is lost, so a selenoether
-        # is handed to the model as a thioether. Measured against this pattern.
+        # Selenium written outside brackets: `Se` would match `S` and lose the `e`, handing a
+        # selenoether to the model as a thioether.
         ("CCSeC", "CCSC"),
         # The three-digit ring-closure form loses its `%`.
         ("C%(123)CC", "C(123)CC"),

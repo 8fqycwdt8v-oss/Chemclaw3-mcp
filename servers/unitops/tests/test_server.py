@@ -80,7 +80,7 @@ def test_healthz_names_the_correlations_this_pod_verified(running_server: str) -
 
 
 def test_the_readiness_probe_refuses_when_zwieterings_exponents_are_transposed() -> None:
-    """Break a dependency and read the status: transposed Zwietering exponents make the probe unready.
+    """Break a dependency: transposed Zwietering exponents make the readiness probe unready.
 
     Swapping the particle-diameter and buoyancy exponents (a realistic transcription error) gives a
     plausible `N_js`, but the set no longer makes a frequency. A probe that only checked the

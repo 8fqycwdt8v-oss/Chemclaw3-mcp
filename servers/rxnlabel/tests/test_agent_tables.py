@@ -101,10 +101,10 @@ def test_every_role_smarts_compiles(pattern: str) -> None:
 
 
 def test_each_role_smarts_is_compiled_once_per_process() -> None:
-    """Both tables were re-parsed on every `is_ligand`/`is_base`; the cache's own counters say not.
+    """Each role SMARTS table is compiled once per process, per the cache's own counters.
 
-    Water matches no rule, so every call walks both whole tables — the worst case for the old
-    per-call parse, and the one where a regression to it would show as a miss per pattern per call.
+    Water matches no rule, so every call walks both whole tables; a per-call parse would show as a
+    miss per pattern per call.
     """
     agents._compiled.cache_clear()
     patterns = {*agents._LIGAND_SMARTS, *agents._BASE_SMARTS}

@@ -101,7 +101,7 @@ def test_metrics_are_exposed_unauthenticated(running_server: str) -> None:
 async def test_the_bearer_credential_is_enforced_on_the_mounted_mcp_surface(
     running_server: str,
 ) -> None:
-    """The bearer credential is enforced on the mounted MCP surface, driven against the running server.
+    """The bearer credential is enforced on the mounted MCP surface, against the running server.
 
     `/mcp` is mounted, and a mount bypasses the enclosing app's dependencies, so this cannot be read
     off the source. `assert_bearer_is_enforced` drives every arm (anonymous, wrong token, wrong

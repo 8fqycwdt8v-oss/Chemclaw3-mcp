@@ -276,9 +276,7 @@ def test_the_allowlist_check_bites() -> None:
         "servers/x/Containerfile", continued.replace("GUARD=off", "GUARD=on")
     ) == ["servers/x/Containerfile: sets MCP_EGRESS_ALLOW='evil.example.com'"]
 
-    # The guard set on as a continuation is what every shipped file that uses the form does, and it
-    # must read as clean — a parser that flagged it would be noticed, a parser that cannot see it
-    # at all is what shipped.
+    # The guard set on via a line continuation, the form shipped files use, must read as clean.
     assert _containerfile_env(
         "servers/x/Containerfile", continued.replace("GUARD=off", "GUARD=on")
     ) == [
@@ -1027,8 +1025,8 @@ def test_the_derivation_reads_the_two_spellings_it_used_to_miss() -> None:
     )
     assert set(_numeric_settings_fields({"m.py": annotated})) == {"CHEMCLAW_MAX_RUNS"}
 
-    # And the boundary, asserted so the docstring naming it cannot quietly become false. It moved
-    # on 2026-09-16 and is now a *pair*: one named helper is followed, every other is not.
+    # And the boundary, asserted so the docstring naming it cannot become false: the named helpers
+    # are followed, every other is not.
     known = ast.parse(
         'LIMIT = env_bound("MCP_MAX_THINGS", default=4, minimum=1, consequence="x")\n'
     )

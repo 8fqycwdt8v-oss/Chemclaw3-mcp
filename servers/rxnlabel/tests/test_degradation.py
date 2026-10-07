@@ -94,7 +94,7 @@ def no_readiness_memo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_namer_that_raises_is_not_a_reaction_that_matched_nothing(broken_namer: None) -> None:
-    """The two answers that used to be the same object, and the stamp that keeps them apart."""
+    """A namer that raises is told apart from a no-match by its version stamp."""
     before = _count(naming.COMPONENT, degradation.CAUSE_FAILED)
 
     answers = tools._name([tools.NamingRequest(id="1", reaction_smiles=_REACTION)])
