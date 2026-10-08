@@ -56,9 +56,12 @@ BURST_WIDTH = PROBE_CEILING * 8
 MAX_REFUSAL_OVER_ADMISSION = 2.0
 
 #: Sessions opened by the cost probe, and the warm-up that precedes them so the allocator's own
-#: first-touch growth is not charged to the curve.
+#: first-touch growth is not charged to the curve. In a suite process the warm-up must also fill the
+#: freed small-object arenas earlier tests left behind, or the first sessions are placed in holes
+#: and cost no resident memory: measured 6-11 kB per session after the whole suite had run, against
+#: 58 kB in a fresh process. Those holes are about 20 MB, so the warm-up outlasts them.
 COST_PROBE_SESSIONS = 400
-COST_PROBE_WARMUP = 50
+COST_PROBE_WARMUP = 600
 
 
 def _probe_server(name: str) -> FastMCP:
