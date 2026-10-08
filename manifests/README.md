@@ -16,7 +16,7 @@ directory. `pyexec` is the connector it does not declare; in a cluster, mount
 `pyexec/connector.yaml` alone through the Chemclaw3 chart's `extraConnectors.bundles`
 ([`docs/operations.md`](../docs/operations.md#3-wire-it-into-chemclaw3)).
 
-**Every entry is a symlink to the server's own `connector.yaml`, never a copy.** The manifest and
+**Every entry is a symlink to the server's own `connector.yaml`, itself a link to the file in [`packages/chemclaw_contracts`](../packages/chemclaw_contracts/), never a copy.** The manifest and
 the tool surface it declares have to be edited together — a copy here would be a second declaration
 of one fact, and Chemclaw3's own history is a list of second declarations that went stale while
 still being believed. `servers/<name>/tests/test_server.py` checks the manifest against the tools a

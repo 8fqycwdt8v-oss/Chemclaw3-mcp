@@ -16,6 +16,7 @@ WORKDIR /build
 # (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`).
 COPY pyproject.toml uv.lock /build/
 COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY packages/chemclaw_contracts /build/packages/chemclaw_contracts
 COPY servers/rxnpredict /build/servers/rxnpredict
 
 # Two `pip wheel` passes with the build backend installed in front of them, and the split is the
@@ -55,7 +56,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
          --require-hashes -r /build/requirements.txt \
          --extra-index-url https://download.pytorch.org/whl/cpu \
     && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels \
-        ./packages/mcp_server_kit "./servers/rxnpredict[reaction_t5,rxn_insight]"
+        ./packages/chemclaw_contracts ./packages/mcp_server_kit "./servers/rxnpredict[reaction_t5,rxn_insight]"
 
 # The one sanctioned moment this fleet reaches a network, and it is a build step in a stage that is
 # thrown away. `MCP_EGRESS_ALLOW` is set only here; it appears in no runtime environment and in no
@@ -73,7 +74,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
 ENV HF_HOME=/opt/models/hf
 ARG MODEL_HOSTS=huggingface.co,cdn-lfs.huggingface.co,cdn-lfs-us-1.huggingface.co,cdn-lfs-eu-1.huggingface.co
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
+        chemclaw-contracts mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
     && MCP_EGRESS_ALLOW="${MODEL_HOSTS}" MCP_EGRESS_GUARD=on \
        python /build/servers/rxnpredict/scripts/fetch_models.py \
     && find /opt/models -type f -print0 | xargs -0 sha256sum > /opt/models/SHA256SUMS
@@ -92,7 +93,7 @@ ENV HOME=/tmp
 COPY --from=build /wheels /wheels
 COPY --from=build /opt/models /opt/models
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
+        chemclaw-contracts mcp-server-kit "chemclaw-mcp-rxnpredict[reaction_t5,rxn_insight]" \
     && rm -rf /wheels
 
 # **Three system libraries, because Rxn-INSIGHT imports RDKit's drawing module**, and the import

@@ -1,0 +1,19 @@
+[project]
+name = "chemclaw-contracts"
+version = "1.0.0"
+description = "Every connector manifest the Chemclaw3 MCP fleet serves, and the typed wire of its two backend servers (calc, rxnlabel)."
+requires-python = ">=3.11"
+# `pyyaml` reads a manifest; `pydantic` carries the wire models. Nothing else: this package is
+# imported by the consumer's process and by every serving image, so its closure stays this small.
+dependencies = [
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The manifests are package data: hatch ships every file under the package directory.
+[tool.hatch.build.targets.wheel]
+packages = ["src/chemclaw_contracts"]

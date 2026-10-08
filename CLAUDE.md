@@ -14,6 +14,7 @@ one directory on `CHEMCLAW_CONNECTORS_DIR`, one entry in `CHEMCLAW_CONNECTOR_URL
 | --- | --- |
 | `servers/` | One directory per capability — a complete, independently deployable MCP server. |
 | `packages/mcp_server_kit/` | The shape every server has, written once: transport, auth, identity, tracing, datasets, limits, the egress guard. |
+| `packages/chemclaw_contracts/` | The one owner of every `connector.yaml` (as package data) and of the typed wire of the `calc` and `rxnlabel` backends; Chemclaw3 takes it as a pinned dependency. |
 | `manifests/` | One symlinked `connector.yaml` per **connector** — what `CHEMCLAW_CONNECTORS_DIR` points at. |
 | `manifests-internal/` | The servers Chemclaw3 must **not** discover (`calc`, `rxnlabel`); each declares `mount: backend`, a key Chemclaw3's manifest model refuses. |
 | `docs/` | Operating, integrating and adding servers; the decision record (`docs/decisions/`) and the open queue (`docs/BACKLOG.md`). |
@@ -90,7 +91,9 @@ Every corpus ships a `dataset.json` with `name`, `version`, `licence`, `retrieve
 Validate a hand-compiled corpus against itself (see `servers/props/tests/test_dataset.py`).
 
 `connector.yaml` is the surface Chemclaw3 advertises: every served tool declared, every declared tool
-served, each classified once as `read_only` or `state_changing` — changed in the same commit.
+served, each classified once as `read_only` or `state_changing` — changed in the same commit. It
+lives in `packages/chemclaw_contracts` (the server's and `manifests/`'s paths are links) and carries
+`contract_version`, bumped by the rules in `docs/adding-a-server.md`; `/healthz` reports the same.
 
 **Tool docstrings are the prompt.** State the units and what the tool is **not**; return `source`
 with every answer and `method` when there is more than one; refuse rather than approximate.

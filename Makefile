@@ -10,7 +10,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts $(wildcard servers/*/scripts)
+SRC := packages/mcp_server_kit/src packages/chemclaw_contracts/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts $(wildcard servers/*/scripts)
 # The test tree, globbed rather than listed: a new server's tests are checked the day the directory
 # exists, which is the half `SRC` gets wrong by being a list somebody has to remember to extend.
 # `conftest.py` is named because nothing globs it: it is layer 3 of the no-egress posture — the

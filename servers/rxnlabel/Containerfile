@@ -20,6 +20,7 @@ WORKDIR /build
 # (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`).
 COPY pyproject.toml uv.lock /build/
 COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY packages/chemclaw_contracts /build/packages/chemclaw_contracts
 COPY servers/rxnlabel /build/servers/rxnlabel
 
 # Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
@@ -60,7 +61,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
          --require-hashes -r /build/requirements.txt \
          --extra-index-url https://download.pytorch.org/whl/cpu \
     && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels \
-        ./packages/mcp_server_kit "./servers/rxnlabel[models]"
+        ./packages/chemclaw_contracts ./packages/mcp_server_kit "./servers/rxnlabel[models]"
 
 FROM python:3.11-slim
 
@@ -105,7 +106,7 @@ RUN apt-get update \
 # `tests/test_fleet_images.py::test_no_image_installs_what_the_lock_did_not_hash` refuses the old form.
 COPY --from=build /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        mcp-server-kit "chemclaw-mcp-rxnlabel[models]" \
+        chemclaw-contracts mcp-server-kit "chemclaw-mcp-rxnlabel[models]" \
     && rm -rf /wheels
 
 # **The offline switches, set before the check below so the check runs under them.** RXNMapper

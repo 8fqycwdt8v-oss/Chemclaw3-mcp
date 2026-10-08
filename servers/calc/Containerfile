@@ -52,6 +52,7 @@ WORKDIR /build
 # (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`).
 COPY pyproject.toml uv.lock /build/
 COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY packages/chemclaw_contracts /build/packages/chemclaw_contracts
 COPY servers/calc /build/servers/calc
 
 # Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
@@ -99,7 +100,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
     && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
     && python -m pip wheel --no-cache-dir --no-build-isolation --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
-    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/mcp_server_kit ./servers/calc
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/chemclaw_contracts ./packages/mcp_server_kit ./servers/calc
 
 FROM python:3.11-slim
 
@@ -114,7 +115,7 @@ ENV HOME=/tmp
 
 COPY --from=build /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        mcp-server-kit chemclaw-mcp-calc \
+        chemclaw-contracts mcp-server-kit chemclaw-mcp-calc \
     && rm -rf /wheels
 
 # **`libgomp1`, because the locked tblite wheel links OpenMP and does not bundle it.** tblite 0.7.0's

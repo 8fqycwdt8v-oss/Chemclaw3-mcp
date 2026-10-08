@@ -22,6 +22,7 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 - [A Deployment reads its bearer from the Secret its caller reads](D-2026-10-04-a-deployment-reads-its-bearer-from-the-secret-its-caller-reads.md)
 - [A hand-rolled model cannot see a key it was not told about](D-2026-09-16-a-hand-rolled-model-cannot-see-a-key-it-was-not-told-about.md)
 - [A stand-in that refuses a real field is not a stand-in](D-2026-09-16-a-stand-in-that-refuses-a-real-field-is-not-a-stand-in.md)
+- [The fleet owns every connector contract; Chemclaw3 pins it as a git package](D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package.md)
 - [A stand-in refuses what its consumer refuses](D-2026-09-26-a-stand-in-refuses-what-its-consumer-refuses.md)
 - [The consumer's agreement module is the trust boundary](D-2026-09-26-the-consumer-s-agreement-module-is-the-trust-boundary.md)
 - [The fleet runs the consumer's agreement suite before merge, and a deliberate lead is a label](D-2026-09-27-the-fleet-runs-the-consumer-s-agreement-before-merge.md)

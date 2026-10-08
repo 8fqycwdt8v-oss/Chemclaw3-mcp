@@ -5,6 +5,8 @@
 - `assert_manifest_matches` holds `connector.yaml` and the served surface together, including each
   tool's arguments against a recorded `tool-surface.json` beside the manifest (a separate file
   because Chemclaw3's manifest model forbids extra keys).
+- `assert_wire_contract` holds a backend's served input and output schemas to the typed models in
+  `chemclaw_contracts`, so a tool that drifts from the wire its consumer codes against fails here.
 - `assert_bearer_is_enforced` drives a *running* server, because a mounted MCP surface can bypass a
   credential the enclosing app declares, and only a real request shows it.
 """
@@ -15,7 +17,7 @@ import importlib.util
 import json
 import os
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, Self
@@ -23,6 +25,7 @@ from typing import Any, Literal, Self
 # `[testing]`-extra only: drives a running server and is never imported by a serving image.
 import httpx  # noqa: TID253
 import yaml
+from chemclaw_contracts import CONTRACT_VERSION_PATTERN
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
@@ -38,6 +41,7 @@ __all__ = [
     "HttpEndpoint",
     "assert_bearer_is_enforced",
     "assert_manifest_matches",
+    "assert_wire_contract",
     "load_manifest",
     "reimported",
     "served_tools",
@@ -228,6 +232,9 @@ class ConnectorManifest(BaseModel):
     #: The consumer's declared-but-not-bound switch; a fleet manifest shadowing a consumer copy
     #: must be able to say `false` too, or it binds every tool schema on every model call.
     default_enabled: bool = True
+    #: The version of the surface this manifest declares (`docs/adding-a-server.md` has the bump
+    #: rules). Optional here because it is optional over there; `/healthz` reports the same string.
+    contract_version: str | None = Field(default=None, pattern=CONTRACT_VERSION_PATTERN)
 
 
 def load_manifest(path: Path) -> ConnectorManifest:
@@ -375,6 +382,135 @@ def assert_manifest_matches(
     schemas = [tool for tool in tools if isinstance(tool, Tool)]
     if schemas:
         _assert_surface_unchanged(surface_path or manifest_path.parent / SURFACE_FILENAME, schemas)
+
+
+def _schema_shape(schema: Any, defs: Mapping[str, Any], ignore: frozenset[str]) -> Any:
+    """A JSON schema reduced to what a caller codes against: types, members, requiredness, defaults.
+
+    `$ref`s are followed. Titles, descriptions and numeric or length bounds are dropped, because a
+    reworded description or a tightened bound is not a change of wire shape. `ignore` names
+    properties to leave out at any depth (an output-only field a request model carries).
+    """
+    if not isinstance(schema, dict):
+        return "any"
+    if "$ref" in schema:
+        shape = _schema_shape(defs[str(schema["$ref"]).rsplit("/", 1)[-1]], defs, ignore)
+    elif "anyOf" in schema:
+        members = [_schema_shape(member, defs, ignore) for member in schema["anyOf"]]
+        shape = {"anyOf": sorted(members, key=lambda member: json.dumps(member, sort_keys=True))}
+    else:
+        shape = {}
+        if "type" in schema:
+            shape["type"] = schema["type"]
+        if "enum" in schema:
+            shape["enum"] = sorted(schema["enum"], key=str)
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            shape["properties"] = {
+                name: _schema_shape(member, defs, ignore)
+                for name, member in sorted(properties.items())
+                if name not in ignore
+            }
+            shape["required"] = sorted(
+                name for name in schema.get("required", []) if name not in ignore
+            )
+        if "items" in schema:
+            shape["items"] = _schema_shape(schema["items"], defs, ignore)
+    if "default" in schema:
+        shape = {**shape, "default": schema["default"]}
+    return shape
+
+
+def _shape_differences(contract: Any, served: Any, *, subset: bool, where: str) -> list[str]:
+    """Where `contract` and `served` disagree; with `subset`, `served` may carry extra members.
+
+    Subset mode is for answers: a field the server adds is additive, but one the contract names and
+    the server dropped or retyped is not, and a contract may not require what the server does not.
+    """
+    if not (isinstance(contract, dict) and isinstance(served, dict)):
+        return [] if contract == served else [f"{where}: contract {contract!r}, served {served!r}"]
+    if "properties" not in contract or "properties" not in served:
+        return [] if contract == served else [f"{where}: contract {contract!r}, served {served!r}"]
+    found: list[str] = []
+    names, offered = set(contract["properties"]), set(served["properties"])
+    missing = names - offered
+    extra = set() if subset else offered - names
+    if missing:
+        found.append(f"{where}: the server does not serve {sorted(missing)}")
+    if extra:
+        found.append(f"{where}: the server serves {sorted(extra)}, which the contract lacks")
+    if subset:
+        unserved = set(contract["required"]) - set(served["required"])
+        if unserved:
+            found.append(f"{where}: the contract requires {sorted(unserved)}, the server does not")
+    elif contract["required"] != served["required"]:
+        found.append(
+            f"{where}: required {contract['required']} in the contract, {served['required']} served"
+        )
+    for name in sorted(names & offered):
+        found += _shape_differences(
+            contract["properties"][name],
+            served["properties"][name],
+            subset=subset,
+            where=f"{where}.{name}",
+        )
+    return found
+
+
+def assert_wire_contract(
+    tools: Sequence[Tool],
+    requests: Mapping[str, type[BaseModel]],
+    responses: Mapping[str, type[BaseModel]],
+    *,
+    ignore: Iterable[str] = (),
+) -> None:
+    """Assert a server's served schemas agree with the contract models, in both directions.
+
+    Every served tool has a request and a response model and every model names a served tool. A
+    request model must describe the input schema exactly (names, types, requiredness, defaults,
+    nested members). A response model must be a subset of the output schema: the server may add
+    fields, but not drop or retype the ones the contract names.
+
+    Args:
+        tools: The `Tool` objects a `tools/list` returned.
+        requests: Tool name to the model of its arguments.
+        responses: Tool name to the model of its answer.
+        ignore: Property names left out of the comparison at every depth, for a field that exists
+            on one side only by design (an output-only identifier a request model also carries).
+    """
+    skipped = frozenset(ignore)
+    served = {tool.name: tool for tool in tools}
+    problems: list[str] = []
+    for label, models in (("request", requests), ("response", responses)):
+        if set(models) != set(served):
+            problems.append(
+                f"{label} models cover {sorted(models)} but the server serves {sorted(served)}"
+            )
+    for name in sorted(set(served) & set(requests) & set(responses)):
+        tool = served[name]
+        schema = tool.inputSchema or {}
+        contract = requests[name].model_json_schema(mode="validation")
+        problems += _shape_differences(
+            _schema_shape(contract, contract.get("$defs", {}), skipped),
+            _schema_shape(schema, schema.get("$defs", {}), skipped),
+            subset=False,
+            where=f"{name} input",
+        )
+        output = tool.outputSchema or {}
+        answer = responses[name].model_json_schema(mode="serialization")
+        problems += _shape_differences(
+            _schema_shape(answer, answer.get("$defs", {}), skipped),
+            _schema_shape(output, output.get("$defs", {}), skipped),
+            subset=True,
+            where=f"{name} output",
+        )
+    assert not problems, (
+        "the served wire has drifted from `chemclaw_contracts`:\n  "
+        + "\n  ".join(problems)
+        + "\nChange the contract model and bump the manifest's `contract_version` (major for a "
+        "removed, renamed or retyped argument or field; minor for an additive one) in the same "
+        "commit."
+    )
 
 
 def _tools_list(mcp_url: str, headers: dict[str, str]) -> httpx.Response:
