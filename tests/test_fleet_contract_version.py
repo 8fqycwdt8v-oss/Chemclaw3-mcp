@@ -1,4 +1,4 @@
-"""Every server reports, on `/healthz`, the `contract_version` its manifest carries.
+"""Every server reports, on `/healthz`, the `contract_version` its manifest carries, if any.
 
 The version lives in one place, the packaged manifest (`chemclaw_contracts`); `connector_app` reads
 it from there, so a server cannot report a version its manifest does not declare. This holds the
@@ -9,12 +9,18 @@ leaves this process's heap as it was (`test_session_ceiling` measures RSS growth
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from chemclaw_contracts import manifest_path
+from chemclaw_contracts import (
+    CONTRACT_VERSION_PATTERN,
+    contract_version,
+    declared_contract_version,
+    manifest_path,
+)
 from mcp_server_kit.testing import load_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,3 +70,17 @@ def test_healthz_reports_the_manifest_s_contract_version(
     assert reported == declared, (
         f"{name}: /healthz reports {reported!r} and the manifest declares {declared!r}"
     )
+
+
+@pytest.mark.parametrize("name", _servers())
+def test_a_declared_contract_version_is_semver_and_read_the_same_three_ways(name: str) -> None:
+    """The helper, the file read and the stand-in model agree, and a present value is semver.
+
+    Presence is not required yet: a manifest gains the key once the consumer's copies of it do. When
+    one has it, every route to it must give one answer.
+    """
+    path = manifest_path(name)
+    declared = declared_contract_version(path)
+    assert contract_version(name) == declared == load_manifest(path).contract_version
+    if declared is not None:
+        assert re.fullmatch(CONTRACT_VERSION_PATTERN, declared)

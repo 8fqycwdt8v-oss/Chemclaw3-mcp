@@ -166,8 +166,9 @@ reason. `tests/test_fleet_manifests.py` checks both directions.
 
 ## The contract version
 
-Every `connector.yaml` carries `contract_version: MAJOR.MINOR.PATCH`, and the server's `/healthz`
-reports the same string, read from the packaged manifest (`tests/test_fleet_contract_version.py`).
+A `connector.yaml` declares `contract_version: MAJOR.MINOR.PATCH` (every one will, once Chemclaw3's
+copies of the shared manifests carry it or are removed), and the server's `/healthz` reports the
+same string, read from the packaged manifest (`tests/test_fleet_contract_version.py`).
 It versions what a consumer codes against: the tools, their arguments and answers, and the text the
 model reads. Bump it in the commit that changes any of those:
 

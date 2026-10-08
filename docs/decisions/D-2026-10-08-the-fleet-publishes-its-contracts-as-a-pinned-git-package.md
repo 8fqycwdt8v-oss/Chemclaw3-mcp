@@ -50,8 +50,11 @@ Option 3 is declined because it re-creates the copies.
   published `CHEMCLAW_CONNECTORS_DIR` line keep working. Server images build and install the package
   wheel beside `mcp-server-kit`, from the same lock.
 - **Runtime.** The manifests are read from site-packages. Nothing in the package opens a socket.
-- **Versions.** Each manifest carries `contract_version` (bump rules in `docs/adding-a-server.md`);
-  `/healthz` reports the manifest's value. The package `__version__` is the release, tagged
+- **Versions.** A manifest declares `contract_version` (bump rules in `docs/adding-a-server.md`)
+  and `/healthz` reports the manifest's value, omitting it where the manifest has none. No manifest
+  declares one yet: Chemclaw3 accepts the field, but its sibling agreement test compares every
+  bundle-level key against its own copies of eight manifests, so the value is added once those
+  copies carry it or are deleted. The package `__version__` is the release, tagged
   `contracts-vX.Y.Z` after a merge. Until a tag exists, Chemclaw3 may pin the merge commit.
 - **Checking.** The agreement workflow installs *this* pull request's package into Chemclaw3's
   environment, over whatever it pins, and runs Chemclaw3's validators and sibling-agreement test;
@@ -81,5 +84,9 @@ Chemclaw3's image); then publish option 2 from a release job and pin the wheel b
   holds that the installed package has them.
 - `servers/calc/tests/test_contract.py::test_the_served_surface_is_the_contract` holds the typed wire
   against the served schemas.
+- `packages/mcp_server_kit/tests/test_connector_app.py::test_healthz_reports_the_version_its_manifest_declares`
+  holds that `/healthz` reports exactly the version its manifest declares, and omits it otherwise.
 - `tests/test_fleet_contract_version.py::test_healthz_reports_the_manifest_s_contract_version`
-  holds the reported version.
+  holds that for every server, and
+  `test_a_declared_contract_version_is_semver_and_read_the_same_three_ways` that a present value is
+  well formed. Neither requires presence while the consumer's copies lack the key.
