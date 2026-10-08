@@ -28,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
 
+from chemclaw_contracts import contract_version
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
@@ -284,6 +285,19 @@ def _stamp_revision(server: FastMCP) -> None:
     server._mcp_server.version = server_revision()
 
 
+def _declared_contract_version(name: str) -> str | None:
+    """The `contract_version` the packaged manifest of `name` carries, `None` where it has none.
+
+    Read from `chemclaw_contracts`, the one owner of the manifest, so `/healthz` cannot report a
+    version the manifest does not declare. An app with no packaged manifest (a probe app in a test)
+    reports none.
+    """
+    try:
+        return contract_version(name)
+    except KeyError:
+        return None
+
+
 def connector_app(
     server: FastMCP,
     *,
@@ -391,9 +405,9 @@ def connector_app(
     async def healthz() -> Response:
         """Readiness: can this pod answer tool calls.
 
-        Runs the server's `readiness` callable: 503 with the reason on failure, else the corpora
-        it verified. Datasets load lazily, so this route — not the import — is where a bad
-        corpus shows.
+        Reports `contract_version` when its manifest declares one. Runs the server's `readiness`
+        callable: 503 with the reason on failure, else the corpora it verified. Datasets load
+        lazily, so this route — not the import — is where a bad corpus shows.
 
         - The check runs off the event loop on its own one-thread pool, single-flighted, and a
           failure is memoised for `READINESS_FAILURE_TTL_SECONDS`.
@@ -411,6 +425,9 @@ def connector_app(
             # open.
             "bounds": effective_bounds(),
         }
+        declared = _declared_contract_version(name)
+        if declared is not None:
+            payload["contract_version"] = declared
         if readiness is None:
             READY.labels(name).set(1)
             return JSONResponse(payload)

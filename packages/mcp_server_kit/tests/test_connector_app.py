@@ -150,6 +150,37 @@ def test_readiness_success_names_the_verified_datasets(serving: Callable[..., An
         assert 'chemclaw_mcp_ready{server="probe-ready"} 1.0' in exposition
 
 
+def test_healthz_reports_the_version_its_manifest_declares(
+    serving: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`contract_version` is read from the packaged manifest of the server's own name.
+
+    It rides on the ready answer and the unready one, and is absent where the manifest declares
+    none or the name has no packaged manifest, so a server cannot report a version it was not given.
+    """
+    declared = {"probe-declares": "2.3.4", "probe-silent": None}
+
+    def _packaged(name: str) -> str | None:
+        return declared[name]  # a KeyError is "no packaged manifest", as in the real lookup
+
+    monkeypatch.setattr("mcp_server_kit.app.contract_version", _packaged)
+
+    def _broken() -> list[Dataset]:
+        raise RuntimeError("corpus missing")
+
+    for name, readiness, expected_status in (
+        ("probe-declares", None, 200),
+        ("probe-declares", _broken, 503),
+        ("probe-silent", None, 200),
+        ("probe-unpackaged", None, 200),
+    ):
+        app = connector_app(_probe_server(), name=name, readiness=readiness)
+        with serving(app) as base:
+            response = httpx.get(f"{base}/healthz", timeout=5.0)
+            assert response.status_code == expected_status
+            assert response.json().get("contract_version") == declared.get(name), name
+
+
 @pytest.fixture
 def isolated_bounds() -> Iterator[None]:
     """The process-wide bound record, restored after the test that writes to it."""
