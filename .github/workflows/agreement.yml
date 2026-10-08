@@ -11,6 +11,14 @@ name: Agreement
 # module, run against the pull request's own tree, so the author hears about it while the change
 # is still theirs.
 #
+# **This lane is required, on every pull request, and it never skips.** It has no `paths:` filter
+# (a required check that a filter leaves unreported blocks the merge), the consumer is cloned with
+# retries and an unreachable one fails the job, and `CHEMCLAW3_AGREEMENT_REQUIRED` turns a skip in
+# the test below into a failure. It points the consumer's environment at *this* pull request's
+# `chemclaw_contracts` (`D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package`),
+# over whatever version the consumer pins, and runs the consumer's `connector-validate` and
+# `skill-validate` against it.
+#
 # It runs `tests/test_consumer_agreement.py`, not the consumer's module directly, because that file
 # is where this repository already decided how to read the consumer's verdict: a skip, an xfail or
 # an empty selection over there is not a pass here. `CHEMCLAW3_AGREEMENT_REQUIRED` turns this
@@ -20,17 +28,6 @@ on:
     # `labeled`/`unlabeled` beside the defaults, so adding `agreement:core-follows` re-runs the
     # lane and records the choice on the pull request rather than in a re-push.
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    # What the consumer's module reads of this tree, and what reads it. The manifests are the
-    # declared surface — `tests/test_fleet_auth.py` already holds a server's served tools to its
-    # manifest, so a tool module that changes without its manifest fails there, not here.
-    paths:
-      - "servers/*/connector.yaml"
-      - "servers/*/tool-surface.json"
-      - "manifests/**"
-      - "manifests-internal/**"
-      - "packages/mcp_server_kit/src/mcp_server_kit/testing.py"
-      - "tests/test_consumer_agreement.py"
-      - ".github/workflows/agreement.yml"
   # Nightly, because the consumer moves too: a bundle it re-declares, or a check it adds to the
   # module this runs, is a disagreement no pull request here touched.
   schedule:
@@ -71,8 +68,18 @@ jobs:
       # consumer ships and what its own CI compares against this fleet's `main`.
       - name: Clone Chemclaw3 main (shallow)
         run: |
-          git clone --depth 1 --branch main --single-branch \
-            https://github.com/8fqycwdt8v-oss/Chemclaw3.git "${RUNNER_TEMP}/Chemclaw3"
+          for attempt in 1 2 3; do
+            rm -rf "${RUNNER_TEMP}/Chemclaw3"
+            if git clone --depth 1 --branch main --single-branch \
+                https://github.com/8fqycwdt8v-oss/Chemclaw3.git "${RUNNER_TEMP}/Chemclaw3"; then
+              break
+            fi
+            if [ "${attempt}" = 3 ]; then
+              echo "::error title=Chemclaw3 is unreachable::The agreement lane cannot compare against the consumer, so it fails rather than reports green having compared nothing."
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           git -C "${RUNNER_TEMP}/Chemclaw3" log -1 --format='Chemclaw3 main at %H (%cs) %s'
 
       # `--locked`, the consumer's own spelling: its tests import `chemclaw` from its own
@@ -84,6 +91,42 @@ jobs:
       - name: Sync this workspace
         run: uv sync --frozen
 
+      # This pull request's package over the consumer's own: a pinned `chemclaw-contracts` in its
+      # lock (once it takes one) would otherwise be what its validators read, and they would say
+      # nothing about this tree. `--no-deps` leaves the consumer's closure as locked, and the
+      # `diff` proves the installed manifests are this tree's, byte for byte.
+      - name: Point the consumer at this pull request's contracts
+        env:
+          CONSUMER: ${{ runner.temp }}/Chemclaw3
+        run: |
+          uv pip install --python "${CONSUMER}/.venv/bin/python" --reinstall --no-deps \
+            "${GITHUB_WORKSPACE}/packages/chemclaw_contracts"
+          installed="$("${CONSUMER}/.venv/bin/python" -c \
+            'import chemclaw_contracts as c; print(c.manifests_dir().parent)')"
+          diff -r "${installed}/manifests" \
+            "${GITHUB_WORKSPACE}/packages/chemclaw_contracts/src/chemclaw_contracts/manifests"
+          diff -r "${installed}/manifests_internal" \
+            "${GITHUB_WORKSPACE}/packages/chemclaw_contracts/src/chemclaw_contracts/manifests_internal"
+
+      # The consumer's own validators, with this tree's manifests ahead of its built-in bundles
+      # (the first directory wins a name), and `UV_NO_SYNC` so `uv run` does not put the consumer's
+      # pinned contracts back. `make` fails when a target is missing, so a renamed one is red.
+      - name: Run the consumer's validators against this tree
+        id: validate
+        continue-on-error: >-
+          ${{ github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'agreement:core-follows') }}
+        working-directory: ${{ runner.temp }}/Chemclaw3
+        env:
+          UV_NO_SYNC: "1"
+          CHEMCLAW_MCP_REPO: ${{ github.workspace }}
+        run: |
+          fleet="$(.venv/bin/python -c 'import chemclaw_contracts as c; print(c.manifests_dir())')"
+          builtin="$(.venv/bin/python -c \
+            'import chemclaw.connectors as c, pathlib; print(pathlib.Path(c.__file__).parent)')"
+          export CHEMCLAW_CONNECTORS_DIR="${fleet}:${builtin}"
+          make connector-validate skill-validate
+
       # With the label, a disagreement is reported and does not block: the author has said the
       # consumer follows, in a pull request of its own. Without it, this step is the gate.
       - name: Run the consumer's agreement against this tree
@@ -94,10 +137,11 @@ jobs:
         env:
           CHEMCLAW3_REPO: ${{ runner.temp }}/Chemclaw3
           CHEMCLAW3_AGREEMENT_REQUIRED: "1"
+          UV_NO_SYNC: "1"
         run: uv run --frozen pytest -p no:cacheprovider -q tests/test_consumer_agreement.py
 
       - name: Record a disagreement the label let through
-        if: ${{ steps.agree.outcome == 'failure' }}
+        if: ${{ steps.agree.outcome == 'failure' || steps.validate.outcome == 'failure' }}
         run: |
           echo "::warning title=Chemclaw3 does not yet agree::Merged with agreement:core-follows. \
           Chemclaw3's own CI reads this fleet's main and stays red until its matching pull \
