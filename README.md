@@ -20,6 +20,7 @@ enforced rather than requested.
 | [`CLAUDE.md`](CLAUDE.md) | The conventions every server follows; the reasons are in `docs/decisions/`. |
 | [`servers/props/`](servers/props/) | The reference server: solvent and pure-component properties. Copy this one. |
 | [`packages/mcp_server_kit/`](packages/mcp_server_kit/) | The shared shape: FastAPI transport, bearer auth, identity logging, vendored datasets, the egress guard. |
+| [`packages/chemclaw_contracts/`](packages/chemclaw_contracts/) | The contracts: every `connector.yaml` as package data, and the typed wire of the `calc` and `rxnlabel` backends. Chemclaw3 pins it. |
 | [`manifests/`](manifests/) | One directory per **connector**, holding its `connector.yaml`. Point `CHEMCLAW_CONNECTORS_DIR` here — and only here. |
 | [`manifests-internal/`](manifests-internal/) | The two servers Chemclaw3 must not discover — `calc` and `rxnlabel`. Reached by configuration, never mounted. |
 | [`docs/operations.md`](docs/operations.md) | **Running it**: build an image, deploy a server, wire it into Chemclaw3, verify, troubleshoot. |

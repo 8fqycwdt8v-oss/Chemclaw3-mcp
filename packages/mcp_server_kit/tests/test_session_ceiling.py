@@ -55,10 +55,11 @@ BURST_WIDTH = PROBE_CEILING * 8
 #: be slower than an admission. The slack is for scheduling noise, not a queue.
 MAX_REFUSAL_OVER_ADMISSION = 2.0
 
-#: Sessions opened by the cost probe, and the warm-up that precedes them so the allocator's own
-#: first-touch growth is not charged to the curve.
+#: Sessions opened by the cost probe, and the warm-up that precedes them. The warm-up outlasts the
+#: allocator's first-touch growth and the freed small-object arenas earlier tests leave in the
+#: process, so the measured sessions are charged their resident cost rather than placed in holes.
 COST_PROBE_SESSIONS = 400
-COST_PROBE_WARMUP = 50
+COST_PROBE_WARMUP = 600
 
 
 def _probe_server(name: str) -> FastMCP:

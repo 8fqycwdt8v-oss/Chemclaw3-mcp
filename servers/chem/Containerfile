@@ -13,6 +13,7 @@ WORKDIR /build
 # (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`).
 COPY pyproject.toml uv.lock /build/
 COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY packages/chemclaw_contracts /build/packages/chemclaw_contracts
 COPY servers/chem /build/servers/chem
 
 # Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
@@ -43,7 +44,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
     && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
     && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
          --require-hashes -r /build/requirements.txt \
-    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/mcp_server_kit ./servers/chem
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/chemclaw_contracts ./packages/mcp_server_kit ./servers/chem
 
 FROM python:3.11-slim
 
@@ -58,7 +59,7 @@ ENV HOME=/tmp
 
 COPY --from=build /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
-        mcp-server-kit chemclaw-mcp-chem \
+        chemclaw-contracts mcp-server-kit chemclaw-mcp-chem \
     && rm -rf /wheels
 
 # **Three system libraries, because this server draws.** `engine/depiction.py` imports RDKit's

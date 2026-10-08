@@ -48,6 +48,24 @@ from every directory carrying the name, winner first (`registry._bundle_content_
 Chemclaw3's `safety-screening` skill survives whichever `safety` manifest wins. Chemclaw3's
 `tests/test_sibling_manifest_agreement.py` compares the two copies' bundle-level keys.
 
+### Taking the contracts as a package
+
+The copies described above are going away: the manifests and the typed `calc` and `rxnlabel` wire
+are published as `chemclaw-contracts` (`packages/chemclaw_contracts`), and Chemclaw3 depends on a
+tagged release of it instead of keeping its own declarations
+(`D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package`):
+
+```toml
+# Chemclaw3's pyproject.toml
+"chemclaw-contracts @ git+https://github.com/8fqycwdt8v-oss/Chemclaw3-mcp@contracts-v1.0.0#subdirectory=packages/chemclaw_contracts"
+```
+
+`uv lock` records the commit the tag names, so the image build is pinned and nothing is fetched at
+runtime. `chemclaw_contracts.manifests_dir()` is a directory to put on `CHEMCLAW_CONNECTORS_DIR`
+(connectors only); `chemclaw_contracts.calc` carries the argument models behind `remote.py`'s
+hard-coded calls. Each server's `/healthz` reports the `contract_version` its manifest declares, so
+the consumer can compare the two at session open.
+
 ## Local development
 
 Run the server:

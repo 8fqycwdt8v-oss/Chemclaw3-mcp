@@ -135,3 +135,22 @@ def test_every_shipped_manifest_in_this_repository_validates() -> None:
     mounts = {path.parent.name: load_manifest(path).mount for path in manifests}
     assert set(mounts) == {path.parent.name for path in manifests}
     assert mounts["calc"] == "backend", "calc is a backend and its manifest must say so"
+
+
+@pytest.mark.parametrize("version", ["1.0.0", "0.12.345", "10.0.1"])
+def test_a_contract_version_is_a_semver_string(tmp_path: Path, version: str) -> None:
+    """`MAJOR.MINOR.PATCH`, digits only: the shape the consumer's model accepts."""
+    manifest = load_manifest(_written(tmp_path, {**COMPLETE, "contract_version": version}))
+    assert manifest.contract_version == version
+
+
+@pytest.mark.parametrize("version", ["1.0", "v1.0.0", "1.0.0-rc1", "1.0.0.0", "", 1])
+def test_a_contract_version_that_is_not_semver_is_refused(tmp_path: Path, version: object) -> None:
+    """Anything else is a manifest error here, before it is one at the consumer's startup."""
+    with pytest.raises(ValueError, match="not a connector manifest"):
+        load_manifest(_written(tmp_path, {**COMPLETE, "contract_version": version}))
+
+
+def test_a_manifest_without_a_contract_version_still_validates(tmp_path: Path) -> None:
+    """The field is optional, as it is in the consumer's model."""
+    assert load_manifest(_written(tmp_path, COMPLETE)).contract_version is None

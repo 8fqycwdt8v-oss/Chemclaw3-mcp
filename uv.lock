@@ -21,6 +21,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "chemclaw-contracts",
     "chemclaw-mcp-calc",
     "chemclaw-mcp-chem",
     "chemclaw-mcp-kinetics",
@@ -430,6 +431,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/10/6b/6046773901f1944b9a89436351529811ee958afc7b774563be9d74a6f0c3/charset_normalizer-3.5.0-cp37-abi3-win_amd64.whl", hash = "sha256:0c8953d9d1617794cfc40d81179571c9ba3805dd029623a15c93f1fb70e60a74", size = 198959, upload-time = "2026-08-12T14:35:05.187Z" },
     { url = "https://files.pythonhosted.org/packages/ab/a6/b57708ac92aefc8e8389d51d5178129b81f03196da61ee2c23e687b8178a/charset_normalizer-3.5.0-cp37-abi3-win_arm64.whl", hash = "sha256:562d24ca7797c1af8852994950c2e623a907b201fc4b0ed29e92af173d3828ca", size = 267055, upload-time = "2026-08-12T14:35:06.533Z" },
     { url = "https://files.pythonhosted.org/packages/22/c7/754d09943a616937df61e4ba367c409ded2a987e872972098d51a6fcf73b/charset_normalizer-3.5.0-py3-none-any.whl", hash = "sha256:993dfcbe75a85a3784abb5084f2c41b915767c90546fcc92803cffa28611baea", size = 67943, upload-time = "2026-08-12T14:35:30.363Z" },
+]
+
+[[package]]
+name = "chemclaw-contracts"
+version = "1.0.0"
+source = { editable = "packages/chemclaw_contracts" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
@@ -878,6 +894,7 @@ build = [
     { name = "setuptools" },
 ]
 dev = [
+    { name = "chemclaw-contracts" },
     { name = "chemclaw-mcp-calc" },
     { name = "chemclaw-mcp-chem" },
     { name = "chemclaw-mcp-kinetics" },
@@ -911,6 +928,7 @@ build = [
     { name = "setuptools", specifier = ">=70.1" },
 ]
 dev = [
+    { name = "chemclaw-contracts", editable = "packages/chemclaw_contracts" },
     { name = "chemclaw-mcp-calc", editable = "servers/calc" },
     { name = "chemclaw-mcp-chem", editable = "servers/chem" },
     { name = "chemclaw-mcp-kinetics", editable = "servers/kinetics" },
@@ -2172,6 +2190,7 @@ name = "mcp-server-kit"
 version = "0.1.0"
 source = { editable = "packages/mcp_server_kit" }
 dependencies = [
+    { name = "chemclaw-contracts" },
     { name = "fastapi" },
     { name = "mcp" },
     { name = "prometheus-client" },
@@ -2190,6 +2209,7 @@ testing = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chemclaw-contracts", editable = "packages/chemclaw_contracts" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'testing'", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.9,<2" },

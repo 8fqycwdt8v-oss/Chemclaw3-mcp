@@ -109,7 +109,7 @@ variance between servers should be in what they compute, not in how they are sha
 
 ```
 servers/<name>/
-├── connector.yaml               # every tool classified read_only or state_changing, exactly once
+├── connector.yaml               # a link to the packaged manifest (below); every tool classified once
 ├── pyproject.toml               # this server's dependency closure and nobody else's
 ├── Containerfile                # rootless, dataset baked in, no credential for anything external
 ├── README.md                    # what it serves, the exact artifact it reads, and who refreshes it
@@ -135,20 +135,27 @@ servers/<name>/
                                  #   assert_bearer_is_enforced on every arm of the credential
 ```
 
-Then symlink the manifest — never copy it — into the bucket that says what the server *is*:
+The manifest is owned by `packages/chemclaw_contracts`, which publishes it to Chemclaw3. Write it
+there, in the directory that says what the server *is*, and link to it — never copy it:
 
 ```sh
-mkdir -p manifests/<name>                                          # a connector Chemclaw3 dials
+P=packages/chemclaw_contracts/src/chemclaw_contracts
+mkdir -p $P/manifests/<name>                                       # a connector Chemclaw3 dials
+$EDITOR $P/manifests/<name>/connector.yaml
+ln -s ../../$P/manifests/<name>/connector.yaml servers/<name>/connector.yaml
+mkdir -p manifests/<name>
 ln -s ../../servers/<name>/connector.yaml manifests/<name>/connector.yaml
 ```
 
 `manifests/` is what every published `export CHEMCLAW_CONNECTORS_DIR=...` line names, and Chemclaw3
 enables everything it discovers there. If the new server is **not** something the agent should see
 as tools — a backend called from inside Chemclaw3's own code, or primitives for a background drain
-— it goes in `manifests-internal/` instead, and its `connector.yaml` declares `mount: backend`:
+— the manifest goes in `manifests_internal/` of the package instead, declares `mount: backend`, and
+is linked from `manifests-internal/`:
 
 ```sh
-mkdir -p manifests-internal/<name>                                 # reached by configuration only
+mkdir -p $P/manifests_internal/<name> manifests-internal/<name>    # reached by configuration only
+ln -s ../../$P/manifests_internal/<name>/connector.yaml servers/<name>/connector.yaml
 ln -s ../../servers/<name>/connector.yaml manifests-internal/<name>/connector.yaml
 ```
 
@@ -156,6 +163,27 @@ That key is refused by Chemclaw3's `extra="forbid"` manifest model, which is the
 that mounts the directory anyway gets a startup error naming the file rather than an agent whose
 tool surface quietly changed. A connector's manifest must carry no `mount:` key at all, for the same
 reason. `tests/test_fleet_manifests.py` checks both directions.
+
+## The contract version
+
+A `connector.yaml` declares `contract_version: MAJOR.MINOR.PATCH` (every one will, once Chemclaw3's
+copies of the shared manifests carry it or are removed), and the server's `/healthz` reports the
+same string, read from the packaged manifest (`tests/test_fleet_contract_version.py`).
+It versions what a consumer codes against: the tools, their arguments and answers, and the text the
+model reads. Bump it in the commit that changes any of those:
+
+| Change | Bump |
+| --- | --- |
+| A tool removed or renamed; an argument removed, renamed, retyped or newly required; a default changed; an answer field removed or retyped | **major** |
+| A tool, optional argument or answer field added; a tool or argument description rewritten (the model reads it, so it is part of the contract) | **minor** |
+| Nothing a consumer can see: a bug fix behind an unchanged surface | **patch** |
+
+A backend (`calc`, `rxnlabel`) also owns typed request and response models in
+`chemclaw_contracts.calc` / `.rxnlabel`; `servers/<name>/tests/test_contract.py` fails when a served
+schema drifts from them, so the bump and the model change in one commit. The package's own
+`__version__` (the release tag `contracts-vX.Y.Z`) rises with the largest bump of any manifest it
+carries. `D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package` has how a
+consumer takes a release.
 
 ## The dataset
 

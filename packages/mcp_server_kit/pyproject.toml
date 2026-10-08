@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "The shape every Chemclaw3 MCP server has: FastAPI transport, bearer auth, identity logging, W3C trace continuation, vendored datasets, and the egress guard."
 requires-python = ">=3.11"
 dependencies = [
+    # The manifest each server reports its `contract_version` from, and the wire models it serves.
+    "chemclaw-contracts",
     "fastapi>=0.115",
     "mcp>=1.9,<2",
     "prometheus-client>=0.20",

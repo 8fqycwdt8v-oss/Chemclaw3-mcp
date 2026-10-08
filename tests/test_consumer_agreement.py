@@ -1,8 +1,8 @@
 """What this fleet declares and `Chemclaw3` consumes, checked from *this* side.
 
-Two facts leave this tree: the bundle manifests it also ships copies of (whichever directory
-comes first on `CHEMCLAW_CONNECTORS_DIR` wins the name, unmerged), and
-`servers/calc/tool-surface.json`, the only record Chemclaw3's hardcoded `calc` calls are checked
+Two facts leave this tree: the manifests `packages/chemclaw_contracts` owns (until Chemclaw3 drops
+its copies, whichever directory comes first on `CHEMCLAW_CONNECTORS_DIR` wins the name, unmerged),
+and `servers/calc/tool-surface.json`, the record Chemclaw3's hardcoded `calc` calls are checked
 against. A rename done completely here passes `make check` and fails only in the consumer, so
 this runs the consumer's own agreement module rather than a copy that would agree with itself.
 
@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import NoReturn
 
+import chemclaw_contracts as contracts
 import pytest
 import yaml
 from mcp_server_kit.testing import (
@@ -414,11 +415,16 @@ def test_the_stand_in_manifest_model_agrees_with_the_model_that_reads_a_manifest
             f"reads a manifest: {reason}. Nothing in this run is evidence about whether they agree."
         )
 
-    published = sorted((ROOT / "manifests").glob("*/connector.yaml"))
-    internal = sorted((ROOT / "manifests-internal").glob("*/connector.yaml"))
+    published = sorted(contracts.manifests_dir().glob("*/connector.yaml"))
+    internal = sorted(contracts.internal_manifests_dir().glob("*/connector.yaml"))
     assert published and internal, "no shipped manifests found; has the layout changed?"
     shipped: list[tuple[str, dict[str, object], bool, bool]] = [
-        (str(path.relative_to(ROOT)), yaml.safe_load(path.read_text(encoding="utf-8")), True, there)
+        (
+            str(path.relative_to(path.parents[2])),
+            yaml.safe_load(path.read_text(encoding="utf-8")),
+            True,
+            there,
+        )
         for paths, there in ((published, True), (internal, False))
         for path in paths
     ]
