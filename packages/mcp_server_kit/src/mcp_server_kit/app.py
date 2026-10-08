@@ -425,12 +425,6 @@ def connector_app(
             # open.
             "bounds": effective_bounds(),
         }
-        declared = _declared_contract_version(name)
-        if declared is not None:
-            payload["contract_version"] = declared
-        if readiness is None:
-            READY.labels(name).set(1)
-            return JSONResponse(payload)
 
         def unready(reason: str) -> Response:
             """The 503, with the same redacted reason the memo holds."""
@@ -449,6 +443,19 @@ def connector_app(
             unready a pod on a transient cause.
             """
             return unready(reason) if cause in PERMANENT_CAUSES else degraded(reason, cause)
+
+        try:
+            declared = _declared_contract_version(name)
+        except ValueError as exc:
+            # A manifest this pod ships but cannot read is a fault in the image, not in a call:
+            # classified like any other readiness failure, so it is a 503 naming the cause.
+            logger.exception("server %s cannot read its packaged manifest: %s", name, exc)
+            return verdict(redact_secrets(str(exc)), classify(exc))
+        if declared is not None:
+            payload["contract_version"] = declared
+        if readiness is None:
+            READY.labels(name).set(1)
+            return JSONResponse(payload)
 
         async with readiness_lock:
             if readiness_failure is not None and time.monotonic() < readiness_failure[0]:

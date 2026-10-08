@@ -181,6 +181,38 @@ def test_healthz_reports_the_version_its_manifest_declares(
             assert response.json().get("contract_version") == declared.get(name), name
 
 
+def test_an_unreadable_packaged_manifest_is_a_503_naming_the_cause(
+    serving: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed `contract_version` in the shipped manifest is a permanent fault, not a 500.
+
+    It takes the same path as a failed readiness check: classified through `degradation`, 503 with
+    the redacted reason, ready gauge down, with or without a `readiness` callable.
+    """
+
+    def _malformed(name: str) -> str | None:
+        raise ValueError(
+            f"{name}: contract_version '1.0' is not MAJOR.MINOR.PATCH PGPASSWORD=hunter2"
+        )
+
+    monkeypatch.setattr("mcp_server_kit.app.contract_version", _malformed)
+    for name, readiness in (
+        ("probe-bad-manifest", None),
+        ("probe-bad-manifest-checked", lambda: []),
+    ):
+        app = connector_app(_probe_server(), name=name, readiness=readiness)
+        with serving(app) as base:
+            response = httpx.get(f"{base}/healthz", timeout=5.0)
+            assert response.status_code == 503
+            body = response.json()
+            assert body["status"] == "unready"
+            assert "MAJOR.MINOR.PATCH" in body["reason"]
+            assert "hunter2" not in response.text
+            assert "contract_version" not in body
+            exposition = httpx.get(f"{base}/metrics", timeout=5.0).text
+            assert f'chemclaw_mcp_ready{{server="{name}"}} 0.0' in exposition
+
+
 @pytest.fixture
 def isolated_bounds() -> Iterator[None]:
     """The process-wide bound record, restored after the test that writes to it."""
