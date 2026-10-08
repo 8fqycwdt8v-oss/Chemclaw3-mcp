@@ -14,12 +14,11 @@ for it, so the measurement that earned a rule lives in the test that holds it, a
 `tests/test_prompt_cost.py` ratchets what the surface costs. `enumerate_torsions` and the species
 enumerations were added here after the port.
 
-Chemclaw3 no longer runs any `chem` code. What it keeps is a *declaration* —
-`connectors/chem/connector.yaml`, the same name and tool list, pointing at this server — because its
-validators and skills name these tools by string. So there is one implementation and one address
-(`CHEMCLAW_CONNECTOR_URLS` has one `chem` key); if this repository's `manifests/` is also on
-`CHEMCLAW_CONNECTORS_DIR`, the first directory wins the tool list and both describe this server
-(`docs/integration.md`).
+Chemclaw3 no longer runs any `chem` code and holds no copy of its manifest: it installs
+`connector.yaml` from the pinned `chemclaw-contracts` package, because its validators and skills name
+these tools by string. So there is one implementation, one manifest and one address
+(`CHEMCLAW_CONNECTOR_URLS` has one `chem` key); a second `chem` manifest on `CHEMCLAW_CONNECTORS_DIR`
+is a startup error (`docs/integration.md`).
 
 Moving it out here buys what the split is for: RDKit leaves the chat service's image, and the tool
 surface releases on its own cadence.
@@ -71,7 +70,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8858 / `chemclaw-mcp-chem` |
 | Token | `CHEMCLAW_CHEM_TOKEN` |
-| Chemclaw3 | connector `chem`, declared there and enabled by default; its seven queued tools run through `connectors.chem.interactive` (sized 2 pods x 4 slots) |
+| Chemclaw3 | connector `chem`, manifest installed from `chemclaw-contracts`, enabled by default; its seven queued tools run through `connectors.chem.interactive` (sized 2 pods x 4 slots) |
 | Pod | requests 500m / 256Mi, limits 1 CPU / 512Mi; 2 → 6 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
 | Readiness | `/healthz` loads and checksums `records.csv` (`bench-reagents@<version>`); a corrupt table is a 503 naming the file. |
 | Admission | `CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS` (4, derived from the pod's thread pool) over the seven gated tools; a full pod answers `[chem-at-capacity] …`. `CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS` is retired and refused at startup. |

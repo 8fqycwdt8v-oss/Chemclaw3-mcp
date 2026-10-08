@@ -68,30 +68,29 @@ DNS-rebinding guard, a `401` from a mismatched token, a readiness `503` naming a
 
 ## Wiring it to Chemclaw3
 
-No code change on either side. Chemclaw3 already ships a `connector.yaml` for `chem`, `safety`,
-`rxnpredict`, `props`, `thermalsafety`, `kinetics`, `unitops` and `suitability`, so for those it needs
-only an address and the token, under the same variable name the server verifies:
+No code change on either side. Chemclaw3 installs every connector's `connector.yaml` from the
+pinned `chemclaw-contracts` package (`chem`, `safety`, `rxnpredict`, `props`, `thermalsafety`,
+`kinetics`, `unitops`, `suitability`, `pyexec`), so it needs only an address and the token, under the
+same variable name the server verifies:
 
 ```sh
 export CHEMCLAW_CONNECTOR_URLS='{"props":"http://127.0.0.1:8850/mcp"}'   # Helm: connectors.<name>.url
 export CHEMCLAW_PROPS_TOKEN=dev-token                                     # the same variable both sides read
 ```
 
-`pyexec` is the connector Chemclaw3 does not declare: its manifest comes from this repository's
-[`manifests/`](manifests/), prepended to `CHEMCLAW_CONNECTORS_DIR` (Helm: `extraConnectors`).
-Full instructions, including the five connectors that ship disabled and the degrades-silently failure
+Nothing is mounted, and a mount that carries a fleet connector's name is refused at startup.
+Full instructions, including the connectors that ship disabled and the degrades-silently failure
 mode to watch for, are in [`docs/operations.md`](docs/operations.md#3-wire-it-into-chemclaw3) and
 [`docs/integration.md`](docs/integration.md).
 
 **Two servers are not connectors at all.** `calc` holds the *physics* behind Chemclaw3's own `calc`
 bundle and is called from inside its `cached_compute` on a cache miss (`CHEMCLAW_CALC_SERVER_URL`);
-`rxnlabel` is called by a background corpus drain (`CHEMCLAW_RXNLABEL_SERVER_URL`). Mounting
-`calc`'s manifest would let a partial surface win the `calc` name collision and take the calibration
-ledger, the calculation cache, the artifact store and every durable calc job off the agent's
-surface — with no error. So their manifests live in [`manifests-internal/`](manifests-internal/),
-which nothing tells you to mount, and each declares `mount: backend` — a key Chemclaw3's manifest
-model refuses, so pointing a path there anyway is a startup error naming the file rather than a
-silent swap.
+`rxnlabel` is called by a background corpus drain (`CHEMCLAW_RXNLABEL_SERVER_URL`). `calc`'s manifest
+describes only the physics, not the calibration ledger, the calculation cache, the artifact store or
+the durable calc jobs behind Chemclaw3's own `calc` bundle. So their manifests live in
+[`manifests-internal/`](manifests-internal/), which nothing tells you to mount, and each declares
+`mount: backend` — a key Chemclaw3's manifest model refuses, so pointing a path there anyway is a
+startup error naming the file.
 
 `calc` is also the server that shows what this fleet does and does not promise: it may run for
 hours, and it may not hold state. See [`servers/calc/README.md`](servers/calc/README.md).

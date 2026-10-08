@@ -91,9 +91,9 @@ answers, and there is no point at which half of it is a result. One tool, one ke
 
 ## Read this first: it is a backend, not a connector Chemclaw3 dials
 
-`chem` and `safety` are complete ports, so Chemclaw3's declaration and this repository's manifest of
-each describe the same server and either may win on `CHEMCLAW_CONNECTORS_DIR`. **This server is
-different, and putting it on that path is wrong** — so it is not reachable from there any more. Its manifest is registered in
+`chem` and `safety` are complete ports, whose manifests Chemclaw3 installs from
+`chemclaw-contracts`. **This server is different, and putting it on `CHEMCLAW_CONNECTORS_DIR` is
+wrong** — so it is not reachable from there. Its manifest is registered in
 `manifests-internal/`, which no published `export` line names, and declares `mount: backend`, a key
 Chemclaw3's `extra="forbid"` manifest model refuses; a deployment that points a path at that
 directory anyway fails at startup naming the file rather than serving a reduced surface.
@@ -111,8 +111,8 @@ the state:
 
 The name is still `calc`, because this repository requires the directory, the package suffix and the
 manifest `name` to be one string (`tests/test_fleet_layout.py`). So registering this directory as a
-connector would let a *partial* port win the name collision — first directory wins, **with no
-error** — and take those six tools, `compute_thermochemistry` and every durable job off the agent's surface. The manifest here
+connector would put a *partial* port under that name, in place of those six tools,
+`compute_thermochemistry` and every durable job. The manifest here
 is this repository's own declaration of the served surface, checked against the running server by
 `tests/test_server.py`; it is not an instruction to point Chemclaw3 at it.
 

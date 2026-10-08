@@ -3,7 +3,7 @@
 What this fleet promises its consumer, as one installable package.
 
 - **Every `connector.yaml`**, as package data: `manifests/<name>/` for the connectors Chemclaw3
-  mounts, `manifests_internal/<name>/` for the backends (`calc`, `rxnlabel`) it must not. The files
+  discovers, `manifests_internal/<name>/` for the backends (`calc`, `rxnlabel`) it must not. The files
   here are the only copies: `servers/<name>/connector.yaml` and `manifests*/<name>/connector.yaml`
   are links to them.
 - **`chemclaw_contracts.calc` and `.rxnlabel`**: one request model per backend tool (`.wire()` is

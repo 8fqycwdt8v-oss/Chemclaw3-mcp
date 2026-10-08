@@ -60,8 +60,8 @@ endpoint:
     - filtration_time
     - drying_time
 
-# **Off unless a deployment names it in `CHEMCLAW_CONNECTORS_ENABLED`**, the same as Chemclaw3's own
-# copy of this bundle (`D-2026-09-20-declaring-a-capability-and-binding-it-are-different-decisions`
-# there). Every bound tool's schema is charged to every model call, so without the flag a deployment
-# that put `manifests/` first with no enable-list bound this bundle on every turn. Naming it overrides.
+# **Off unless a deployment names it in `CHEMCLAW_CONNECTORS_ENABLED`**
+# (`D-2026-09-20-declaring-a-capability-and-binding-it-are-different-decisions` in Chemclaw3).
+# Every bound tool's schema is charged to every model call, so without the flag an empty enable-list
+# would bind this bundle on every turn. Naming it overrides.
 default_enabled: false

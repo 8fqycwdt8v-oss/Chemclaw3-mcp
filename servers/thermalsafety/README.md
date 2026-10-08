@@ -126,7 +126,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8851 / `chemclaw-mcp-thermalsafety` |
 | Token | `CHEMCLAW_THERMALSAFETY_TOKEN` |
-| Chemclaw3 | connector `thermalsafety`, declared there with `default_enabled: false` — enable it with `connectors.thermalsafety.enabled: true` |
+| Chemclaw3 | connector `thermalsafety`, manifest installed from `chemclaw-contracts` with `default_enabled: false` — enable it with `connectors.thermalsafety.enabled: true` |
 | Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
 | Own knobs | none |
 | Readiness | `/healthz` runs the self-test above; a moved answer is a 503 |

@@ -6,7 +6,7 @@ Everything below is Chemclaw3's own mechanism, used as intended. No fork, no pat
 
 | Fact | Where it lives in Chemclaw3 |
 | --- | --- |
-| A bundle is any subdirectory of `connectors_dir` containing `connector.yaml`. `CHEMCLAW_CONNECTORS_DIR` is a `PATH`-style list; earlier directories win a name collision | `src/chemclaw/core/config/connectors.py` |
+| A bundle is any subdirectory of `connectors_dir` containing `connector.yaml`. `CHEMCLAW_CONNECTORS_DIR` is a `PATH`-style list; a name found in two directories is a **startup error** naming both files | `src/chemclaw/core/config/connectors.py` |
 | Discovery is not enablement. `CHEMCLAW_CONNECTORS_ENABLED` narrows the set *and fixes its order* — tool order is part of the prompt | same file |
 | A name listed there that no bundle provides is a **startup error**, not a silently missing capability | same file |
 | Per-connector address override: `CHEMCLAW_CONNECTOR_URLS`, a JSON map. In Helm, `connectors.<name>.url` | `D-2026-08-09-a-connector-we-do-not-run` |
@@ -21,50 +21,42 @@ will see; it produces an answer with less evidence behind it. Chemclaw3 reports 
 `/readyz` and the `chemclaw_connectors_unhealthy` gauge, and `CHEMCLAW_CONNECTORS_REQUIRED=true`
 turns it into a hard failure — which is the right setting for a GxP deployment.
 
-## What Chemclaw3 already declares
+## How Chemclaw3 gets the manifests
 
-Chemclaw3's image ships a `connector.yaml` for `chem`, `safety`, `rxnpredict`, `props`,
-`thermalsafety`, `kinetics`, `unitops` and `suitability`, each describing the server in **this**
-repository — same name, same tools, same `token_env` — so that its validators can resolve tool names
-and its skills can name them. Its comments call them declarations rather than servers: Chemclaw3
-runs none of them. For those, wiring is an address and a token; this repository's `manifests/` does
-not need to be mounted at all.
-
-The last five ship `default_enabled: false` there, because every bound connector's tool schemas are
-paid on every model call. An empty `CHEMCLAW_CONNECTORS_ENABLED` binds none of them; an explicit list
-binds exactly what it names, in that order, and replaces the default set — so a list that adds
-`props` has to name the rest of the surface too.
-
-`pyexec` is the one connector Chemclaw3 does not declare, so its manifest has to come from
-`manifests/`. `calc` and `rxnlabel` are not connectors at all (below).
-
-**When two manifests carry one name, the first directory on `CHEMCLAW_CONNECTORS_DIR` wins the tool
-surface outright** (`connectors/registry.py::_bundle_dirs`) — no merge, no warning. Prepending this
-repository's `manifests/` therefore makes *this* repository's copy authoritative for every name in
-it, which is useful for testing a tool-surface change before Chemclaw3's copy follows. Every
-opt-in server's manifest here carries `default_enabled: false` too, the same as Chemclaw3's copy,
-so which copy wins does not change what an empty `CHEMCLAW_CONNECTORS_ENABLED` binds. A bundle's `skills/` and `profiles/` are merged
-from every directory carrying the name, winner first (`registry._bundle_content_dirs`), so
-Chemclaw3's `safety-screening` skill survives whichever `safety` manifest wins. Chemclaw3's
-`tests/test_sibling_manifest_agreement.py` compares the two copies' bundle-level keys.
-
-### Taking the contracts as a package
-
-The copies described above are going away: the manifests and the typed `calc` and `rxnlabel` wire
-are published as `chemclaw-contracts` (`packages/chemclaw_contracts`), and Chemclaw3 depends on a
-tagged release of it instead of keeping its own declarations
-(`D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package`):
+Every fleet connector's `connector.yaml` (`chem`, `safety`, `rxnpredict`, `props`, `thermalsafety`,
+`kinetics`, `unitops`, `suitability`, `pyexec`) reaches Chemclaw3 as package data of
+`chemclaw-contracts` (`packages/chemclaw_contracts`), which Chemclaw3 depends on at a pinned commit
+(`D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package`). Chemclaw3 holds no copy:
+this repository is the single owner of each manifest, and Chemclaw3's default connectors directory
+is the installed package's `manifests/` followed by its own bundles. For these connectors wiring is
+an address and a token; nothing is mounted.
 
 ```toml
-# Chemclaw3's pyproject.toml
-"chemclaw-contracts @ git+https://github.com/8fqycwdt8v-oss/Chemclaw3-mcp@contracts-v1.0.0#subdirectory=packages/chemclaw_contracts"
+# Chemclaw3's pyproject.toml: pinned by commit until the release tag can be pushed
+"chemclaw-contracts @ git+https://github.com/8fqycwdt8v-oss/Chemclaw3-mcp@<commit>#subdirectory=packages/chemclaw_contracts"
 ```
 
-`uv lock` records the commit the tag names, so the image build is pinned and nothing is fetched at
-runtime. `chemclaw_contracts.manifests_dir()` is a directory to put on `CHEMCLAW_CONNECTORS_DIR`
+`uv lock` records the commit, so the image build is pinned and nothing is fetched at runtime. A
+change to a manifest reaches Chemclaw3 when its pin moves to a commit carrying it.
+`chemclaw_contracts.manifests_dir()` is the directory Chemclaw3 puts on `CHEMCLAW_CONNECTORS_DIR`
 (connectors only); `chemclaw_contracts.calc` carries the argument models behind `remote.py`'s
 hard-coded calls. Each server's `/healthz` reports the `contract_version` its manifest declares, so
 the consumer can compare the two at session open.
+
+`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec` declare
+`default_enabled: false`, because every bound connector's tool schemas are paid on every model call.
+An empty `CHEMCLAW_CONNECTORS_ENABLED` binds none of them; an explicit list binds exactly what it
+names, in that order, and replaces the default set, so a list that adds `props` has to name the rest
+of the surface too. `calc` and `rxnlabel` are not connectors at all (below).
+
+**One owner per name.** A connector name found in two directories on `CHEMCLAW_CONNECTORS_DIR` is a
+startup error, so a copy of a fleet manifest cannot shadow the package's. To reach a fleet connector
+at another address, set `CHEMCLAW_CONNECTOR_URLS` (Helm: `connectors.<name>.url`), which moves the
+endpoint without replacing the manifest. A bundle directory with no `connector.yaml` still
+contributes its `skills/` and `profiles/` to the connector of its name, which is how Chemclaw3's
+`safety-screening` skill loads beside the fleet's `safety` manifest.
+Chemclaw3's `tests/test_sibling_manifest_agreement.py` checks the installed package against this
+tree.
 
 ## Local development
 
@@ -75,9 +67,9 @@ cd /path/to/Chemclaw3-mcp
 make run-props                            # 127.0.0.1:8850, token defaults to `dev-token`
 ```
 
-Point Chemclaw3 at it. Chemclaw3's own `props` declaration already names `http://127.0.0.1:8850/mcp`
-(every declaration's loopback default is this fleet's dev port), so locally the token and the
-enablement are all it needs:
+Point Chemclaw3 at it. The `props` manifest already names `http://127.0.0.1:8850/mcp` (every
+manifest's loopback default is this fleet's dev port), so locally the token and the enablement are
+all it needs:
 
 ```sh
 cd /path/to/Chemclaw3
@@ -89,12 +81,10 @@ make connector-validate                   # the manifests resolve and are classi
 uvicorn chemclaw.api.app:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-For `pyexec`, or to make this repository's manifests win, prepend `manifests/` — keeping
-Chemclaw3's own directory on the path, or every shipped bundle disappears:
+For `pyexec` the manifest is already installed; enable it and give it a token:
 
 ```sh
-CHEMCLAW_OWN=$(uv run python -c "import chemclaw.connectors, pathlib; print(pathlib.Path(chemclaw.connectors.__file__).parent)")
-export CHEMCLAW_CONNECTORS_DIR="/path/to/Chemclaw3-mcp/manifests:$CHEMCLAW_OWN"
+export CHEMCLAW_CONNECTORS_ENABLED="<the connectors you want>:pyexec"
 export CHEMCLAW_PYEXEC_TOKEN=dev-token
 ```
 
@@ -105,14 +95,13 @@ licence.
 
 ### `calc` is not a connector Chemclaw3 dials — it is a backend behind `cached_compute`
 
-**`calc`'s manifest is not in `manifests/`, and that is why the export line above is safe to copy.**
-It lives in `manifests-internal/` beside `rxnlabel`, the other server Chemclaw3 reaches through
-plain configuration rather than discovery. Getting this wrong is silent: the name collides,
-first-directory-wins applies, and Chemclaw3's own `calc` bundle loses seven tools and every durable
-job to a partial port, with no error at any point. Measured with Chemclaw3's own `_bundle_dirs()`
-and the export line as it was published, the lost set is `report_measurement`, `find_calculations`,
-`list_artifacts`, `fetch_artifact`, `calculator_trust`, `calculator_outliers` and
-`compute_thermochemistry`, plus all twelve `jobs:` entries.
+**`calc`'s manifest is not in `manifests/`, and that is why `manifests_dir()` is safe to put on
+`CHEMCLAW_CONNECTORS_DIR`.** It lives in `manifests-internal/` beside `rxnlabel`, the other server
+Chemclaw3 reaches through plain configuration rather than discovery. The name `calc` is also
+Chemclaw3's own bundle, which holds seven tools (`report_measurement`, `find_calculations`,
+`list_artifacts`, `fetch_artifact`, `calculator_trust`, `calculator_outliers`,
+`compute_thermochemistry`) and every `jobs:` entry that this server's partial port does not carry.
+A `calc` manifest on the path is refused at startup.
 
 The directory split is the first layer. The second is in the manifest itself: it declares
 `mount: backend`, and Chemclaw3's `ConnectorManifest` is `extra="forbid"`, so a deployment that
@@ -336,12 +325,11 @@ hand-run build that drops the `--build-arg` is the remaining way to get `"unknow
 
 ### Which manifests reach the Chemclaw3 pod
 
-For the eight connectors Chemclaw3 declares itself, none: its image already carries them. For
-`pyexec`, mount `manifests/pyexec/connector.yaml` as a ConfigMap through the chart's
-`extraConnectors.bundles` (prepended to `CHEMCLAW_CONNECTORS_DIR`). Mounting more of `manifests/`
-is allowed and makes this repository's copy win each name it carries
-([above](#what-chemclaw3-already-declares)). `manifests-internal/` is never a
-path to add: it is the directory whose contents must not be discovered.
+Every fleet connector (`chem`, `safety`, `rxnpredict`, `props`, `thermalsafety`, `kinetics`,
+`unitops`, `suitability`, `pyexec`) arrives in the Chemclaw3 image through `chemclaw-contracts`,
+pinned by commit in Chemclaw3's `pyproject.toml` until the release tag can be pushed. Nothing is
+mounted, and mounting a fleet connector's name is refused. `manifests-internal/` is never a path to
+add: it is the directory whose contents must not be discovered.
 
 **`calc` and `rxnlabel` deploy like the rest and are registered like none of them.** Same images,
 same NetworkPolicies, same bearer Secrets (`CHEMCLAW_CALC_TOKEN`, `CHEMCLAW_RXNLABEL_TOKEN`) — but
@@ -360,9 +348,9 @@ seam:
 | The agent answers a solvent question from memory, with no `source` | The connector is unreachable and degraded silently. Check `/readyz`. |
 | Every MCP call returns 401 | The token env var is unset or differs between the two pods. It fails closed by design. |
 | The server accepts connections then hangs on the first call | The MCP session manager is not running — the mount-does-not-run-a-lifespan trap. `connector_app` handles it; a hand-rolled transport does not. |
-| `props` (or another opt-in connector) is bound on every turn although nothing enabled it | A manifest that won the name does not carry `default_enabled: false` — a hand-copied or older `connector.yaml` ahead of both repositories' copies on `CHEMCLAW_CONNECTORS_DIR`. Mount only the bundles you mean to bind, or name the set in `CHEMCLAW_CONNECTORS_ENABLED`. |
-| Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. For `pyexec`, mount its manifest. |
-| `calculator_trust`, `find_calculations` or a durable calc job has vanished from the surface | A `calc` manifest from this fleet reached `CHEMCLAW_CONNECTORS_DIR` and its partial port won the name collision. It cannot come from `manifests/` — check for a hand-copied `connector.yaml`, or a path pointing into `manifests-internal/`. |
+| `props` (or another opt-in connector) is bound on every turn although nothing enabled it | `CHEMCLAW_CONNECTORS_ENABLED` names it, or Chemclaw3 pins a `chemclaw-contracts` commit older than the manifest's `default_enabled: false`. Move the pin, or name the set in `CHEMCLAW_CONNECTORS_ENABLED`. |
+| Startup error naming a connector | `CHEMCLAW_CONNECTORS_ENABLED` lists a name no bundle provides. That is deliberate: a typo must not silently remove a capability. For a fleet connector, the pinned `chemclaw-contracts` commit predates it; move the pin. |
+| Chemclaw3 refuses to start with a connector name found in two directories | A fleet manifest was mounted beside the installed package's: a hand-copied `connector.yaml`, or a bundle listed in `extraConnectors.bundles` (the chart refuses the render too). Remove the mount; use `CHEMCLAW_CONNECTOR_URLS` to change an address. |
 | Chemclaw3 refuses to start with `invalid manifest: ... mount ... Extra inputs are not permitted` | `manifests-internal/` is on `CHEMCLAW_CONNECTORS_DIR`. That is the guard working: those servers are addressed by configuration (`CHEMCLAW_CALC_SERVER_URL`, `CHEMCLAW_RXNLABEL_SERVER_URL`), never discovered. Remove the path. |
 | Every calculation recomputes; the cache never hits | The key was derived locally instead of read from `calculation_key`, or a `CALCULATION_EPOCH` was bumped on either side (which invalidates every row deliberately — the two compose). The parts `store.get` needs come back from that tool ready to use; nothing on the Chemclaw3 side should be assembling one. |
 | `calculator_trust("pka")` says `UNCALIBRATED` with n=0 on a calculator that has residuals | A `calc_version` was re-derived rather than read off the result. The ledger matches it exactly and does not pool versions, so a locally-built string — which comes out well-formed, because `binary_version()` answers `"absent"` rather than raising — matches nothing. |

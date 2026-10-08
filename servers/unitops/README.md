@@ -156,7 +156,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8853 / `chemclaw-mcp-unitops` |
 | Token | `CHEMCLAW_UNITOPS_TOKEN` |
-| Chemclaw3 | connector `unitops`, declared there with `default_enabled: false` — enable it with `connectors.unitops.enabled: true` |
+| Chemclaw3 | connector `unitops`, manifest installed from `chemclaw-contracts` with `default_enabled: false` — enable it with `connectors.unitops.enabled: true` |
 | Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
 | Own knobs | none |
 | Readiness | `/healthz` checks the relations listed under "What it reads" and names the correlation revision (`unitops-correlations@<version>`); a relation that fails — two Zwietering exponents transposed, say — is a 503. |

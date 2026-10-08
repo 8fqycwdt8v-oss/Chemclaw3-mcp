@@ -1,10 +1,10 @@
 """What this fleet declares and `Chemclaw3` consumes, checked from *this* side.
 
-Two facts leave this tree: the manifests `packages/chemclaw_contracts` owns (until Chemclaw3 drops
-its copies, whichever directory comes first on `CHEMCLAW_CONNECTORS_DIR` wins the name, unmerged),
-and `servers/calc/tool-surface.json`, the record Chemclaw3's hardcoded `calc` calls are checked
-against. A rename done completely here passes `make check` and fails only in the consumer, so
-this runs the consumer's own agreement module rather than a copy that would agree with itself.
+Two facts leave this tree: the manifests `packages/chemclaw_contracts` owns (Chemclaw3 installs
+them as the pinned package and keeps no copy), and `servers/calc/tool-surface.json`, the record
+Chemclaw3's hardcoded `calc` calls are checked against. A rename done completely here passes
+`make check` and fails only in the consumer, so this runs the consumer's own agreement module
+rather than a copy that would agree with itself.
 
 Opt-in: without a consumer checkout it skips with the reason; a present checkout missing the
 module fails. `.github/workflows/agreement.yml` runs it with `CHEMCLAW3_AGREEMENT_REQUIRED` set,
@@ -57,8 +57,8 @@ REQUIRED_ENV = "CHEMCLAW3_AGREEMENT_REQUIRED"
 #: What a failure tells the author to change, in the consumer. Paths in *that* repository, named
 #: here because the author of a pull request in this one is the reader who has to open them.
 CONSUMER_FILES_TO_UPDATE = (
-    "src/chemclaw/connectors/<bundle>/connector.yaml — the consumer's copy of a bundle both trees "
-    "declare (tools, read_only, state_changing, auth.token_env, and every bundle-level key)",
+    "pyproject.toml — the `chemclaw-contracts` pin, moved to the commit of this fleet that carries "
+    "the change (the connector manifests reach the consumer only through that package)",
     "tests/test_sibling_manifest_agreement.py — `_ARGUED_DIVERGENCES`, and the per-seam declined "
     "tables for the `calc` and `rxnlabel` backends (`servers/*/tool-surface.json` here)",
 )

@@ -171,26 +171,28 @@ read from `chemclaw.core.config`. The Helm keys are in that repository's
 
 | Server | Port | In-cluster URL | Token variable | How Chemclaw3 reaches it |
 | --- | --- | --- | --- | --- |
-| `chem` | 8858 | `http://chemclaw-mcp-chem:8858/mcp` | `CHEMCLAW_CHEM_TOKEN` | connector, declared by Chemclaw3, on by default |
-| `safety` | 8859 | `http://chemclaw-mcp-safety:8859/mcp` | `CHEMCLAW_SAFETY_TOKEN` | connector, declared by Chemclaw3, on by default |
-| `rxnpredict` | 8857 | `http://chemclaw-mcp-rxnpredict:8857/mcp` | `CHEMCLAW_RXNPREDICT_TOKEN` | connector, declared by Chemclaw3, on by default |
-| `props` | 8850 | `http://chemclaw-mcp-props:8850/mcp` | `CHEMCLAW_PROPS_TOKEN` | connector, declared by Chemclaw3, **off** until enabled |
-| `thermalsafety` | 8851 | `http://chemclaw-mcp-thermalsafety:8851/mcp` | `CHEMCLAW_THERMALSAFETY_TOKEN` | connector, declared by Chemclaw3, **off** until enabled |
-| `kinetics` | 8852 | `http://chemclaw-mcp-kinetics:8852/mcp` | `CHEMCLAW_KINETICS_TOKEN` | connector, declared by Chemclaw3, **off** until enabled |
-| `unitops` | 8853 | `http://chemclaw-mcp-unitops:8853/mcp` | `CHEMCLAW_UNITOPS_TOKEN` | connector, declared by Chemclaw3, **off** until enabled |
-| `suitability` | 8892 | `http://chemclaw-mcp-suitability:8892/mcp` | `CHEMCLAW_SUITABILITY_TOKEN` | connector, declared by Chemclaw3, **off** until enabled |
-| `pyexec` | 8899 | `http://chemclaw-mcp-pyexec:8899/mcp` | `CHEMCLAW_PYEXEC_TOKEN` | connector, **not** declared by Chemclaw3: mount this repository's manifest |
+| `chem` | 8858 | `http://chemclaw-mcp-chem:8858/mcp` | `CHEMCLAW_CHEM_TOKEN` | connector, manifest in Chemclaw3's image, on by default |
+| `safety` | 8859 | `http://chemclaw-mcp-safety:8859/mcp` | `CHEMCLAW_SAFETY_TOKEN` | connector, manifest in Chemclaw3's image, on by default |
+| `rxnpredict` | 8857 | `http://chemclaw-mcp-rxnpredict:8857/mcp` | `CHEMCLAW_RXNPREDICT_TOKEN` | connector, manifest in Chemclaw3's image, on by default |
+| `props` | 8850 | `http://chemclaw-mcp-props:8850/mcp` | `CHEMCLAW_PROPS_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
+| `thermalsafety` | 8851 | `http://chemclaw-mcp-thermalsafety:8851/mcp` | `CHEMCLAW_THERMALSAFETY_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
+| `kinetics` | 8852 | `http://chemclaw-mcp-kinetics:8852/mcp` | `CHEMCLAW_KINETICS_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
+| `unitops` | 8853 | `http://chemclaw-mcp-unitops:8853/mcp` | `CHEMCLAW_UNITOPS_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
+| `suitability` | 8892 | `http://chemclaw-mcp-suitability:8892/mcp` | `CHEMCLAW_SUITABILITY_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
+| `pyexec` | 8899 | `http://chemclaw-mcp-pyexec:8899/mcp` | `CHEMCLAW_PYEXEC_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
 | `calc` | 8860 | `http://chemclaw-mcp-calc:8860/mcp` | `CHEMCLAW_CALC_TOKEN` | backend: `CHEMCLAW_CALC_SERVER_URL` |
 | `rxnlabel` | 8865 | `http://chemclaw-mcp-rxnlabel:8865/mcp` | `CHEMCLAW_RXNLABEL_TOKEN` | backend: `CHEMCLAW_RXNLABEL_SERVER_URL` |
 
 `MODULES.md` is the port registry. The ports above come from the manifests in this repository.
 
-### A connector Chemclaw3 already declares
+### Every fleet connector arrives in Chemclaw3's image
 
-Chemclaw3's image includes a `connector.yaml` for `chem`, `safety`, `rxnpredict`, `props`,
-`thermalsafety`, `kinetics`, `unitops` and `suitability`. Each describes the server here, with the
-same name, tools and token variable. You do not need to mount this repository's `manifests/` for
-them. On the Chemclaw3 release:
+Chemclaw3's image carries a `connector.yaml` for `chem`, `safety`, `rxnpredict`, `props`,
+`thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec`. They are installed with the
+pinned `chemclaw-contracts` package, which this repository publishes, so the manifest, the tool
+list and the token variable are this repository's own. Nothing is mounted: Chemclaw3 refuses to
+start when one connector name is found in two directories, so a mount carrying a fleet connector's
+name is an error (`docs/integration.md`). On the Chemclaw3 release:
 
 ```yaml
 connectors:
@@ -211,28 +213,21 @@ The egress peer above matches the pods every `servers/*/deploy/deployment.yaml` 
 label. The chart takes either `egressDestinations` or `allowAnyDestination: true`, never both — a
 release already on the latter needs no entry.
 
-`props`, `thermalsafety`, `kinetics`, `unitops` and `suitability` declare `default_enabled: false`
-on both sides, Chemclaw3's copy and this repository's. `pyexec`, which only this repository
-declares, carries `default_enabled: false` here. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not bound. Naming one
-with `connectors.<name>.enabled: true` binds it. Each bound connector adds its tool schemas to the
-prompt of every model call, so enable only what a site uses.
+`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec` declare
+`default_enabled: false` in their manifests. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not
+bound. Naming one with `connectors.<name>.enabled: true` binds it. Each bound connector adds its tool
+schemas to the prompt of every model call, so enable only what a site uses.
 
 `chem`, `rxnpredict`, `kinetics` and `pyexec` list `queued:` tools. Chemclaw3 runs an interactive
 Temporal worker for them, sized by `connectors.<name>.interactive`. Size it to the server's
 `replicas x admission ceiling` (see each README).
 
-### `pyexec`: mount this repository's manifest
+### `pyexec`: opt in
 
-Chemclaw3 does not declare `pyexec`, so the manifest has to come from here. Make a ConfigMap
-containing `manifests/pyexec/connector.yaml` and list it in `extraConnectors.bundles`:
-
-```sh
-oc create configmap chemclaw-connector-pyexec --from-file=connector.yaml=manifests/pyexec/connector.yaml
-```
+`pyexec` is off by default, and its manifest is already in Chemclaw3's image. The opt-in is the
+connector's `enabled`, its `url` and the interactive worker (`run_python` is `queued:`):
 
 ```yaml
-extraConnectors:
-  bundles: [{name: pyexec, configMap: chemclaw-connector-pyexec}]
 connectors:
   pyexec:
     enabled: true
@@ -245,12 +240,11 @@ secrets:
   optionalKeys: {pyexecToken: CHEMCLAW_PYEXEC_TOKEN}
 ```
 
-**Mount only the bundles you need, and never `manifests-internal/`.** The chart prepends the mount
-to `CHEMCLAW_CONNECTORS_DIR`, and the first directory wins a name collision. A manifest from this
-repository therefore replaces Chemclaw3's copy of the same connector. Every opt-in server's
-manifest here carries `default_enabled: false`, the same as Chemclaw3's copy, so a mounted `props`
-(for example) stays unbound when `CHEMCLAW_CONNECTORS_ENABLED` is empty. A chart release never
-renders it empty anyway. Bundle skills are still merged from every directory with the same name.
+**Upgrading a release that mounted `pyexec`.** A release that still lists `pyexec` (or any other
+fleet connector) in `extraConnectors.bundles` must remove that mount and its ConfigMap. Chemclaw3
+refuses a connector name found in two directories, which is a startup error, and the chart refuses
+the render. Never mount `manifests-internal/` either: its manifests declare `mount: backend`, which
+Chemclaw3 refuses.
 
 ### `calc` and `rxnlabel`: backends, never connectors
 
@@ -353,7 +347,8 @@ not show an error. Its tools are missing from the turn.
 | `413 request body too large` | A request body over 1 MB. | Send less. For `rxnlabel`, use smaller batches. |
 | Connector configured, resolves, times out | The NetworkPolicy dropped the connection: a different namespace, a caller without the label `app.kubernetes.io/name: chemclaw`, or Chemclaw3's own egress policy missing the port or the destination. | Same namespace; check `egressPorts` and `egressDestinations` on the Chemclaw3 side. |
 | Chemclaw3 will not start: `invalid manifest: … mount … Extra inputs are not permitted` | `manifests-internal/` (or a copy of `calc`/`rxnlabel`'s manifest) is on `CHEMCLAW_CONNECTORS_DIR`. | Remove it. Those two are reached by `CHEMCLAW_CALC_SERVER_URL` / `CHEMCLAW_RXNLABEL_SERVER_URL`. |
-| Chemclaw3 will not start: `connectors_enabled names unknown connector(s) ['pyexec']` | Enabled without a manifest. | Mount `manifests/pyexec` (§3). |
+| Chemclaw3 will not start: `connectors_enabled names unknown connector(s) ['pyexec']` | The Chemclaw3 image predates its `chemclaw-contracts` pin, or the name is misspelled. | Run a Chemclaw3 release that pins `chemclaw-contracts`; do not mount a manifest. |
+| Chemclaw3 will not start: a connector name is found in two directories | A release still mounts a fleet connector through `extraConnectors.bundles`. | Remove the mount (§3, `pyexec`). |
 | `/healthz` says `"revision":"unknown"` | The image was built without `--build-arg CHEMCLAW_REVISION`. | Rebuild with it. |
 | Pod accepts connections, then hangs on the first `/mcp` request | A hand-written transport that does not run the MCP session manager. | Use `mcp_server_kit.connector_app`. Every server here does. |
 

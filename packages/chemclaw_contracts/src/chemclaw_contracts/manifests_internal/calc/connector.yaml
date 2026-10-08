@@ -4,9 +4,8 @@
 # # THIS MANIFEST DOES NOT GO ON `CHEMCLAW_CONNECTORS_DIR`.                                  #
 # ############################################################################################
 #
-# `chem` and `safety` are connectors Chemclaw3 dials (D-2026-08-09-a-connector-we-do-not-run):
-# drop their directory on the path and the capability appears with no core edit. **This one is
-# not.** Chemclaw3 keeps its own `calc` bundle and every tool in it; what moved here is
+# `chem` and `safety` are connectors Chemclaw3 dials (D-2026-08-09-a-connector-we-do-not-run),
+# installed with the pinned `chemclaw-contracts`. **This one is not.** Chemclaw3 keeps its own `calc` bundle and every tool in it; what moved here is
 # the *physics* behind them — its calculators and its durable jobs' activities alike — and
 # Chemclaw3 calls this server from inside
 # `science/calc/store.py::cached_compute` as a backend on a cache miss.
@@ -14,9 +13,8 @@
 # The name is nonetheless `calc`, because this repository requires the directory, the package
 # suffix, the manifest `name` and the addressing key to be one string
 # (`tests/test_fleet_layout.py::test_the_name_is_one_string_used_four_times`). So registering this
-# directory as a connector would let a *partial* port win a name collision — first directory wins,
-# with no error either way — and silently remove everything the in-tree bundle serves that is not
-# listed below:
+# directory as a connector would put a *partial* port under the name of the in-tree bundle, which
+# serves much that is not listed below:
 #
 #   report_measurement · find_calculations · list_artifacts · fetch_artifact ·
 #   calculator_trust · calculator_outliers   … and every `jobs:` entry (solvent screens,
@@ -26,10 +24,9 @@
 # queues — state, which a server in this fleet is by construction not.
 #
 # **`mount: backend` below is what makes that mechanical rather than trusted.** This directory is
-# registered in `manifests-internal/`, which no published `export CHEMCLAW_CONNECTORS_DIR=...` line
-# names, and the key is the second layer under that: Chemclaw3's `ConnectorManifest` is
-# `extra="forbid"`, so a deployment that points a path here anyway gets a `ConnectorError` naming
-# this file at startup instead of a partial surface winning the name. It is read by
+# registered in `manifests-internal/`, which nothing names for `CHEMCLAW_CONNECTORS_DIR`, and the
+# key is the second layer under that: Chemclaw3's `ConnectorManifest` is `extra="forbid"`, so a
+# deployment that points a path here anyway gets a `ConnectorError` naming this file at startup. It is read by
 # `tests/test_fleet_manifests.py` on this side and by nothing on Chemclaw3's, which is the point — a
 # manifest Chemclaw3 must refuse is one it cannot silently accept.
 #

@@ -4,8 +4,8 @@ Layers: `engine/` <- `tools.py` (the MCP surface) <- `app.py` (the transport), o
 
 A **backend, not a connector**: Chemclaw3 keeps its own `calc` bundle (cache, calibration ledger,
 artifact store, durable jobs) and calls this server from `cached_compute` on a cache miss. Hence
-it is registered in `manifests-internal/` with `mount: backend`, so it can never win the `calc`
-name collision on the agent's surface.
+it is registered in `manifests-internal/` with `mount: backend`, so it is never discovered as
+a connector on the agent's surface.
 
 It serves request/response compute tools and keyed primitives (`relax_structure`,
 `compute_hessian`, `scan_point`, the CREST searches, ...) — never a composite whose key names its

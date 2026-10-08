@@ -65,7 +65,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8850 / `chemclaw-mcp-props` |
 | Token | `CHEMCLAW_PROPS_TOKEN` |
-| Chemclaw3 | connector `props`, declared there with `default_enabled: false` — enable it with `connectors.props.enabled: true` |
+| Chemclaw3 | connector `props`, manifest installed from `chemclaw-contracts` with `default_enabled: false` — enable it with `connectors.props.enabled: true` |
 | Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
 | Own knobs | `CHEMCLAW_PROPS_MAX_TB_RATIO` (1.8) — the upper temperature bound as a multiple of the boiling point in kelvin, see below. A value below 1.01 is refused at startup, naming the variable. |
 | Readiness | `/healthz` loads and checksums `records.csv` and names it (`process-solvents@<version>`); a corrupt or missing table is a 503 naming the file and both hashes. |
