@@ -2,20 +2,35 @@
 
 The version lives in one place, the packaged manifest (`chemclaw_contracts`); `connector_app` reads
 it from there, so a server cannot report a version its manifest does not declare. This holds the
-whole served fleet to that, and the manifests to carrying one.
+whole served fleet to that. The apps run in a child interpreter so importing eleven servers' engines
+leaves this process's heap as it was (`test_session_ceiling` measures RSS growth in it).
 """
 
 from __future__ import annotations
 
-import importlib
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from chemclaw_contracts import manifest_path
-from fastapi.testclient import TestClient
 from mcp_server_kit.testing import load_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: Import each server's app, ask its `/healthz` without a socket, print `{name: [status, version]}`.
+_PROBE = """
+import importlib, json, sys
+from fastapi.testclient import TestClient
+
+answers = {}
+for name in sys.argv[1:]:
+    app = importlib.import_module(f"chemclaw_mcp_{name}.app").app
+    body = TestClient(app).get("/healthz")
+    answers[name] = [body.status_code, body.json().get("contract_version")]
+json.dump(answers, sys.stdout)
+"""
 
 
 def _servers() -> list[str]:
@@ -23,14 +38,29 @@ def _servers() -> list[str]:
     return sorted(p.name for p in (ROOT / "servers").iterdir() if (p / "connector.yaml").exists())
 
 
+@pytest.fixture(scope="module")
+def healthz() -> dict[str, list[object]]:
+    """Each server's `[status, contract_version]` from its own `/healthz`."""
+    run = subprocess.run(
+        [sys.executable, "-c", _PROBE, *_servers()],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=300,
+    )
+    assert run.returncode == 0, run.stderr[-3000:]
+    answers: dict[str, list[object]] = json.loads(run.stdout)
+    return answers
+
+
 @pytest.mark.parametrize("name", _servers())
-def test_healthz_reports_the_manifest_s_contract_version(name: str) -> None:
+def test_healthz_reports_the_manifest_s_contract_version(
+    name: str, healthz: dict[str, list[object]]
+) -> None:
     """The version on `/healthz` is the manifest's, ready or not, for every server."""
-    app = importlib.import_module(f"chemclaw_mcp_{name}.app").app
-    response = TestClient(app).get("/healthz")
-    assert response.status_code in (200, 503), response.text
+    status, reported = healthz[name]
+    assert status in (200, 503), f"{name}: /healthz answered {status}"
     declared = load_manifest(manifest_path(name)).contract_version
-    assert response.json().get("contract_version") == declared, (
-        f"{name}: /healthz reports {response.json().get('contract_version')!r} and the manifest "
-        f"declares {declared!r}"
+    assert reported == declared, (
+        f"{name}: /healthz reports {reported!r} and the manifest declares {declared!r}"
     )
