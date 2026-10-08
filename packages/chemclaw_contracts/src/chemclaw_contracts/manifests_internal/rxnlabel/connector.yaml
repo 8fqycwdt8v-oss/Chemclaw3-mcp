@@ -19,6 +19,7 @@
 # than putting `represent_reactions` into the agent's prompt.
 mount: backend
 name: rxnlabel
+contract_version: 1.0.0
 description: >-
   Reaction and per-species representations with role assignment, and named-reaction classification.
   Atom-maps a reaction (RXNMapper), decides what each species was doing — starting material,

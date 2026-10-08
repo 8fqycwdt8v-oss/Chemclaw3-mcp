@@ -4,6 +4,7 @@
 # (D-2026-08-09-a-connector-we-do-not-run). The URL below is the loopback dev default; a cluster
 # address is set per deployment by `CHEMCLAW_CONNECTOR_URLS` or `connectors.rxnpredict.url`.
 name: rxnpredict
+contract_version: 1.0.0
 description: >-
   Forward reaction prediction and reaction-condition prediction by ensemble: several open-source
   models are run in parallel and their ranked outputs combined by Borda-weighted voting, gated on a

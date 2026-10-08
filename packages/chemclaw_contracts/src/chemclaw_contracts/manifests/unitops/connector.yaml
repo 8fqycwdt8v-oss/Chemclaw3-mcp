@@ -7,6 +7,7 @@
 # The URL below is the loopback dev default. A cluster address is set per deployment, by
 # `CHEMCLAW_CONNECTOR_URLS` or by `connectors.unitops.url` in the Helm chart.
 name: unitops
+contract_version: 1.0.0
 description: >-
   Scale-up and unit-operation sizing, from the equipment and material data the chemist already
   has: carry an agitation duty between vessels on matched power-per-volume and matched tip speed,

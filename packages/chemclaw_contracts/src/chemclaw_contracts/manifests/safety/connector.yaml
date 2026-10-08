@@ -16,6 +16,7 @@
 # `CHEMCLAW_CONNECTOR_URLS` or by `connectors.safety.url` in the Helm chart — hosting is a deployment
 # fact and does not belong in a manifest.
 name: safety
+contract_version: 1.0.0
 description: >-
   Cited safety and impurity reference tables, three separate questions kept separate: structural
   hazard screening of molecules and whole reactions (energetic and reactive motifs, plus dangerous
