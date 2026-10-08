@@ -462,7 +462,8 @@ def assert_wire_contract(
     requests: Mapping[str, type[BaseModel]],
     responses: Mapping[str, type[BaseModel]],
     *,
-    ignore: Iterable[str] = (),
+    ignore_in_requests: Iterable[str] = (),
+    unlisted_in_answers: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """Assert a server's served schemas agree with the contract models, in both directions.
 
@@ -475,10 +476,15 @@ def assert_wire_contract(
         tools: The `Tool` objects a `tools/list` returned.
         requests: Tool name to the model of its arguments.
         responses: Tool name to the model of its answer.
-        ignore: Property names left out of the comparison at every depth, for a field that exists
-            on one side only by design (an output-only identifier a request model also carries).
+        ignore_in_requests: Property names left out of the request comparison at every depth, for
+            a field a request model carries that the server never takes (an output-only identifier).
+            Never applied to answers.
+        unlisted_in_answers: Tool name to top-level answer properties the served output schema
+            omits though real answers carry them (a computed field). They are dropped from the
+            contract side of that comparison only, so the caller must prove them on a real result.
     """
-    skipped = frozenset(ignore)
+    skipped = frozenset(ignore_in_requests)
+    unlisted = {tool: frozenset(names) for tool, names in (unlisted_in_answers or {}).items()}
     served = {tool.name: tool for tool in tools}
     problems: list[str] = []
     for label, models in (("request", requests), ("response", responses)):
@@ -498,9 +504,10 @@ def assert_wire_contract(
         )
         output = tool.outputSchema or {}
         answer = responses[name].model_json_schema(mode="serialization")
+        expected = _schema_shape(answer, answer.get("$defs", {}), frozenset(unlisted.get(name, ())))
         problems += _shape_differences(
-            _schema_shape(answer, answer.get("$defs", {}), skipped),
-            _schema_shape(output, output.get("$defs", {}), skipped),
+            expected,
+            _schema_shape(output, output.get("$defs", {}), frozenset()),
             subset=True,
             where=f"{name} output",
         )

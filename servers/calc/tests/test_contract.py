@@ -13,8 +13,23 @@ from mcp.types import Tool
 from mcp_server_kit.testing import assert_wire_contract
 from pydantic import BaseModel, ValidationError
 
-#: Present on the contract's `Structure` only: the server recomputes it, so no request carries it.
-OUTPUT_ONLY = ("structure_id",)
+#: On the contract's `Structure` for answers; the server recomputes it, so no request carries it.
+REQUEST_IGNORES = ("structure_id",)
+
+#: The content address Chemclaw3's cache keys on. FastMCP leaves a computed field out of
+#: `outputSchema`, so these answers are checked on a real call instead (below).
+UNLISTED = {"embed_structure": ("structure_id",), "combine_structures": ("structure_id",)}
+
+
+def _check(served: Sequence[Tool]) -> None:
+    """The wire check as this server runs it."""
+    assert_wire_contract(
+        served,
+        CALC_REQUESTS,
+        CALC_RESPONSES,
+        ignore_in_requests=REQUEST_IGNORES,
+        unlisted_in_answers=UNLISTED,
+    )
 
 
 def _served() -> list[Tool]:
@@ -34,7 +49,7 @@ def _drifted(served: Sequence[Tool], **replace: Any) -> list[Tool]:
 
 def test_the_served_surface_is_the_contract() -> None:
     """Every tool's input is exactly its request model, and its output satisfies its response."""
-    assert_wire_contract(_served(), CALC_REQUESTS, CALC_RESPONSES, ignore=OUTPUT_ONLY)
+    _check(_served())
 
 
 def test_a_renamed_argument_fails_the_check() -> None:
@@ -47,9 +62,7 @@ def test_a_renamed_argument_fails_the_check() -> None:
         "required": ["smile"],
     }
     with pytest.raises(AssertionError, match="predict_pka input"):
-        assert_wire_contract(
-            _drifted(served, predict_pka=renamed), CALC_REQUESTS, CALC_RESPONSES, ignore=OUTPUT_ONLY
-        )
+        _check(_drifted(served, predict_pka=renamed))
 
 
 def test_a_retyped_default_fails_the_check() -> None:
@@ -59,12 +72,7 @@ def test_a_retyped_default_fails_the_check() -> None:
     properties = {**schema["properties"], "solvent": {**schema["properties"]["solvent"]}}
     properties["solvent"]["default"] = "water"
     with pytest.raises(AssertionError, match=r"scan_point input\.solvent"):
-        assert_wire_contract(
-            _drifted(served, scan_point={**schema, "properties": properties}),
-            CALC_REQUESTS,
-            CALC_RESPONSES,
-            ignore=OUTPUT_ONLY,
-        )
+        _check(_drifted(served, scan_point={**schema, "properties": properties}))
 
 
 def test_a_tool_without_a_model_fails_the_check() -> None:
@@ -73,7 +81,7 @@ def test_a_tool_without_a_model_fails_the_check() -> None:
         name: model for name, model in CALC_RESPONSES.items() if name != "predict_pka"
     }
     with pytest.raises(AssertionError, match="response models cover"):
-        assert_wire_contract(_served(), CALC_REQUESTS, narrowed, ignore=OUTPUT_ONLY)
+        assert_wire_contract(_served(), CALC_REQUESTS, narrowed, ignore_in_requests=REQUEST_IGNORES)
 
 
 def test_a_request_model_sends_only_what_the_caller_set() -> None:
@@ -90,3 +98,37 @@ def test_an_argument_the_tool_does_not_take_is_refused() -> None:
         CALC_REQUESTS["predict_pka"](smiles="CCO", solvent="water")  # type: ignore[call-arg]
     key = CalculationKeyRequest(tool="predict_pka", arguments={"smiles": "CCO"})
     assert key.wire() == {"tool": "predict_pka", "arguments": {"smiles": "CCO"}}
+
+
+def test_a_dropped_answer_field_fails_the_check() -> None:
+    """`calculation_key` lists `structure_id`; a server that stops serving it is drift."""
+    drifted = []
+    for tool in _served():
+        if tool.name == "calculation_key":
+            schema = dict(tool.outputSchema or {})
+            schema["properties"] = {
+                k: v for k, v in schema["properties"].items() if k != "structure_id"
+            }
+            tool = tool.model_copy(update={"outputSchema": schema})
+        drifted.append(tool)
+    with pytest.raises(AssertionError, match=r"calculation_key output"):
+        _check(drifted)
+
+
+def test_the_unlisted_allowance_is_the_only_thing_hiding_the_structure_id() -> None:
+    """Without it the check demands `structure_id` in the served schema, which FastMCP omits."""
+    with pytest.raises(AssertionError, match=r"embed_structure output.*structure_id"):
+        assert_wire_contract(
+            _served(), CALC_REQUESTS, CALC_RESPONSES, ignore_in_requests=REQUEST_IGNORES
+        )
+
+
+@pytest.mark.parametrize("tool", ["embed_structure", "combine_structures"])
+def test_a_structure_answer_carries_the_content_address_the_contract_names(tool: str) -> None:
+    """The field the schema omits is on a real answer, and the contract model reads that answer."""
+    _, water = asyncio.run(tools.server.call_tool("embed_structure", {"smiles": "O"}))
+    arguments = {"smiles": "O"} if tool == "embed_structure" else {"first": water, "second": water}
+    _, answer = asyncio.run(tools.server.call_tool(tool, arguments))
+    parsed = Structure.model_validate(answer)
+    assert parsed.structure_id is not None
+    assert parsed.structure_id.startswith("st_")
