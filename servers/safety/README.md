@@ -12,13 +12,13 @@ for word, because every disclaimer in it exists to prevent a mistake that was me
 (an invented ICH M7 class and purge factor, a palladium PDE recited from training, "no hazards
 detected" told six times to a chemist about to sign a risk assessment).
 
-Chemclaw3 no longer runs any `safety` code. What it keeps is a *declaration* —
-`connectors/safety/connector.yaml`, the same name and tool list, pointing at this server — and,
-beside it, `skills/safety-screening/SKILL.md`: the *judgment* about which of these three tools
-answers which question and how to report what comes back. A skill is architecture layer 3 in that
-repository and this fleet has no equivalent seam, so this manifest declares no `skills:`. Chemclaw3
-reads a bundle's skills from every directory carrying the bundle's name, so the skill stays loaded
-even when this repository's `manifests/` is mounted ahead of its own and wins the tool list.
+Chemclaw3 no longer runs any `safety` code and holds no copy of its manifest: it installs
+`connector.yaml` from the pinned `chemclaw-contracts` package. What it keeps is
+`skills/safety-screening/SKILL.md`: the *judgment* about which of these three tools answers which
+question and how to report what comes back. A skill is architecture layer 3 in that repository and
+this fleet has no equivalent seam, so this manifest declares no `skills:`. Chemclaw3 reads a bundle's
+skills from every directory carrying the bundle's name, including one with no manifest, so the skill
+loads beside the manifest this fleet owns.
 
 ## Tools
 
@@ -78,7 +78,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8859 / `chemclaw-mcp-safety` |
 | Token | `CHEMCLAW_SAFETY_TOKEN` |
-| Chemclaw3 | connector `safety`, declared there and enabled by default |
+| Chemclaw3 | connector `safety`, manifest installed from `chemclaw-contracts`, enabled by default |
 | Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
 | Own knobs | `CHEMCLAW_SAFETY_MAX_COMPONENTS` (64), below; `MCP_MAX_SMILES_CHARS` / `MCP_MAX_MOLECULE_ATOMS` per structure |
 | Readiness | `/healthz` loads and checksums all five corpora — `hazard-screening-rules`, `genotoxicity-structural-alerts`, `ich-q3c-residual-solvents`, `ich-q3d-elemental-impurities`, `bench-reagents` — and names each with its version; any one failing is a 503 naming the file. An unready `safety` pod must not take traffic: a screen that errors is a control the answer gets written without. |

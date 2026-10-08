@@ -84,8 +84,7 @@ endpoint:
 
 # **Off unless a deployment names it in `CHEMCLAW_CONNECTORS_ENABLED`** — Chemclaw3's switch for a
 # bundle that is declared but not bound (`D-2026-09-20-declaring-a-capability-and-binding-it-are-
-# different-decisions` there). Chemclaw3 ships no copy of this bundle, so this file is the only one
-# that can say it, and that repository lists `pyexec` among its off-by-default servers. Every bound
-# tool's schema is charged to every model call, so without the flag a deployment that mounted
-# `manifests/` with no enable-list bound arbitrary code execution on every turn. Naming it overrides.
+# different-decisions` there). This file is the only declaration of the bundle, so it is the only
+# place that can say it. Every bound tool's schema is charged to every model call, so without the
+# flag an empty enable-list would bind arbitrary code execution on every turn. Naming it overrides.
 default_enabled: false

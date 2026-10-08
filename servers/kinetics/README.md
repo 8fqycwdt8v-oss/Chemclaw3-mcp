@@ -130,7 +130,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8852 / `chemclaw-mcp-kinetics` |
 | Token | `CHEMCLAW_KINETICS_TOKEN` |
-| Chemclaw3 | connector `kinetics`, declared there with `default_enabled: false`; `semibatch_accumulation_profile` is `queued:`, so enabling it also runs `connectors.kinetics.interactive` (2 pods x 3 slots) |
+| Chemclaw3 | connector `kinetics`, manifest installed from `chemclaw-contracts` with `default_enabled: false`; `semibatch_accumulation_profile` is `queued:`, so enabling it also runs `connectors.kinetics.interactive` (2 pods x 3 slots) |
 | Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
 | Own knobs | `CHEMCLAW_KINETICS_MAX_CONCURRENT_INTEGRATIONS` (3) — integrations in flight per pod; a full pod answers `[kinetics-at-capacity] …` |
 | Readiness | `/healthz` recomputes the four relations above and names the formula revision (`kinetics-formulas@<version>`); a relation that has moved is a 503. |

@@ -229,8 +229,8 @@ class ConnectorManifest(BaseModel):
     profiles: list[str] = Field(default_factory=list)
     note_types: list[str] = Field(default_factory=list)
     relations: list[str] = Field(default_factory=list)
-    #: The consumer's declared-but-not-bound switch; a fleet manifest shadowing a consumer copy
-    #: must be able to say `false` too, or it binds every tool schema on every model call.
+    #: The consumer's declared-but-not-bound switch; a fleet manifest must be able to say `false`,
+    #: or it binds every tool schema on every model call.
     default_enabled: bool = True
     #: The version of the surface this manifest declares (`docs/adding-a-server.md` has the bump
     #: rules). Optional here because it is optional over there; `/healthz` reports the same string.

@@ -1,7 +1,7 @@
 # `manifests-internal/` — the servers Chemclaw3 must **not** discover
 
-The sibling of [`manifests/`](../manifests/), and the whole reason that directory is safe to point
-`CHEMCLAW_CONNECTORS_DIR` at. One subdirectory per server here too, each a symlink to that server's
+The sibling of [`manifests/`](../manifests/), and the whole reason that directory is safe to put
+on `CHEMCLAW_CONNECTORS_DIR`. One subdirectory per server here too, each a symlink to that server's
 own `connector.yaml` — same rule, opposite consumer.
 
 Chemclaw3 discovers a bundle as *any subdirectory of `connectors_dir` holding a `connector.yaml`*,
@@ -13,18 +13,16 @@ and discovery is enablement unless `CHEMCLAW_CONNECTORS_ENABLED` narrows it. So 
 | [`calc`](../servers/calc/) | From **inside** `science/calc/store.py::cached_compute`, as a backend on a cache miss. `CHEMCLAW_CALC_SERVER_URL`, `CHEMCLAW_CALC_SERVER_TOKEN_ENV` (→ `CHEMCLAW_CALC_TOKEN`). |
 | [`rxnlabel`](../servers/rxnlabel/) | From a background corpus-labelling drain. `CHEMCLAW_RXNLABEL_SERVER_URL`, `CHEMCLAW_RXNLABEL_SERVER_TOKEN_ENV` (→ `CHEMCLAW_RXNLABEL_TOKEN`). |
 
-Neither is dialled as a connector, and mounting either has a consequence with no error attached to
-it. `calc` carries a Chemclaw3 bundle's *name*, so first-directory-wins hands it the collision —
-measured with Chemclaw3's own `_bundle_dirs()` and the published `export` line, that removes
-`report_measurement`, `find_calculations`, `list_artifacts`, `fetch_artifact`, `calculator_trust`,
-`calculator_outliers` and `compute_thermochemistry`, plus **all twelve** durable calc jobs, and
-replaces them with 20 raw physics primitives that have no calculation cache, no artifact store and
-no calibration ledger behind them. `rxnlabel` puts internal batch primitives into the agent's prompt
-as tools to choose between.
+Neither is dialled as a connector. `calc` carries a Chemclaw3 bundle's *name*, and its manifest
+declares raw physics primitives with no calculation cache, no artifact store and no calibration
+ledger behind them, where Chemclaw3's bundle holds `report_measurement`, `find_calculations`,
+`list_artifacts`, `fetch_artifact`, `calculator_trust`, `calculator_outliers`,
+`compute_thermochemistry` and the durable calc jobs. `rxnlabel` would put internal batch primitives
+into the agent's prompt as tools to choose between.
 
 This directory is what prevents both, in two layers:
 
-1. **No published `export` line names it.** `manifests/` holds only connectors, and
+1. **Nothing names it.** `manifests/` holds only connectors, and
    `tests/test_fleet_manifests.py::test_the_directory_the_export_line_names_holds_only_connectors` replicates
    Chemclaw3's discovery over it to say so.
 2. **Every manifest here declares `mount: backend`, a key Chemclaw3 *refuses*.** Its

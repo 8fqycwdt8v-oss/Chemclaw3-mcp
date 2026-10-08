@@ -131,7 +131,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | --- | --- |
 | Port / Service | 8892 / `chemclaw-mcp-suitability` |
 | Token | `CHEMCLAW_SUITABILITY_TOKEN` |
-| Chemclaw3 | connector `suitability`, declared there with `default_enabled: false` — enable it with `connectors.suitability.enabled: true` |
+| Chemclaw3 | connector `suitability`, manifest installed from `chemclaw-contracts` with `default_enabled: false` — enable it with `connectors.suitability.enabled: true` |
 | Pod | requests 250m / 256Mi, limits 1 CPU / 512Mi; 2 → 4 replicas on CPU |
 | Own knobs | none |
 | Readiness | `/healthz` recomputes the plate-count and resolution constants from their definitions and publishes `suitability-constants@<version>` with a digest of the allowance table; a constant that no longer reproduces is a 503. |

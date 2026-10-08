@@ -147,8 +147,7 @@ mkdir -p manifests/<name>
 ln -s ../../servers/<name>/connector.yaml manifests/<name>/connector.yaml
 ```
 
-`manifests/` is what every published `export CHEMCLAW_CONNECTORS_DIR=...` line names, and Chemclaw3
-enables everything it discovers there. If the new server is **not** something the agent should see
+`manifests/` holds only connectors, and Chemclaw3 enables everything it discovers there. If the new server is **not** something the agent should see
 as tools — a backend called from inside Chemclaw3's own code, or primitives for a background drain
 — the manifest goes in `manifests_internal/` of the package instead, declares `mount: backend`, and
 is linked from `manifests-internal/`:
@@ -166,9 +165,9 @@ reason. `tests/test_fleet_manifests.py` checks both directions.
 
 ## The contract version
 
-A `connector.yaml` declares `contract_version: MAJOR.MINOR.PATCH` (every one will, once Chemclaw3's
-copies of the shared manifests carry it or are removed), and the server's `/healthz` reports the
-same string, read from the packaged manifest (`tests/test_fleet_contract_version.py`).
+A `connector.yaml` may declare `contract_version: MAJOR.MINOR.PATCH`; the server's `/healthz`
+reports the same string, read from the packaged manifest (`tests/test_fleet_contract_version.py`),
+and Chemclaw3 compares the two when a session opens (a missing value is unknown, never a refusal).
 It versions what a consumer codes against: the tools, their arguments and answers, and the text the
 model reads. Bump it in the commit that changes any of those:
 
@@ -352,6 +351,6 @@ Finally, update the documents an operator reads:
   default, what `/healthz` verifies, and its admission ceiling or why it has none.
 
 **There is nothing to update in `CLAUDE.md`**: it holds no port table, and `MODULES.md` is the
-registry and the only file the port tests read. If the agent should see the server's tools, its
-manifest also needs a declaration on the Chemclaw3 side (or a mount of `manifests/<name>` there) —
-that is a pull request in that repository.
+registry and the only file the port tests read. If the agent should see the server's tools, the new manifest
+reaches Chemclaw3 when its `chemclaw-contracts` pin moves to a commit carrying it, and the
+connector's address and token settings are a pull request in that repository.

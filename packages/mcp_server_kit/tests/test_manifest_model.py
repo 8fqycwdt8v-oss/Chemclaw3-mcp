@@ -81,10 +81,10 @@ def test_a_bare_top_level_list_key_is_refused_as_the_consumer_refuses_it(tmp_pat
 
 
 def test_default_enabled_is_a_field_the_fleet_can_declare(tmp_path: Path) -> None:
-    """The consumer's `default_enabled`, which a shadowing fleet manifest has to be able to say.
+    """The consumer's `default_enabled`, which a fleet manifest has to be able to say.
 
-    A fleet manifest that wins the name collision must be able to carry `false`, or it binds every
-    tool schema on every model call.
+    A fleet manifest must be able to carry `false`, or it binds every tool schema on every model
+    call.
     """
     assert load_manifest(_written(tmp_path, COMPLETE)).default_enabled is True
     declared = load_manifest(_written(tmp_path, {**COMPLETE, "default_enabled": False}))
