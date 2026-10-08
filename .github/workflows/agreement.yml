@@ -55,6 +55,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # This job runs another repository's code; it needs no credential to do so.
+          persist-credentials: false
 
       # No cache: the consumer's closure is gigabytes of wheels this repository's `check` job never
       # installs, and a shared cache key would make one job evict the other's.
@@ -110,12 +112,9 @@ jobs:
 
       # The consumer's own validators, with this tree's manifests ahead of its built-in bundles
       # (the first directory wins a name), and `UV_NO_SYNC` so `uv run` does not put the consumer's
-      # pinned contracts back. `make` fails when a target is missing, so a renamed one is red.
+      # pinned contracts back. `make` fails when a target is missing, so a renamed one is red. Not
+      # excused by `agreement:core-follows`: that label covers only the agreement test below.
       - name: Run the consumer's validators against this tree
-        id: validate
-        continue-on-error: >-
-          ${{ github.event_name == 'pull_request'
-          && contains(github.event.pull_request.labels.*.name, 'agreement:core-follows') }}
         working-directory: ${{ runner.temp }}/Chemclaw3
         env:
           UV_NO_SYNC: "1"
@@ -141,7 +140,7 @@ jobs:
         run: uv run --frozen pytest -p no:cacheprovider -q tests/test_consumer_agreement.py
 
       - name: Record a disagreement the label let through
-        if: ${{ steps.agree.outcome == 'failure' || steps.validate.outcome == 'failure' }}
+        if: ${{ steps.agree.outcome == 'failure' }}
         run: |
           echo "::warning title=Chemclaw3 does not yet agree::Merged with agreement:core-follows. \
           Chemclaw3's own CI reads this fleet's main and stays red until its matching pull \
