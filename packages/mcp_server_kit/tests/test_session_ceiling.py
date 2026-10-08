@@ -55,11 +55,9 @@ BURST_WIDTH = PROBE_CEILING * 8
 #: be slower than an admission. The slack is for scheduling noise, not a queue.
 MAX_REFUSAL_OVER_ADMISSION = 2.0
 
-#: Sessions opened by the cost probe, and the warm-up that precedes them so the allocator's own
-#: first-touch growth is not charged to the curve. In a suite process the warm-up must also fill the
-#: freed small-object arenas earlier tests left behind, or the first sessions are placed in holes
-#: and cost no resident memory: measured 6-11 kB per session after the whole suite had run, against
-#: 58 kB in a fresh process. Those holes are about 20 MB, so the warm-up outlasts them.
+#: Sessions opened by the cost probe, and the warm-up that precedes them. The warm-up outlasts the
+#: allocator's first-touch growth and the freed small-object arenas earlier tests leave in the
+#: process, so the measured sessions are charged their resident cost rather than placed in holes.
 COST_PROBE_SESSIONS = 400
 COST_PROBE_WARMUP = 600
 

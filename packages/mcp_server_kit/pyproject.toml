@@ -43,6 +43,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_server_kit"]
-
-[tool.uv.sources]
-chemclaw-contracts = { workspace = true }
