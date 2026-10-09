@@ -93,8 +93,7 @@ Validate a hand-compiled corpus against itself (see `servers/props/tests/test_da
 `connector.yaml` is the surface Chemclaw3 advertises: every served tool declared, every declared tool
 served, each classified once as `read_only` or `state_changing` — changed in the same commit. It
 lives in `packages/chemclaw_contracts` (the server's and `manifests/`'s paths are links) and declares
-`contract_version` once the consumer accepts it everywhere, bumped by the rules in
-`docs/adding-a-server.md`; `/healthz` reports the same.
+`contract_version`, bumped by the rules in `docs/adding-a-server.md`; `/healthz` reports the same.
 
 **Tool docstrings are the prompt.** State the units and what the tool is **not**; return `source`
 with every answer and `method` when there is more than one; refuse rather than approximate.

@@ -165,9 +165,9 @@ reason. `tests/test_fleet_manifests.py` checks both directions.
 
 ## The contract version
 
-A `connector.yaml` may declare `contract_version: MAJOR.MINOR.PATCH`; the server's `/healthz`
+Every `connector.yaml` declares `contract_version: MAJOR.MINOR.PATCH`; the server's `/healthz`
 reports the same string, read from the packaged manifest (`tests/test_fleet_contract_version.py`),
-and Chemclaw3 compares the two when a session opens (a missing value is unknown, never a refusal).
+and Chemclaw3 compares the two when a session opens (a manifest without one reads as unknown, never a refusal).
 It versions what a consumer codes against: the tools, their arguments and answers, and the text the
 model reads. Bump it in the commit that changes any of those:
 
