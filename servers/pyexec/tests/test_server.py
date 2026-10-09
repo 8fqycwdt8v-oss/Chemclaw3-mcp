@@ -22,7 +22,11 @@ from chemclaw_mcp_pyexec import tools
 from chemclaw_mcp_pyexec.engine.admission import ADMISSION_MARKER
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp_server_kit.testing import assert_bearer_is_enforced, assert_manifest_matches
+from mcp_server_kit.testing import (
+    assert_bearer_is_enforced,
+    assert_manifest_matches,
+    load_manifest,
+)
 
 TOKEN = "test-token-for-pyexec"
 MANIFEST = Path(__file__).resolve().parents[1] / "connector.yaml"
@@ -74,6 +78,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     # admission ceiling is visible here.
     bounds = body.pop("bounds")
     assert bounds["CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS"] >= 1
+    # The version this server's manifest declares, which the probe reports beside the revision.
+    assert body.pop("contract_version") == load_manifest(MANIFEST).contract_version
     assert body == {
         "status": "ok",
         "server": "pyexec",
