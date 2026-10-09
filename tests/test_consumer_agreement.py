@@ -309,6 +309,8 @@ _MANIFEST_PROBES: tuple[tuple[str, dict[str, object], bool, bool], ...] = (
     # The consumer's switch for a declared-but-unbound bundle (`pyexec` sets it); refusing it here
     # would be a false refusal.
     ("default_enabled: false", _manifest(default_enabled=False), True, True),
+    ("a contract_version", _manifest(contract_version="1.0.0"), True, True),
+    ("a contract_version that is not semver", _manifest(contract_version="1.0"), False, False),
     # Still refused on both sides, which is what makes the row above a widening rather than a hole.
     ("an invented key", _manifest(nonsense=["x"]), False, False),
     # Shapes the stand-in once coerced and the consumer refuses: a discriminated endpoint with no

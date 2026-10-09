@@ -9,6 +9,7 @@
 # `CHEMCLAW_CONNECTOR_URLS` or by `connectors.chem.url` in the Helm chart — hosting is a deployment
 # fact and does not belong in a manifest.
 name: chem
+contract_version: 1.0.0
 description: >-
   Bench chemistry over RDKit: resolve a compound name, abbreviation or SMILES to a canonical
   structure from a vendored, checksummed table of 61 reagents and solvents; build a stoichiometry

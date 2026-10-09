@@ -76,11 +76,17 @@ def test_healthz_reports_the_manifest_s_contract_version(
 def test_a_declared_contract_version_is_semver_and_read_the_same_three_ways(name: str) -> None:
     """The helper, the file read and the stand-in model agree, and a present value is semver.
 
-    Presence is not required: the consumer reads a missing value as unknown and never refuses
-    on it. When a manifest has one, every route to it must give one answer.
+    Presence is held by `test_every_manifest_declares_a_contract_version`; this holds that every
+    route to the value gives one answer.
     """
     path = manifest_path(name)
     declared = declared_contract_version(path)
     assert contract_version(name) == declared == load_manifest(path).contract_version
     if declared is not None:
         assert re.fullmatch(CONTRACT_VERSION_PATTERN, declared)
+
+
+def test_every_manifest_declares_a_contract_version() -> None:
+    """A manifest without a `MAJOR.MINOR.PATCH` version is a surface nobody can version."""
+    for name in _servers():
+        assert contract_version(name) is not None, f"{name}/connector.yaml declares none"

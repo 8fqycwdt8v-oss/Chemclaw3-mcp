@@ -7,6 +7,7 @@
 # The URL below is the loopback dev default. A cluster address is set per deployment, by
 # `CHEMCLAW_CONNECTOR_URLS` or by `connectors.suitability.url` in the Helm chart.
 name: suitability
+contract_version: 1.0.0
 description: >-
   USP <621> chromatographic system-suitability arithmetic, from numbers a chromatogram already
   reported: replicate-injection RSD with the compendial rule for how many injections that limit

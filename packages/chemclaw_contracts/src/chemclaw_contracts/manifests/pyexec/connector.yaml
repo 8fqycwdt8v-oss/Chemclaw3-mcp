@@ -7,6 +7,7 @@
 # `execute` verb, correctly, because the two sandboxes that framework ships are a third-party
 # content egress and an unrestricted local shell. This is neither, and it needs none of that seam.
 name: pyexec
+contract_version: 1.0.0
 description: >-
   Run a short Python analysis in a bounded, offline child process: numpy, pandas, scipy, matplotlib,
   sympy, scikit-learn, RDKit and OpenBabel, plus the arithmetic, container, text and date parts of

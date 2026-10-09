@@ -19,7 +19,11 @@ import pytest
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp_server_kit.testing import assert_bearer_is_enforced, assert_manifest_matches
+from mcp_server_kit.testing import (
+    assert_bearer_is_enforced,
+    assert_manifest_matches,
+    load_manifest,
+)
 
 TOKEN = "test-token-for-rxnlabel"
 
@@ -83,6 +87,8 @@ def test_healthz_answers_and_names_the_server(running_server: str) -> None:
     bounds = body.pop("bounds")
     assert bounds["CHEMCLAW_RXNLABEL_MAX_BATCH"] >= 1
     assert bounds["CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES"] >= 1
+    # The version this server's manifest declares, which the probe reports beside the revision.
+    assert body.pop("contract_version") == load_manifest(MANIFEST).contract_version
     assert body == {
         "status": "ok",
         "server": "rxnlabel",

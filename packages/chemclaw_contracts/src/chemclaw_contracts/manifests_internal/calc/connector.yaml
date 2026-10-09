@@ -38,6 +38,7 @@
 # The URL below is the loopback dev default; a deployment supplies the address.
 mount: backend
 name: calc
+contract_version: 1.0.0
 description: >-
   Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic
   properties, condensed Fukui site reactivity, geometry optimization, and the second derivatives and

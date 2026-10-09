@@ -8,6 +8,7 @@
 # `CHEMCLAW_CONNECTOR_URLS` or by `connectors.props.url` in the Helm chart — hosting is a deployment
 # fact and does not belong in a manifest.
 name: props
+contract_version: 1.0.0
 description: >-
   Solvent and pure-component properties for process R&D, from a vendored, checksummed table of 44
   process solvents: boiling and melting point, density, flash point, dielectric constant, Hansen
