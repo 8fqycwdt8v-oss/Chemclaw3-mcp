@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from mcp.server.fastmcp import FastMCP
 from mcp_server_kit import current_caller
 from mcp_server_kit.app import connector_app
-from mcp_server_kit.limits import Admission
+from mcp_server_kit.limits import Admission, TimeBudgetExceeded
 from prometheus_client import REGISTRY
 
 TOKEN = "test-token-for-the-rpc-kit"
@@ -77,6 +77,12 @@ class FullRequest(WireRequest):
     tool_name: ClassVar[str] = "boom_full"
 
 
+class BudgetRequest(WireRequest):
+    """`boom_budget`."""
+
+    tool_name: ClassVar[str] = "boom_budget"
+
+
 class EgressRequest(WireRequest):
     """`dial_out`."""
 
@@ -92,6 +98,7 @@ MODELS: dict[str, type[WireRequest]] = {
         RefusalRequest,
         SecretRefusalRequest,
         FullRequest,
+        BudgetRequest,
         EgressRequest,
     )
 }
@@ -131,6 +138,11 @@ def _probe_server() -> FastMCP:
     def boom_full() -> dict[str, str]:
         """Refuse as a full pod does."""
         raise Admission(1, server=SERVER).refuse("the pod is full")
+
+    @server.tool()
+    def boom_budget() -> dict[str, str]:
+        """Stop as the pod's clock does."""
+        raise TimeBudgetExceeded("[rpc-probe-time-budget] a probe exceeded this server's budget")
 
     @server.tool()
     def dial_out() -> dict[str, str]:
@@ -342,6 +354,27 @@ def test_a_full_pod_is_503_with_its_marker_at_the_head(running_server: str) -> N
     error = RpcError.model_validate(response.json())
     assert error.kind == "at_capacity"
     assert error.message.startswith(f"[{SERVER}-at-capacity] ")
+
+
+def test_a_spent_clock_is_its_own_kind_with_its_marker_at_the_head(running_server: str) -> None:
+    """The input was fine and a retry spends the same clock: neither `refused` nor a fault."""
+    response = _post(running_server, "boom_budget", {})
+    assert response.status_code == 422
+    error = RpcError.model_validate(response.json())
+    assert error.kind == "time_budget"
+    assert error.message.startswith("[rpc-probe-time-budget] ")
+
+
+def test_a_body_the_model_refuses_is_counted_as_the_tools_refusal(running_server: str) -> None:
+    """The tool manager never sees it, so the route books it; unknown operations are not booked."""
+    labels = {"server": SERVER, "tool": "echo", "outcome": "refused"}
+    before = _sample("chemclaw_mcp_tool_calls_total", **labels)
+    _post(running_server, "echo", {"colour": "red"})
+    _post(running_server, "echo", {"text": "hi", "scale": 1.0, "colour": "red"})
+    _post(running_server, "not_a_tool", {})
+    assert _sample("chemclaw_mcp_tool_calls_total", **labels) == before + 2
+    unknown = {"server": SERVER, "tool": "not_a_tool", "outcome": "refused"}
+    assert _sample("chemclaw_mcp_tool_calls_total", **unknown) == 0
 
 
 def test_a_non_finite_number_is_refused_whichever_way_it_is_spelled(running_server: str) -> None:

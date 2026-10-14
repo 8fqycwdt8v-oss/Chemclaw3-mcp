@@ -34,6 +34,7 @@ from mcp_server_kit.identity import (
     bind_caller,
     reset_caller,
 )
+from mcp_server_kit.logging import printable
 from mcp_server_kit.metrics import REQUESTS, UNAUTHENTICATED_REQUESTS
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ class BearerAuthMiddleware:
             logger.warning(
                 "server %s refused an unauthenticated request to %s",
                 self._server,
-                path,
+                printable(path),
             )
             await PlainTextResponse("unauthorized", status_code=401)(scope, receive, send)
             return
@@ -176,13 +177,13 @@ class CallerLogMiddleware:
                 "server %s request: path=%s status=%s duration_ms=%.1f actor=%s session=%s "
                 "correlation=%s dry_run=%s revision=%s",
                 self._server,
-                path,
+                printable(path),
                 status,
                 elapsed_ms,
-                actor or "-",
-                session or "-",
-                correlation or "-",
-                headers.get(HEADER_DRY_RUN, "-"),
+                printable(actor) or "-",
+                printable(session) or "-",
+                printable(correlation) or "-",
+                printable(headers.get(HEADER_DRY_RUN, "-")),
                 self._revision,
             )
             reset_caller(tokens)

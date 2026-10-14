@@ -62,10 +62,32 @@ cross-cutting behaviour instead of reimplementing it. Chemclaw3 selects the wire
   upstream's own check, run on the route with the same `MCP_ALLOWED_HOSTS`.
 - **Identity** is `X-Chemclaw-Actor/Session/Correlation-Id/Dry-Run`, read from each request by
   `CallerLogMiddleware`: logged, never trusted, the spellings unchanged.
-- **Status codes.** 200 the answer; 400 `refused` (the contract model or the tool refused: the same
-  call cannot succeed); 503 `at_capacity` (the `[<server>-at-capacity]` marker leads `message`, no
-  transport prefix); 500 `failed` (a fault replaced by the sanitiser, naming one `error id` that is
-  also in the log); 404 `unknown_op`; 401, 413 and 421 as on `/mcp`.
+- **Kinds and statuses.** A caller classifies by `kind`; the status is its transport. 200 the
+  answer; 400 `refused` (the contract model or the tool refused: the same call cannot succeed);
+  503 `at_capacity` (the `[<server>-at-capacity]` marker leads `message`, no transport prefix);
+  422 `time_budget` (the pod's clock stopped a call that ran: the input was fine and a retry spends
+  the same clock, so it is neither bad input nor a full pod; a 4xx so it is not read as the
+  infrastructure's own 504; `[calc-time-budget]` still leads `message`); 500 `failed` (a fault
+  replaced by the sanitiser, naming one `error id` that is also in the log); 404 `unknown_op`;
+  401, 413 and 421 as on `/mcp`. HEAD, OPTIONS and GET fall through to the mount and answer 404.
+- **A refusal is bounded.** `refusal.py` names at most 10 validation errors and cuts any message to
+  2,000 characters before the secret scan (`/rpc` formats the first errors itself; on `/mcp` the
+  sanitiser cuts what upstream formatted). A body of 70,000 unknown keys was a 12.7 MB
+  answer and a 5 s stall of `/livez`, whose liveness probe allows 3 s. A body over 64 KiB is
+  validated in a worker thread, so a 200,000-item batch (400,000 errors, seconds of work) leaves
+  the loop at a lag of about 0.2 s. On `/mcp` the validation of such a batch, and upstream's formatting of its
+  error whole, still run on the loop (`docs/BACKLOG.md`). A body nested past the parser is a 400 on both surfaces.
+- **Unknown arguments diverge, in the safe direction.** `/rpc` refuses an argument the contract
+  model does not name (`extra="forbid"`); over MCP the tool's own argument model ignores it.
+  Callers build requests from the models, so they never send one.
+- **Every `refused` is counted.** A body the contract model refuses never reaches the tool manager,
+  so the route books it as `chemclaw_mcp_tool_calls_total{outcome="refused"}` for that operation
+  (the label set is the served operations).
+- **An unterminated body is not bounded here, on either surface.** A request promising 900,000
+  bytes and sending one is waited on for as long as the peer holds the connection: uvicorn's
+  `--timeout-keep-alive` covers idle connections between requests, the Containerfiles pass no other
+  flag, and the Deployments set probes but no request timeout. The caller must hold the bearer, and the NetworkPolicy
+  admits Chemclaw3's pods. A read timeout in the body-buffering middleware is `docs/BACKLOG.md`.
 - **Metrics.** `chemclaw_mcp_requests_total` gains `path="/rpc/<tool>"` for served operations (any
   other `/rpc/...` is `<other>`); `chemclaw_mcp_tool_calls_total` and the duration histogram count
   the call under the tool, whichever transport brought it. No new label, none about a caller.
@@ -76,8 +98,10 @@ cross-cutting behaviour instead of reimplementing it. Chemclaw3 selects the wire
   mirrors the consumer's `extra="forbid"` one, and `tools:` is both surfaces.
 - **MCP stays for one release** so the move is reversible. Its removal, and `manifests-internal/`
   with it, is a later record (the plan's W6.4).
-- **Model-facing text is unchanged.** Every MCP tool's description, input schema and output schema
-  is byte-identical before and after; the route adds a transport, not a tool.
+- **Model-facing text is unchanged.** No tool function, signature or docstring is touched. The
+  check was a before and after dump of every tool's description and input and output schema (81
+  entries, identical); no standing test pins descriptions (`assert_manifest_matches` compares
+  argument names and types only), and this record adds none.
 
 ## Consequences
 
@@ -98,7 +122,15 @@ JSON schema; then gRPC or MCP's own streaming is reopened against that need.
   `test_every_arm_of_the_bearer_rule_applies`, `test_the_body_cap_applies`,
   `test_a_fault_is_replaced_once_and_joined_to_the_log_by_its_error_id`,
   `test_the_metrics_carry_the_operation_and_nothing_about_the_caller` and
-  `test_the_egress_guard_is_armed_on_this_path_too` hold what is inherited from `/mcp`.
+  `test_the_egress_guard_is_armed_on_this_path_too` hold what is inherited from `/mcp`;
+  `test_a_spent_clock_is_its_own_kind_with_its_marker_at_the_head` and
+  `test_a_body_the_model_refuses_is_counted_as_the_tools_refusal` hold the kinds and the count.
+- `packages/mcp_server_kit/tests/test_hostile_bodies.py` holds the bounds:
+  `test_many_unknown_keys_are_refused_small_and_do_not_stall_the_loop`,
+  `test_a_batch_of_empty_items_is_refused_small_and_does_not_stall_the_loop`,
+  `test_the_mcp_path_bounds_the_same_messages`,
+  `test_a_body_nested_past_the_parser_is_a_refusal_not_a_traceback` and
+  `test_the_mcp_surface_answers_a_deeply_nested_body_with_a_400`.
 - `tests/test_identity_contract.py::test_the_rpc_surface_reads_every_header_per_request` holds the
   per-request identity under the sender's spellings, across concurrent callers.
 - `tests/test_fleet_rpc.py::test_every_declared_tool_is_a_routed_operation_that_validates_its_body`

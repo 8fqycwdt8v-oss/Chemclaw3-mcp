@@ -64,7 +64,7 @@ from mcp_server_kit.limits import effective_bounds
 from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
 from mcp_server_kit.rebinding import apply_allowed_hosts
-from mcp_server_kit.refusal import is_caller_safe
+from mcp_server_kit.refusal import bounded_message, is_caller_safe
 from mcp_server_kit.rpc import rpc_routes
 from mcp_server_kit.schema_cache import install_validator_cache
 from mcp_server_kit.sessions import apply_session_ceiling, apply_session_idle_timeout
@@ -185,9 +185,9 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
         except ToolError as exc:
             if is_caller_safe(exc):
                 # Even a caller-safe message is redacted: a validation error quotes its input, which
-                # is where a secret would land. Re-raised unchanged when redaction is a no-op,
-                # keeping the traceback.
-                redacted = redact_secrets(str(exc))
+                # is where a secret would land. Bounded first, so the scan is never over megabytes.
+                # Re-raised unchanged when both are no-ops, keeping the traceback.
+                redacted = redact_secrets(bounded_message(str(exc)))
                 if redacted == str(exc):
                     raise
                 raise ToolError(redacted) from exc.__cause__

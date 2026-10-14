@@ -23,13 +23,17 @@ __all__ = ["RPC_PREFIX", "RpcError", "RpcErrorKind", "WireRequest", "rpc_path"]
 #: The path prefix of every operation, with no trailing slash.
 RPC_PREFIX = "/rpc"
 
-#: What went wrong, as a caller acts on it:
+#: What went wrong, as a caller acts on it. Classify by `kind`; the status is its transport. The
+#: server's markers (`[calc-at-capacity]`, `[calc-time-budget]`) still open `message`, for a caller
+#: that has not moved off reading them.
 #: `refused` (400) the arguments are wrong, resending the same call cannot succeed;
 #: `unknown_op` (404) this server does not serve that operation;
 #: `rejected` (400, 403, 421) the transport guard refused the Content-Type, Origin or Host;
 #: `at_capacity` (503) the pod is full, the identical call may succeed shortly;
+#: `time_budget` (422) the pod's clock stopped the call after it ran; the input was fine, and a
+#: retry spends the same clock again;
 #: `failed` (500) a fault in the server, named by the `error id` in `message`.
-RpcErrorKind = Literal["refused", "unknown_op", "rejected", "at_capacity", "failed"]
+RpcErrorKind = Literal["refused", "unknown_op", "rejected", "at_capacity", "time_budget", "failed"]
 
 
 class RpcError(BaseModel):

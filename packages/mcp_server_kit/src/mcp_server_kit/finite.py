@@ -22,7 +22,7 @@ from typing import Any
 from chemclaw_contracts.rpc import RPC_PREFIX, RpcError
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
-from mcp.types import INVALID_PARAMS
+from mcp.types import INVALID_PARAMS, PARSE_ERROR
 from pydantic import BaseModel, ValidationInfo, create_model, field_validator
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -107,6 +107,9 @@ def _non_finite_literal(body: bytes) -> tuple[str, object] | None:
     Returns:
         `(literal, id)` for a refusal, or `None` for a clean body or one that is not JSON (which the
         transport refuses itself).
+
+    Raises:
+        RecursionError: the body is nested past the parser's depth; no transport can read it.
     """
     found: list[str] = []
 
@@ -134,12 +137,27 @@ class NonFiniteLiteralRefusal:
     Pure ASGI, installed inside the size cap and bearer check, so the buffered body is bounded and
     authenticated; a clean body is replayed byte for byte. A request with an id gets 200 with a
     JSON-RPC error carrying that id — an MCP client tears down the session on a 400 — and one
-    without gets 400. A `/rpc/` request gets the contract's `RpcError` with 400.
+    without gets 400. A `/rpc/` request gets the contract's `RpcError` with 400. A body nested past
+    the parser's depth is a 400 too, never a traceback.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap `app`."""
         self._app = app
+
+    @staticmethod
+    async def _too_deep(scope: Scope, receive: Receive, send: Send) -> None:
+        """Answer a body nested past the parser's depth: 400, in the vocabulary of its route."""
+        message = "the request body is nested too deeply to be read"
+        if str(scope.get("path", "")).startswith(f"{RPC_PREFIX}/"):
+            content: dict[str, Any] = RpcError(kind="refused", message=message).model_dump()
+        else:
+            content = {
+                "jsonrpc": "2.0",
+                "id": "server-error",
+                "error": {"code": PARSE_ERROR, "message": message},
+            }
+        await JSONResponse(content, status_code=400)(scope, receive, send)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Read a POST body whole, refuse it if it spells a non-finite number, else replay it."""
@@ -157,7 +175,11 @@ class NonFiniteLiteralRefusal:
             if not message.get("more_body", False):
                 break
         body = b"".join(chunks)
-        refused = None if ended is not None else _non_finite_literal(body)
+        try:
+            refused = None if ended is not None else _non_finite_literal(body)
+        except RecursionError:
+            await self._too_deep(scope, receive, send)
+            return
         if refused is not None:
             literal, request_id = refused
             if str(scope.get("path", "")).startswith(f"{RPC_PREFIX}/"):

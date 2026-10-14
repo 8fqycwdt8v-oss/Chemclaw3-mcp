@@ -4,7 +4,8 @@
 label with the `version` the answer carries. `servers/rxnlabel/tests/test_contract.py` fails when a
 tool's served schema drifts from the models here.
 
-Invariants: requests forbid unknown arguments; a batch answer holds only the reactions that were
+Invariants: requests forbid unknown arguments (`/rpc` refuses them; MCP's argument model ignores
+them); a batch answer holds only the reactions that were
 represented, so a missing id means "not labelled this pass".
 """
 

@@ -6,8 +6,9 @@ server would refuse, and `servers/calc/tests/test_contract.py` fails when a tool
 schema drifts from the model here. Compute payloads other than the identity and the structure are
 the caller's to model; they share only `KeyedResult`.
 
-Invariants: requests forbid unknown arguments (the server refuses them too); `wire()` sends only
-what the caller set, so a default is the server's, never restated here.
+Invariants: requests forbid unknown arguments (`/rpc` refuses them as this model does; MCP's
+argument model ignores them); `wire()` sends only what the caller set, so a default is the
+server's, never restated here.
 """
 
 from __future__ import annotations

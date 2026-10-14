@@ -275,9 +275,9 @@ confuse `CHEMCLAW_CALC_TOKEN` (Chemclaw3 to this `calc` server) with `CHEMCLAW_C
 the JSON body, the same bearer token, the same `X-Chemclaw-*` headers, the same Service name in
 `MCP_ALLOWED_HOSTS`. Nothing to configure here: the route is in the image, and `/mcp` keeps working.
 A caller reading `/healthz` sees `contract_version` and knows which it can use. Errors are
-`{"kind": ..., "message": ...}` (`chemclaw_contracts.rpc.RpcError`): 400 `refused`, 503 `at_capacity`
-(the `[<server>-at-capacity]` marker leads `message`), 500 `failed` with an `error id` to find in the
-log; 401, 413 and 421 are the same refusals as on `/mcp`. `chemclaw_mcp_requests_total` carries
+`{"kind": ..., "message": ...}` (`chemclaw_contracts.rpc.RpcError`; classify by `kind`): 400 `refused`,
+503 `at_capacity` and 422 `time_budget` (their `[<server>-...]` markers still lead `message`), 500
+`failed` with an `error id` to find in the log; 401, 413 and 421 are the same refusals as on `/mcp`. `chemclaw_mcp_requests_total` carries
 `path="/rpc/<tool>"` and `chemclaw_mcp_tool_calls_total` counts the call under the tool, whichever
 transport brought it.
 

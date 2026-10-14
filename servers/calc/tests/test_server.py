@@ -388,6 +388,30 @@ def test_a_full_pod_is_a_503_the_caller_can_retry(
     assert error.message.startswith("[calc-at-capacity] ")
 
 
+def test_a_spent_inline_clock_is_a_time_budget_the_caller_does_not_retry_as_bad_input(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The MCP time-budget stop, over `/rpc`: its own kind, marker first, not a `refused` input."""
+    from chemclaw_mcp_calc.engine.config import settings
+
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    embedded = httpx.post(
+        f"{running_server}/rpc/embed_structure", json={"smiles": "CCO"}, headers=headers
+    )
+    assert embedded.status_code == 200, embedded.text
+    monkeypatch.setattr(settings, "xtb_inline_timeout_seconds", 1e-9)
+    stopped = httpx.post(
+        f"{running_server}/rpc/relax_structure",
+        json={"structure": embedded.json()},
+        headers=headers,
+        timeout=60.0,
+    )
+    assert stopped.status_code == 422, stopped.text
+    error = RpcError.model_validate(stopped.json())
+    assert error.kind == "time_budget"
+    assert error.message.startswith("[calc-time-budget] ")
+
+
 def test_a_domain_refusal_is_a_400_and_an_unknown_argument_is_refused(running_server: str) -> None:
     """A bad molecule is `refused`; an argument the tool does not take never reaches the tool."""
     headers = {"Authorization": f"Bearer {TOKEN}"}
