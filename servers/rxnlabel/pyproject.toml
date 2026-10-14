@@ -15,6 +15,8 @@ requires-python = ">=3.11"
 # degradation safe rather than silent — see `engine/version.py`.
 dependencies = [
     "mcp-server-kit",
+    # The request models `app.py` serves on `/rpc`, imported directly rather than through the kit.
+    "chemclaw-contracts",
     "rdkit>=2024.3",
     "uvicorn[standard]>=0.32",
 ]
@@ -45,3 +47,4 @@ packages = ["src/chemclaw_mcp_rxnlabel"]
 
 [tool.uv.sources]
 mcp-server-kit = { workspace = true }
+chemclaw-contracts = { workspace = true }

@@ -1,4 +1,4 @@
-"""Bearer authentication on `/mcp`, and the request-size cap that sits outside it.
+"""Bearer authentication on `/mcp` and `/rpc`, and the request-size cap that sits outside it.
 
 Every network-reachable server declares `auth: {mode: bearer, token_env: ...}`, and this is the
 serving side that checks it. Load-bearing rules:
@@ -58,10 +58,14 @@ def _is_open(path: str) -> bool:
     return (path.rstrip("/") or "/") in OPEN_PATHS
 
 
-def _labelled_path(path: str) -> str:
-    """`path` folded onto the fixed route set this server actually has."""
+def _labelled_path(path: str, rpc_paths: frozenset[str] = frozenset()) -> str:
+    """`path` folded onto the fixed route set this server actually has.
+
+    `rpc_paths` are the operations the server serves under `/rpc`; any other `/rpc/...` is
+    `<other>`, like every path the caller invented.
+    """
     normalised = path.rstrip("/") or "/"
-    if normalised in OPEN_PATHS or normalised == _MCP_PATH:
+    if normalised in OPEN_PATHS or normalised == _MCP_PATH or normalised in rpc_paths:
         return normalised
     return _OTHER_PATH
 
@@ -192,10 +196,16 @@ class RequestMetrics:
     path folded by `_labelled_path`, and status — never anything about the caller.
     """
 
-    def __init__(self, app: ASGIApp, *, server: str) -> None:
-        """Wrap `app`, booking one series per request it answers."""
+    def __init__(
+        self, app: ASGIApp, *, server: str, rpc_paths: frozenset[str] = frozenset()
+    ) -> None:
+        """Wrap `app`, booking one series per request it answers.
+
+        `rpc_paths` are the served `/rpc/<operation>` paths, each its own label value.
+        """
         self._app = app
         self._server = server
+        self._rpc_paths = rpc_paths
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve the request, recording the status of the response that reached the client."""
@@ -214,7 +224,9 @@ class RequestMetrics:
             await self._app(scope, receive, _status_capturing_send(send, record))
         finally:
             REQUESTS.labels(
-                self._server, _labelled_path(str(scope.get("path", ""))), str(status)
+                self._server,
+                _labelled_path(str(scope.get("path", "")), self._rpc_paths),
+                str(status),
             ).inc()
 
 

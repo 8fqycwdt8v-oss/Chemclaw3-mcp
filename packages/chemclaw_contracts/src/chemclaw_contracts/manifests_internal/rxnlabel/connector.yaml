@@ -17,9 +17,12 @@
 # the key refuses the mistake a second time: Chemclaw3's `ConnectorManifest` is `extra="forbid"`,
 # so pointing a path here anyway aborts its startup with a `ConnectorError` naming this file rather
 # than putting `represent_reactions` into the agent's prompt.
+#
+# 1.1.0 added `POST /rpc/<tool>` for every tool below (`chemclaw_contracts.rpc`): the same tools and
+# the request models of `chemclaw_contracts.rxnlabel`, as typed HTTP/JSON. `tools:` names both.
 mount: backend
 name: rxnlabel
-contract_version: 1.0.0
+contract_version: 1.1.0
 description: >-
   Reaction and per-species representations with role assignment, and named-reaction classification.
   Atom-maps a reaction (RXNMapper), decides what each species was doing — starting material,

@@ -41,6 +41,22 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
   **Other repository:** `chemclaw2_retrosynthesis` (`fastapi-mcp` mount, `Depends(require_token)`);
   owed here: `manifests/retro/connector.yaml`, with `retrosynthesis_multi_step` as a durable job.
 
+## 3b — Backends on one wire
+
+- [ ] **Remove MCP from `calc` and `rxnlabel`, and `manifests-internal/` with it.** Not before
+  Chemclaw3 has run a release on `calc_transport=rpc` (its W6.3) and the contracts pin carries
+  1.1.0. Then `rpc=` stays, `server.streamable_http_app()` and the session machinery go for these two,
+  the manifests leave `manifests_internal/` (a backend's package description is the request models),
+  and `contract_version` takes a major bump.
+  `servers/calc/src/chemclaw_mcp_calc/app.py`, `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/app.py`,
+  `manifests-internal/`.
+
+- [ ] **A client that gives up on a `/rpc` call is not seen by the server.** Over MCP a timed-out
+  caller sent `notifications/cancelled`; over `/rpc` it closes the connection and the handler runs
+  on. The tool thread outlives either (`asyncio.shield` holds the slot), so the cost is a duplicate
+  on retry, as before. Worth a disconnect-driven cancel of the awaiting coroutine only if a retry
+  storm against a full pod is measured. `packages/mcp_server_kit/src/mcp_server_kit/rpc.py`.
+
 ## 4 — Dependencies held back from Dependabot
 
 - [ ] **rdkit 2026.3.6 moves torsion-handle literals both repositories assert**: bump here and in

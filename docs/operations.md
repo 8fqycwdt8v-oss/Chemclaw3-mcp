@@ -270,6 +270,17 @@ raise one side, raise the other too. The chart's `egressPorts` already lists `ca
 confuse `CHEMCLAW_CALC_TOKEN` (Chemclaw3 to this `calc` server) with `CHEMCLAW_CALC_MCP_TOKEN`
 (Chemclaw3's own `calc` bundle).
 
+**Both also serve their tools as typed HTTP/JSON on the same port** (`contract_version` 1.1.0): `POST
+/rpc/<tool>` with the tool's request model (`chemclaw_contracts.calc` / `.rxnlabel`, `.wire()`) as
+the JSON body, the same bearer token, the same `X-Chemclaw-*` headers, the same Service name in
+`MCP_ALLOWED_HOSTS`. Nothing to configure here: the route is in the image, and `/mcp` keeps working.
+A caller reading `/healthz` sees `contract_version` and knows which it can use. Errors are
+`{"kind": ..., "message": ...}` (`chemclaw_contracts.rpc.RpcError`): 400 `refused`, 503 `at_capacity`
+(the `[<server>-at-capacity]` marker leads `message`), 500 `failed` with an `error id` to find in the
+log; 401, 413 and 421 are the same refusals as on `/mcp`. `chemclaw_mcp_requests_total` carries
+`path="/rpc/<tool>"` and `chemclaw_mcp_tool_calls_total` counts the call under the tool, whichever
+transport brought it.
+
 For local development without a cluster, see [`integration.md`](integration.md#local-development).
 
 ## 4. Verify

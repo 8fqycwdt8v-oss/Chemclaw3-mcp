@@ -9,6 +9,10 @@ What this fleet promises its consumer, as one installable package.
 - **`chemclaw_contracts.calc` and `.rxnlabel`**: one request model per backend tool (`.wire()` is
   the exact argument dict) and the responses a caller reads. `servers/<name>/tests/test_contract.py`
   fails when a served schema drifts from them.
+- **`chemclaw_contracts.rpc`**: where a backend operation lives (`POST /rpc/<tool>`, body = the
+  tool's request model, 200 body = what its response model reads) and the `RpcError` envelope every
+  non-200 the route itself produces carries. Served beside MCP by `calc` and `rxnlabel` from
+  `contract_version` 1.1.0.
 - **`contract_version(name)`** reads the `contract_version` a manifest declares; each server's
   `/healthz` reports it. Bump rules: [`docs/adding-a-server.md`](../../docs/adding-a-server.md).
 

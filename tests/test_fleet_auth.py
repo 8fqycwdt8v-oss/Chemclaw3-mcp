@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 import pytest
+from mcp_server_kit.testing import load_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,6 +20,13 @@ SERVERS = ROOT / "servers"
 def server_dirs() -> list[Path]:
     """Every server directory — a subdirectory of `servers/` holding a `connector.yaml`."""
     return sorted(path for path in SERVERS.iterdir() if (path / "connector.yaml").is_file())
+
+
+def backend_dirs() -> list[Path]:
+    """The server directories whose manifest says `mount: backend`, which serve `/rpc` too."""
+    return [
+        path for path in server_dirs() if load_manifest(path / "connector.yaml").mount == "backend"
+    ]
 
 
 def test_every_published_dev_token_default_is_in_the_redaction_exemption() -> None:
@@ -141,4 +149,29 @@ def test_every_server_proves_its_manifest_against_a_running_server(server: Path)
         f"{tests.relative_to(ROOT)} never calls assert_manifest_matches from a collected test, so "
         "nothing compares this server's manifest with what it serves. An undeclared tool is served "
         "while looking deleted, and an unclassified one fails open at Chemclaw3's plan gate."
+    )
+
+
+@pytest.mark.parametrize("server", backend_dirs(), ids=lambda path: path.name)
+@pytest.mark.parametrize(
+    ("helper", "owes"),
+    [
+        (
+            "assert_rpc_bearer_is_enforced",
+            "nothing drives the credential on `/rpc`, which serves the tools `/mcp` does",
+        ),
+        (
+            "assert_rpc_agrees_with_mcp",
+            "nothing holds `/rpc` to the answers `/mcp` gives for the same arguments",
+        ),
+    ],
+)
+def test_every_backend_proves_its_rpc_surface_against_a_running_server(
+    server: Path, helper: str, owes: str
+) -> None:
+    """A backend's `test_server.py` drives the RPC credential and RPC/MCP agreement, too."""
+    tests = server / "tests" / "test_server.py"
+    assert helper in _calls_from_collected_tests(tests), (
+        f"{tests.relative_to(ROOT)} never calls {helper} from a collected test, so {owes}. The "
+        "helper is in `mcp_server_kit.testing`; see `servers/calc/tests/test_server.py`."
     )

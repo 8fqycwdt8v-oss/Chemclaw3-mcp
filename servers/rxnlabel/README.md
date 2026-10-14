@@ -160,3 +160,9 @@ The registration lives in [`manifests-internal/`](../../manifests-internal/), wh
 `export` line names, and `connector.yaml` declares `mount: backend` — a key Chemclaw3's
 `extra="forbid"` manifest model refuses, so pointing a path there anyway is a startup error naming
 the file rather than a tool surface that quietly grew.
+
+**It is served twice, on the one port.** Every tool is also `POST /rpc/<tool>`: the body is the
+tool's request model in `chemclaw_contracts.rxnlabel` (`.wire()`), the 200 body is the answer that
+model's response reads, and an error is a `chemclaw_contracts.rpc.RpcError` — the batch cap is a 400
+`refused` carrying its words. The same tool body behind the same bearer and sanitiser as `/mcp`
+(`D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release`).

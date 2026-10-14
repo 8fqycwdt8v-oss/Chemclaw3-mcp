@@ -16,13 +16,13 @@ reads, because production has no egress. Nothing here duplicates a Chemclaw3 cap
 | `rxnpredict` | 8857 | **built** | Forward reaction and condition prediction, a Borda-weighted ensemble with per-model spread. | Model checkpoints baked in at build time. |
 | `chem` | 8858 | **built** | Bench chemistry over RDKit: compound resolution, stoichiometry, green metrics, depiction, torsions, species and degradant enumeration. | Vendored reagent CSV (CC0) plus RDKit. |
 | `safety` | 8859 | **built** | Cited hazard, genotoxicity and ICH impurity tables. | Vendored, checksummed YAML corpora plus RDKit. |
-| `calc` | 8860 | **built** (backend) | The semiempirical physics behind Chemclaw3's calculators (GFN2-xTB, CREST), as keyed primitives. | No dataset; programs and parameters in the image. |
-| `rxnlabel` | 8865 | **built** (backend) | Reaction and species representations, roles and named reactions. | RXNMapper checkpoint inside its hashed wheel. |
+| `calc` | 8860 | **built** (backend; MCP and `/rpc`) | The semiempirical physics behind Chemclaw3's calculators (GFN2-xTB, CREST), as keyed primitives. | No dataset; programs and parameters in the image. |
+| `rxnlabel` | 8865 | **built** (backend; MCP and `/rpc`) | Reaction and species representations, roles and named reactions. | RXNMapper checkpoint inside its hashed wheel. |
 | `suitability` | 8892 | **built** | USP <621> system suitability arithmetic from numbers a run already produced. | First-party formulas; no corpus. |
 | `pyexec` | 8899 | **built** | A bounded, offline Python analysis sandbox. | No dataset. |
 
 Each server's `README.md` is the authority on its tools, bounds and scope; its `connector.yaml` on its
-surface. `calc` and `rxnlabel` are registered in `manifests-internal/`.
+surface. `calc` and `rxnlabel` are registered in `manifests-internal/` and serve their tools twice: MCP on `/mcp` and typed HTTP/JSON on `/rpc/<tool>`, on the one port.
 
 ## What the built fleet costs to run
 

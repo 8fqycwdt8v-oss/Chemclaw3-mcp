@@ -19,12 +19,25 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from chemclaw_contracts.calc import (
+    CALC_RESPONSES,
+    CalculationKeyRequest,
+    ComputeXtbEnergyRequest,
+    EmbedStructureRequest,
+    PredictSolubilityRequest,
+)
+from chemclaw_contracts.rpc import RpcError
 from chemclaw_mcp_calc import tools
 from chemclaw_mcp_calc.engine import crest_cli
 from chemclaw_mcp_calc.engine.admission import Admission
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from mcp_server_kit.testing import assert_bearer_is_enforced, assert_manifest_matches
+from mcp_server_kit.testing import (
+    assert_bearer_is_enforced,
+    assert_manifest_matches,
+    assert_rpc_agrees_with_mcp,
+    assert_rpc_bearer_is_enforced,
+)
 
 TOKEN = "test-token-for-calc"
 MANIFEST = Path(__file__).resolve().parents[1] / "connector.yaml"
@@ -321,6 +334,75 @@ async def test_a_full_pod_refuses_with_a_marker_the_caller_can_classify(
     # And the human half is still there: a marker that replaced the message would leave the model
     # with nothing to say to the chemist.
     assert "0 of its 1 calculation slots free" in content
+
+
+def test_the_bearer_credential_is_enforced_on_the_rpc_surface(running_server: str) -> None:
+    """`/rpc/<tool>` owes the credential `/mcp` does, on every arm of the rule."""
+    probe = CalculationKeyRequest(tool="predict_solubility", arguments={"smiles": "CCO"})
+    assert_rpc_bearer_is_enforced(
+        running_server,
+        MANIFEST,
+        token=TOKEN,
+        operation=probe.tool_name,
+        arguments=probe.wire(),
+    )
+
+
+async def test_rpc_and_mcp_answer_the_same_arguments_alike(running_server: str) -> None:
+    """The key probe and three compute tools give one answer over either transport.
+
+    A `Structure` answer included, because its `structure_id` is a computed field both transports
+    must carry.
+    """
+    await assert_rpc_agrees_with_mcp(
+        running_server,
+        token=TOKEN,
+        cases=[
+            (
+                "calculation_key",
+                CalculationKeyRequest(tool="predict_pka", arguments={"smiles": "CC(=O)O"}).wire(),
+            ),
+            ("predict_solubility", PredictSolubilityRequest(smiles="CCO").wire()),
+            ("compute_xtb_energy", ComputeXtbEnergyRequest(smiles="O").wire()),
+            ("embed_structure", EmbedStructureRequest(smiles="O").wire()),
+        ],
+        responses=CALC_RESPONSES,
+    )
+
+
+def test_a_full_pod_is_a_503_the_caller_can_retry(
+    running_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission is the tool's, so a full pod refuses `/rpc` as it refuses `/mcp`: promptly."""
+    monkeypatch.setattr(tools, "_admission", Admission(1))
+    tools._admission.acquire("a calculation the test is pretending to run")
+    response = httpx.post(
+        f"{running_server}/rpc/predict_solubility",
+        json=PredictSolubilityRequest(smiles="CCO").wire(),
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        timeout=15.0,
+    )
+    assert response.status_code == 503
+    error = RpcError.model_validate(response.json())
+    assert error.kind == "at_capacity"
+    assert error.message.startswith("[calc-at-capacity] ")
+
+
+def test_a_domain_refusal_is_a_400_and_an_unknown_argument_is_refused(running_server: str) -> None:
+    """A bad molecule is `refused`; an argument the tool does not take never reaches the tool."""
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    bad_molecule = httpx.post(
+        f"{running_server}/rpc/predict_pka", json={"smiles": "not a smiles((("}, headers=headers
+    )
+    assert bad_molecule.status_code == 400
+    assert RpcError.model_validate(bad_molecule.json()).kind == "refused"
+    extra = httpx.post(
+        f"{running_server}/rpc/predict_pka",
+        json={"smiles": "CC(=O)O", "solvant": "water"},
+        headers=headers,
+    )
+    assert extra.status_code == 400
+    assert "solvant" in RpcError.model_validate(extra.json()).message
 
 
 async def test_a_domain_refusal_does_not_carry_the_capacity_marker(running_server: str) -> None:

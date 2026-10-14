@@ -138,6 +138,13 @@ if hit is None:
     await store.put(StoredResult(key=identity.key, result=payload))
 ```
 
+**Over which wire.** `calc` and `rxnlabel` serve every tool twice, as MCP on `/mcp` and as typed
+HTTP/JSON on `POST /rpc/<tool>` (`chemclaw_contracts.rpc`; since `contract_version` 1.1.0), through
+the same tool manager, so the two cannot answer differently
+(`D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release`). A backend caller has no
+use for an MCP session: `/rpc` needs no handshake, and a pooled HTTP client keeps its connection.
+The MCP surface stays for one release so Chemclaw3 can move behind a switch and move back.
+
 One cheap round trip on a hit instead of a calculation; two calls on a miss, which is noise beside
 minutes of CPU. The compute result carries the same `calc_key` string, so asserting it against
 `identity.calc_key` is a free check that both sides agree.

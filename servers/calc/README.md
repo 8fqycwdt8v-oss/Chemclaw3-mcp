@@ -98,6 +98,13 @@ wrong** — so it is not reachable from there. Its manifest is registered in
 Chemclaw3's `extra="forbid"` manifest model refuses; a deployment that points a path at that
 directory anyway fails at startup naming the file rather than serving a reduced surface.
 
+**It is served twice, on the one port.** Every tool is also `POST /rpc/<tool>`: the body is the
+tool's request model in `chemclaw_contracts.calc` (`.wire()`), the 200 body is the answer that
+model's response reads, and an error is a `chemclaw_contracts.rpc.RpcError`. It is the same tool
+body behind the same bearer, admission ceiling and sanitiser as `/mcp`, so a full pod is a 503
+`at_capacity` led by `[calc-at-capacity]`. A backend caller needs no MCP session for it
+(`D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release`).
+
 Chemclaw3 keeps its `calc` bundle and every tool in it. What moved here is the *computation*
 behind them; six of that bundle's tools have no computation to move at all, because they **are**
 the state:

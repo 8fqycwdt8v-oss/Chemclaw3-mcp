@@ -19,6 +19,7 @@ import json
 import math
 from typing import Any
 
+from chemclaw_contracts.rpc import RPC_PREFIX, RpcError
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
 from mcp.types import INVALID_PARAMS
@@ -133,7 +134,7 @@ class NonFiniteLiteralRefusal:
     Pure ASGI, installed inside the size cap and bearer check, so the buffered body is bounded and
     authenticated; a clean body is replayed byte for byte. A request with an id gets 200 with a
     JSON-RPC error carrying that id — an MCP client tears down the session on a 400 — and one
-    without gets 400.
+    without gets 400. A `/rpc/` request gets the contract's `RpcError` with 400.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -159,6 +160,18 @@ class NonFiniteLiteralRefusal:
         refused = None if ended is not None else _non_finite_literal(body)
         if refused is not None:
             literal, request_id = refused
+            if str(scope.get("path", "")).startswith(f"{RPC_PREFIX}/"):
+                await JSONResponse(
+                    RpcError(
+                        kind="refused",
+                        message=(
+                            f"the request spells {literal!r}, which {NON_FINITE_REFUSAL}. JSON has "
+                            "no NaN or infinity. Send a finite number, or omit the argument."
+                        ),
+                    ).model_dump(),
+                    status_code=400,
+                )(scope, receive, send)
+                return
             await JSONResponse(
                 {
                     "jsonrpc": "2.0",

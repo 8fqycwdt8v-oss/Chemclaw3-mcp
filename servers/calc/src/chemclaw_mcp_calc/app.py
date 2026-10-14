@@ -2,13 +2,16 @@
 
     uvicorn chemclaw_mcp_calc.app:app --host 127.0.0.1 --port 8860
 
-Bearer auth via `CHEMCLAW_CALC_TOKEN`, enforced even on loopback and failing closed when unset.
+Serves MCP on `/mcp` and the same tools as typed HTTP/JSON on `/rpc/<tool>` (the request models
+are `chemclaw_contracts.calc`). Bearer auth via `CHEMCLAW_CALC_TOKEN`, enforced even on loopback
+and failing closed when unset, on both.
 `on_start` resolves the calculator versions once (possibly an `xtb --version` subprocess), so the
 first request does not pay it on the event loop.
 """
 
 from __future__ import annotations
 
+from chemclaw_contracts.calc import CALC_REQUESTS
 from fastapi import FastAPI
 from mcp_server_kit import Dataset, connector_app
 
@@ -43,4 +46,5 @@ app: FastAPI = connector_app(
     token_env="CHEMCLAW_CALC_TOKEN",  # noqa: S106 - an environment variable's *name*, never a credential
     on_start=resolve_calculator_versions,
     readiness=_readiness,
+    rpc=CALC_REQUESTS,
 )

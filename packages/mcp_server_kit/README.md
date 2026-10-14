@@ -7,8 +7,10 @@ own `engine/`.
 | Module | What it is |
 | --- | --- |
 | `app.py` | `connector_app()` — the FastAPI app: `/healthz` (readiness: 503 with a reason when the server's `readiness` callable fails for a permanent cause, 200 with `degraded` for a transient one, plus `revision`, `bounds` and verified `datasets`), `/livez` (liveness: consults nothing), `/metrics`, mounted `/mcp`, the session-manager lifespan, per-tool-call caller binding and trace continuation, and tool-error sanitising. |
+| `rpc.py` | `rpc_routes()` (used through `connector_app(..., rpc=...)`): a backend's tools as `POST /rpc/<tool>`, typed HTTP/JSON. The body is the tool's `chemclaw_contracts` request model; it is dispatched through the same wrapped tool manager as `/mcp`, so admission, the non-finite refusal, error sanitising, the tool counters and the span are the MCP path's. Auth, the body cap and the request counter are the same middleware; Host, Origin and Content-Type are upstream's guard. An error is a `chemclaw_contracts.rpc.RpcError`: 400 `refused`, 503 `at_capacity`, 500 `failed` (with the `error id`). |
+| `refusal.py` | `is_caller_safe()`: whether a failed tool call is a refusal the caller may read or a fault to hide. The one answer behind the sanitiser, the `refused`/`failed` counter, the span status and `/rpc`'s 400-versus-500. |
 | `finite.py` | Refuses a NaN or an infinity in any tool argument, on both channels it arrives by: the bare `NaN`/`Infinity`/`1e400` literals the transport would rewrite to `null` (an optional argument then reads "not declared"), and the strings `"nan"`/`"1e400"` pydantic coerces. Installed by `connector_app` on every served tool. |
-| `auth.py` | Bearer check on `/mcp` (probes stay open, comparison in bytes, fails closed), the caller log, the request counter and the request-body cap. All four are pure ASGI: `BaseHTTPMiddleware` cost ~1 ms per request and made the caller log's `duration_ms` time-to-SSE-headers. |
+| `auth.py` | Bearer check on `/mcp` and `/rpc` (probes stay open, comparison in bytes, fails closed), the caller log, the request counter and the request-body cap. All four are pure ASGI: `BaseHTTPMiddleware` cost ~1 ms per request and made the caller log's `duration_ms` time-to-SSE-headers. |
 | `schema_cache.py` | One compiled `jsonschema` validator per tool schema, instead of upstream re-checking the schema against the meta-schema on every call. The dominant per-call cost in the fleet: 10.75 → 2.15 ms of server CPU on `props.solvent_properties`. |
 | `executor.py` | The default `to_thread` pool, sized from the container's **cgroup** quota (plus `MCP_THREAD_POOL_HEADROOM`, 4; or `MCP_THREAD_POOL_SIZE` outright) rather than from `os.cpu_count()` — which is the node's, so a `cpu: "1"` pod on a 64-core worker got 32 threads. |
 | `sessions.py` | The MCP session idle timeout `FastMCP` never passes (`MCP_SESSION_IDLE_TIMEOUT_SECONDS`, 1800; `MCP_SESSION_UNUSED_TIMEOUT_SECONDS`, 60), the hold-open that stops a four-hour CREST search being reaped as "idle", and the per-pod session ceiling (`MCP_MAX_SESSIONS`, 1024) refused with 503 and `Retry-After`. |
@@ -22,7 +24,7 @@ own `engine/`.
 | `datasets.py` | Vendored-corpus loading: every provenance field required, refresh owner and cadence included, checksum verified on load. |
 | `egress.py` | The runtime guard. Armed on import; a non-loopback `connect`, `sendto`/`sendmsg` or DNS lookup raises `EgressForbidden`. A child process and a `ctypes` call are outside it by construction — `make offline-run` is what covers those. |
 | `no_egress.py` | The static scan — AST, not grep — that each server's `test_no_egress.py` calls. |
-| `testing.py` | A real MCP session against a running server, and the manifest↔served-tools assertion. |
+| `testing.py` | A real MCP session against a running server, the manifest↔served-tools assertion, and for a backend the same bearer proof on `/rpc` and the check that `/rpc` and `/mcp` answer alike. |
 
 ## The parts that exist because they went wrong somewhere
 

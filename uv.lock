@@ -435,7 +435,7 @@ wheels = [
 
 [[package]]
 name = "chemclaw-contracts"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "packages/chemclaw_contracts" }
 dependencies = [
     { name = "pydantic" },
@@ -453,6 +453,7 @@ name = "chemclaw-mcp-calc"
 version = "0.1.0"
 source = { editable = "servers/calc" }
 dependencies = [
+    { name = "chemclaw-contracts" },
     { name = "geometric" },
     { name = "mcp-server-kit" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -473,6 +474,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chemclaw-contracts", editable = "packages/chemclaw_contracts" },
     { name = "geometric", specifier = ">=1.1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
@@ -625,6 +627,7 @@ name = "chemclaw-mcp-rxnlabel"
 version = "0.1.0"
 source = { editable = "servers/rxnlabel" }
 dependencies = [
+    { name = "chemclaw-contracts" },
     { name = "mcp-server-kit" },
     { name = "rdkit" },
     { name = "uvicorn", extra = ["standard"] },
@@ -646,6 +649,7 @@ models = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chemclaw-contracts", editable = "packages/chemclaw_contracts" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },

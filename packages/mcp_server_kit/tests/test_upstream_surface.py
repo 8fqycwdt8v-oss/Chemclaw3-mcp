@@ -16,9 +16,11 @@ from typing import Any
 import jsonschema  # type: ignore[import-untyped]
 import jsonschema.validators  # type: ignore[import-untyped]
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.tools import ToolManager
 from mcp.server.lowlevel import server as lowlevel
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER, StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecurityMiddleware
 
 
 def _probe() -> FastMCP:
@@ -195,3 +197,24 @@ def test_a_session_is_recorded_in_a_second_map_only_for_an_authenticated_scope_u
         "upstream no longer keeps a second per-session map; re-read the sweep in "
         "mcp_server_kit/sessions.py, which was written knowing about exactly this one"
     )
+
+
+def test_the_tool_manager_and_the_transport_guard_still_have_the_shape_rpc_calls() -> None:
+    """`rpc.py` dispatches through the tool manager and runs the guard `/mcp` runs.
+
+    It calls `ToolManager.call_tool(name, arguments, context=None, convert_result=True)`, reads
+    element 1 of the `(unstructured, structured)` pair that `FastMCP.call_tool` also hands the
+    transport, and awaits `TransportSecurityMiddleware.validate_request(request, is_post=True)`.
+    """
+    parameters = set(inspect.signature(ToolManager.call_tool).parameters)
+    assert {"context", "convert_result"} <= parameters, (
+        "ToolManager.call_tool no longer takes `context` and `convert_result`; "
+        "mcp_server_kit/rpc.py dispatches through both"
+    )
+    assert "convert_result=True" in inspect.getsource(FastMCP.call_tool), (
+        "FastMCP.call_tool no longer asks the tool manager for the converted pair; "
+        "mcp_server_kit/rpc.py answers with the same element the transport does"
+    )
+    assert {"request", "is_post"} <= set(
+        inspect.signature(TransportSecurityMiddleware.validate_request).parameters
+    ), "TransportSecurityMiddleware.validate_request changed; mcp_server_kit/rpc.py runs it"
