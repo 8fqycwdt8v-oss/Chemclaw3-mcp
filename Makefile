@@ -57,29 +57,53 @@ type: ## mypy --strict over every server, the shared kit and the test tree.
 	@# tree anyway, so splitting them would analyse the same modules twice.
 	$(UV) run mypy --explicit-package-bases --namespace-packages $(SRC) $(TESTS)
 
+# **The deploy checks need `helm`, and a run without it must not read as green.** They render
+# `deploy/helm/chemclaw-fleet`; pytest can only skip them, and a skip prints green (the epilogue
+# names it, but a gate does not read epilogues). So every target that runs the suite first requires
+# helm and says how to get it, and `CHEMCLAW_REQUIRE_HELM` makes the tests themselves fail rather
+# than skip. `CHEMCLAW_ALLOW_NO_HELM=1` is the explicit opt-out for a laptop without helm: the
+# rendered-chart checks then skip, and `make chart-validate` says it did not run.
+ifeq ($(strip $(CHEMCLAW_ALLOW_NO_HELM)),)
+export CHEMCLAW_REQUIRE_HELM := 1
+endif
+
+.PHONY: require-helm
+require-helm:
+	@if [ -n "$(strip $(CHEMCLAW_ALLOW_NO_HELM))" ]; then \
+	  command -v helm >/dev/null || echo "CHEMCLAW_ALLOW_NO_HELM is set and helm is absent: every check on the rendered fleet chart will SKIP, and this run is no evidence about it"; \
+	else \
+	  command -v helm >/dev/null || { echo "helm is not installed. The deploy checks render deploy/helm/chemclaw-fleet and would skip, which prints green. Install the pinned one with 'scripts/install-chart-tools.sh <dir>' and put <dir> on PATH, or set CHEMCLAW_ALLOW_NO_HELM=1 to run without them."; exit 1; }; \
+	fi
+
 .PHONY: test
-test: ## The whole suite, with the egress guard armed (see conftest.py).
+test: require-helm ## The whole suite, with the egress guard armed (see conftest.py).
 	$(UV) run pytest -q
 
 .PHONY: no-egress
-no-egress: ## The no-egress checks alone — the static scan, the runtime guard, the NetworkPolicy.
+no-egress: require-helm ## The no-egress checks alone — the static scan, the runtime guard, the NetworkPolicy.
 	$(UV) run pytest -q -k "egress or deploy"
 
 # The chart's own gate, beside the pytest checks that read its render (`tests/test_deploy_shape.py`):
 # those prove the shape each server must have, this proves the Kubernetes API accepts it. Both
 # autoscaling modes, since the KEDA objects exist only in one. Needs `helm` and `kubeconform` on
-# PATH and, for the schemas, the host below; CI installs both pinned (`.github/workflows/ci.yml`).
+# PATH and, for the schemas, the host below; CI installs both pinned (`.github/workflows/ci.yml`),
+# and `scripts/install-chart-tools.sh` installs the same pins anywhere else. With
+# `CHEMCLAW_ALLOW_NO_HELM` set and a tool missing it names what it did not check and succeeds.
 # The CRD catalogue covers ServiceMonitor and the KEDA kinds, which kubeconform's own does not;
 # no `-ignore-missing-schemas`, so a kind it cannot check fails instead of passing unseen.
 KUBE_VERSION ?= 1.29.0
 CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 
 .PHONY: chart-validate
-chart-validate: ## helm lint, then kubeconform over the fleet chart's render in both autoscaling modes.
-	@command -v helm >/dev/null || { echo "helm not installed: needed to render deploy/helm/chemclaw-fleet"; exit 1; }
-	@command -v kubeconform >/dev/null || { echo "kubeconform not installed: needed to check the render"; exit 1; }
-	helm lint deploy/helm/chemclaw-fleet
-	@for mode in hpa keda; do \
+chart-validate: ## helm lint, then kubeconform over the fleet chart's render in every autoscaling mode.
+	@if ! command -v helm >/dev/null || ! command -v kubeconform >/dev/null; then \
+	  if [ -n "$(strip $(CHEMCLAW_ALLOW_NO_HELM))" ]; then \
+	    printf '\nSKIPPED chart-validate: helm or kubeconform is not installed, so the fleet chart was NOT linted or schema-checked.\n\n'; exit 0; \
+	  fi; \
+	  echo "helm and kubeconform are needed to check deploy/helm/chemclaw-fleet: scripts/install-chart-tools.sh <dir> installs the pinned ones (CHEMCLAW_ALLOW_NO_HELM=1 skips this)"; exit 1; \
+	fi; \
+	helm lint deploy/helm/chemclaw-fleet; \
+	for mode in hpa keda none; do \
 	  echo "--- autoscaling.mode=$$mode"; \
 	  helm template chemclaw-fleet deploy/helm/chemclaw-fleet --namespace chemclaw \
 	    --set autoscaling.mode=$$mode \
@@ -96,11 +120,11 @@ architecture-baseline: ## Cold import, /healthz and MCP handshake latency per se
 	$(UV) run python scripts/architecture_baseline.py
 
 .PHONY: offline-run
-offline-run: ## Prove every server answers with the network taken away (needs unshare; Linux).
+offline-run: require-helm ## Prove every server answers with the network taken away (needs unshare; Linux).
 	unshare --user --map-root-user --net -- $(UV) run python scripts/offline_check.py -q
 
 .PHONY: cov
-cov: ## The suite again, with coverage measured and the floor in `pyproject.toml` enforced.
+cov: require-helm ## The suite again, with coverage measured and the floor in `pyproject.toml` enforced.
 	@# One run, not two: `--cov` costs nothing measurable here (measured 176 s against 210 s for the
 	@# bare run, which is noise), so `check` calls this instead of `test` rather than paying for the
 	@# suite twice. `test` stays for a fast bare run while iterating.
@@ -137,7 +161,7 @@ offline-guarded:  ## `offline-run` where the kernel allows a network namespace, 
 	fi
 
 .PHONY: check
-check: lint type cov offline-guarded deps-audit ## Everything CI runs, including the offline lane where the kernel allows it.
+check: lint type cov offline-guarded chart-validate deps-audit ## Everything CI runs, including the offline lane where the kernel allows it.
 	@# `deps-audit` is last on purpose: a dependency finding is a real failure, but not one that
 	@# should mask a broken test, and it is the only step here whose fix lives in `uv.lock` rather
 	@# than in the diff under review. It is in this list at all because CI now runs it, and a local

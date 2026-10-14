@@ -66,8 +66,18 @@ objects for each, held to one shape by `tests/test_deploy_shape.py` and `tests/t
 
 Names are fixed (`chemclaw-mcp-<name>`, `CHEMCLAW_<NAME>_TOKEN`), whatever the release is called,
 because Chemclaw3 dials them. `helm template deploy/helm/chemclaw-fleet` shows exactly what a
-cluster would receive. A release changes an image with a values file (below); Chemclaw3's
-`deploy/jenkins/targets/openshift.sh` is the delivery tool.
+cluster would receive.
+
+**Which release path is real today.** The chart describes the fleet and the checks hold it; the
+release tooling has not moved onto it. Chemclaw3's `deploy/jenkins/targets/openshift.sh` and its
+`Jenkinsfile.release` still release a fleet server with `oc set image deployment/chemclaw-mcp-<name>`
+against a Deployment an operator created, and nothing in this repository changes that (the move is
+the open Jenkins-delivery item, W6.11). So an environment is released **either** by that path **or**
+by `helm upgrade` with a values file, and the two must not be mixed: a `helm upgrade` puts back the
+image its values file names over whatever `oc set image` set, and an `oc set image` after a
+`helm upgrade` is reverted by the next one. Until the release tooling drives the chart, an
+environment that uses the chart has to write each published digest into its values file and
+upgrade, and one that does not use it keeps releasing as before.
 
 ### Prerequisites
 
@@ -114,8 +124,19 @@ helm upgrade --install chemclaw-fleet deploy/helm/chemclaw-fleet --namespace che
 ```
 
 `oc` and `kubectl` take the same verbs for step 1. To leave a server out, null its entry:
-`--set servers.pyexec=null`. The chart refuses `image.tag: latest`, an empty tag and a malformed
-digest, so a moving pointer cannot reach a cluster. Two cautions:
+`--set servers.pyexec=null`. The template refuses `image.tag: latest` and an empty tag
+(`chemclaw-fleet.image` in `templates/_helpers.tpl`; the schema does not check tags, only their
+character set), and the schema refuses a malformed digest, so a moving pointer cannot reach a
+cluster. Three cautions:
+
+- **A values file with no digest installs a fleet that cannot start, on purpose.** A server with no
+  `image.digest` (or tag) renders `registry.invalid/chemclaw-mcp-<name>:unset`, or the same name at
+  your registry with the tag `unset`; the pull fails (`ErrImagePull`) instead of running whatever a
+  namesake registry served. `tests/test_deploy_shape.py::
+  test_a_values_file_without_a_digest_renders_an_image_that_cannot_run` holds that. On a running
+  environment this means `release.yaml` must name every server's current digest before the first
+  upgrade (`oc get deploy -l app.kubernetes.io/part-of=chemclaw3 -o
+  jsonpath='{range .items[*]}{.metadata.name}={.spec.template.spec.containers[0].image}{"\n"}{end}'`).
 
 - **Step 1 is required.** Without the key the pod never starts (`CreateContainerConfigError`
   naming it). With a key whose value differs from Chemclaw3's, `/mcp` answers 401 while `/healthz`
@@ -127,6 +148,47 @@ digest, so a moving pointer cannot reach a cluster. Two cautions:
 Deployment to the one placeholder shape, and
 `::test_a_digest_pins_the_image_and_a_moving_tag_is_refused` holds the two ways a release names its
 bytes.
+
+### Adopting a fleet that is already running
+
+Helm will not take over objects it did not create: installing the chart over Deployments, Services
+and the rest that were applied with `oc apply` fails with `invalid ownership metadata` for the first
+object it meets. Either install into a fresh namespace and cut Chemclaw3 over (its connector URLs
+are bare Service names, so the namespace moves with the release), or adopt the existing objects in
+place. Adoption is a label and two annotations on every object the chart renders, then the first
+`helm upgrade --install`:
+
+```sh
+NS=chemclaw; REL=chemclaw-fleet
+for kind in deployment service networkpolicy horizontalpodautoscaler poddisruptionbudget \
+            servicemonitor scaledobject triggerauthentication; do
+  for obj in $(oc -n $NS get $kind -l app.kubernetes.io/part-of=chemclaw3 -o name 2>/dev/null); do
+    oc -n $NS label    $obj app.kubernetes.io/managed-by=Helm --overwrite
+    oc -n $NS annotate $obj meta.helm.sh/release-name=$REL meta.helm.sh/release-namespace=$NS --overwrite
+  done
+done
+```
+
+Three things this does not cover. The `ServiceMonitor` kind needs the Prometheus Operator CRDs, so
+`oc get` of it fails on a cluster without them; install with `--set serviceMonitor.enabled=false`
+there. **KEDA objects applied by hand** from the old `keda/` directory are the same case: label and
+annotate them as above, and know that `autoscaling.mode=hpa` (the default) renders no
+ScaledObject, so helm will not delete the hand-applied one and it would fight the HPA the chart
+creates. Either move to `--set autoscaling.mode=keda` at adoption, or delete the ScaledObjects and
+TriggerAuthentications first. In the other direction, switching to KEDA mode leaves the old HPA of a
+gated server behind unless it was adopted too, so adopt the HPAs before the switch and let helm
+remove them. And the chart renders no `spec.replicas`: an adopted Deployment keeps the count it has until the
+HPA the chart creates takes it over, which is the intended end state.
+
+### Running the checks without helm
+
+`make test`, `make cov`, `make offline-run` and `make check` fail with an install hint when `helm` is
+not on `PATH`, because the deploy checks would otherwise skip and the run would print green.
+`scripts/install-chart-tools.sh <directory>` installs the pinned, checksummed `helm` and
+`kubeconform`; put the directory on `PATH`. For a laptop that has neither, `CHEMCLAW_ALLOW_NO_HELM=1`
+is the explicit opt-out: the rendered-chart checks skip and `make chart-validate` says it did not
+run, and such a run is no evidence about the chart. CI and the Jenkins gate set
+`CHEMCLAW_REQUIRE_HELM=1`, which turns a missing `helm` into a failure even outside `make`.
 
 ### Environment: what every server reads
 

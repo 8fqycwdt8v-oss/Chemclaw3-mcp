@@ -106,9 +106,18 @@ pipeline {
       when { expression { params.RUN_GATE } }
       steps {
         sh 'uv sync --frozen'
-        sh 'make check'
-        // The strongest form of the no-egress claim, and the one that does not trust our own code.
-        sh 'make offline-run'
+        // **The deploy checks render the fleet chart, so the gate needs `helm`** (and `kubeconform`
+        // for `chart-validate`, which `make check` runs). An agent without them did not fail: the
+        // rendered-chart tests skipped and the stage was green. So the pinned, checksummed binaries
+        // are installed here (`scripts/install-chart-tools.sh`; `tests/test_delivery.py` holds its
+        // pins equal to `.github/workflows/ci.yml`'s), and `CHEMCLAW_REQUIRE_HELM` turns a missing
+        // binary into a failure rather than a skip.
+        sh 'scripts/install-chart-tools.sh "$WORKSPACE/.tools/bin"'
+        withEnv(['PATH+CHARTTOOLS=' + env.WORKSPACE + '/.tools/bin', 'CHEMCLAW_REQUIRE_HELM=1']) {
+          sh 'make check'
+          // The strongest form of the no-egress claim, and the one that does not trust our own code.
+          sh 'make offline-run'
+        }
       }
     }
 

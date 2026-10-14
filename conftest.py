@@ -131,30 +131,57 @@ def _helm() -> str:
     pytest.skip(message)
 
 
+def _render_chart(chart: Path, helm_args: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Every object `helm template` emits for `chart` in the `chemclaw` namespace.
+
+    A render that fails fails the test with helm's message, since a chart that does not render is
+    the finding.
+    """
+    command = [_helm(), "template", "chemclaw-fleet", str(chart), "--namespace", "chemclaw"]
+    done = subprocess.run(  # noqa: S603 - the binary and every argument are the test's own
+        [*command, *helm_args],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=HELM_TIMEOUT_SECONDS,
+    )
+    if done.returncode != 0:
+        pytest.fail(f"helm template {' '.join(helm_args)} failed:\n{done.stderr}")
+    return [doc for doc in yaml.safe_load_all(done.stdout) if doc]
+
+
 @pytest.fixture(scope="session")
 def fleet_render() -> Callable[..., list[dict[str, Any]]]:
     """`render(*helm_args)`: every object `helm template` emits for the fleet chart, cached.
 
-    Rendered into the `chemclaw` namespace with the chart's own defaults plus `helm_args` (for
-    example `"--set", "autoscaling.mode=keda"`). A render that fails fails the test with helm's
-    message, since a chart that does not render is the finding.
+    Rendered with the chart's own defaults plus `helm_args` (for example
+    `"--set", "autoscaling.mode=keda"`).
     """
     cache: dict[tuple[str, ...], list[dict[str, Any]]] = {}
 
     def render(*helm_args: str) -> list[dict[str, Any]]:
         if helm_args not in cache:
-            command = [_helm(), "template", "chemclaw-fleet", str(CHART), "--namespace", "chemclaw"]
-            done = subprocess.run(  # noqa: S603 - the binary and every argument are the test's own
-                [*command, *helm_args],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=HELM_TIMEOUT_SECONDS,
-            )
-            if done.returncode != 0:
-                pytest.fail(f"helm template {' '.join(helm_args)} failed:\n{done.stderr}")
-            cache[helm_args] = [doc for doc in yaml.safe_load_all(done.stdout) if doc]
+            cache[helm_args] = _render_chart(CHART, helm_args)
         return cache[helm_args]
+
+    return render
+
+
+@pytest.fixture(scope="session")
+def fleet_render_without_schema(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Callable[..., list[dict[str, Any]]]:
+    """`render(*helm_args)` over a copy of the chart with `values.schema.json` removed.
+
+    What the templates do on their own: for proving that quoting holds when the schema is the
+    layer that was skipped or got a pattern wrong.
+    """
+    copy = tmp_path_factory.mktemp("fleet-chart-no-schema") / "chemclaw-fleet"
+    shutil.copytree(CHART, copy)
+    (copy / "values.schema.json").unlink()
+
+    def render(*helm_args: str) -> list[dict[str, Any]]:
+        return _render_chart(copy, helm_args)
 
     return render
 

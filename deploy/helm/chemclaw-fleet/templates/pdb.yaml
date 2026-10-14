@@ -9,12 +9,12 @@ OOMKill and a failed liveness probe are outside it; replicas >= 2 and the topolo
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "chemclaw-fleet.service" $name }}
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name }}
+      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name | quote }}
 {{- end }}

@@ -19,14 +19,14 @@ credential. Requires KEDA (OpenShift's Custom Metrics Autoscaler).
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: {{ $svc }}
+  name: {{ $svc | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ $svc }}
+    name: {{ $svc | quote }}
   minReplicaCount: {{ int $c.replicas }}
   maxReplicaCount: {{ int $c.maxReplicas }}
   pollingInterval: {{ int $k.pollingInterval }}
@@ -41,8 +41,8 @@ spec:
     - type: prometheus
       metricType: AverageValue
       metadata:
-        serverAddress: {{ $k.serverAddress }}
-        namespace: {{ $k.namespace | default $.Release.Namespace }}
+        serverAddress: {{ $k.serverAddress | quote }}
+        namespace: {{ $k.namespace | default $.Release.Namespace | quote }}
         authModes: bearer
         query: >-
           sum(chemclaw_mcp_admission_in_flight{server="{{ $name }}"})
@@ -50,7 +50,7 @@ spec:
         threshold: {{ $k.threshold | quote }}
         ignoreNullValues: "true"
       authenticationRef:
-        name: {{ $svc }}-prometheus
+        name: {{ printf "%s-prometheus" $svc | quote }}
     - type: cpu
       metricType: Utilization
       metadata:
@@ -59,16 +59,16 @@ spec:
 apiVersion: keda.sh/v1alpha1
 kind: TriggerAuthentication
 metadata:
-  name: {{ $svc }}-prometheus
+  name: {{ printf "%s-prometheus" $svc | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
   secretTargetRef:
     - parameter: bearerToken
-      name: {{ $svc }}-prometheus
+      name: {{ printf "%s-prometheus" $svc | quote }}
       key: token
     - parameter: ca
-      name: {{ $svc }}-prometheus
+      name: {{ printf "%s-prometheus" $svc | quote }}
       key: ca.crt
 {{- end }}
 {{- end }}

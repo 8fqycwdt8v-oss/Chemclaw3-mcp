@@ -101,6 +101,14 @@ descriptor. See that repository's `deploy/jenkins/README.md`, and
 `D-2026-08-26-a-release-is-a-descriptor-and-a-target` for why the fleet is rolled out **before** the
 core that dials it.
 
-The digests a build publishes are what a values file names (`operations.md` §2). A change to a
-Deployment's resources or probes is a change to `values.yaml` or the templates and a
-`helm upgrade`; it no longer needs a second `oc set image` to put the image back.
+**What is real today:** that tooling releases a fleet server with `oc set image` against a Deployment
+an operator created, and has not been moved onto the chart (the Jenkins-delivery item, W6.11, is
+open). The chart is therefore the description of what to create and what the checks hold, not yet
+the release path. The two must not be mixed in one environment: a `helm upgrade` replaces whatever
+image `oc set image` put there with the one its values file names, and the reverse. An environment
+that adopts the chart (`operations.md` §2, including how to adopt objects that already exist)
+writes each published digest into its values file and upgrades, instead of running the release job
+against it. What must change for the release to drive the chart: `openshift.sh` and
+`Jenkinsfile.release` pass the descriptor's digests as `servers.<name>.image.digest` to
+`helm upgrade --install` instead of calling `oc set image`, and the descriptor names the chart
+version that goes with them.

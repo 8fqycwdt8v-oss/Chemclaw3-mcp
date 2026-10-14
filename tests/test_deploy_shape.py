@@ -72,9 +72,9 @@ def _object(render: Render, server: Path, kind: str, *helm_args: str) -> dict[st
     return found[0]
 
 
-def _deployment(render: Render, server: Path) -> dict[str, Any]:
+def _deployment(render: Render, server: Path, *helm_args: str) -> dict[str, Any]:
     """The rendered Deployment for one server."""
-    return _object(render, server, "Deployment")
+    return _object(render, server, "Deployment", *helm_args)
 
 
 def _pod_spec(render: Render, server: Path) -> dict[str, Any]:
@@ -135,14 +135,18 @@ def test_a_server_is_rendered_whole(server: Path, fleet_render: Render) -> None:
 def test_a_capability_is_never_one_pod(server: Path, fleet_render: Render) -> None:
     """`replicas: 1` is a single point of failure for every user of that capability.
 
-    Checked as a floor rather than an equality: the autoscaler owns the number above it, and a
-    server that legitimately wants three baseline pods should not have to edit this test.
+    The floor is the autoscaler's minimum (the Deployment carries no count of its own, see
+    `test_an_autoscaler_owns_the_replica_count`), checked as a floor rather than an equality: a
+    server that legitimately wants three baseline pods should not have to edit this test. With
+    `autoscaling.mode=none` the Deployment's own count is the floor, and holds the same bar.
     """
-    replicas = _deployment(fleet_render, server)["spec"]["replicas"]
-    assert isinstance(replicas, int) and replicas >= 2, (
-        f"{server.name} ships replicas={replicas!r}: a rollout, a drain or one failed liveness "
-        "probe then takes the whole capability offline, and there is no second pod to serve"
-    )
+    minimum = _object(fleet_render, server, "HorizontalPodAutoscaler")["spec"]["minReplicas"]
+    fixed = _deployment(fleet_render, server, "--set", "autoscaling.mode=none")["spec"]["replicas"]
+    for where, replicas in (("HPA minReplicas", minimum), ("fixed Deployment replicas", fixed)):
+        assert isinstance(replicas, int) and replicas >= 2, (
+            f"{server.name} ships {where}={replicas!r}: a rollout, a drain or one failed liveness "
+            "probe then takes the whole capability offline, and there is no second pod to serve"
+        )
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -242,11 +246,7 @@ def test_a_voluntary_disruption_cannot_take_the_whole_capability(
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
 def test_capacity_has_a_lever(server: Path, fleet_render: Render) -> None:
-    """An HPA exists, targets *this* Deployment, and its floor is the Deployment's own replicas.
-
-    An HPA whose `minReplicas` is below `replicas` scales the baseline down on the first quiet
-    minute, undoing `test_a_capability_is_never_one_pod` without touching its file.
-    """
+    """An HPA exists, targets *this* Deployment, and can scale up from its floor."""
     hpa = _object(fleet_render, server, "HorizontalPodAutoscaler")
     assert hpa["kind"] == "HorizontalPodAutoscaler"
     assert hpa["apiVersion"] == "autoscaling/v2", "v1 cannot express behaviour or a target type"
@@ -257,12 +257,29 @@ def test_capacity_has_a_lever(server: Path, fleet_render: Render) -> None:
         f"{server.name}'s HPA points at {target['name']!r}, which is not its Deployment; an HPA "
         "with no target reports no error and scales nothing"
     )
-    replicas = _deployment(fleet_render, server)["spec"]["replicas"]
-    assert spec["minReplicas"] == replicas, (
-        f"{server.name}: HPA minReplicas={spec['minReplicas']} against Deployment "
-        f"replicas={replicas}. The HPA wins, so the Deployment's floor is decorative"
-    )
     assert spec["maxReplicas"] > spec["minReplicas"], "an HPA that cannot scale up is not one"
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_an_autoscaler_owns_the_replica_count(server: Path, fleet_render: Render) -> None:
+    """The Deployment carries no `spec.replicas` while an autoscaler owns the count.
+
+    A rendered number is applied again by every `helm upgrade`, so a server scaled out to eight
+    pods (calc, running CREST) would be reset to its floor, bypassing the slow scale-in window.
+    Both autoscaler modes omit it; `autoscaling.mode=none` has no autoscaler and keeps the count.
+    """
+    for mode in ("hpa", "keda"):
+        spec = _deployment(fleet_render, server, "--set", f"autoscaling.mode={mode}")["spec"]
+        assert "replicas" not in spec, (
+            f"{server.name} under autoscaling.mode={mode} renders replicas={spec.get('replicas')}"
+            ", which the next helm upgrade applies over the autoscaler's decision"
+        )
+    fixed = _deployment(fleet_render, server, "--set", "autoscaling.mode=none")["spec"]
+    assert fixed.get("replicas", 0) >= 2, f"{server.name}: a fixed-replica render lost its count"
+    for kind in ("HorizontalPodAutoscaler", "ScaledObject"):
+        assert not _objects(fleet_render, server, kind, "--set", "autoscaling.mode=none"), (
+            f"{server.name} has a {kind} beside a fixed replica count, so two things own it"
+        )
 
 
 @pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
@@ -655,3 +672,335 @@ def test_a_digest_pins_the_image_and_a_moving_tag_is_refused(fleet_render: Rende
     for refused in ("latest", ""):
         with pytest.raises(pytest.fail.Exception, match="non-latest tag or a digest"):
             fleet_render("--set", f"defaults.image.tag={refused}")
+
+
+# --- What a pod may ask of the node, and what values may do to a manifest ------------------------
+
+#: Pod and container fields that hand a workload the host or privilege. None is a value the chart
+#: has, so none may appear in any render; a template that learns one needs a decision, not a diff.
+HOST_AND_PRIVILEGE_KEYS = frozenset(
+    {
+        "hostNetwork",
+        "hostPID",
+        "hostIPC",
+        "hostPath",
+        "hostPort",
+        "hostUsers",
+        "privileged",
+        "shareProcessNamespace",
+        "envFrom",
+        "command",
+        "args",
+        "initContainers",
+        "ephemeralContainers",
+    }
+)
+
+ALL_MODES = (("hpa", ()), ("keda", KEDA), ("none", ("--set", "autoscaling.mode=none")))
+
+
+def _keys(node: object) -> set[str]:
+    """Every mapping key anywhere under `node`."""
+    if isinstance(node, dict):
+        return set(node) | {key for child in node.values() for key in _keys(child)}
+    if isinstance(node, list):
+        return {key for child in node for key in _keys(child)}
+    return set()
+
+
+def _shape(docs: list[dict[str, Any]]) -> set[tuple[str, ...]]:
+    """The key paths of every object (kind, name, then keys; lists collapsed), values ignored.
+
+    Two renders with the same shape differ only in scalar values. Injected YAML adds keys, so it is
+    a different shape.
+    """
+    found: set[tuple[str, ...]] = set()
+
+    def walk(node: object, path: tuple[str, ...]) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                found.add((*path, str(key)))
+                walk(child, (*path, str(key)))
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, (*path, "[]"))
+
+    for doc in docs:
+        walk(doc, (doc["kind"], doc["metadata"]["name"]))
+    return found
+
+
+@pytest.mark.parametrize("mode", [name for name, _ in ALL_MODES])
+def test_no_pod_asks_for_the_host_or_for_privilege(mode: str, fleet_render: Render) -> None:
+    """No object in any autoscaling mode carries a host-access, privilege or command field.
+
+    The default-deny NetworkPolicy does not govern `hostNetwork`, and `privileged` undoes the
+    security context, so each is a way to void the posture while the checks on the fields that
+    *are* there stay green.
+    """
+    args = dict(ALL_MODES)[mode]
+    offences = sorted(HOST_AND_PRIVILEGE_KEYS & _keys(fleet_render(*args)))
+    assert not offences, f"the render carries {offences}"
+
+
+#: The only servers whose root filesystem is writable: `calc` runs xtb and CREST, `pyexec` runs
+#: caller programs. Written as literals, so a server that opens its root filesystem has to say so
+#: here, in review, rather than by setting a value.
+WRITABLE_ROOT_SERVERS = frozenset({"calc", "pyexec"})
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_the_root_filesystem_is_read_only_except_where_the_server_writes(
+    server: Path, fleet_render: Render
+) -> None:
+    """`readOnlyRootFilesystem` is true for every server not named in `WRITABLE_ROOT_SERVERS`."""
+    container = _pod_spec(fleet_render, server)["containers"][0]
+    read_only = container["securityContext"]["readOnlyRootFilesystem"]
+    assert read_only is (server.name not in WRITABLE_ROOT_SERVERS), (
+        f"{server.name}: readOnlyRootFilesystem={read_only!r}, and "
+        f"{sorted(WRITABLE_ROOT_SERVERS)} are the servers allowed to write outside /tmp"
+    )
+
+
+#: The most scratch a server may be given. A value above its ceiling is a decision about node disk,
+#: so it is made here rather than in a values file. `calc` writes xtb and CREST output for runs of
+#: minutes to hours, `pyexec` is the one caller-controlled writer, and the two model servers stage
+#: weights; everything else is `tempfile` and nothing.
+DEFAULT_SCRATCH_CEILING = "64Mi"
+SCRATCH_CEILINGS = {
+    "calc": "4Gi",
+    "pyexec": "256Mi",
+    "rxnlabel": "256Mi",
+    "rxnpredict": "256Mi",
+}
+_BINARY = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+
+
+def _bytes(quantity: str) -> int:
+    """A binary-suffixed Kubernetes quantity in bytes."""
+    return int(quantity[:-2]) * _BINARY[quantity[-2:]]
+
+
+@pytest.mark.parametrize("server", server_dirs(), ids=lambda path: path.name)
+def test_scratch_stays_under_the_ceiling_argued_for_the_server(
+    server: Path, fleet_render: Render
+) -> None:
+    """The `/tmp` emptyDir's `sizeLimit` is at most this server's ceiling."""
+    limit = _pod_spec(fleet_render, server)["volumes"][0]["emptyDir"]["sizeLimit"]
+    ceiling = SCRATCH_CEILINGS.get(server.name, DEFAULT_SCRATCH_CEILING)
+    assert _bytes(limit) <= _bytes(ceiling), (
+        f"{server.name}: scratch {limit} is above its ceiling {ceiling}; a bigger emptyDir is a "
+        "bigger share of node disk for one pod to fill, so raise the ceiling here, with the reason"
+    )
+
+
+@pytest.mark.parametrize("server", gated_server_dirs(), ids=lambda path: path.name)
+def test_the_keda_trigger_is_the_one_argued_for(server: Path, fleet_render: Render) -> None:
+    """The occupancy trigger's constants, as literals: 0.7 per pod, an empty series reads as idle.
+
+    `docs/autoscaling.md` argues for each. A threshold of 0.1 scales the fleet out on a single
+    call, and `ignoreNullValues: "false"` turns a fresh install's missing series into an error that
+    blocks the CPU trigger too.
+    """
+    scaled, _ = _scaled_object(fleet_render, server)
+    spec = scaled["spec"]
+    prometheus = spec["triggers"][0]
+    assert prometheus["metricType"] == "AverageValue"
+    assert prometheus["metadata"]["threshold"] == "0.7"
+    assert prometheus["metadata"]["ignoreNullValues"] == "true"
+    assert prometheus["metadata"]["authModes"] == "bearer"
+    assert spec["pollingInterval"] == 15
+    assert spec["triggers"][1]["metricType"] == "Utilization"
+
+
+# --- Values must not be able to write manifest ----------------------------------------------
+
+INJECTION = (
+    "\nhostNetwork: true\nhostPID: true\nprivileged: true\nenvFrom: [{secretRef: {name: x}}]\n"
+)
+
+#: What helm prints when `values.schema.json` refuses a values file.
+SCHEMA_REFUSAL = r"values don't meet the specifications of the schema"
+
+#: Every string a template interpolates, with the helm arguments that reach it. The KEDA ones need
+#: the mode that renders them.
+HOSTILE_FIELDS = [
+    ("servers.props.scratch", ()),
+    ("defaults.scratch", ()),
+    ("servers.props.image.tag", ()),
+    ("servers.props.image.digest", ()),
+    ("defaults.image.registry", ()),
+    ("defaults.image.namePrefix", ()),
+    ("defaults.image.pullPolicy", ()),
+    ("secretName", ()),
+    ("serviceMonitor.interval", ()),
+    ("serviceMonitor.scrapeTimeout", ()),
+    ("networkPolicy.callerLabels.app\\.kubernetes\\.io/name", ()),
+    ("networkPolicy.scraperNamespaces[0]", ()),
+    ("servers.props.resources.requests.cpu", ()),
+    ("servers.props.resources.limits.memory", ()),
+    ("autoscaling.keda.serverAddress", KEDA),
+    ("autoscaling.keda.namespace", KEDA),
+    ("autoscaling.keda.threshold", KEDA),
+]
+
+
+def _hostile(field: str, extra: tuple[str, ...]) -> tuple[str, ...]:
+    """Helm arguments setting `field` to a string that carries `INJECTION`."""
+    return (*extra, "--set-string", f"{field}=x{INJECTION}")
+
+
+@pytest.mark.parametrize(("field", "extra"), HOSTILE_FIELDS, ids=[f for f, _ in HOSTILE_FIELDS])
+def test_the_schema_refuses_a_value_that_carries_yaml(
+    field: str, extra: tuple[str, ...], fleet_render: Render
+) -> None:
+    """With the schema in place, a newline-bearing value in any interpolated field is refused."""
+    with pytest.raises(pytest.fail.Exception, match=SCHEMA_REFUSAL):
+        fleet_render(*_hostile(field, extra))
+
+
+@pytest.mark.parametrize(("field", "extra"), HOSTILE_FIELDS, ids=[f for f, _ in HOSTILE_FIELDS])
+def test_the_templates_quote_what_the_schema_would_have_refused(
+    field: str, extra: tuple[str, ...], fleet_render: Render, fleet_render_without_schema: Render
+) -> None:
+    """With the schema removed, the same values render as strings and add no key to any object.
+
+    The second layer: a pattern that is wrong or skipped must not be what stands between a values
+    file and `hostNetwork`. The render has the same key paths as the default render in the same
+    mode, and none of the host or privilege fields.
+    """
+    docs = fleet_render_without_schema(*_hostile(field, extra))
+    baseline = fleet_render(*extra) if extra == KEDA else fleet_render()
+    assert _shape(docs) == _shape(baseline), (
+        f"{field}: the render gained {sorted(_shape(docs) - _shape(baseline))[:3]}"
+    )
+    assert not HOST_AND_PRIVILEGE_KEYS & _keys(docs)
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        ("serviceMonitor.enable", "true"),
+        ("autoscaling.keda.typo", "1"),
+        ("autoscaling.modee", "hpa"),
+        ("servers.props.resources.foo", "1"),
+        ("servers.props.resources.requests.gpu", "1"),
+        ("defaults.hostNetwork", "true"),
+        ("servers.props.hostNetwork", "true"),
+        ("networkPolicy.egressPeers", "x"),
+    ],
+    ids=lambda pair: pair[0],
+)
+def test_an_unknown_key_is_refused_rather_than_ignored(
+    refused: tuple[str, str], fleet_render: Render
+) -> None:
+    """A typo in a values file is an error. Every object in the schema is closed."""
+    with pytest.raises(pytest.fail.Exception, match="Additional property"):
+        fleet_render("--set", f"{refused[0]}={refused[1]}")
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        "servers.props.resources.requests.cpu=lots",
+        "servers.props.resources.limits.memory=4GB",
+        "servers.props.scratch=64",
+        "serviceMonitor.interval=30",
+        "autoscaling.keda.serverAddress=ftp://thanos",
+        "servers.props.image.pullPolicy=Sometimes",
+    ],
+)
+def test_a_quantity_or_address_of_the_wrong_shape_is_refused(
+    refused: str, fleet_render: Render
+) -> None:
+    """The typed fields have patterns, so a unit that Kubernetes would reject fails at render."""
+    with pytest.raises(pytest.fail.Exception, match=SCHEMA_REFUSAL):
+        fleet_render("--set-string", refused)
+
+
+def test_two_servers_cannot_claim_one_port_and_a_ceiling_cannot_undercut_its_floor(
+    fleet_render: Render,
+) -> None:
+    """Rules across fields, which a per-field schema cannot state, fail the render by name."""
+    with pytest.raises(pytest.fail.Exception, match="both claim port 8851"):
+        fleet_render("--set", "servers.props.port=8851")
+    with pytest.raises(pytest.fail.Exception, match="maxReplicas 2 is below replicas 3"):
+        fleet_render("--set", "servers.calc.replicas=3", "--set", "servers.calc.maxReplicas=2")
+
+
+def test_a_values_file_without_a_digest_renders_an_image_that_cannot_run(
+    fleet_render: Render,
+) -> None:
+    """Naming a registry but no digest still renders `:unset`; installing then fails at the pull.
+
+    Intended, and the guard against deploying a fleet nobody pinned: `docs/operations.md` §2 says a
+    release names a digest for every server. With no registry either, the host is `.invalid`
+    (RFC 2606), which can never resolve. A tag that exists is the other way to name bytes.
+    """
+    for args in ((), ("--set", "defaults.image.registry=registry.example")):
+        for doc in fleet_render(*args):
+            if doc["kind"] != "Deployment":
+                continue
+            image = doc["spec"]["template"]["spec"]["containers"][0]["image"]
+            assert image.endswith(":unset"), f"{doc['metadata']['name']}: {image}"
+            if not args:
+                assert image.startswith("registry.invalid/"), image
+
+
+# --- The cost table in MODULES.md is the chart's, not a second copy ------------------------------
+
+_COST_ROW = re.compile(
+    r"^\| `(?P<name>[a-z0-9]+)` \| (?P<low>\d+) → (?P<high>\d+) \| (?P<req>[^|]+?) \| "
+    r"(?P<base>[^|]+?) \| (?P<ceil>[^|]+?) \|$",
+    re.M,
+)
+
+
+def _cores(quantity: str) -> float:
+    """CPU cores in a Kubernetes quantity (`250m`, `1`)."""
+    return float(quantity[:-1]) / 1000 if quantity.endswith("m") else float(quantity)
+
+
+def _gibibytes(quantity: str) -> float:
+    """Memory in GiB for a `Mi` or `Gi` quantity."""
+    return int(quantity[:-2]) / 1024 if quantity.endswith("Mi") else float(int(quantity[:-2]))
+
+
+def test_the_cost_table_in_modules_md_is_what_the_chart_renders(fleet_render: Render) -> None:
+    """Replicas, requests, baseline and ceiling per server, and the fleet totals, are the chart's.
+
+    The table is prose a person copied out of the values; this recomputes every cell from the
+    render, so a changed request or ceiling that does not move the table is red.
+    """
+    catalogue = (ROOT / "MODULES.md").read_text(encoding="utf-8")
+    section = catalogue.split("## What the built fleet costs to run", 1)[1].split("\n## ", 1)[0]
+    rows = {match["name"]: match for match in _COST_ROW.finditer(section)}
+    totals = {"base_cpu": 0.0, "base_mem": 0.0, "ceil_cpu": 0.0, "ceil_mem": 0.0}
+    for server in server_dirs():
+        low = _object(fleet_render, server, "HorizontalPodAutoscaler")["spec"]["minReplicas"]
+        high = _object(fleet_render, server, "HorizontalPodAutoscaler")["spec"]["maxReplicas"]
+        requests = _pod_spec(fleet_render, server)["containers"][0]["resources"]["requests"]
+        cpu, memory = str(requests["cpu"]), str(requests["memory"])
+        row = rows.get(server.name)
+        assert row, f"MODULES.md's cost table has no row for {server.name}"
+        base_cpu, base_mem = low * _cores(cpu), low * _gibibytes(memory)
+        ceil_cpu, ceil_mem = high * _cores(cpu), high * _gibibytes(memory)
+        expected = (
+            f"{low} → {high}",
+            f"{cpu} / {memory}",
+            f"{base_cpu:g} CPU, {base_mem:g} Gi",
+            f"{ceil_cpu:g} CPU, {ceil_mem:g} Gi",
+        )
+        found = (f"{row['low']} → {row['high']}", row["req"], row["base"], row["ceil"])
+        assert found == expected, (
+            f"MODULES.md row {server.name}: {found} but the chart gives {expected}"
+        )
+        totals["base_cpu"] += base_cpu
+        totals["base_mem"] += base_mem
+        totals["ceil_cpu"] += ceil_cpu
+        totals["ceil_mem"] += ceil_mem
+    assert set(rows) == {path.name for path in server_dirs()}, "the cost table lists other servers"
+    assert (
+        f"**{totals['base_cpu']:g} CPU, {totals['base_mem']:g} Gi**" in section
+        and f"**{totals['ceil_cpu']:g} CPU, {totals['ceil_mem']:g} Gi**" in section
+    ), f"MODULES.md's fleet row is not the sum of the rows above it: {totals}"

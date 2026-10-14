@@ -223,12 +223,14 @@ def shipped_deployment_files(render: Render) -> list[tuple[str, str]]:
 
 
 def test_a_deployment_directory_holds_only_shapes_the_ratchets_can_read() -> None:
-    """No server ships deployment files of its own, and the chart offers no way to set a variable.
+    """No server ships deployment files of its own, and the chart has no key that sets a variable.
 
     The ratchets read the chart's rendered objects, so a `servers/<name>/deploy/` would be a second
     description of the same pod that none of them sees. And a values key that injects environment
     (`env`, `extraEnv`, `envFrom`, `command`, `args`) would let a release set `MCP_EGRESS_ALLOW` or
-    a bound past a render that never passes it, so the values schema must not allow one.
+    a bound past a render that never passes it, so the values schema must not name one. This checks
+    key *names* only; that no *value* can write a field into a manifest is
+    `tests/test_deploy_shape.py::test_the_templates_quote_what_the_schema_would_have_refused`.
     """
     stray = sorted(str(path.relative_to(ROOT)) for path in SERVERS.glob("*/deploy"))
     assert not stray, (

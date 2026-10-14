@@ -10,18 +10,18 @@ caller. Requires the prometheus-operator CRDs; serviceMonitor.enabled=false omit
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "chemclaw-fleet.service" $name }}
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name }}
+      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name | quote }}
   endpoints:
     - port: http
       path: /metrics
       scheme: http
-      interval: {{ $.Values.serviceMonitor.interval }}
-      scrapeTimeout: {{ $.Values.serviceMonitor.scrapeTimeout }}
+      interval: {{ $.Values.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ $.Values.serviceMonitor.scrapeTimeout | quote }}
 {{- end }}
 {{- end }}

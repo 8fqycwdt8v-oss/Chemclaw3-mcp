@@ -7,23 +7,24 @@ of a pod doing real work so the percentage means something. It reads *higher* th
 the GIL bounds a pod below its gate, which errs safe; KEDA (keda.yaml) is the exact signal.
 scaleDown is slow on purpose: a drained pod loses work nothing has written down. Under
 autoscaling.mode=keda the servers with a gate get a ScaledObject instead; two autoscalers on one
-Deployment fight, so each server renders exactly one.
+Deployment fight, so each server renders exactly one. `autoscaling.mode=none` renders neither,
+and then the Deployment carries its own fixed `replicas`.
 */ -}}
 {{- range $name, $_ := .Values.servers }}
 {{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
-{{- if not (and $c.keda (eq $.Values.autoscaling.mode "keda")) }}
+{{- if not (or (eq $.Values.autoscaling.mode "none") (and $c.keda (eq $.Values.autoscaling.mode "keda"))) }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: {{ include "chemclaw-fleet.service" $name }}
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "chemclaw-fleet.service" $name }}
+    name: {{ include "chemclaw-fleet.service" $name | quote }}
   minReplicas: {{ int $c.replicas }}
   maxReplicas: {{ int $c.maxReplicas }}
   metrics:

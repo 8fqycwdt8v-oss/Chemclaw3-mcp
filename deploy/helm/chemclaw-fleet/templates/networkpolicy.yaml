@@ -16,13 +16,13 @@ and reads as a server nobody calls.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "chemclaw-fleet.service" $name }}
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name }}
+      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name | quote }}
   policyTypes:
     - Ingress
     - Egress

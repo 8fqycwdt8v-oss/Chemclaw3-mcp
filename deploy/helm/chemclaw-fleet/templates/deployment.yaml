@@ -20,7 +20,12 @@ tests/test_deploy_shape.py against this template's rendered output.
   nothing. On /healthz a missing optional checkpoint would be a restart loop, and a restart cannot
   recreate a file.
 - The emptyDir is bounded: unbounded, one pod filling it evicts its neighbours via DiskPressure.
+- `spec.replicas` is omitted when an autoscaler (HPA, or KEDA's) owns the count: a rendered number
+  is applied again by every `helm upgrade`, which would reset a scaled-out server (calc at eight
+  pods running CREST) to its floor and bypass the slow scale-in window. The floor lives in the
+  autoscaler's minimum. Only `autoscaling.mode=none` (fixed replicas, no autoscaler) renders it.
 */ -}}
+{{- include "chemclaw-fleet.validate" . -}}
 {{- range $name, $_ := .Values.servers }}
 {{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
 {{- $svc := include "chemclaw-fleet.service" $name }}
@@ -29,14 +34,16 @@ tests/test_deploy_shape.py against this template's rendered output.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $svc }}
+  name: {{ $svc | quote }}
   labels:
     {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
 spec:
+{{- if eq $.Values.autoscaling.mode "none" }}
   replicas: {{ int $c.replicas }}
+{{- end }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ $svc }}
+      app.kubernetes.io/name: {{ $svc | quote }}
   template:
     metadata:
       labels:
@@ -49,7 +56,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ $svc }}
+              app.kubernetes.io/name: {{ $svc | quote }}
       terminationGracePeriodSeconds: {{ add (int $c.requestTimeout) (int $.Values.drainSeconds) }}
       securityContext:
         runAsNonRoot: true
@@ -57,19 +64,19 @@ spec:
           type: RuntimeDefault
       containers:
         - name: server
-          image: {{ include "chemclaw-fleet.image" (dict "name" $name "image" $c.image) }}
-          imagePullPolicy: {{ $c.image.pullPolicy }}
+          image: {{ include "chemclaw-fleet.image" (dict "name" $name "image" $c.image) | quote }}
+          imagePullPolicy: {{ $c.image.pullPolicy | quote }}
           ports:
             - name: http
               containerPort: {{ int $c.port }}
           env:
             - name: MCP_ALLOWED_HOSTS
               value: {{ printf "%s:%d" $svc (int $c.port) | quote }}
-            - name: {{ $token }}
+            - name: {{ $token | quote }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Values.secretName }}
-                  key: {{ $token }}
+                  name: {{ $.Values.secretName | quote }}
+                  key: {{ $token | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: {{ not $c.writableRoot }}
@@ -103,5 +110,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir:
-            sizeLimit: {{ $c.scratch }}
+            sizeLimit: {{ $c.scratch | quote }}
 {{- end }}
