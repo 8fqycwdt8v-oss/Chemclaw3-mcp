@@ -1,0 +1,5 @@
+apiVersion: v2
+name: chemclaw-fleet
+description: The Chemclaw3-mcp tool fleet. One server is one entry in values.yaml `servers`.
+type: application
+version: 0.1.0

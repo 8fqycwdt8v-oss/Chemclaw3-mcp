@@ -15,6 +15,9 @@ Operational scripts that are not part of any server's runtime.
   a fresh MCP session, a warm one, a pooled `POST /rpc/...` and an unpooled one, with the server in a
   thread and as its own process; prints JSON. The figures in
   `D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release` come from it.
+- `install-chart-tools.sh` — installs the pinned, checksummed `helm` and `kubeconform` into a directory
+  (the Jenkins gate runs it; a laptop can too). The pins equal `.github/workflows/ci.yml`'s, held by a
+  delivery test.
 
 Anything here that fetches data for a vendored corpus runs **outside** the serving image, and is the
 one sanctioned place `MCP_EGRESS_ALLOW` may be set.

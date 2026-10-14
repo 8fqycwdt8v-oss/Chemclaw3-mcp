@@ -14,12 +14,10 @@ import sys
 import threading
 import time
 import types
-from collections.abc import Iterator
-from pathlib import Path
+from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import pytest
-import yaml
 from chemclaw_mcp_rxnpredict import tools
 from chemclaw_mcp_rxnpredict.engine import config
 from chemclaw_mcp_rxnpredict.engine import predictors as registry
@@ -33,8 +31,6 @@ from chemclaw_mcp_rxnpredict.engine.config import reset_settings_for_tests
 from chemclaw_mcp_rxnpredict.engine.predictors.base import BaseForwardPredictor
 from chemclaw_mcp_rxnpredict.engine.schemas import ForwardPrediction
 from mcp_server_kit.testing import reimported
-
-DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
 REACTANTS = "CC(=O)Cl.Nc1ccccc1"
 
@@ -396,12 +392,14 @@ async def test_the_charge_does_not_follow_the_callers_models_argument(
     )
 
 
-def test_the_ceiling_is_the_pods_own_core_count() -> None:
+def test_the_ceiling_is_the_pods_own_core_count(
+    fleet_deployment: Callable[[str], dict[str, Any]],
+) -> None:
     """A slot is a core, so the default ceiling equals `limits.cpu` in the shipped Deployment.
 
-    Read from the file rather than transcribed, so changing either side alone fails here.
+    Read from the chart's render rather than transcribed, so changing either side alone fails here.
     """
-    manifest = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
+    manifest = fleet_deployment("rxnpredict")
     containers = manifest["spec"]["template"]["spec"]["containers"]
     limits = next(c for c in containers if c["name"] == "server")["resources"]["limits"]
     assert int(limits["cpu"]) == DEFAULT_MAX_CONCURRENT_PREDICTIONS, (

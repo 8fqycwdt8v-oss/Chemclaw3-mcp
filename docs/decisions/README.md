@@ -121,5 +121,6 @@ index of what is in force.
 | [D-2026-10-07-the-record-gets-lean](D-2026-10-07-the-record-gets-lean.md) | The record gets lean: decisions in ADRs, rules in CLAUDE.md, architecture in tests |
 | [D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package](D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package.md) | The fleet owns every connector contract; Chemclaw3 takes it as a git dependency pinned to a tag |
 | [D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release](D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release.md) | Backends (`calc`, `rxnlabel`) speak typed HTTP/JSON, served beside MCP for one release |
+| [D-2026-10-14-the-fleet-deploys-as-one-chart](D-2026-10-14-the-fleet-deploys-as-one-chart.md) | A server's deployment is a row in one Helm chart's values, and the deploy checks read what that chart renders |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

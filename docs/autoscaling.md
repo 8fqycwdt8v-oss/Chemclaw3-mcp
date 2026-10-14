@@ -1,7 +1,7 @@
 # Autoscaling
 
-Every server ships a CPU `HorizontalPodAutoscaler` (`servers/<name>/deploy/hpa.yaml`) and a floor of
-two replicas. That works on any cluster, and it is the default.
+The fleet chart (`deploy/helm/chemclaw-fleet`) renders a CPU `HorizontalPodAutoscaler` for every
+server and a floor of two replicas. That works on any cluster, and it is the default.
 
 ## The better signal, where the cluster has it
 
@@ -19,24 +19,28 @@ scaling signal than CPU here: a full `calc` pod on in-process xTB draws 1.37 of 
 reads it as a third busy. Behind Chemclaw3's queued compute it is also the only signal that rises
 before anyone is refused, because the backlog waits in Temporal rather than at the pod.
 
-Each gated server ships `deploy/keda/scaledobject.yaml`: a KEDA ScaledObject on that quotient
+For each gated server (`keda: true` in the chart's `values.yaml`), `autoscaling.mode=keda` renders a
+KEDA ScaledObject on that quotient
 (target 0.7 per replica) with the CPU target kept as its second trigger, and the same floor, ceiling
 and scale-down behaviour as the CPU HPA. KEDA is OpenShift's **Custom Metrics Autoscaler** operator.
 
-### Adopting it for one server
+### Adopting it
 
 1. Install the Custom Metrics Autoscaler operator and create a `KedaController`.
 2. Create the Secret `chemclaw-mcp-<name>-prometheus` with `token` (a ServiceAccount token that may
    read the namespace's metrics through the Thanos querier) and `ca.crt` (the service CA).
-3. Edit `namespace:` in the ScaledObject to the namespace the server runs in.
-4. Swap the autoscalers — two on one Deployment fight, so this is deliberate:
+3. Set `autoscaling.keda.namespace` if the Prometheus tenancy port answers for a namespace other
+   than the release's (it defaults to the release's).
+4. Switch the mode. Two autoscalers on one Deployment fight, so the chart renders exactly one per
+   server: in this mode each gated server has a ScaledObject and no HPA, and an ungated one keeps its HPA.
 
    ```sh
-   oc delete hpa chemclaw-mcp-<name>
-   oc apply -f servers/<name>/deploy/keda/
+   helm upgrade chemclaw-fleet deploy/helm/chemclaw-fleet -f release.yaml --set autoscaling.mode=keda
    ```
 
-Revert with `oc delete -f servers/<name>/deploy/keda/ && oc apply -f servers/<name>/deploy/hpa.yaml`.
+Revert with `--set autoscaling.mode=hpa`; Helm deletes the ScaledObjects and recreates the HPAs.
+`tests/test_deploy_shape.py::test_the_keda_alternative_is_the_hpa_with_a_better_signal` holds the
+bounds and behaviour equal between the two.
 
 ## Sizing for interactive use
 

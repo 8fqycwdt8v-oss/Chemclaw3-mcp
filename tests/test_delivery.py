@@ -250,3 +250,47 @@ def test_ci_builds_every_image_from_a_list_it_discovers() -> None:
         assert trigger in discovery, (
             f"image discovery no longer widens to every server on {trigger}"
         )
+
+
+def test_the_jenkins_gate_installs_the_chart_tools_ci_pins_and_requires_them() -> None:
+    """The gate cannot skip the deploy checks: it installs helm and sets `CHEMCLAW_REQUIRE_HELM`.
+
+    Without helm the rendered-chart tests skip and the stage is green. The versions and checksums
+    the install script pins are the ones `ci.yml` pins, so the two gates render and validate on the
+    same binaries.
+    """
+    gate = _pipeline().split("stage('Gate')", 1)[1].split("stage('Build and publish", 1)[0]
+    assert "scripts/install-chart-tools.sh" in gate, "the gate does not install helm"
+    assert "CHEMCLAW_REQUIRE_HELM=1" in gate, "the gate lets a missing helm skip the deploy checks"
+    assert "sh 'make check'" in gate and "sh 'make offline-run'" in gate
+    # Both make targets run inside the environment that carries the binaries.
+    assert (
+        gate.index("withEnv") < gate.index("sh 'make check'") < gate.index("sh 'make offline-run'")
+    )
+
+    script = (ROOT / "scripts" / "install-chart-tools.sh").read_text(encoding="utf-8")
+    workflow = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    for variable in ("HELM_VERSION", "KUBECONFORM_VERSION", "KUBECONFORM_SHA256"):
+        in_script = re.search(rf'^{variable}="([^"]+)"', script, re.M)
+        in_ci = re.search(rf'^  {variable}: "([^"]+)"', workflow, re.M)
+        assert in_script and in_ci, f"{variable} is not pinned in both places"
+        assert in_script.group(1) == in_ci.group(1), (
+            f"{variable}: scripts/install-chart-tools.sh says {in_script.group(1)} and ci.yml "
+            f"says {in_ci.group(1)}"
+        )
+
+
+def test_make_refuses_to_run_the_suite_without_helm_unless_told_to() -> None:
+    """`make test`, `cov`, `offline-run` and `check` need helm or an explicit opt-out.
+
+    They depend on `require-helm`, which fails with an install hint; `CHEMCLAW_ALLOW_NO_HELM`
+    is the documented laptop opt-out, and `check` includes `chart-validate` because CI runs it.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    for target in ("test", "cov", "offline-run", "no-egress"):
+        assert re.search(rf"^{target}: require-helm\b", makefile, re.M), (
+            f"`make {target}` does not require helm, so it can run the deploy tests as skips"
+        )
+    assert re.search(r"^check: .*\bchart-validate\b", makefile, re.M)
+    assert "CHEMCLAW_ALLOW_NO_HELM" in makefile
+    assert "CHEMCLAW_ALLOW_NO_HELM" in (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")

@@ -26,8 +26,8 @@ surface. `calc` and `rxnlabel` are registered in `manifests-internal/` and serve
 
 ## What the built fleet costs to run
 
-Read off each `servers/<name>/deploy/deployment.yaml` and `hpa.yaml`; when one moves, this table
-moves in the same pull request.
+Read off `deploy/helm/chemclaw-fleet/values.yaml`; when one moves, this table moves in the same
+pull request.
 
 | server | replicas (min → max) | requests/pod | baseline (min x req) | ceiling (max x req) |
 | --- | --- | --- | --- | --- |

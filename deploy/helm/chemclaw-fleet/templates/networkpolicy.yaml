@@ -1,0 +1,44 @@
+{{- /*
+Layer 4 of the no-egress posture: default-deny, which makes "no outbound calls" true even if every
+line of Python were wrong. `egress: []` is an empty list rather than an absent key: both deny all,
+but only the list says so on purpose where a reader can see it; dropping `Egress` from policyTypes
+would silently restore unrestricted outbound traffic. Not even DNS: a server that never dials a
+host never resolves one, and a DNS hole is how a default-deny stops being one. The podSelector must
+equal the pod label (tests/test_deploy_shape.py checks the two against each other).
+Ingress: two callers, no third. The agent opens MCP sessions; Prometheus scrapes /metrics. Both
+scraper namespaces are named because the platform may run either (kube-prometheus-stack in
+`monitoring`, OpenShift's user-workload Prometheus elsewhere); admitting only one drops every scrape
+and reads as a server nobody calls.
+*/ -}}
+{{- range $name, $_ := .Values.servers }}
+{{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name | quote }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $.Values.networkPolicy.callerLabels | nindent 14 }}
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  {{- toYaml $.Values.networkPolicy.scraperNamespaces | nindent 18 }}
+      ports:
+        - protocol: TCP
+          port: {{ int $c.port }}
+  egress: []
+{{- end }}

@@ -348,7 +348,7 @@ skip_covered = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# Every server ships tests/test_server.py, test_no_egress.py and test_deploy.py — that sameness is
+# Every server ships tests/test_server.py and test_no_egress.py — that sameness is
 # the point. The default `prepend` import mode keys test modules by basename and so refuses the
 # second server; `importlib` keys by path.
 addopts = "--import-mode=importlib"

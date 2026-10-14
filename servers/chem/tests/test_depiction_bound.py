@@ -3,7 +3,7 @@
 `Compute2DCoords` is superlinear and cancellation does not stop it, so two bounds protect the pod:
 a per-call atom ceiling (`MAX_DEPICTION_ATOMS`) and a concurrency ceiling (`Admission`). The
 admission ceiling is derived from the kit's cgroup-sized `to_thread` pool (the pool less one), and
-the pool tests re-derive that width from the Deployment so the two cannot drift apart.
+the pool tests re-derive that width from the rendered Deployment so the two cannot drift apart.
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ import math
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from chemclaw_mcp_chem.engine import depiction
 from chemclaw_mcp_chem.engine.admission import (
     DEFAULT_MAX_CONCURRENT_HEAVY_CALLS,
@@ -35,9 +35,6 @@ from mcp_server_kit import executor
 from mcp_server_kit.testing import reimported
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
-
-#: The file the pod's thread pool is decided by, read rather than transcribed.
-DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
 #: The worst case for `Compute2DCoords` that is legal under both bounds: a 76-atom polypeptide.
 #: Shape, not size, is what costs. For this shape the character bound binds well before the atom
@@ -146,33 +143,35 @@ def test_the_worst_legal_depiction_still_costs_what_the_ceiling_was_derived_from
     )
 
 
-def _container() -> dict[str, Any]:
-    """The shipped Deployment's one container, where both the CPU limit and any `env:` live."""
-    loaded = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
-    container = loaded["spec"]["template"]["spec"]["containers"][0]
+def _container(deployment: dict[str, Any]) -> dict[str, Any]:
+    """The rendered Deployment's one container, where both the CPU limit and any `env:` live."""
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
     assert isinstance(container, dict)
     return container
 
 
-def _pod_cpu_limit_cores() -> float:
+def _pod_cpu_limit_cores(deployment: dict[str, Any]) -> float:
     """`limits.cpu` in cores. Kubernetes accepts `"500m"`, `"1"` and `1` for the same field."""
-    declared = str(_container()["resources"]["limits"]["cpu"])
+    declared = str(_container(deployment)["resources"]["limits"]["cpu"])
     return float(declared[:-1]) / 1000 if declared.endswith("m") else float(declared)
 
 
-def _pod_thread_pool_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+def _pod_thread_pool_width(
+    deployment: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> int:
     """The `to_thread` pool width the shipped pod gets, computed by the kit's own arithmetic.
 
     The Deployment's cgroup is written to a file for `mcp_server_kit.executor`, and its `env:`
     applied, so the answer is for that pod, not the test box.
     """
     quota = tmp_path / "cpu.max"
-    quota.write_text(f"{int(_pod_cpu_limit_cores() * 100_000)} 100000\n", encoding="utf-8")
+    cores = _pod_cpu_limit_cores(deployment)
+    quota.write_text(f"{int(cores * 100_000)} 100000\n", encoding="utf-8")
     monkeypatch.setattr(executor, "_CGROUP_V2_CPU_MAX", quota)
     # Literal values only: a `valueFrom` entry (the bearer, from a Secret) is not a sizing knob.
     declared = {
         entry["name"]: str(entry["value"])
-        for entry in _container().get("env", [])
+        for entry in _container(deployment).get("env", [])
         if "value" in entry
     }
     for knob in ("MCP_THREAD_POOL_SIZE", "MCP_THREAD_POOL_HEADROOM"):
@@ -184,14 +183,16 @@ def _pod_thread_pool_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> i
 
 
 def test_the_pod_pool_is_the_width_the_ceiling_was_argued_against(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fleet_deployment: Callable[[str], dict[str, Any]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`POD_THREAD_POOL_WIDTH` is re-derived from the pod it describes.
 
     From the Deployment's `limits.cpu` through `thread_pool_size()`, so a CPU, headroom or
     `MCP_THREAD_POOL_SIZE` change lands here.
     """
-    width = _pod_thread_pool_width(tmp_path, monkeypatch)
+    width = _pod_thread_pool_width(fleet_deployment("chem"), tmp_path, monkeypatch)
     assert width == POD_THREAD_POOL_WIDTH, (
         f"this pod's to_thread pool is {width} threads, not the {POD_THREAD_POOL_WIDTH} that "
         "engine/admission.py derives the ceiling of "
@@ -201,24 +202,30 @@ def test_the_pod_pool_is_the_width_the_ceiling_was_argued_against(
 
 
 def test_threads_are_never_scarcer_than_the_cpu_this_pod_may_spend(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fleet_deployment: Callable[[str], dict[str, Any]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Threads are never scarcer than the CPU this pod may spend.
 
     Only then is the gate, not the pool, the bound. Written against the CPU allowance rather than a
     literal.
     """
-    width = _pod_thread_pool_width(tmp_path, monkeypatch)
-    allowance = math.ceil(_pod_cpu_limit_cores())
+    deployment = fleet_deployment("chem")
+    width = _pod_thread_pool_width(deployment, tmp_path, monkeypatch)
+    allowance = math.ceil(_pod_cpu_limit_cores(deployment))
     assert width > allowance, (
-        f"this pod may spend {_pod_cpu_limit_cores()} cores and has {width} offload threads: the "
+        f"this pod may spend {_pod_cpu_limit_cores(deployment)} cores and has {width} offload "
+        "threads: the "
         "pool is now the scarcer of the two, so it — not the admission gate — decides how long an "
         "admitted render waits, and engine/admission.py's derivation no longer describes this pod"
     )
 
 
 def test_every_admitted_call_has_a_worker_and_the_ungated_tools_keep_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    fleet_deployment: Callable[[str], dict[str, Any]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every admitted call has a worker, and the ungated tools keep one.
 
@@ -226,7 +233,7 @@ def test_every_admitted_call_has_a_worker_and_the_ungated_tools_keep_one(
     waiting call could sit behind several seconds-long species calls. One thread is left for ungated
     tools.
     """
-    width = _pod_thread_pool_width(tmp_path, monkeypatch)
+    width = _pod_thread_pool_width(fleet_deployment("chem"), tmp_path, monkeypatch)
     assert width >= DEFAULT_MAX_CONCURRENT_HEAVY_CALLS + 1, (
         f"a ceiling of {DEFAULT_MAX_CONCURRENT_HEAVY_CALLS} over a {width}-thread pool admits "
         "calls that then wait for a worker, or leaves the ungated tools none — queueing behind "

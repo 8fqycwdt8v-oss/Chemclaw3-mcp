@@ -75,9 +75,10 @@ endpoint:
   # `calc_sampling_timeout_seconds` (14400) for the two CREST searches. Each has a matching bound on
   # this side, held 120 s *tighter* so that this server's refusal is the answer that arrives rather
   # than the caller's timeout — see `engine/config._CALLER_MARGIN_SECONDS` and
-  # `tests/test_cost_bounds.py`. This number is also what `deploy/deployment.yaml` derives its
-  # `terminationGracePeriodSeconds` from, because a rollout can wait out an ordinary calculation and
-  # cannot wait out a four-hour search.
+  # `tests/test_cost_bounds.py`. This number is also what the fleet chart derives the pod's
+  # `terminationGracePeriodSeconds` from (`requestTimeout` in `deploy/helm/chemclaw-fleet/values.yaml`,
+  # held equal by `tests/test_deploy_shape.py`), because a rollout can wait out an ordinary
+  # calculation and cannot wait out a four-hour search.
   request_timeout: 900
   # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here and
   # refuse it the moment a deployment points this at a real host — and a manifest whose auth mode
