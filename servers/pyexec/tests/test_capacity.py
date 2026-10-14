@@ -4,16 +4,16 @@
 instead of refusing one call, so `default_memory_bytes` derives one from the other. Concurrency
 is gated to the pod's cores, because `os.cpu_count()` is not cgroup-aware and an oversubscribed
 core turns a CPU-bound run into a spurious wall-clock timeout. Tested against a real cgroup
-file, a real gate, and the shipped Deployment read from disk rather than transcribed.
+file, a real gate, and the shipped Deployment as the fleet chart renders it, not transcribed.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from chemclaw_mcp_pyexec.engine import limits as limits_module
 from chemclaw_mcp_pyexec.engine.admission import DEFAULT_MAX_CONCURRENT_RUNS, Admission
 from chemclaw_mcp_pyexec.engine.limits import (
@@ -25,52 +25,54 @@ from chemclaw_mcp_pyexec.engine.limits import (
     default_memory_bytes,
 )
 
-#: The file the pod's two limits and the ceiling's own override live in, read rather than copied.
-DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
+#: What the pod's two limits and the ceiling's own override are read from, by the name it reports.
+DEPLOYMENT = "the rendered Deployment"
+
+#: The `fleet_deployment` fixture: this server's Deployment as `helm template` renders it.
+Deployment = Callable[[str], dict[str, Any]]
 
 #: Kubernetes' quantity suffixes, for the two fields this file reads.
 _MEMORY_SUFFIXES = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
 
 
-def _container() -> dict[str, Any]:
+def _container(fleet_deployment: Deployment) -> dict[str, Any]:
     """The shipped Deployment's one container, where the limits and any `env:` live."""
-    loaded = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
-    container = loaded["spec"]["template"]["spec"]["containers"][0]
+    container = fleet_deployment("pyexec")["spec"]["template"]["spec"]["containers"][0]
     assert isinstance(container, dict)
     return container
 
 
-def _declared_env() -> dict[str, str]:
+def _declared_env(fleet_deployment: Deployment) -> dict[str, str]:
     """The container's literal `env:` values — none a sizing knob today, the drift to catch."""
     # Literal values only: a `valueFrom` entry (the bearer, from a Secret) is not a sizing knob.
     return {
         entry["name"]: str(entry["value"])
-        for entry in _container().get("env", [])
+        for entry in _container(fleet_deployment).get("env", [])
         if "value" in entry
     }
 
 
-def pod_memory_limit_bytes() -> int:
+def pod_memory_limit_bytes(fleet_deployment: Deployment) -> int:
     """`limits.memory` in bytes. This is what `default_memory_bytes` divides by the ceiling."""
-    declared = str(_container()["resources"]["limits"]["memory"])
+    declared = str(_container(fleet_deployment)["resources"]["limits"]["memory"])
     for suffix, multiplier in _MEMORY_SUFFIXES.items():
         if declared.endswith(suffix):
             return int(float(declared[: -len(suffix)]) * multiplier)
     return int(declared)
 
 
-def pod_cpu_limit_cores() -> float:
+def pod_cpu_limit_cores(fleet_deployment: Deployment) -> float:
     """`limits.cpu` in cores. Kubernetes accepts `"500m"`, `"1"` and `1` for the same field."""
-    declared = str(_container()["resources"]["limits"]["cpu"])
+    declared = str(_container(fleet_deployment)["resources"]["limits"]["cpu"])
     return float(declared[:-1]) / 1000 if declared.endswith("m") else float(declared)
 
 
-def shipped_max_concurrent_runs() -> int:
+def shipped_max_concurrent_runs(fleet_deployment: Deployment) -> int:
     """The ceiling this pod actually runs with: the default, unless its `env:` overrides it.
 
     Reads the same variable and default as `tools.py`, so a Deployment override is picked up here.
     """
-    declared = _declared_env().get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS")
+    declared = _declared_env(fleet_deployment).get("CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS")
     return int(declared) if declared else DEFAULT_MAX_CONCURRENT_RUNS
 
 
@@ -89,21 +91,21 @@ def _with_cgroup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, contents: str)
 
 
 def test_the_shipped_pod_gives_each_run_more_than_a_heavy_program_needs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fleet_deployment: Deployment
 ) -> None:
-    """The memory arithmetic, run against the numbers `deploy/deployment.yaml` actually ships.
+    """The memory arithmetic, run against the numbers the fleet chart actually ships.
 
     Written against the pod limit rather than `Limits.memory_bytes`, because a value correct in
     isolation can be wrong about the container it runs in; the limit is read, not transcribed.
     """
-    pod_memory = pod_memory_limit_bytes()
-    ceiling = shipped_max_concurrent_runs()
+    pod_memory = pod_memory_limit_bytes(fleet_deployment)
+    ceiling = shipped_max_concurrent_runs(fleet_deployment)
     _with_cgroup(monkeypatch, tmp_path, str(pod_memory))
     per_run = default_memory_bytes(ceiling)
     assert per_run > HEAVY_PROGRAM_ADDRESS_SPACE_BYTES, (
         f"each run gets {per_run // 1024**2} MiB of address space, and a legitimate analysis "
         f"importing the scientific stack reached {HEAVY_PROGRAM_ADDRESS_SPACE_BYTES // 1024**2} "
-        f"MiB — the bound would refuse real work. {DEPLOYMENT.name} limits this pod to "
+        f"MiB — the bound would refuse real work. {DEPLOYMENT} limits this pod to "
         f"{pod_memory // 1024**2} MiB over a ceiling of {ceiling}"
     )
     admitted_together = ceiling * per_run + SERVER_HEADROOM_BYTES
@@ -113,17 +115,17 @@ def test_the_shipped_pod_gives_each_run_more_than_a_heavy_program_needs(
     )
 
 
-def test_a_slot_is_a_core_the_shipped_pod_actually_has() -> None:
+def test_a_slot_is_a_core_the_shipped_pod_actually_has(fleet_deployment: Deployment) -> None:
     """A slot is a core: the run ceiling equals the shipped pod's `limits.cpu`.
 
     Equality in both directions: a ceiling above the cores breaks the wall clock (a CPU-bound run
     cannot finish and the caller is told their program timed out), one below leaves a core idle
     while a caller is refused. Read from the Deployment, not transcribed.
     """
-    cores = pod_cpu_limit_cores()
-    ceiling = shipped_max_concurrent_runs()
+    cores = pod_cpu_limit_cores(fleet_deployment)
+    ceiling = shipped_max_concurrent_runs(fleet_deployment)
     assert cores == ceiling, (
-        f"{DEPLOYMENT.name} limits this pod to {cores} cores while the gate admits {ceiling} runs, "
+        f"{DEPLOYMENT} limits this pod to {cores} cores while the gate admits {ceiling} runs, "
         "and a run is a single-threaded child pinned to one core. Move both, and re-derive "
         "engine/admission.py's argument — the per-run memory bound is the same number's divisor"
     )

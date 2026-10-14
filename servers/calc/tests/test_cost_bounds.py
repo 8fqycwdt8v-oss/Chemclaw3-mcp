@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 import types
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import chemclaw_mcp_calc.engine.budget as budget_module
@@ -24,7 +24,6 @@ import chemclaw_mcp_calc.engine.xtb_engine as xtb_engine
 import chemclaw_mcp_calc.engine.xtb_opt as xtb_opt
 import numpy as np
 import pytest
-import yaml
 from chemclaw_mcp_calc.engine.config import settings
 from chemclaw_mcp_calc.engine.pka import PkaInput, _conjugate_bases, _predict_acid_pka, predict_pka
 from chemclaw_mcp_calc.engine.structure import Structure, structure_from_smiles
@@ -169,9 +168,6 @@ def test_a_pka_acid_at_the_ceiling_still_predicts(monkeypatch: pytest.MonkeyPatc
     assert np.isfinite(result.pka)
 
 
-#: This server's own Deployment, which is where the memory the ceiling is derived from is declared.
-_DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
-
 #: Peak MiB per atom squared for one in-process relaxation. Quadratic because geomeTRIC
 #: eigendecomposes an (`nprim`, `nprim`) matrix with `nprim` linear in atoms. Measured out of
 #: process as peak RSS on linear alkanes:
@@ -197,9 +193,12 @@ SERVER_RESIDENT_MIB = 200
 PRIMITIVES_PER_ATOM = 9.0
 
 
-def _container_memory_limit_mib() -> int:
-    """The `limits.memory` this server's own Deployment declares, in MiB."""
-    manifest = yaml.safe_load(_DEPLOYMENT.read_text(encoding="utf-8"))
+def _container_memory_limit_mib(manifest: dict[str, Any]) -> int:
+    """The `limits.memory` this server's rendered Deployment declares, in MiB.
+
+    The Deployment is what the fleet chart renders for `calc`: the memory the ceiling is derived
+    from is declared in `deploy/helm/chemclaw-fleet/values.yaml`.
+    """
     containers = manifest["spec"]["template"]["spec"]["containers"]
     declared = str(containers[0]["resources"]["limits"]["memory"])
     assert declared.endswith("Gi"), f"unhandled memory unit in {declared!r}"
@@ -211,7 +210,9 @@ def _peak_mib_for(atoms: int) -> float:
     return RETAINED_ARENA_FACTOR * PEAK_MIB_PER_ATOM_SQUARED * atoms**2
 
 
-def test_a_full_pod_of_calculations_at_the_ceiling_fits_the_memory_limit_it_declares() -> None:
+def test_a_full_pod_of_calculations_at_the_ceiling_fits_the_memory_limit_it_declares(
+    fleet_deployment: Callable[[str], dict[str, Any]],
+) -> None:
     """A full pod of calculations at the atom ceiling fits the memory limit it declares.
 
     An inequality over four declared numbers: the container's `limits.memory`,
@@ -219,7 +220,7 @@ def test_a_full_pod_of_calculations_at_the_ceiling_fits_the_memory_limit_it_decl
     `xtb_max_atoms` sits a margin under the bound because every constant carries a few percent.
     Changing any of them past the bound fails here instead of in an OOMKill.
     """
-    limit = _container_memory_limit_mib()
+    limit = _container_memory_limit_mib(fleet_deployment("calc"))
     sessions_mib = DEFAULT_MAX_SESSIONS * SESSION_COST_BYTES / 1024**2
     concurrent = settings.calc_max_concurrent_requests
     needed = SERVER_RESIDENT_MIB + sessions_mib + concurrent * _peak_mib_for(settings.xtb_max_atoms)

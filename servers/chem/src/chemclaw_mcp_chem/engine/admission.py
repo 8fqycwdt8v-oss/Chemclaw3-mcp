@@ -60,7 +60,7 @@ RETIRED_VARIABLE = "CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS"
 #: it does not derive the ceiling.
 WORST_RENDER_SECONDS = 0.1
 
-#: `deploy/deployment.yaml`'s `readinessProbe.timeoutSeconds`: the request that must not be starved.
+#: the fleet chart's `readinessProbe.timeoutSeconds`: the request that must not be starved.
 PROBE_TIMEOUT_SECONDS = 3
 
 #: Width of the default `asyncio.to_thread` pool on the shipped pod

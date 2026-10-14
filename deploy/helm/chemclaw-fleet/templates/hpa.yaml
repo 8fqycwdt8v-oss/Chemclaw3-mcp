@@ -1,0 +1,43 @@
+{{- /*
+The capacity lever, and its floor equals the Deployment's replicas (the HPA wins, so a lower floor
+would silently undo "never one pod"). The metric is CPU utilization against requests.cpu: every
+unit of work here is CPU-bound (an admitted call is a core, a depiction holds the GIL, a sandboxed
+run is a child process), so it rises with admission occupancy, and requests are sized to the draw
+of a pod doing real work so the percentage means something. It reads *higher* than occupancy where
+the GIL bounds a pod below its gate, which errs safe; KEDA (keda.yaml) is the exact signal.
+scaleDown is slow on purpose: a drained pod loses work nothing has written down. Under
+autoscaling.mode=keda the servers with a gate get a ScaledObject instead; two autoscalers on one
+Deployment fight, so each server renders exactly one. `autoscaling.mode=none` renders neither,
+and then the Deployment carries its own fixed `replicas`.
+*/ -}}
+{{- range $name, $_ := .Values.servers }}
+{{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
+{{- if not (or (eq $.Values.autoscaling.mode "none") (and $c.keda (eq $.Values.autoscaling.mode "keda"))) }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "chemclaw-fleet.service" $name | quote }}
+  minReplicas: {{ int $c.replicas }}
+  maxReplicas: {{ int $c.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ int $.Values.autoscaling.cpuUtilization }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ int $.Values.autoscaling.scaleUpWindow }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ int $c.scaleDownWindow }}
+{{- end }}
+{{- end }}

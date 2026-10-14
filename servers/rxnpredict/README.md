@@ -92,7 +92,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | Port / Service | 8857 / `chemclaw-mcp-rxnpredict` |
 | Token | `CHEMCLAW_RXNPREDICT_TOKEN` |
 | Chemclaw3 | connector `rxnpredict`, manifest installed from `chemclaw-contracts`, enabled by default; the four prediction tools are `queued:`, run through `connectors.rxnpredict.interactive` (2 pods x 2 slots) |
-| Pod | requests 500m / 2Gi, limits 2 CPU / 4Gi; 2 → 4 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Pod | requests 500m / 2Gi, limits 2 CPU / 4Gi; 2 → 4 replicas on CPU (or KEDA on admission, `autoscaling.mode=keda`) |
 | Image | `reaction_t5_v2` and `rxn_insight`, weights baked at build; `HF_HOME=/opt/models/hf`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `CHEMCLAW_RXNPREDICT_MODEL_DIR=/opt/models`, `OMP_NUM_THREADS=1` |
 | Readiness | `/healthz` loads and checksums `trust_priors.json` (`rxnpredict-trust-priors@<version>`) and checks the predictor registry: a predictor this image carries that failed to load (`failed`, `egress_refused`), or an allow-list naming an unregistered predictor, is a 503. A predictor whose extra is simply not installed is ready. |
 | Admission | a full pod answers `[rxnpredict-at-capacity] …` |
@@ -147,7 +147,7 @@ the hub for a metadata check on a model they already have, which is a network ca
 "offline" server would keep making.
 
 Behind them sit the fleet's usual layers — the runtime egress guard, the AST scan over this
-package, and `deploy/networkpolicy.yaml` with an empty `egress:`. Together they mean that a build
+package, and the fleet chart's NetworkPolicy with an empty `egress:`. Together they mean that a build
 which failed to bake a checkpoint fails loudly on first inference rather than quietly downloading a
 model nobody reviewed.
 

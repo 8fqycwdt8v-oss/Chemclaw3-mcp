@@ -35,31 +35,18 @@ def manifest_of(server: Path) -> dict[str, object]:
 
 # The files a server is not deployable or reviewable without. `docs/adding-a-server.md` is the one
 # prose declaration of this set, and `test_the_checklist_lists_every_required_file` keeps it
-# complete.
+# complete. Its workload, Service, scrape, budgets, autoscaler and default-deny policy are not
+# files here: they are its entry in `deploy/helm/chemclaw-fleet/values.yaml`, which
+# `tests/test_deploy_shape.py::test_the_chart_names_exactly_the_servers_the_tree_has` holds equal
+# to this tree, and the chart's rendering of them is held by `tests/test_deploy_shape.py` and
+# `tests/test_deploy.py` for every server.
 REQUIRED_SERVER_FILES = (
     "connector.yaml",
     "pyproject.toml",
     "Containerfile",
     "README.md",
-    "deploy/networkpolicy.yaml",
-    # The two files that make `/metrics` reachable by a scrape. Required fleet-wide because a new
-    # server copied from a directory without them would not notice through its own tests.
-    "deploy/service.yaml",
-    "deploy/servicemonitor.yaml",
-    # The workload itself, carrying every pod-hardening field (runAsNonRoot, dropped capabilities,
-    # seccomp, resource limits, no service-account token); without it each defaults to the
-    # cluster's.
-    "deploy/deployment.yaml",
-    # The objects that decide whether a capability survives a rollout and has a capacity lever.
-    # `tests/test_deploy_shape.py` checks their content; this checks they exist.
-    "deploy/hpa.yaml",
-    "deploy/pdb.yaml",
     "tests/test_no_egress.py",
     "tests/test_server.py",
-    # The per-server half of layer 4: a server's own file holds its port, ingress peers and the
-    # Service-to-ServiceMonitor port name, which no fleet-wide reader can derive. The fleet-wide
-    # half is `tests/test_deploy_shape.py::test_the_egress_policy_denies_and_selects_the_workload`.
-    "tests/test_deploy.py",
 )
 
 
@@ -75,13 +62,17 @@ def test_the_checklist_lists_every_required_file() -> None:
 
     A contributor copies that tree; a file missing from it is a server that fails
     `test_a_server_ships_the_whole_set` on its first `make check`. Matched on the basename because
-    the checklist is a nested tree (`hpa.yaml` under a `deploy/` line), and every required basename
-    is distinct, so the match is exact.
+    the checklist is a nested tree (`test_server.py` under a `tests/` line), and every required
+    basename is distinct, so the match is exact. It also names the chart's values file, because that
+    entry is the other half of "a server's deployment".
     """
     checklist = (ROOT / "docs/adding-a-server.md").read_text(encoding="utf-8")
     names = [Path(required).name for required in REQUIRED_SERVER_FILES]
     assert len(set(names)) == len(names), "two required files share a basename; match on the path"
     missing = [name for name in names if name not in checklist]
+    missing += [
+        chart for chart in ("deploy/helm/chemclaw-fleet/values.yaml",) if chart not in checklist
+    ]
     assert not missing, (
         f"docs/adding-a-server.md does not list {missing}, which `REQUIRED_SERVER_FILES` demands "
         "of every server; a contributor copying that tree fails the suite on their first run"

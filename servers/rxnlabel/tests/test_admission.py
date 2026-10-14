@@ -14,12 +14,10 @@ import sys
 import threading
 import time
 import types
-from collections.abc import Iterator
-from pathlib import Path
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
-import yaml
 from chemclaw_mcp_rxnlabel import tools
 from chemclaw_mcp_rxnlabel.engine import mapping
 from chemclaw_mcp_rxnlabel.engine.admission import (
@@ -29,8 +27,6 @@ from chemclaw_mcp_rxnlabel.engine.admission import (
     Admission,
 )
 from mcp_server_kit.testing import reimported
-
-DEPLOYMENT = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
 #: One reaction, five species — the shape the drain sends, and what `_represent` is driven over.
 REACTION = "CC(=O)Cl.Nc1ccccc1>CCN(CC)CC.ClCCl>CC(=O)Nc1ccccc1"
@@ -310,12 +306,14 @@ def test_a_gated_tool_still_advertises_its_real_signature() -> None:
     assert set(batched.inputSchema["properties"]) == {"reactions"}
 
 
-def test_the_ceiling_is_the_pods_own_core_count() -> None:
+def test_the_ceiling_is_the_pods_own_core_count(
+    fleet_deployment: Callable[[str], dict[str, Any]],
+) -> None:
     """A slot is a core, so the default ceiling equals `limits.cpu` in the shipped Deployment.
 
-    Read from the file rather than transcribed, so changing either side alone fails here.
+    Read from the chart's render rather than transcribed, so changing either side alone fails here.
     """
-    manifest = yaml.safe_load(DEPLOYMENT.read_text(encoding="utf-8"))
+    manifest = fleet_deployment("rxnlabel")
     containers = manifest["spec"]["template"]["spec"]["containers"]
     limits = next(c for c in containers if c["name"] == "server")["resources"]["limits"]
     assert int(limits["cpu"]) == DEFAULT_MAX_CONCURRENT_BATCHES, (

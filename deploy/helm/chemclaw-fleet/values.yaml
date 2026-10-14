@@ -1,0 +1,124 @@
+# The fleet's deployment table: one entry per server under `servers`, everything shared under
+# `defaults`. The rationale for each rule lives once, in templates/; a server states only how it
+# differs. Adding a server is adding an entry here (tests/test_fleet_layout.py holds the set equal
+# to servers/*/connector.yaml).
+#
+# Per-server keys (all but `port` and `requestTimeout` fall back to `defaults`):
+#   port            Service/container port; MODULES.md is the registry and connector.yaml must agree.
+#   requestTimeout  connector.yaml `request_timeout`; the pod's grace period is this + drainSeconds.
+#   resources       requests/limits; requests.cpu is what the HPA measures utilization against.
+#   scratch         the /tmp emptyDir sizeLimit.  writableRoot: true only for a server that needs it.
+#   readyDelay/liveDelay  probe initialDelaySeconds.  maxReplicas, scaleDownWindow  the HPA's ceiling
+#   and its scale-in stabilization (a drained pod loses its in-flight work).
+#   keda            true where the server has an admission gate: autoscaling.mode=keda swaps its HPA
+#                   for a ScaledObject on gate occupancy (docs/autoscaling.md).
+#   image           {tag|digest|registry|namePrefix} override, merged over defaults.image.
+
+defaults:
+  replicas: 2 # floor of the HPA; one pod makes a rollout or a drain a full outage
+  readyDelay: 5
+  liveDelay: 35
+  maxReplicas: 4
+  scaleDownWindow: 300
+  scratch: 64Mi
+  image:
+    # `registry.invalid` never resolves (RFC 2606): an unrewritten install fails with
+    # ErrImagePull instead of pulling a search-registry namesake. A release sets the registry and
+    # a per-server `digest`; `tag: latest` is refused by the chart.
+    registry: registry.invalid
+    namePrefix: chemclaw-mcp-
+    tag: unset
+    digest: ""
+    pullPolicy: IfNotPresent
+
+secretName: chemclaw-secrets # holds every server's bearer, keyed by its token variable
+drainSeconds: 30 # endpoint removal plus uvicorn stopping, on top of requestTimeout
+
+networkPolicy:
+  callerLabels: { app.kubernetes.io/name: chemclaw } # the agent's front door: the only caller
+  scraperNamespaces: [monitoring, openshift-user-workload-monitoring]
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+autoscaling:
+  mode: hpa # hpa | keda
+  cpuUtilization: 70
+  scaleUpWindow: 60
+  keda:
+    namespace: "" # the namespace the Prometheus tenancy port answers for; "" is the release's
+    serverAddress: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+    threshold: "0.7"
+    pollingInterval: 15
+
+servers:
+  props:
+    port: 8850
+    requestTimeout: 15
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+  thermalsafety:
+    port: 8851
+    requestTimeout: 15
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+  kinetics:
+    port: 8852
+    requestTimeout: 15
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+    keda: true
+  unitops:
+    port: 8853
+    requestTimeout: 15
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+  rxnpredict: # eleven checkpoints loaded from the baked, read-only model tree
+    port: 8857
+    requestTimeout: 120
+    resources: { requests: { cpu: 500m, memory: 2Gi }, limits: { cpu: "2", memory: 4Gi } }
+    scratch: 256Mi
+    readyDelay: 90
+    liveDelay: 120
+    scaleDownWindow: 600
+    keda: true
+  chem: # limits.cpu sizes the to_thread pool (ceil(cpu)+4); tests/test_depiction_bound.py
+    port: 8858
+    requestTimeout: 30
+    resources: { requests: { cpu: 500m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+    maxReplicas: 6
+    keda: true
+  safety:
+    port: 8859
+    requestTimeout: 30
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+  calc: # xtb/CREST write scratch for minutes to hours; limits.cpu is CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS
+    port: 8860
+    requestTimeout: 900 # covers in-process work only: the xtb (3480 s) and CREST (14280 s) tiers outlive it
+    resources: { requests: { cpu: "1", memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
+    scratch: 4Gi
+    writableRoot: true
+    readyDelay: 15
+    liveDelay: 45
+    maxReplicas: 8
+    scaleDownWindow: 1800 # a CREST search outlives the grace period; scale in slowly
+    keda: true
+  rxnlabel: # an RXNMapper transformer loaded from the baked, read-only model tree
+    port: 8865
+    requestTimeout: 180
+    resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "2", memory: 3Gi } }
+    scratch: 256Mi
+    readyDelay: 90
+    liveDelay: 120
+    scaleDownWindow: 600
+    keda: true
+  suitability:
+    port: 8892
+    requestTimeout: 15
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+  pyexec: # RLIMIT_AS is derived from the memory limit; the one caller-controlled writer in the fleet
+    port: 8899
+    requestTimeout: 30
+    resources: { requests: { cpu: "1", memory: 512Mi }, limits: { cpu: "2", memory: 2Gi } }
+    scratch: 256Mi
+    writableRoot: true
+    maxReplicas: 6
+    keda: true

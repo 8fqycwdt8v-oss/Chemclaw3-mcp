@@ -11,6 +11,9 @@ Operational scripts that are not part of any server's runtime.
   latency (plus `calc`'s `calculation_key`), and the prose share of non-test source at the
   pre-programme commit and in the working tree, written to `docs/architecture-baseline.json`
   (`make architecture-baseline`).
+- `install-chart-tools.sh` — installs the pinned, checksummed `helm` and `kubeconform` into a directory
+  (the Jenkins gate runs it; a laptop can too). The pins equal `.github/workflows/ci.yml`'s, held by a
+  delivery test.
 
 Anything here that fetches data for a vendored corpus runs **outside** the serving image, and is the
 one sanctioned place `MCP_EGRESS_ALLOW` may be set.

@@ -221,3 +221,6 @@ __marimo__/
 # agent here; they are transient copies of this repo, never source. Only `worktrees/`
 # is ignored, so a `.claude/skills/<name>/SKILL.md` is still committable.
 .claude/worktrees/
+
+# Binaries `scripts/install-chart-tools.sh` installs for the Jenkins gate.
+.tools/

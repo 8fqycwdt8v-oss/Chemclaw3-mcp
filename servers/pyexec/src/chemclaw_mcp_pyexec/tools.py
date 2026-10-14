@@ -29,7 +29,7 @@ from chemclaw_mcp_pyexec.engine.runner import ALLOWED_IMPORTS
 server = FastMCP("pyexec")
 
 # The pod's ceiling on concurrent runs and the divisor of its memory limit. A run is a
-# single-threaded child, so a slot is a core: `deploy/deployment.yaml` sets `limits.cpu` to this and
+# single-threaded child, so a slot is a core: the fleet chart sets `limits.cpu` to this and
 # `default_memory_bytes` divides the cgroup memory limit by it, so `RLIMIT_AS` can actually fire.
 # `env_bound` validates it because `0` would reach the division too.
 _MAX_CONCURRENT_RUNS = env_bound(

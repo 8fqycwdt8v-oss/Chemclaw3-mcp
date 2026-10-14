@@ -107,20 +107,15 @@ variance between servers should be in what they compute, not in how they are sha
 
 ## The files
 
+A server's deployment is not a directory of its own: it is an entry in
+`deploy/helm/chemclaw-fleet/values.yaml` (step 4 below), rendered by the one chart.
+
 ```
 servers/<name>/
 ├── connector.yaml               # a link to the packaged manifest (below); every tool classified once
 ├── pyproject.toml               # this server's dependency closure and nobody else's
 ├── Containerfile                # rootless, dataset baked in, no credential for anything external
 ├── README.md                    # what it serves, the exact artifact it reads, and who refreshes it
-├── deploy/networkpolicy.yaml    # policyTypes includes Egress; egress: []
-├── deploy/service.yaml          # one port named `http`; what the ServiceMonitor resolves through
-├── deploy/servicemonitor.yaml   # path /metrics, port: http — a *name*, not a number
-├── deploy/deployment.yaml       # the workload: runAsNonRoot with no pinned UID, drop ALL caps, seccomp,
-│                                # limits, no SA token, the manifest's token_env from chemclaw-secrets
-├── deploy/hpa.yaml              # replicas are the only scaling axis here; state the metric and why
-├── deploy/pdb.yaml              # maxUnavailable: 1 — a drain must not take every replica at once
-│                                # — pod label must equal the NetworkPolicy podSelector
 ├── src/chemclaw_mcp_<name>/
 │   ├── engine/                  # pure computation — no FastAPI, no MCP, no network
 │   ├── tools.py                 # the FastMCP surface
@@ -130,7 +125,6 @@ servers/<name>/
     ├── test_dataset.py          # the corpus validated against itself
     ├── test_tools.py            # what the tools answer, and what they refuse
     ├── test_no_egress.py        # three lines; see props
-    ├── test_deploy.py           # the NetworkPolicy, asserted in both directions
     └── test_server.py           # real socket, real handshake, the manifest mirror, and
                                  #   assert_bearer_is_enforced on every arm of the credential
 ```
@@ -289,29 +283,28 @@ What a *new server* still owes:
    your three failure modes apart from the log alone. A timeout that only raises is invisible: the
    exception is a `RuntimeError`, so it arrives at `connector_app` as "a tool raised an unexpected
    exception", which is what a genuine bug looks like.
-4. **`deploy/service.yaml` and `deploy/servicemonitor.yaml`**, copied from any server and renamed.
-   The NetworkPolicy already admits the monitoring namespace; these are what tell Prometheus to use
-   it. `tests/test_fleet_layout.py` requires both files and `tests/test_deploy.py` holds their port against
-   the Containerfile and the manifest.
-5. **`deploy/hpa.yaml` and `deploy/pdb.yaml`**, copied from a server whose cost shape resembles
-   yours. Both are required and `tests/test_deploy_shape.py` checks them: without a PDB a rollout
-   or a node drain is a 100% outage of that capability, and without an HPA there is no capacity
-   lever at all. `terminationGracePeriodSeconds` is **derived** rather than chosen — the manifest's
-   own `request_timeout` plus a drain margin — because that is already the longest a caller waits.
-
-6. **`deploy/deployment.yaml`**, copied from any server and renamed. It carries the pod hardening —
-   `runAsNonRoot`, `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`,
-   `automountServiceAccountToken: false`, resource requests/limits, a `readinessProbe` on `/healthz`
-   and a `livenessProbe` on `/livez`. Its pod-template label **must equal** the NetworkPolicy's `podSelector`, or the
-   default-deny egress policy does not select the workload and the no-egress promise is void for it;
-   `tests/test_deploy.py` checks the two against each other. Set `readOnlyRootFilesystem: true`
-   unless the server writes at runtime (`calc`'s scratch, `pyexec`'s sandbox) — those set it false.
-   **Rename its `MCP_ALLOWED_HOSTS` too**, to the new Service's `name:port`: upstream's
-   DNS-rebinding guard on `/mcp` admits a loopback `Host` only, so without it every in-cluster call
-   is a `421` while `/healthz` stays green.
-   `tests/test_deploy_shape.py::test_mcp_admits_the_host_its_own_service_is_dialled_by` derives the
-   value from `service.yaml`; `D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name`
-   has why the guard is told the name rather than switched off.
+4. **`deploy/helm/chemclaw-fleet/values.yaml`**, one entry under `servers`, copied from a server
+   whose cost shape resembles yours: the `port` (the one `MODULES.md` gives you), `requestTimeout`
+   (the manifest's `request_timeout`), `resources`, and only the keys where you differ from
+   `defaults`. The chart renders the Deployment, Service, ServiceMonitor, NetworkPolicy, HPA and PDB
+   from it, and the rationale for each rule lives once, in `deploy/helm/chemclaw-fleet/templates/`.
+   The checks are fleet-wide and need nothing from you: `tests/test_deploy_shape.py` requires every
+   server in the tree to be in the table (and the table to hold nothing else), and holds each render
+   to one shape — a PDB (a rollout or a drain is otherwise a 100% outage of that capability), an HPA
+   (otherwise no capacity lever), a pod label equal to the NetworkPolicy's `podSelector` (otherwise
+   the default-deny egress policy does not select the workload and the no-egress promise is void
+   for it), the hardening fields (`runAsNonRoot`, `capabilities.drop: [ALL]`, `seccompProfile`,
+   `automountServiceAccountToken: false`), and probes on `/healthz` and `/livez`.
+   `tests/test_deploy.py` holds the port against the Containerfile and the manifest.
+   `terminationGracePeriodSeconds` is **derived** rather than chosen — the manifest's own
+   `request_timeout` plus a drain margin — because that is already the longest a caller waits.
+   Set `writableRoot: true` only if the server writes at runtime (`calc`'s scratch, `pyexec`'s
+   sandbox). `MCP_ALLOWED_HOSTS` is derived from the Service, so the DNS-rebinding guard on `/mcp`
+   is told the new name without you writing it (`tests/test_deploy_shape.py::
+   test_mcp_admits_the_host_its_own_service_is_dialled_by`;
+   `D-2026-10-02-the-rebinding-guard-stays-on-and-is-told-the-service-name` has why the guard is
+   told the name rather than switched off). Run `helm template deploy/helm/chemclaw-fleet` to read
+   what you get.
 
 ## The tool docstrings
 

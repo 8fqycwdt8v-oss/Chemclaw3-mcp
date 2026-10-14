@@ -141,7 +141,7 @@ what is particular to this server:
 | Port / Service | 8865 / `chemclaw-mcp-rxnlabel` |
 | Token | `CHEMCLAW_RXNLABEL_TOKEN` |
 | Chemclaw3 | **a backend, not a connector**: `CHEMCLAW_RXNLABEL_SERVER_URL` (chart: `http://chemclaw-mcp-rxnlabel:8865/mcp`), `CHEMCLAW_RXNLABEL_SERVER_TOKEN_ENV` (default `CHEMCLAW_RXNLABEL_TOKEN`), `CHEMCLAW_RXNLABEL_SERVER_TIMEOUT_SECONDS` (120). Keep Chemclaw3's `CHEMCLAW_LABEL_BATCH_SIZE` (200) at or below `CHEMCLAW_RXNLABEL_MAX_BATCH`. |
-| Pod | requests 500m / 1Gi, limits 2 CPU / 3Gi; 2 → 4 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Pod | requests 500m / 1Gi, limits 2 CPU / 3Gi; 2 → 4 replicas on CPU (or KEDA on admission, `autoscaling.mode=keda`) |
 | Own knobs | `CHEMCLAW_RXNLABEL_MAX_BATCH` (500), `CHEMCLAW_RXNLABEL_MAX_CONCURRENT_BATCHES` (2) — see "What bounds this pod" |
 | Image | installs the `models` extra with the hub switched off (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`) and pins `OMP_NUM_THREADS=1` |
 | Readiness | `/healthz` labels a fixture reaction end to end. An absent optional model is ready; an installed one that will not construct, or that raises on the fixture, is a 503 naming it. `datasets` is `[]` (no corpus). |

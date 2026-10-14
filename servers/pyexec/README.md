@@ -36,7 +36,7 @@ these two routes has the lower E-factor" has to be answerable before somebody si
 
 ## The controls, and which of them are the boundary
 
-**Read this table before changing anything in `engine/` or `deploy/`.** The distinction between the
+**Read this table before changing anything in `engine/` or this server's chart entry.** The distinction between the
 two halves is the whole security design, and a change that quietly moves a row from the second half
 to the first is the change that matters.
 
@@ -75,7 +75,7 @@ the jail.
 | The child's stdout **discarded** and its stderr written to a file under the child's own `RLIMIT_FSIZE` | `engine/sandbox.py` |
 | `python -I -B`, a per-call temp directory that is `HOME`, `TMPDIR` and the working directory, removed on every path including the kill | `engine/sandbox.py` |
 | Rootless image, and the pod should mount the root filesystem read-only | `Containerfile` |
-| `NetworkPolicy` with an empty `egress:` — not even DNS | `deploy/networkpolicy.yaml` |
+| `NetworkPolicy` with an empty `egress:` — not even DNS | the fleet chart's NetworkPolicy |
 
 The environment is **built rather than filtered** on purpose: deleting known-dangerous names from a
 copy of `os.environ` works until somebody adds a variable nobody thought of, and this pod's
@@ -237,7 +237,7 @@ prompt refusals naming the pod. `engine/admission.py` has the argument.
 **There is deliberately no separate cap on the scratch directory's *total* size in this process.**
 `RLIMIT_FSIZE` already bounds any single file a program writes — a plot, a scratch CSV, an
 intermediate mol2 — and the pod-level bound that belongs beside it is now there: the `/tmp`
-`emptyDir` in `deploy/deployment.yaml` carries a `sizeLimit`, so a pod that fills it is evicted
+`emptyDir` the fleet chart renders carries a `sizeLimit`, so a pod that fills it is evicted
 alone instead of drawing on the node's disk and evicting its neighbours. A per-run counter could
 never have answered "how much can this pod hold at once", which is why the answer is a deployment
 field rather than a field in `engine/limits.py`.
@@ -276,7 +276,7 @@ what is particular to this server:
 | Port / Service | 8899 / `chemclaw-mcp-pyexec` |
 | Token | `CHEMCLAW_PYEXEC_TOKEN` |
 | Chemclaw3 | connector `pyexec`, manifest installed from `chemclaw-contracts` with `default_enabled: false` (nothing is mounted): enable `connectors.pyexec` with its `url` and `interactive` worker (`run_python` is `queued:`), `networkPolicy.egressPorts.pyexec: 8899` and the token in `secrets.optionalKeys` — `docs/operations.md` §3 has the values |
-| Pod | requests 1 CPU / 512Mi, limits 2 CPU / 2Gi; 2 → 6 replicas on CPU (or KEDA on admission, `deploy/keda/`). The memory **limit** is load-bearing: `RLIMIT_AS` is derived from it, so `(limit − 256 MiB) / CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` is what each run may allocate. Below 768 MiB per run the pod logs a WARNING at startup and analyses that import the scientific stack fail. |
+| Pod | requests 1 CPU / 512Mi, limits 2 CPU / 2Gi; 2 → 6 replicas on CPU (or KEDA on admission, `autoscaling.mode=keda`). The memory **limit** is load-bearing: `RLIMIT_AS` is derived from it, so `(limit − 256 MiB) / CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` is what each run may allocate. Below 768 MiB per run the pod logs a WARNING at startup and analyses that import the scientific stack fail. |
 | Own knobs | `CHEMCLAW_PYEXEC_MAX_CONCURRENT_RUNS` (2); the per-run limits in "Bounds" are code defaults in `engine/limits.py`, not variables |
 | Readiness | `/healthz` runs one trivial program through the real sandbox, once per process; a broken interpreter or unwritable scratch directory is a 503 naming the reason. `datasets` is `[]`. |
 | Admission | a full pod answers `[pyexec-at-capacity] …` |

@@ -1,0 +1,25 @@
+{{- /*
+The only way anything reaches a pod by name: one port, named `http`, carrying /mcp, /healthz and
+/metrics alike (a second port would be a second address for one process and a second hole for the
+NetworkPolicy; /metrics is unauthenticated precisely so it can share this one). The ServiceMonitor's
+`endpoints[].port` is this port's *name*; a name no Service declares selects nothing and reports
+nothing.
+*/ -}}
+{{- range $name, $_ := .Values.servers }}
+{{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name | quote }}
+  ports:
+    - name: http
+      protocol: TCP
+      port: {{ int $c.port }}
+      targetPort: {{ int $c.port }}
+{{- end }}

@@ -61,6 +61,7 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 - [One echo bound, and the refusals that bypassed the four copies of it](D-2026-09-26-one-echo-bound-and-the-refusals-that-bypassed-it.md)
 - [A full pod says so in one fleet-wide format, and admission occupancy is the scaling signal](D-2026-09-30-a-full-pod-says-so-in-one-format-and-occupancy-is-the-scaling-signal.md)
 - [A torch image pins one thread per forward pass](D-2026-09-26-a-torch-image-pins-one-thread-per-forward-pass.md)
+- [A server's deployment is a row in one Helm chart's values, and the deploy checks read what it renders](D-2026-10-14-the-fleet-deploys-as-one-chart.md)
 
 ## Supply chain and images
 

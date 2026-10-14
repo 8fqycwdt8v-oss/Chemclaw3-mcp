@@ -13,15 +13,13 @@ import sys
 import types
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 from chemclaw_mcp_rxnlabel import app as app_module
 from chemclaw_mcp_rxnlabel.engine import mapping, naming, readiness, species, version
 from mcp_server_kit import degradation
-
-_DEPLOYMENT_PATH = Path(__file__).resolve().parents[1] / "deploy" / "deployment.yaml"
 
 
 @pytest.fixture(autouse=True)
@@ -447,20 +445,19 @@ def test_the_app_wires_the_probe_in() -> None:
     assert app_module._readiness() == []
 
 
-def test_the_verdict_window_is_bounded_by_the_probe_cadence_this_server_declares() -> None:
+def test_the_verdict_window_is_bounded_by_the_probe_cadence_this_server_declares(
+    fleet_deployment: Callable[[str], dict[str, Any]],
+) -> None:
     """The shipped verdict window is bounded by the probe cadence this server declares.
 
     The tests above patch the window, so they prove the mechanism, not the number. Below one probe
     period the fixture's forward pass runs on nearly every probe; above a dozen a broken component
-    keeps serving for minutes. The cadence is read from `deployment.yaml`, which is what a kubelet
-    reads.
+    keeps serving for minutes. The cadence is read from the rendered Deployment, which is what a
+    kubelet reads.
     """
-    import yaml
-
-    deployment = yaml.safe_load(_DEPLOYMENT_PATH.read_text(encoding="utf-8"))
-    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    container = fleet_deployment("rxnlabel")["spec"]["template"]["spec"]["containers"][0]
     period = int(container["readinessProbe"]["periodSeconds"])
-    assert period > 0, f"{_DEPLOYMENT_PATH} declares no readiness period"
+    assert period > 0, "the rendered Deployment declares no readiness period"
     assert period <= readiness.VERDICT_TTL_SECONDS <= 12 * period, (
         f"VERDICT_TTL_SECONDS is {readiness.VERDICT_TTL_SECONDS} against a {period}s readiness "
         f"period: below {period} the probe pays a transformer forward pass on every probe, above "

@@ -1,0 +1,27 @@
+{{- /*
+What tells Prometheus to scrape: without it /metrics is published and nothing collects it.
+`port: http` is the Service port's name. No bearerTokenSecret or tlsConfig: /metrics is one of the
+two open routes (mcp_server_kit.auth.OPEN_PATHS), on the condition it publishes nothing about a
+caller. Requires the prometheus-operator CRDs; serviceMonitor.enabled=false omits it.
+*/ -}}
+{{- if .Values.serviceMonitor.enabled }}
+{{- range $name, $_ := .Values.servers }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "chemclaw-fleet.service" $name | quote }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name | quote }}
+  endpoints:
+    - port: http
+      path: /metrics
+      scheme: http
+      interval: {{ $.Values.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ $.Values.serviceMonitor.scrapeTimeout | quote }}
+{{- end }}
+{{- end }}

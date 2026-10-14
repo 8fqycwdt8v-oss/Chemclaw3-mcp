@@ -378,7 +378,7 @@ What that buys and what it costs:
     allocation takes the process down with every other connected turn.
     **The number is derived rather than chosen**: one whole relaxation of 509 atoms peaks at
     978.9 MiB, and what the ceiling has to satisfy is that `calc_max_concurrent_requests` of those
-    fit inside `deploy/deployment.yaml`'s memory limit alongside the server's resident set and the
+    fit inside the fleet chart's memory limit alongside the server's resident set and the
     session backlog `mcp_server_kit` budgets. `servers/calc/tests/test_cost_bounds.py` performs the
     derivation; `D-2026-09-18-a-ceiling-is-derived-from-the-pod-it-protects` has the measurements
     and says why the 500 it replaces — derived from the ANC preconditioner geomeTRIC deleted, whose
@@ -549,7 +549,7 @@ what is particular to this server:
 | Port / Service | 8860 / `chemclaw-mcp-calc` |
 | Token | `CHEMCLAW_CALC_TOKEN` |
 | Chemclaw3 | **a backend, not a connector** (see "Read this first"): `CHEMCLAW_CALC_SERVER_URL` (chart: `http://chemclaw-mcp-calc:8860/mcp`), `CHEMCLAW_CALC_SERVER_TOKEN_ENV` (default `CHEMCLAW_CALC_TOKEN`), and the three client budgets `CHEMCLAW_CALC_SERVER_TIMEOUT_SECONDS` (900), `CHEMCLAW_CALC_ATOMIC_TIMEOUT_SECONDS` (3600), `CHEMCLAW_CALC_SAMPLING_TIMEOUT_SECONDS` (14400). Its queued calculations wait in `connectors.calc.interactive`, sized to 2 pods x 4 slots. |
-| Pod | requests 1 CPU / 1Gi, limits 4 CPU / 4Gi, a 4Gi `/tmp`; 2 → 8 replicas on CPU (or KEDA on admission, `deploy/keda/` — the better signal here, see `docs/autoscaling.md`) |
+| Pod | requests 1 CPU / 1Gi, limits 4 CPU / 4Gi, a 4Gi `/tmp`; 2 → 8 replicas on CPU (or KEDA on admission, `autoscaling.mode=keda` — the better signal here, see `docs/autoscaling.md`) |
 | Image | `xtb` 6.7.1 and `crest` on `PATH`; `CHEMCLAW_XTB_ENGINE=tblite`, `CHEMCLAW_CREST_THREADS=4`, `OMP_NUM_THREADS=1` (and the BLAS equivalents) |
 | Readiness | `/healthz` derives a `calc_version`, and refuses (503) if `CHEMCLAW_XTB_ENGINE=xtb` names a binary the image lacks. `datasets` is `[]` (no corpus). |
 | Admission | `CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS` (4) slots, a slot being a core; a CREST search charges `CHEMCLAW_CREST_THREADS`. A full pod answers `[calc-at-capacity] …`. |

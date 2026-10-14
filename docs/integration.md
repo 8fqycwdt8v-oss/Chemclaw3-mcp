@@ -278,7 +278,7 @@ boolean and an address are two declarations of one fact that can disagree. That 
 app Deployment and no Service from Chemclaw3's chart. `server: true` stays: it mirrors whether the
 manifest declares an `endpoint:`, and the chart ignores a `url` beside `server: false`.
 
-**A bare short name, in the same namespace.** Every `servers/*/deploy/networkpolicy.yaml` here
+**A bare short name, in the same namespace.** Every NetworkPolicy the fleet chart renders
 admits its caller with a bare `podSelector`, and a peer with a `podSelector` and no
 `namespaceSelector` selects pods **in the policy's own namespace** — so a namespace-qualified address
 resolves in DNS and is then dropped by the server's own ingress rule
@@ -291,9 +291,10 @@ On this side, each server ships:
 
 - a rootless image built from `servers/<name>/Containerfile`, **built with
   `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`** — see below;
-- `servers/<name>/deploy/` — Deployment, Service, NetworkPolicy (default-deny egress, ingress from
-  the Chemclaw3 pods and the Prometheus scraper only), HPA, PDB and ServiceMonitor;
-- `MCP_ALLOWED_HOSTS` in `deploy/deployment.yaml`, set to the server's own Service `name:port`
+- an entry in `deploy/helm/chemclaw-fleet/values.yaml`, rendered as a Deployment, Service,
+  NetworkPolicy (default-deny egress, ingress from the Chemclaw3 pods and the Prometheus scraper
+  only), HPA, PDB and ServiceMonitor;
+- `MCP_ALLOWED_HOSTS` in the rendered Deployment, set to the server's own Service `name:port`
   (`chemclaw-mcp-props:8850`). `/mcp` sits behind upstream's DNS-rebinding guard, which admits a
   loopback `Host` only, so without it every call through the Service is a `421 Misdirected Request`
   — while `/healthz`, outside the MCP app, stays green and nothing else notices. **An address

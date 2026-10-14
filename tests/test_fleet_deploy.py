@@ -1,6 +1,9 @@
 """Shipped deployment files: no file widens the egress allowlist or moves a bound the code reads
 from the environment, every such bound refuses at import and is reported on the probe, and the
 session ceiling is derived from the smallest pod.
+
+"Shipped file" means every Containerfile and every object `helm template` renders from
+`deploy/helm/chemclaw-fleet` (the `fleet_render` fixture in the root `conftest.py`).
 """
 
 from __future__ import annotations
@@ -10,8 +13,9 @@ import importlib
 import json
 import re
 import shlex
+from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import pytest
 import yaml
@@ -28,6 +32,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 SERVERS = ROOT / "servers"
+CHART_SCHEMA = ROOT / "deploy" / "helm" / "chemclaw-fleet" / "values.schema.json"
+
+Render = Callable[..., list[dict[str, Any]]]
 
 
 # A variable a shipped file sets and its value, or `None` where the file names the variable
@@ -194,30 +201,59 @@ def _egress_offences(label: str, text: str) -> list[str]:
     return offences
 
 
-def shipped_deployment_files() -> list[Path]:
-    """Every file a deployment of this fleet ships — the set both deployment ratchets read."""
-    files = [path for path in SERVERS.glob("*/deploy/**/*") if path.is_file()]
-    files += [path for path in SERVERS.glob("*/Containerfile*") if path.is_file()]
-    return sorted(files)
+def shipped_deployment_files(render: Render) -> list[tuple[str, str]]:
+    """Every file a deployment of this fleet ships, as `(label, text)` — what both ratchets read.
+
+    The Containerfiles as written, and each object the chart renders as the YAML it would apply;
+    the `.yaml` label suffix is what makes `_env_settings` read an object as a manifest.
+    """
+    shipped = [
+        (str(path.relative_to(ROOT)), path.read_text(encoding="utf-8"))
+        for path in sorted(SERVERS.glob("*/Containerfile*"))
+        if path.is_file()
+    ]
+    shipped += [
+        (
+            f"deploy/helm/chemclaw-fleet/{doc['kind']}/{doc['metadata']['name']}.yaml",
+            yaml.safe_dump(doc),
+        )
+        for doc in render()
+    ]
+    return shipped
 
 
 def test_a_deployment_directory_holds_only_shapes_the_ratchets_can_read() -> None:
-    """`deploy/` holds only `.yaml` files, because the ratchets dispatch on that suffix.
+    """No server ships deployment files of its own, and the chart has no key that sets a variable.
 
-    `_env_settings` reads anything else as a Containerfile, so a `.yml`, a template or a JSON patch
-    would be scanned for `ENV`, find none, and be reported clean.
+    The ratchets read the chart's rendered objects, so a `servers/<name>/deploy/` would be a second
+    description of the same pod that none of them sees. And a values key that injects environment
+    (`env`, `extraEnv`, `envFrom`, `command`, `args`) would let a release set `MCP_EGRESS_ALLOW` or
+    a bound past a render that never passes it, so the values schema must not name one. This checks
+    key *names* only; that no *value* can write a field into a manifest is
+    `tests/test_deploy_shape.py::test_the_templates_quote_what_the_schema_would_have_refused`.
     """
-    unreadable = sorted(
-        str(path.relative_to(ROOT))
-        for path in SERVERS.glob("*/deploy/**/*")
-        if path.is_file() and path.suffix != ".yaml"
+    stray = sorted(str(path.relative_to(ROOT)) for path in SERVERS.glob("*/deploy"))
+    assert not stray, (
+        f"{stray} exist beside the chart. A server's deployment is its entry in "
+        "deploy/helm/chemclaw-fleet/values.yaml; the egress and bound ratchets read only the "
+        "chart's render, so a second description would be unchecked"
     )
-    assert not unreadable, (
-        f"{unreadable} sit under a server's deploy/ and are not `.yaml`. The egress and bound "
-        "ratchets read every file there, but `_env_settings` parses anything else as a "
-        "Containerfile — it would find no `ENV` and report the file clean. Rename it, or teach "
-        "`_env_settings` the shape in the same commit."
-    )
+
+    def keys(node: object) -> set[str]:
+        if isinstance(node, dict):
+            return set(node) | {name for child in node.values() for name in keys(child)}
+        if isinstance(node, list):
+            return {name for child in node for name in keys(child)}
+        return set()
+
+    injecting = keys(json.loads(CHART_SCHEMA.read_text(encoding="utf-8"))) & {
+        "env",
+        "extraEnv",
+        "envFrom",
+        "command",
+        "args",
+    }
+    assert not injecting, f"the chart's values schema admits {sorted(injecting)}"
     mislabelled = sorted(
         str(path.relative_to(ROOT))
         for path in SERVERS.glob("*/Containerfile*")
@@ -226,17 +262,11 @@ def test_a_deployment_directory_holds_only_shapes_the_ratchets_can_read() -> Non
     assert not mislabelled, f"{mislabelled} would be parsed as YAML by its name; rename it"
 
 
-def test_no_shipped_deployment_widens_the_egress_allowlist() -> None:
+def test_no_shipped_deployment_widens_the_egress_allowlist(fleet_render: Render) -> None:
     """`MCP_EGRESS_ALLOW` is empty in every shipped deployment — asserted, not asserted *about*."""
-    shipped = shipped_deployment_files()
+    shipped = shipped_deployment_files(fleet_render)
     assert shipped, "no deployment manifests found; has the layout changed?"
-    offences = [
-        offence
-        for manifest in shipped
-        for offence in _egress_offences(
-            str(manifest.relative_to(ROOT)), manifest.read_text(encoding="utf-8")
-        )
-    ]
+    offences = [offence for label, text in shipped for offence in _egress_offences(label, text)]
     assert not offences, "the shipped posture is no egress and no allowlist:\n  " + "\n  ".join(
         offences
     )
@@ -821,21 +851,19 @@ def _bound_offences(label: str, text: str, bounds: dict[str, Bound]) -> list[str
     return offences
 
 
-def test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment() -> None:
-    """Nothing in `deploy/` or a Containerfile moves a number first-party code reads as a bound."""
+def test_no_shipped_deployment_moves_a_bound_the_code_reads_from_the_environment(
+    fleet_render: Render,
+) -> None:
+    """Nothing the chart renders or a Containerfile sets moves a number first-party code reads."""
     bounds = numeric_env_bounds()
     assert set(bounds) >= _BOUND_ANCHORS, (
         f"the bound scan lost {sorted(_BOUND_ANCHORS - set(bounds))!r}; a derivation that stops "
         "finding variables agrees with an empty tree forever"
     )
-    shipped = shipped_deployment_files()
+    shipped = shipped_deployment_files(fleet_render)
     assert shipped, "no deployment manifests found; has the layout changed?"
     offences = [
-        offence
-        for manifest in shipped
-        for offence in _bound_offences(
-            str(manifest.relative_to(ROOT)), manifest.read_text(encoding="utf-8"), bounds
-        )
+        offence for label, text in shipped for offence in _bound_offences(label, text, bounds)
     ]
     assert not offences, (
         "a bound is moved in a shipped file with no argued row in "
@@ -980,17 +1008,19 @@ def _memory_bytes(quantity: str) -> int:
     return int(quantity)
 
 
-def test_the_session_ceiling_is_derived_from_the_smallest_pod_this_fleet_actually_ships() -> None:
+def test_the_session_ceiling_is_derived_from_the_smallest_pod_this_fleet_actually_ships(
+    fleet_render: Render,
+) -> None:
     """`mcp_server_kit` bounds sessions against a memory limit it cannot see; this sees it."""
     limits = {}
-    for deployment in sorted(SERVERS.glob("*/deploy/deployment.yaml")):
-        manifest = yaml.safe_load(deployment.read_text(encoding="utf-8"))
+    for manifest in fleet_render():
+        if manifest["kind"] != "Deployment":
+            continue
         for container in manifest["spec"]["template"]["spec"]["containers"]:
             memory = container.get("resources", {}).get("limits", {}).get("memory")
             if memory is not None:
-                limits[f"{deployment.parent.parent.name}/{container['name']}"] = _memory_bytes(
-                    str(memory)
-                )
+                name = f"{manifest['metadata']['name']}/{container['name']}"
+                limits[name] = _memory_bytes(str(memory))
     assert limits, "no shipped Deployment declares a memory limit; has the layout changed?"
 
     smallest = min(limits.values())
