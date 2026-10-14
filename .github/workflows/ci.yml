@@ -52,6 +52,16 @@ concurrency:
 # would make the two agree by checking against a Python nobody runs.
 env:
   UV_PYTHON: "3.11"
+  # The deploy checks read `helm template` output of `deploy/helm/chemclaw-fleet`. Without `helm`
+  # they skip locally and say so; here a missing binary is a failure, because a skip reports green.
+  CHEMCLAW_REQUIRE_HELM: "1"
+  # One pin for every job that installs the binaries, matching Chemclaw3's CI so both repositories
+  # render and validate on the same versions. The checksum is for the release asset, which unlike
+  # a git tag is a file its owner can replace; it was checked against the release's published
+  # sums, not against one download.
+  HELM_VERSION: "v3.13.0"
+  KUBECONFORM_VERSION: "v0.6.7"
+  KUBECONFORM_SHA256: "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
 
 jobs:
   check:
@@ -76,6 +86,22 @@ jobs:
 
       - name: Sync the workspace
         run: uv sync --frozen
+
+      # The renderer the deploy tests and `make chart-validate` read. The runner image carries a
+      # helm of its own; pinning it means this job renders on the version Chemclaw3 validates with.
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: "${{ env.HELM_VERSION }}"
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
 
       # `make lint`, for the reason written under `Types` below and found a second time in the same
       # file: this step spelled the two ruff commands inline, which is a second declaration of what
@@ -105,6 +131,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: make cov
 
+      # The pytest checks prove the shape every server's render must have; this proves the
+      # Kubernetes API accepts the render, ServiceMonitor and KEDA kinds included, in both
+      # autoscaling modes. It fetches schemas, so it is here and not in `offline`.
+      - name: Validate the fleet chart
+        if: ${{ !cancelled() }}
+        run: make chart-validate
+
   offline:
     # The strongest form of the no-egress claim, and the one that does not trust our own code: run
     # the whole suite in a network namespace with no route off the host. A server quietly reaching
@@ -124,6 +157,13 @@ jobs:
 
       - name: Sync the workspace
         run: uv sync --frozen
+
+      # The deploy tests render the fleet chart, so this lane needs `helm` too. Rendering a local
+      # chart dials nothing, which is what lets it run with the network taken away.
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: "${{ env.HELM_VERSION }}"
 
       # This job had never passed — red on every run including `main`, with `check` green
       # throughout (and the `manifests` job that then existed), so the strongest no-egress claim

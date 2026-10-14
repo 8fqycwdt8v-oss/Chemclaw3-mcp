@@ -49,3 +49,12 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 - [ ] **`run_python` does not warn that pandas 3 made copy-on-write mandatory** (`df[m]["c"] = x`
   silently does nothing): one docstring sentence and a sandbox test.
   `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.
+
+## 5 — Chemclaw3 consuming the fleet chart
+
+- [ ] **Chemclaw3's `deploy/kind/render-fleet.sh` and the tests that hold its `connectors.<name>.url`
+  values against this repository read `servers/*/deploy/*.yaml`, which no longer exist.** Render the
+  chart instead (`helm template`, `--set` for the kind image registry, `Never` pull policy and one
+  replica), then make the core chart depend on it so a connector's URL, port and token key derive from
+  `servers.<name>.port`. **Other repository:** `Chemclaw3`; the chart is
+  `deploy/helm/chemclaw-fleet`, its interface `deploy/README.md`.

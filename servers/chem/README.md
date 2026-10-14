@@ -71,7 +71,7 @@ Build, deploy, wiring and the fleet-wide variables are in
 | Port / Service | 8858 / `chemclaw-mcp-chem` |
 | Token | `CHEMCLAW_CHEM_TOKEN` |
 | Chemclaw3 | connector `chem`, manifest installed from `chemclaw-contracts`, enabled by default; its seven queued tools run through `connectors.chem.interactive` (sized 2 pods x 4 slots) |
-| Pod | requests 500m / 256Mi, limits 1 CPU / 512Mi; 2 → 6 replicas on CPU (or KEDA on admission, `deploy/keda/`) |
+| Pod | requests 500m / 256Mi, limits 1 CPU / 512Mi; 2 → 6 replicas on CPU (or KEDA on admission, `autoscaling.mode=keda`) |
 | Readiness | `/healthz` loads and checksums `records.csv` (`bench-reagents@<version>`); a corrupt table is a 503 naming the file. |
 | Admission | `CHEMCLAW_CHEM_MAX_CONCURRENT_HEAVY_CALLS` (4, derived from the pod's thread pool) over the seven gated tools; a full pod answers `[chem-at-capacity] …`. `CHEMCLAW_CHEM_MAX_CONCURRENT_RENDERS` is retired and refused at startup. |
 

@@ -1,7 +1,7 @@
 """How many programs this server will run at once — shed at admission, never queued.
 
 The ceiling is **cores**: a run is one child pinned to one thread, so a slot is a core, and
-`deploy/deployment.yaml` sets `limits.cpu` to the same number (`tests/test_capacity.py` reads it).
+the fleet chart sets `limits.cpu` to the same number (`tests/test_capacity.py` reads it).
 Admitting more runs than cores turns a program's CPU budget into a wall-clock kill reported as
 the program's fault. The same number divides the pod's memory limit (`limits.default_memory_bytes`).
 

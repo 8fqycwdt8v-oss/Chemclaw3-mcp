@@ -9,9 +9,10 @@
 // hand-kept list is how Chemclaw3's image workflow came to smoke a component that had not existed
 // for months; `tests/test_delivery.py` asserts this file still derives rather than enumerates.
 //
-// This publishes and reports. It does not deploy: no server here ships a chart, so a rollout is
-// `deploy/jenkins/targets/openshift.sh` in the Chemclaw3 checkout, reading the digests below out of
-// a release descriptor. See that repository's `deploy/jenkins/README.md`.
+// This publishes and reports. It does not deploy: the digests below are what a values file for
+// `deploy/helm/chemclaw-fleet` names, and the rollout is driven from the Chemclaw3 checkout
+// (`deploy/jenkins/targets/openshift.sh`) reading a release descriptor. See that repository's
+// `deploy/jenkins/README.md`.
 pipeline {
   agent any
 

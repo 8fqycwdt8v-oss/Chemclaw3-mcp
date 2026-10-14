@@ -65,6 +65,28 @@ test: ## The whole suite, with the egress guard armed (see conftest.py).
 no-egress: ## The no-egress checks alone — the static scan, the runtime guard, the NetworkPolicy.
 	$(UV) run pytest -q -k "egress or deploy"
 
+# The chart's own gate, beside the pytest checks that read its render (`tests/test_deploy_shape.py`):
+# those prove the shape each server must have, this proves the Kubernetes API accepts it. Both
+# autoscaling modes, since the KEDA objects exist only in one. Needs `helm` and `kubeconform` on
+# PATH and, for the schemas, the host below; CI installs both pinned (`.github/workflows/ci.yml`).
+# The CRD catalogue covers ServiceMonitor and the KEDA kinds, which kubeconform's own does not;
+# no `-ignore-missing-schemas`, so a kind it cannot check fails instead of passing unseen.
+KUBE_VERSION ?= 1.29.0
+CRD_SCHEMAS := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+
+.PHONY: chart-validate
+chart-validate: ## helm lint, then kubeconform over the fleet chart's render in both autoscaling modes.
+	@command -v helm >/dev/null || { echo "helm not installed: needed to render deploy/helm/chemclaw-fleet"; exit 1; }
+	@command -v kubeconform >/dev/null || { echo "kubeconform not installed: needed to check the render"; exit 1; }
+	helm lint deploy/helm/chemclaw-fleet
+	@for mode in hpa keda; do \
+	  echo "--- autoscaling.mode=$$mode"; \
+	  helm template chemclaw-fleet deploy/helm/chemclaw-fleet --namespace chemclaw \
+	    --set autoscaling.mode=$$mode \
+	  | kubeconform -strict -summary -kubernetes-version $(KUBE_VERSION) \
+	      -schema-location default -schema-location '$(CRD_SCHEMAS)'; \
+	done
+
 .PHONY: manifest-validate
 manifest-validate: ## Every connector.yaml parses, is classified, and matches its running server.
 	$(UV) run pytest -q -k "manifest or test_server"
@@ -249,7 +271,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     commit-SHA-pinned repo (`scripts/fetch_models.py`, held equal to the predictor
 #                     by `tests/test_model_pin.py`), in a pod with `readOnlyRootFilesystem: true`
 #                     whose one writable mount is an `emptyDir` at /tmp
-#                     (`servers/rxnpredict/deploy/deployment.yaml`): nothing at runtime can plant a
+#                     (the `rxnpredict` entry of `deploy/helm/chemclaw-fleet`): nothing at runtime can plant a
 #                     crafted `*.index.json` or a FIFO under `/opt/models`. The advisory's own
 #                     `AV:L/UI:P` is that conclusion from the other side. **Nothing here goes red
 #                     when a fix ships**, and the header's "an entry whose package no longer

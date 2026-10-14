@@ -1,0 +1,75 @@
+{{- /*
+Opt-in (`autoscaling.mode=keda`) replacement for the CPU HPA on servers with an admission gate:
+KEDA builds its own HPA for the Deployment, so hpa.yaml omits those servers in this mode.
+The signal is how full the pod is in the unit its gate refuses in: in_flight / ceiling summed over
+pods is "pods' worth of slots busy", so a 0.7 threshold means what the CPU target was meant to
+(CPU does not: a pod holding every slot on in-process xTB draws 1.4 cores). The CPU trigger stays
+as the second signal; KEDA takes the highest, so an unservable metric never blocks a CPU scale-up.
+Floor, ceiling, behaviour and the CPU value are the HPA's, held equal by tests/test_deploy_shape.py.
+The TriggerAuthentication names a Secret the operator creates (token, ca.crt); nothing here ships a
+credential. Requires KEDA (OpenShift's Custom Metrics Autoscaler).
+*/ -}}
+{{- if eq .Values.autoscaling.mode "keda" }}
+{{- range $name, $_ := .Values.servers }}
+{{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
+{{- if $c.keda }}
+{{- $svc := include "chemclaw-fleet.service" $name }}
+{{- $k := $.Values.autoscaling.keda }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $svc }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $svc }}
+  minReplicaCount: {{ int $c.replicas }}
+  maxReplicaCount: {{ int $c.maxReplicas }}
+  pollingInterval: {{ int $k.pollingInterval }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ int $c.scaleDownWindow }}
+        scaleUp:
+          stabilizationWindowSeconds: {{ int $.Values.autoscaling.scaleUpWindow }}
+  triggers:
+    - type: prometheus
+      metricType: AverageValue
+      metadata:
+        serverAddress: {{ $k.serverAddress }}
+        namespace: {{ $k.namespace | default $.Release.Namespace }}
+        authModes: bearer
+        query: >-
+          sum(chemclaw_mcp_admission_in_flight{server="{{ $name }}"})
+          / max(chemclaw_mcp_admission_ceiling{server="{{ $name }}"})
+        threshold: {{ $k.threshold | quote }}
+        ignoreNullValues: "true"
+      authenticationRef:
+        name: {{ $svc }}-prometheus
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ $.Values.autoscaling.cpuUtilization | quote }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: {{ $svc }}-prometheus
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: bearerToken
+      name: {{ $svc }}-prometheus
+      key: token
+    - parameter: ca
+      name: {{ $svc }}-prometheus
+      key: ca.crt
+{{- end }}
+{{- end }}
+{{- end }}

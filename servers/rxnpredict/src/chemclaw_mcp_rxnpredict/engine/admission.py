@@ -27,7 +27,7 @@ __all__ = ["ADMISSION_MARKER", "DEFAULT_MAX_CONCURRENT_PREDICTIONS", "Admission"
 # hand-kept list.
 ADMISSION_MARKER = "__admission_gated__"
 
-#: Cores' worth of inference that may be in flight; equals `deploy/deployment.yaml`'s `limits.cpu`,
+#: Cores' worth of inference that may be in flight; equals the fleet chart's `limits.cpu`,
 #: which `tests/test_admission.py` checks. Overridable with
 #: `CHEMCLAW_RXNPREDICT_MAX_CONCURRENT_PREDICTIONS`, read in `tools.py`.
 DEFAULT_MAX_CONCURRENT_PREDICTIONS = 2

@@ -48,23 +48,26 @@ curl -s localhost:8850/healthz        # "revision" must be the commit you built
 
 ## 2. Deploy a server (OpenShift / Kubernetes)
 
-### What ships, per server
+### What ships
 
-`servers/<name>/deploy/` holds the complete workload, and `tests/test_deploy_shape.py` holds every
-server's copy to one shape:
+`deploy/helm/chemclaw-fleet` is one Helm chart. Its `values.yaml` has one entry per server (port,
+`request_timeout`, resources, and how it differs from `defaults`), and `helm template` renders these
+objects for each, held to one shape by `tests/test_deploy_shape.py` and `tests/test_deploy.py`:
 
-| File | What it is |
+| Object | What it is |
 | --- | --- |
-| `deployment.yaml` | `chemclaw-mcp-<name>`: 2 replicas, `runAsNonRoot` with **no pinned UID/GID** (the platform assigns one), the bearer from `chemclaw-secrets` under the manifest's `auth.token_env`, the unresolvable placeholder image `registry.invalid/chemclaw-mcp-<name>:unset`, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
-| `service.yaml` | `chemclaw-mcp-<name>`, port `http` = the server's port. |
-| `networkpolicy.yaml` | Denies all egress. Allows ingress on the server's port from pods labelled `app.kubernetes.io/name: chemclaw` **in the same namespace**, and from the `monitoring` / `openshift-user-workload-monitoring` namespaces. |
-| `hpa.yaml` | CPU HPA, `minReplicas: 2`. |
-| `pdb.yaml` | `maxUnavailable: 1`. |
-| `servicemonitor.yaml` | Prometheus Operator scrape of `/metrics` (needs the `monitoring.coreos.com` CRDs). |
-| `keda/scaledobject.yaml` | Optional, on servers with an admission gate. See [`autoscaling.md`](autoscaling.md). |
+| Deployment | `chemclaw-mcp-<name>`: 2 replicas, `runAsNonRoot` with **no pinned UID/GID** (the platform assigns one), the bearer from `chemclaw-secrets` under the manifest's `auth.token_env`, the unresolvable placeholder image `registry.invalid/chemclaw-mcp-<name>:unset`, read-only root filesystem (except `calc` and `pyexec`, which write at runtime), all capabilities dropped, a size-limited `/tmp` `emptyDir`, `MCP_ALLOWED_HOSTS` set to its own Service, `readinessProbe` on `/healthz` and `livenessProbe` on `/livez`. |
+| Service | `chemclaw-mcp-<name>`, port `http` = the server's port. |
+| NetworkPolicy | Denies all egress. Allows ingress on the server's port from pods labelled `app.kubernetes.io/name: chemclaw` **in the same namespace**, and from the `monitoring` / `openshift-user-workload-monitoring` namespaces. |
+| HorizontalPodAutoscaler | CPU, `minReplicas: 2`. |
+| PodDisruptionBudget | `maxUnavailable: 1`. |
+| ServiceMonitor | Prometheus Operator scrape of `/metrics` (needs the `monitoring.coreos.com` CRDs; `serviceMonitor.enabled=false` omits it). |
+| ScaledObject, TriggerAuthentication | Optional (`autoscaling.mode=keda`), on servers with an admission gate, instead of their HPA. See [`autoscaling.md`](autoscaling.md). |
 
-There is no chart. A release changes an image with `oc set image`. Chemclaw3's
-`deploy/jenkins/targets/openshift.sh` does this for the fleet before the core release.
+Names are fixed (`chemclaw-mcp-<name>`, `CHEMCLAW_<NAME>_TOKEN`), whatever the release is called,
+because Chemclaw3 dials them. `helm template deploy/helm/chemclaw-fleet` shows exactly what a
+cluster would receive. A release changes an image with a values file (below); Chemclaw3's
+`deploy/jenkins/targets/openshift.sh` is the delivery tool.
 
 ### Prerequisites
 
@@ -73,13 +76,13 @@ There is no chart. A release changes an image with `oc set image`. Chemclaw3's
   namespace. Chemclaw3's chart labels every pod `app.kubernetes.io/name: chemclaw`. If you run the
   fleet in a separate namespace, first add a `namespaceSelector` peer to every policy, then use the
   qualified address. In the other order the connector resolves and then times out.
-- The `ServiceMonitor` CRD, for the scrape. Without it, skip that one file.
+- The `ServiceMonitor` CRD, for the scrape. Without it, install with `--set serviceMonitor.enabled=false`.
 - **The bearer in `chemclaw-secrets`.** Every Deployment reads the variable its manifest names as
   `auth.token_env` from the Secret `chemclaw-secrets`, key = that variable name — the Secret
   Chemclaw3's chart reads (`secrets.name`), so both halves hold one value. The reference is not
   `optional`: if the key is missing the pod stays in `CreateContainerConfigError` rather than
-  starting and refusing every call. If your release renamed `secrets.name`, patch the
-  `secretKeyRef.name` in your overlay.
+  starting and refusing every call. If your release renamed `secrets.name`, set the chart's
+  `secretName` to match.
 - **No SCC grant on OpenShift.** No Deployment pins `runAsUser`, `runAsGroup` or `fsGroup`, so the
   default `restricted-v2` SCC assigns a UID from the namespace's range (GID 0) and admits the pod.
   The images are built for that: a numeric `USER` in group 0, `HOME=/tmp`, and nothing written
@@ -89,59 +92,47 @@ There is no chart. A release changes an image with `oc set image`. Chemclaw3's
 ### Steps
 
 ```sh
-NAME=props                                      # the server
-TOKEN_ENV=CHEMCLAW_PROPS_TOKEN                  # its manifest's auth.token_env (table in §3)
+TOKEN_ENV=CHEMCLAW_PROPS_TOKEN                  # a server's manifest auth.token_env (table in §3)
 
 # 1. The bearer, in the Secret Chemclaw3 reads (skip if the key is already there; §3 needs the
 #    same value on the Chemclaw3 side). Key = variable name, which the Deployment references.
 oc patch secret chemclaw-secrets --type merge \
   -p "{\"stringData\":{\"$TOKEN_ENV\":\"$(openssl rand -hex 32)\"}}"
 
-# 2. The workload. `-f <dir>` does not recurse, so keda/ is not applied.
-oc apply -f servers/$NAME/deploy/
+# 2. The images you built, by digest, in a values file kept in your deployment repository.
+cat > release.yaml <<EOF
+defaults: {image: {registry: <registry>}}
+servers:
+  props: {image: {digest: sha256:<digest>}}
+  # ... one entry per server you deploy
+EOF
 
-# 3. Pin the image you built. The manifest's `registry.invalid/chemclaw-mcp-<name>:unset` is a
-#    placeholder that cannot resolve (`.invalid` is reserved); never run it unrewritten.
-oc set image deployment/chemclaw-mcp-$NAME server=<registry>/chemclaw-mcp-$NAME@sha256:<digest>
+# 3. Install or upgrade the fleet. The chart renders `registry.invalid/chemclaw-mcp-<name>:unset`
+#    for any server without a digest or tag: `.invalid` is reserved and cannot resolve, so a
+#    server you forgot fails with ErrImagePull instead of pulling a namesake from a public registry.
+helm upgrade --install chemclaw-fleet deploy/helm/chemclaw-fleet --namespace chemclaw -f release.yaml
 ```
 
-`kubectl` takes the same verbs. Two cautions, and the overlay that removes the second:
+`oc` and `kubectl` take the same verbs for step 1. To leave a server out, null its entry:
+`--set servers.pyexec=null`. The chart refuses `image.tag: latest`, an empty tag and a malformed
+digest, so a moving pointer cannot reach a cluster. Two cautions:
 
 - **Step 1 is required.** Without the key the pod never starts (`CreateContainerConfigError`
   naming it). With a key whose value differs from Chemclaw3's, `/mcp` answers 401 while `/healthz`
   stays ready — the fail-closed design, which in a cluster looks like a working server.
-- **Re-applying `deployment.yaml` resets `image:` to the placeholder**, because `image:` is in the
-  applied manifest. Run step 3 again after any `oc apply`, or keep the digest in a kustomize
-  overlay.
+- **A digest belongs in the values file, not in `oc set image`.** The next `helm upgrade` would
+  put the file's image back, so the file is the record of what is deployed.
 
-**The durable form is a kustomize overlay** kept in your deployment repository, which pins the
-image by digest — so `oc apply -k` is repeatable and nothing depends on remembering step 3. The
-bearer and the OpenShift-compatible security context are already in the shipped Deployment, so the
-overlay needs nothing else:
-
-```yaml
-# overlays/props/kustomization.yaml
-resources:
-  - <path-to-Chemclaw3-mcp>/servers/props/deploy/deployment.yaml
-  - <path-to-Chemclaw3-mcp>/servers/props/deploy/service.yaml
-  - <path-to-Chemclaw3-mcp>/servers/props/deploy/networkpolicy.yaml
-  - <path-to-Chemclaw3-mcp>/servers/props/deploy/hpa.yaml
-  - <path-to-Chemclaw3-mcp>/servers/props/deploy/pdb.yaml
-  - <path-to-Chemclaw3-mcp>/servers/props/deploy/servicemonitor.yaml
-images:
-  - name: registry.invalid/chemclaw-mcp-props     # matches the placeholder exactly
-    newName: <registry>/chemclaw-mcp-props
-    digest: sha256:<digest>
-```
-
-`tests/test_deploy_shape.py` holds every Deployment to that one placeholder string, so an
-`images:` entry written this way cannot silently miss.
+`tests/test_deploy_shape.py::test_the_image_is_the_one_placeholder_the_overlay_rewrites` holds every
+Deployment to the one placeholder shape, and
+`::test_a_digest_pins_the_image_and_a_moving_tag_is_refused` holds the two ways a release names its
+bytes.
 
 ### Environment: what every server reads
 
 Defaults are what a pod runs with when nothing is set. Every bound in this table and every
 server-specific bound is reported under `bounds` on `/healthz` at the value the process actually
-resolved. Use `/healthz`, not the manifest, to see what an overlay or a `set env` changed.
+resolved. Use `/healthz`, not the chart, to see what a post-render patch or a `set env` changed.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
@@ -208,7 +199,7 @@ secrets:
 The secret named by `secrets.name` (default `chemclaw-secrets`) must hold `CHEMCLAW_PROPS_TOKEN`.
 It is the same Secret the server's Deployment reads (§2), so the two sides hold one value.
 
-The egress peer above matches the pods every `servers/*/deploy/deployment.yaml` labels
+The egress peer above matches the pods every Deployment the fleet chart renders labels
 `app.kubernetes.io/part-of: chemclaw3` in the same namespace; Chemclaw3's own chart does not use that
 label. The chart takes either `egressDestinations` or `allowAnyDestination: true`, never both — a
 release already on the latter needs no entry.
@@ -329,11 +320,11 @@ not show an error. Its tools are missing from the turn.
 | --- | --- | --- |
 | `/mcp` returns **421** `Invalid Host header`; `/healthz` is 200 | The `Host` header (the name the caller dialled) is not in `MCP_ALLOWED_HOSTS`. Upstream's DNS-rebinding guard accepts loopback by default. | Add the dialled `host:port` to `MCP_ALLOWED_HOSTS`. The shipped Deployment sets only the Service short name. A qualified name, a Route or a renamed Service each need an entry. |
 | `/mcp` returns **403** `Invalid Origin header` | A browser-style `Origin` header that does not match an allowed host. | Server-to-server callers do not send `Origin`. If a proxy adds one, strip it, or add the host to `MCP_ALLOWED_HOSTS` (origins follow hosts). |
-| Every `/mcp` call is **401** `unauthorized` | The two sides hold different values or different variable names — e.g. the server reads a different Secret than Chemclaw3 (a renamed `secrets.name` not carried into the overlay). | `oc set env deployment/chemclaw-mcp-<name> --list` must show the manifest's `auth.token_env` from `chemclaw-secrets`. Compare with the Chemclaw3 secret. `chemclaw_mcp_unauthenticated_requests_total` counts these. |
+| Every `/mcp` call is **401** `unauthorized` | The two sides hold different values or different variable names — e.g. the server reads a different Secret than Chemclaw3 (a renamed `secrets.name` not carried into the chart's `secretName`). | `oc set env deployment/chemclaw-mcp-<name> --list` must show the manifest's `auth.token_env` from `chemclaw-secrets`. Compare with the Chemclaw3 secret. `chemclaw_mcp_unauthenticated_requests_total` counts these. |
 | Chemclaw3 raises `MissingConnectorCredential` | The token is unset on the **Chemclaw3** pod. | Add it to Chemclaw3's secret (`secrets.optionalKeys`). |
 | Pod stuck in `CreateContainerConfigError` naming `CHEMCLAW_<NAME>_TOKEN` | The key is missing from `chemclaw-secrets` (the reference is deliberately not optional), or the Secret is in another namespace. | Add the key (§2, step 1) in the release's namespace. |
-| No pods; ReplicaSet event `unable to validate against any security context constraint` | Something re-added a pinned `runAsUser`/`runAsGroup`/`fsGroup` (an old overlay); the shipped Deployments pin none. | Remove the pin from the overlay; `restricted-v2` assigns the UID. |
-| `ErrImagePull` / `ImagePullBackOff` on `registry.invalid/chemclaw-mcp-<name>:unset` | The placeholder image was applied unrewritten. It is unresolvable by design, so it fails here rather than pulling an image nobody reviewed. An overlay written for an older revision still names `chemclaw3/chemclaw-mcp-<name>`, matches nothing now, and leaves this placeholder in place. | Pin the published digest (§2, step 3 or the overlay's `images:`). |
+| No pods; ReplicaSet event `unable to validate against any security context constraint` | Something re-added a pinned `runAsUser`/`runAsGroup`/`fsGroup` (an old overlay or a post-render patch); the chart's Deployments pin none. | Remove the pin; `restricted-v2` assigns the UID. |
+| `ErrImagePull` / `ImagePullBackOff` on `registry.invalid/chemclaw-mcp-<name>:unset` | The placeholder image was applied unrewritten. It is unresolvable by design, so it fails here rather than pulling an image nobody reviewed. A values file for an older revision names a server or registry the chart no longer reads and leaves this placeholder in place. | Name the published digest in the values file (§2, steps 2-3). |
 | Pod not Ready; `/healthz` **503** with `reason` naming a file and two hashes | A vendored corpus failed its checksum: `… does not match the approved checksum: manifest says <a>, file is <b>`. | The image holds a file different from the one reviewed. Rebuild from a clean checkout. Never edit `dataset.json` in place to match. |
 | `/healthz` 503 naming `no dataset manifest` / `no records file` / a missing provenance field | The image is missing a corpus or its `dataset.json`. | Rebuild. The `Containerfile` copies the whole server directory. |
 | `/healthz` 503 on `calc`: `CHEMCLAW_XTB_ENGINE selects the xtb binary and this image has none on PATH` | `CHEMCLAW_XTB_ENGINE=xtb` on an image without `xtb`. | Unset it (the image pins `tblite`) or use the shipped image, which includes the binary. |

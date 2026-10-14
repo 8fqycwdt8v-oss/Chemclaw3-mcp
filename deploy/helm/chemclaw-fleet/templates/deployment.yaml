@@ -1,0 +1,107 @@
+{{- /*
+The workload and its pod hardening, one per server. Every field is asserted by
+tests/test_deploy_shape.py against this template's rendered output.
+
+- Replicas are a floor, never one: the HPA owns the number above it. Spread over nodes with
+  ScheduleAnyway (DoNotSchedule leaves the second pod Pending on a one-node cluster, which is how a
+  constraint gets deleted rather than fixed).
+- The grace period is requestTimeout + drainSeconds, not a number: the manifest states the longest
+  a caller waits, so it states the longest an in-flight call is worth finishing. Nothing is
+  persisted before a response, so a SIGKILLed call is simply lost.
+- No pinned runAsUser/runAsGroup/fsGroup: OpenShift's restricted-v2 SCC assigns a UID and rejects
+  others. runAsNonRoot is what matters; the image's numeric USER lets the kubelet verify it, and
+  the only writable path is the /tmp emptyDir, which any UID can write.
+- No service-account token: nothing here talks to the Kubernetes API.
+- MCP_ALLOWED_HOSTS is the Service `name:port`. Upstream's DNS-rebinding guard stays on and admits
+  only loopback otherwise, so every in-cluster /mcp call would be a 421 while /healthz stays green.
+- The bearer comes from the shared Secret under the variable name the manifest's `token_env`
+  declares, not optional: a missing key keeps the pod from starting rather than serving refusals.
+- /healthz (readiness) consults corpora and optional components; /livez (liveness) consults
+  nothing. On /healthz a missing optional checkpoint would be a restart loop, and a restart cannot
+  recreate a file.
+- The emptyDir is bounded: unbounded, one pod filling it evicts its neighbours via DiskPressure.
+*/ -}}
+{{- range $name, $_ := .Values.servers }}
+{{- $c := include "chemclaw-fleet.config" (dict "root" $ "name" $name) | fromYaml }}
+{{- $svc := include "chemclaw-fleet.service" $name }}
+{{- $token := include "chemclaw-fleet.tokenEnv" $name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  replicas: {{ int $c.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $svc }}
+  template:
+    metadata:
+      labels:
+        {{- include "chemclaw-fleet.labels" $name | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $svc }}
+      terminationGracePeriodSeconds: {{ add (int $c.requestTimeout) (int $.Values.drainSeconds) }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: {{ include "chemclaw-fleet.image" (dict "name" $name "image" $c.image) }}
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ int $c.port }}
+          env:
+            - name: MCP_ALLOWED_HOSTS
+              value: {{ printf "%s:%d" $svc (int $c.port) | quote }}
+            - name: {{ $token }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secretName }}
+                  key: {{ $token }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: {{ not $c.writableRoot }}
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ int $c.readyDelay }}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: {{ int $c.liveDelay }}
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $c.scratch }}
+{{- end }}

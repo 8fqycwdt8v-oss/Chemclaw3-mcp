@@ -58,13 +58,12 @@ it entirely — they read `readinessProbe` and `livenessProbe` off the Pod spec 
 a `docker run` locally is the only place that line has ever executed. It is kept because it is right
 for the local case and costs nothing; it must not be read as the cluster's probe.
 
-**The Pod spec ships with each server.** Every server has `deploy/deployment.yaml`, `deploy/hpa.yaml`
-and `deploy/pdb.yaml` beside the `Service`, the `NetworkPolicy` and the `ServiceMonitor` —
-`docs/adding-a-server.md` lists them as required and
-`tests/test_fleet_layout.py::test_a_server_ships_the_whole_set` is what requires them. Applying them is
-[`operations.md`](operations.md) §2.
+**The Pod spec ships as one chart.** `deploy/helm/chemclaw-fleet` renders a `Deployment`, `Service`,
+`NetworkPolicy`, `ServiceMonitor`, `HorizontalPodAutoscaler` and `PodDisruptionBudget` for every
+server in its `values.yaml`; `tests/test_deploy_shape.py::test_the_chart_names_exactly_the_servers_the_tree_has`
+requires an entry for each server in the tree. Applying it is [`operations.md`](operations.md) §2.
 
-What the shipped Deployment wires, per server, and what an operator therefore does not:
+What the rendered Deployment wires, per server, and what an operator therefore does not:
 
 - `readinessProbe` on `GET /healthz`. A real check rather than a constant 200: a server with a
   `readiness` callable answers **503 with the reason** when its corpus, rule table or backend will
@@ -88,21 +87,20 @@ What the shipped Deployment wires, per server, and what an operator therefore do
 
 `tests/test_deploy_shape.py` holds the last two against every server's manifest and `Containerfile`.
 
-What is still an operator's: applying those manifests, **putting the bearer's key into
+What is still an operator's: installing the chart, **putting the bearer's key into
 `chemclaw-secrets`** (a missing key keeps the pod from starting), replacing the placeholder
 `registry.invalid/chemclaw-mcp-<name>:unset` image — unresolvable by design, so it fails to pull
 rather than resolving to somebody else's — with a published digest
-(`operations.md` §2 does it in a kustomize overlay), and driving the *release*: see below.
+(`operations.md` §2 does it in a values file), and driving the *release*: see below.
 
 ## Where the rollout is
 
-Not here. No server in this repository ships a chart, so a release is `oc set image` against a
-Deployment an operator created, driven from the Chemclaw3 checkout by
-`deploy/jenkins/targets/openshift.sh` reading a release descriptor. See that repository's
-`deploy/jenkins/README.md`, and `D-2026-08-26-a-release-is-a-descriptor-and-a-target` for why the
-fleet is rolled out **before** the core that dials it.
+Not here. This repository publishes images and describes how to run them (the chart); the release
+is driven from the Chemclaw3 checkout by `deploy/jenkins/targets/openshift.sh` reading a release
+descriptor. See that repository's `deploy/jenkins/README.md`, and
+`D-2026-08-26-a-release-is-a-descriptor-and-a-target` for why the fleet is rolled out **before** the
+core that dials it.
 
-Until the fleet has a chart — the servers differ only in name, port and token env — a release can
-change a server's bytes and nothing else; a change to a Deployment's env or resources is an
-`oc apply` of `servers/<name>/deploy/` (then `oc set image` again, because the applied manifest
-carries a placeholder image).
+The digests a build publishes are what a values file names (`operations.md` §2). A change to a
+Deployment's resources or probes is a change to `values.yaml` or the templates and a
+`helm upgrade`; it no longer needs a second `oc set image` to put the image back.

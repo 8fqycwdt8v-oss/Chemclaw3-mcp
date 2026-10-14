@@ -17,6 +17,7 @@ one directory on `CHEMCLAW_CONNECTORS_DIR`, one entry in `CHEMCLAW_CONNECTOR_URL
 | `packages/chemclaw_contracts/` | The one owner of every `connector.yaml` (as package data) and of the typed wire of the `calc` and `rxnlabel` backends; Chemclaw3 takes it as a pinned dependency. |
 | `manifests/` | One symlinked `connector.yaml` per **connector** — what `CHEMCLAW_CONNECTORS_DIR` points at. |
 | `manifests-internal/` | The servers Chemclaw3 must **not** discover (`calc`, `rxnlabel`); each declares `mount: backend`, a key Chemclaw3's manifest model refuses. |
+| `deploy/` | The fleet as one Helm chart (`helm/chemclaw-fleet`): a server's deployment is its entry in `values.yaml`, rendered into Deployment, Service, NetworkPolicy, autoscaler, PDB and ServiceMonitor. |
 | `docs/` | Operating, integrating and adding servers; the decision record (`docs/decisions/`) and the open queue (`docs/BACKLOG.md`). |
 | `scripts/` | Operational scripts outside any server's runtime, listed in `scripts/README.md`. |
 | `tests/` | Fleet-level invariants no single server can see about itself. |

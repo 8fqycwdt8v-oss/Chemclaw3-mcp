@@ -1,0 +1,20 @@
+{{- /*
+What a voluntary disruption (drain, cluster upgrade, descheduler) may take: one pod at a time.
+`maxUnavailable: 1`, not `minAvailable: 1`: at six replicas the latter permits a drain that takes
+five together, which is the outage this object exists to prevent written as a budget. Node death,
+OOMKill and a failed liveness probe are outside it; replicas >= 2 and the topology spread cover those.
+*/ -}}
+{{- range $name, $_ := .Values.servers }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "chemclaw-fleet.service" $name }}
+  labels:
+    {{- include "chemclaw-fleet.labels" $name | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "chemclaw-fleet.service" $name }}
+{{- end }}
