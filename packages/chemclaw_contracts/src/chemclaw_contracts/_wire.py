@@ -10,7 +10,8 @@ from pydantic import BaseModel, ConfigDict
 class WireRequest(BaseModel):
     """The arguments of one backend tool. Subclasses name the tool they are for.
 
-    Unknown arguments are refused, as the servers refuse them. `wire()` is what goes on the wire:
+    Unknown arguments are refused here and on `/rpc`; over MCP the tool's own argument model
+    ignores them, so this model is the stricter of the two. `wire()` is what goes on the wire:
     only the fields the caller set, so a default stays the server's.
     """
 

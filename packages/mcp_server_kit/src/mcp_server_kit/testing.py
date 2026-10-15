@@ -9,6 +9,8 @@
   `chemclaw_contracts`, so a tool that drifts from the wire its consumer codes against fails here.
 - `assert_bearer_is_enforced` drives a *running* server, because a mounted MCP surface can bypass a
   credential the enclosing app declares, and only a real request shows it.
+- `assert_rpc_bearer_is_enforced` and `assert_rpc_agrees_with_mcp` do the same for a backend's
+  `/rpc` surface, and hold its answers to the MCP ones.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import Any, Literal, Self
 import httpx  # noqa: TID253
 import yaml
 from chemclaw_contracts import CONTRACT_VERSION_PATTERN
+from chemclaw_contracts.rpc import rpc_path
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
@@ -41,6 +44,8 @@ __all__ = [
     "HttpEndpoint",
     "assert_bearer_is_enforced",
     "assert_manifest_matches",
+    "assert_rpc_agrees_with_mcp",
+    "assert_rpc_bearer_is_enforced",
     "assert_wire_contract",
     "load_manifest",
     "reimported",
@@ -625,3 +630,145 @@ async def assert_bearer_is_enforced(base_url: str, manifest_path: Path, *, token
         "the server did not serve the same surface once the credential was restored, so the 401 "
         "above is not attributable to the unset variable"
     )
+
+
+def _rpc_post(
+    base_url: str, operation: str, arguments: Mapping[str, Any], headers: Mapping[str, str]
+) -> httpx.Response:
+    """One `POST /rpc/<operation>`, sent as a backend's client would send it."""
+    return httpx.post(
+        f"{base_url.rstrip('/')}{rpc_path(operation)}",
+        json=dict(arguments),
+        headers=dict(headers),
+        timeout=15.0,
+    )
+
+
+def assert_rpc_bearer_is_enforced(
+    base_url: str,
+    manifest_path: Path,
+    *,
+    token: str,
+    operation: str,
+    arguments: Mapping[str, Any],
+) -> None:
+    """Drive a **running** backend's `/rpc/<operation>` through every arm of the bearer rule.
+
+    The arms of `assert_bearer_is_enforced`, against the HTTP/JSON surface: no header, a wrong
+    token and the right secret under the wrong scheme (401); the right token (200); whitespace on
+    either side (served); the variable whitespace-only or unset (401, then restored and served).
+
+    Args:
+        base_url: A running server's base URL on loopback.
+        manifest_path: That server's `connector.yaml`, from which the declared `token_env` is read.
+        token: The value the fixture put in that variable; asserted to be what it holds.
+        operation: A cheap operation the server serves.
+        arguments: A request body for `operation` that the server answers with 200.
+    """
+    token_env = load_manifest(manifest_path).endpoint.auth.token_env
+    assert os.environ.get(token_env) == token, (
+        f"{manifest_path} declares {token_env}, which is the variable the running server reads on "
+        "every request. This check is only evidence if the token it offers is the one that "
+        "variable holds."
+    )
+
+    def post(authorization: str | None) -> httpx.Response:
+        headers = {} if authorization is None else {"authorization": authorization}
+        return _rpc_post(base_url, operation, arguments, headers)
+
+    for description, authorization in (
+        ("no authorization header", None),
+        ("a wrong bearer token", f"Bearer {token}-wrong"),
+        ("the right secret under the wrong scheme", f"Basic {token}"),
+    ):
+        response = post(authorization)
+        assert response.status_code == 401, (
+            f"{base_url}{rpc_path(operation)} answered {response.status_code} with {description}. "
+            "The RPC surface serves the same tools as `/mcp` and owes the same credential."
+        )
+
+    served = post(f"Bearer {token}")
+    assert served.status_code == 200, (
+        f"{rpc_path(operation)} answered {served.status_code} to the declared credential: "
+        f"{served.text[:300]}"
+    )
+
+    for description, provisioned, offered in (
+        ("a padded header against the provisioned secret", token, f" {token}"),
+        ("an unpadded header against a newline-provisioned secret", f"{token}\n", token),
+    ):
+        os.environ[token_env] = provisioned
+        try:
+            assert post(f"Bearer {offered}").status_code == 200, (
+                f"{rpc_path(operation)} refused {description}; surrounding whitespace is "
+                "normalised on both sides, as on `/mcp`."
+            )
+        finally:
+            os.environ[token_env] = token
+
+    os.environ[token_env] = "   \n\t "
+    try:
+        assert post(f"Bearer {token}").status_code == 401, (
+            f"{rpc_path(operation)} served a request with {token_env} holding nothing but "
+            "whitespace, which is an unset credential."
+        )
+    finally:
+        os.environ[token_env] = token
+
+    del os.environ[token_env]
+    try:
+        assert post(f"Bearer {token}").status_code == 401, (
+            f"{rpc_path(operation)} served a request with {token_env} unset; a declared "
+            "credential whose variable is missing must refuse every request."
+        )
+    finally:
+        os.environ[token_env] = token
+
+    assert post(f"Bearer {token}").status_code == 200, (
+        "the RPC surface did not serve again once the credential was restored, so the 401 above "
+        "is not attributable to the unset variable"
+    )
+
+
+async def assert_rpc_agrees_with_mcp(
+    base_url: str,
+    *,
+    token: str,
+    cases: Sequence[tuple[str, Mapping[str, Any]]],
+    responses: Mapping[str, type[BaseModel]],
+) -> None:
+    """Hold `/rpc/<tool>` to the answer a real MCP `tools/call` gives, for each of `cases`.
+
+    Both are sent to the same running server with the same arguments; the RPC body must equal the
+    MCP `structuredContent` and the JSON in its text block, and satisfy the contract's response
+    model for that tool.
+
+    Args:
+        base_url: A running server's base URL on loopback.
+        token: The bearer token both transports are offered.
+        cases: `(tool, arguments)` pairs whose answers are deterministic.
+        responses: Tool name to the response model the contract reads that answer through.
+    """
+    base = base_url.rstrip("/")
+    async with (
+        httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"}, timeout=httpx.Timeout(300.0)
+        ) as http_client,
+        streamable_http_client(f"{base}/mcp", http_client=http_client) as (read, write, _),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        for tool, arguments in cases:
+            over_mcp = await session.call_tool(tool, dict(arguments))
+            assert over_mcp.isError is False, f"{tool}: {over_mcp.content}"
+            response = await http_client.post(f"{base}{rpc_path(tool)}", json=dict(arguments))
+            assert response.status_code == 200, f"{tool}: {response.status_code} {response.text}"
+            assert response.json() == over_mcp.structuredContent, (
+                f"{tool}: /rpc and /mcp answered the same arguments differently"
+            )
+            # What a caller that reads the text block (as Chemclaw3's MCP client does) decodes.
+            text = "".join(getattr(block, "text", "") for block in over_mcp.content)
+            assert response.json() == json.loads(text), (
+                f"{tool}: /rpc differs from the JSON in /mcp's text block"
+            )
+            responses[tool].model_validate(response.json())

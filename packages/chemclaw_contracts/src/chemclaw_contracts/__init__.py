@@ -2,8 +2,9 @@
 
 Owns every `connector.yaml` as package data (`manifests/` for the connectors a consumer discovers,
 `manifests_internal/` for the backends it must not) and the typed wire of the two backends
-(`chemclaw_contracts.calc`, `chemclaw_contracts.rxnlabel`). `servers/<name>/connector.yaml` and the
-repository's `manifests/` are symlinks to these files, never copies.
+(`chemclaw_contracts.calc`, `chemclaw_contracts.rxnlabel`, served over `/rpc` as described by
+`chemclaw_contracts.rpc`). `servers/<name>/connector.yaml` and the repository's `manifests/` are
+symlinks to these files, never copies.
 
 Invariants: a manifest's `contract_version` is a semver string or absent; `manifests_dir()` holds
 only connectors a consumer may discover; nothing here touches the network.
@@ -19,7 +20,7 @@ from pathlib import Path
 import yaml
 
 # Equal to `version` in pyproject.toml; `tests/test_manifests.py` holds it.
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "CONTRACT_VERSION_PATTERN",

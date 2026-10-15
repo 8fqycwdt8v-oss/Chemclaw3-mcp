@@ -2,14 +2,17 @@
 
     uvicorn chemclaw_mcp_rxnlabel.app:app --host 127.0.0.1 --port 8865
 
-Bearer auth on `CHEMCLAW_RXNLABEL_TOKEN`, as `connector.yaml` declares; an unset token fails closed
-with 401. `on_start` logs which optional components loaded, since answers depend on them.
+Serves MCP on `/mcp` and the same tools as typed HTTP/JSON on `/rpc/<tool>` (the request models
+are `chemclaw_contracts.rxnlabel`). Bearer auth on `CHEMCLAW_RXNLABEL_TOKEN`, as `connector.yaml`
+declares, on both; an unset token fails closed with 401. `on_start` logs which optional components
+loaded, since answers depend on them.
 """
 
 from __future__ import annotations
 
 import logging
 
+from chemclaw_contracts.rxnlabel import RXNLABEL_REQUESTS
 from fastapi import FastAPI
 from mcp_server_kit import Dataset, connector_app
 
@@ -52,4 +55,5 @@ app: FastAPI = connector_app(
     token_env="CHEMCLAW_RXNLABEL_TOKEN",  # noqa: S106 - an environment variable's *name*, never a credential
     on_start=_report_components,
     readiness=_readiness,
+    rpc=RXNLABEL_REQUESTS,
 )

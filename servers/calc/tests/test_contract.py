@@ -93,7 +93,7 @@ def test_a_request_model_sends_only_what_the_caller_set() -> None:
 
 
 def test_an_argument_the_tool_does_not_take_is_refused() -> None:
-    """The server refuses an unknown argument; so does the model that builds the call."""
+    """The model that builds the call refuses an unknown argument (MCP's own model ignores one)."""
     with pytest.raises(ValidationError):
         CALC_REQUESTS["predict_pka"](smiles="CCO", solvent="water")  # type: ignore[call-arg]
     key = CalculationKeyRequest(tool="predict_pka", arguments={"smiles": "CCO"})

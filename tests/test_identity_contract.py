@@ -20,11 +20,13 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from typing import ClassVar
 
 import anyio
 import httpx
 import pytest
 import uvicorn
+from chemclaw_contracts.rpc import WireRequest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.fastmcp import FastMCP
@@ -52,6 +54,18 @@ CORRELATION = "corr-abc"
 SEEN_CONCURRENT: list[tuple[str, str, str]] = []
 
 
+class WhoamiRequest(WireRequest):
+    """`whoami` over `/rpc`: no arguments."""
+
+    tool_name: ClassVar[str] = "whoami"
+
+
+class SlowWhoamiRequest(WireRequest):
+    """`slow_whoami` over `/rpc`: no arguments."""
+
+    tool_name: ClassVar[str] = "slow_whoami"
+
+
 def _probe_app() -> uvicorn.Config:
     """A `connector_app` whose tools report the caller their own bodies can see."""
     server = FastMCP("identity-probe")
@@ -74,7 +88,12 @@ def _probe_app() -> uvicorn.Config:
         SEEN_CONCURRENT.append((caller.actor, caller.session, caller.correlation))
         return "ok"
 
-    app = connector_app(server, name="identity-probe", token_env=None)
+    app = connector_app(
+        server,
+        name="identity-probe",
+        token_env=None,
+        rpc={"whoami": WhoamiRequest, "slow_whoami": SlowWhoamiRequest},
+    )
     return uvicorn.Config(app, host="127.0.0.1", port=_free_port(), log_level="warning")
 
 
@@ -237,6 +256,48 @@ async def test_two_concurrent_calls_on_one_session_each_read_their_own_caller(
         f"two concurrent calls on one session read {SEEN_CONCURRENT}; the per-call binding "
         "interleaved and a stamped record would carry the other caller's identity"
     )
+
+
+async def test_the_rpc_surface_reads_every_header_per_request(probe_url: str) -> None:
+    """`/rpc/<tool>` reads the sender's spellings per request, with no session to carry them.
+
+    Two overlapping calls from different callers each read their own identity, and a call that
+    sends no header reads an empty one.
+    """
+    base = probe_url.removesuffix("/mcp")
+
+    async def whoami(client: httpx.AsyncClient, name: str, operation: str) -> dict[str, str]:
+        response = await client.post(
+            f"{base}/rpc/{operation}",
+            json={},
+            headers={
+                SENT_ACTOR: f"{name}-oid",
+                SENT_SESSION: f"sess-{name}",
+                SENT_CORRELATION: f"corr-{name}",
+                SENT_DRY_RUN: "false",
+            },
+        )
+        assert response.status_code == 200, response.text
+        answer: dict[str, str] = response.json()
+        return answer
+
+    SEEN_CONCURRENT.clear()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        assert await whoami(client, "alice", "whoami") == {
+            "actor": "alice-oid",
+            "session": "sess-alice",
+            "correlation": "corr-alice",
+        }
+        anonymous = await client.post(f"{base}/rpc/whoami", json={})
+        assert anonymous.json() == {"actor": "", "session": "", "correlation": ""}
+        async with anyio.create_task_group() as group:
+            group.start_soon(whoami, client, "carol", "slow_whoami")
+            group.start_soon(whoami, client, "dave", "slow_whoami")
+
+    assert sorted(SEEN_CONCURRENT) == [
+        ("carol-oid", "sess-carol", "corr-carol"),
+        ("dave-oid", "sess-dave", "corr-dave"),
+    ], f"two concurrent /rpc calls read {SEEN_CONCURRENT}; one took the other's identity"
 
 
 def test_the_constants_are_exactly_the_headers_chemclaw3_stamps() -> None:

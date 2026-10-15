@@ -36,9 +36,12 @@
 # has the wiring.
 #
 # The URL below is the loopback dev default; a deployment supplies the address.
+#
+# 1.1.0 added `POST /rpc/<tool>` for every tool below (`chemclaw_contracts.rpc`): the same tools and
+# the request models of `chemclaw_contracts.calc`, as typed HTTP/JSON. `tools:` names both surfaces.
 mount: backend
 name: calc
-contract_version: 1.0.0
+contract_version: 1.1.0
 description: >-
   Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic
   properties, condensed Fukui site reactivity, geometry optimization, and the second derivatives and

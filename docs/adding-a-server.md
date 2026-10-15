@@ -178,6 +178,13 @@ schema drifts from them, so the bump and the model change in one commit. The pac
 carries. `D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package` has how a
 consumer takes a release.
 
+**A backend is also served as `POST /rpc/<tool>`.** Pass its request models to the app —
+`connector_app(server, name=..., token_env=..., rpc=<NAME>_REQUESTS)` — and its `test_server.py`
+calls `assert_rpc_bearer_is_enforced` and `assert_rpc_agrees_with_mcp` beside the MCP checks
+(`tests/test_fleet_auth.py` requires both); `tests/test_fleet_rpc.py` needs one deterministic call
+per backend in its `PARITY` table. A transport added to a server is a **minor** bump, removed a
+**major** one (`D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release`).
+
 ## The dataset
 
 **A server with no dataset is possible and `calc` is the first one** — every number it returns is

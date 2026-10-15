@@ -23,6 +23,7 @@ from mcp_server_kit.datasets import read_records as read_records  # noqa: E402
 from mcp_server_kit.egress import EgressForbidden as EgressForbidden  # noqa: E402
 from mcp_server_kit.identity import Caller as Caller  # noqa: E402
 from mcp_server_kit.identity import current_caller as current_caller  # noqa: E402
+from mcp_server_kit.rpc import rpc_routes as rpc_routes  # noqa: E402
 
 __all__ = [
     "DEFAULT_MAX_REQUEST_BYTES",
@@ -36,4 +37,5 @@ __all__ = [
     "egress",
     "load_dataset",
     "read_records",
+    "rpc_routes",
 ]

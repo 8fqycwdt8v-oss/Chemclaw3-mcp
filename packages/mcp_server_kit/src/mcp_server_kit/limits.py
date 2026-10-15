@@ -39,6 +39,7 @@ __all__ = [
     "Admission",
     "AtCapacityError",
     "Slots",
+    "TimeBudgetExceeded",
     "at_capacity_marker",
     "atom_count_error",
     "echo",
@@ -333,6 +334,15 @@ class AtCapacityError(ValueError):
     """This pod is full; the identical call may well succeed once admitted work finishes.
 
     A `ValueError` so `connector_app` passes it verbatim; built by `Admission.refuse`.
+    """
+
+
+class TimeBudgetExceeded(ValueError):
+    """The pod's own clock stopped this call; the input was not refused and the work was spent.
+
+    A `ValueError` so `connector_app` passes it verbatim. `/rpc` answers it as its own kind
+    (`time_budget`): a retry re-runs the same work against the same clock, so it is neither bad
+    input nor a full pod.
     """
 
 

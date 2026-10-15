@@ -1,8 +1,8 @@
 """`connector_app()` — wrap a `FastMCP` capability as the FastAPI app Chemclaw3 dials.
 
 Every server has the same shape — `/healthz` (readiness), `/livez` (liveness), `/metrics`, and
-`/mcp` (streamable HTTP) — written once here so the cross-cutting behaviours cannot be forgotten
-one server at a time. Each is quiet when wrong:
+`/mcp` (streamable HTTP); a backend adds `/rpc/<tool>` (HTTP/JSON, `rpc.py`) — written once here so
+the cross-cutting behaviours cannot be forgotten one server at a time. Each is quiet when wrong:
 
 - The parent app must run the MCP session manager; mounting an app does not run its lifespan.
 - `/healthz` and `/metrics` are declared before the `/` mount; Starlette matches in order.
@@ -23,12 +23,13 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
 
 from chemclaw_contracts import contract_version
+from chemclaw_contracts.rpc import WireRequest, rpc_path
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
@@ -63,6 +64,8 @@ from mcp_server_kit.limits import effective_bounds
 from mcp_server_kit.logging import configure_logging, redact_secrets, register_secret_env
 from mcp_server_kit.metrics import BUILD_INFO, READY, TOOL_CALLS, TOOL_DURATION, UNKNOWN_TOOL
 from mcp_server_kit.rebinding import apply_allowed_hosts
+from mcp_server_kit.refusal import bounded_message, is_caller_safe
+from mcp_server_kit.rpc import rpc_routes
 from mcp_server_kit.schema_cache import install_validator_cache
 from mcp_server_kit.sessions import apply_session_ceiling, apply_session_idle_timeout
 from mcp_server_kit.tracing import tool_call_span
@@ -106,16 +109,6 @@ def _served_tool_name(manager: Any, requested: object) -> str:
     return UNKNOWN_TOOL
 
 
-def _is_caller_safe(exc: ToolError) -> bool:
-    """Whether this `ToolError` is a refusal the model may read, rather than a fault to hide.
-
-    The one discriminator for both the sanitiser and the `refused`/`failed` metric split.
-    Caller-safe: a chained `ValueError` (including pydantic's `ValidationError`), or upstream's
-    unchained `Unknown tool` error; a failing tool body otherwise arrives chained to its real cause.
-    """
-    return exc.__cause__ is None or isinstance(exc.__cause__, ValueError)
-
-
 def _bind_caller_per_tool_call(server: FastMCP) -> None:
     """Re-bind the caller from the request each tool call is serving.
 
@@ -151,7 +144,7 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
     """Open a span for each tool call, parented on the `traceparent` that call's request carried.
 
     Per tool call for the same reason as `_bind_caller_per_tool_call`. The span name is clamped by
-    `_served_tool_name` and its error status follows `_is_caller_safe`, so span and metric agree.
+    `_served_tool_name` and its error status follows `is_caller_safe`, so span and metric agree.
     Inert unless a deployment enables tracing; nothing is exported from here (see `tracing.py`).
     """
     manager = getattr(server, "_tool_manager", None)
@@ -161,7 +154,7 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
 
     def is_refusal(exc: BaseException) -> bool:
         """The counter's `refused`/`failed` split, as a span sees it."""
-        return isinstance(exc, ToolError) and _is_caller_safe(exc)
+        return isinstance(exc, ToolError) and is_caller_safe(exc)
 
     async def call_tool(*args: Any, **kwargs: Any) -> Any:
         headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
@@ -177,7 +170,7 @@ def _continue_trace_per_tool_call(server: FastMCP, *, name: str) -> None:
 def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
     """Replace an unexpected tool exception's text with a generic notice before a caller sees it.
 
-    A caller-safe error (`_is_caller_safe`) passes, redacted; anything else is logged and replaced.
+    A caller-safe error (`is_caller_safe`) passes, redacted; anything else is logged and replaced.
     Tools only: `FastMCP.read_resource`/`get_prompt` wrap errors inside their own bodies where this
     cannot reach, so no server may register either.
     """
@@ -190,11 +183,11 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
         try:
             return await wrapped(*args, **kwargs)
         except ToolError as exc:
-            if _is_caller_safe(exc):
+            if is_caller_safe(exc):
                 # Even a caller-safe message is redacted: a validation error quotes its input, which
-                # is where a secret would land. Re-raised unchanged when redaction is a no-op,
-                # keeping the traceback.
-                redacted = redact_secrets(str(exc))
+                # is where a secret would land. Bounded first, so the scan is never over megabytes.
+                # Re-raised unchanged when both are no-ops, keeping the traceback.
+                redacted = redact_secrets(bounded_message(str(exc)))
                 if redacted == str(exc):
                     raise
                 raise ToolError(redacted) from exc.__cause__
@@ -217,7 +210,7 @@ def _sanitize_tool_errors(server: FastMCP, *, name: str) -> None:
 def _instrument_tool_calls(server: FastMCP, *, name: str) -> None:
     """Count and time every tool call, at the one seam the whole fleet shares.
 
-    `outcome` splits on `_is_caller_safe`: rising `refused` is a model/catalogue problem, rising
+    `outcome` splits on `is_caller_safe`: rising `refused` is a model/catalogue problem, rising
     `failed` a broken server. Applied outside the sanitiser so it books what the caller was told,
     and it never reads who is asking.
     """
@@ -233,7 +226,7 @@ def _instrument_tool_calls(server: FastMCP, *, name: str) -> None:
         try:
             return await wrapped(*args, **kwargs)
         except ToolError as exc:
-            outcome = "refused" if _is_caller_safe(exc) else "failed"
+            outcome = "refused" if is_caller_safe(exc) else "failed"
             raise
         except BaseException:
             # A non-`ToolError` never reached the sanitiser, so it is a fault — including a
@@ -306,6 +299,7 @@ def connector_app(
     max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
     on_start: Callable[[], Coroutine[Any, Any, None]] | None = None,
     readiness: Readiness | None = None,
+    rpc: Mapping[str, type[WireRequest]] | None = None,
 ) -> FastAPI:
     """Build the FastAPI app that serves one capability over MCP streamable-HTTP.
 
@@ -319,13 +313,17 @@ def connector_app(
         on_start: Optional coroutine started (never awaited) once at startup.
         readiness: Optional callable that loads what the first tool call would and returns the
             corpora it verified; `None` keeps `/healthz` a constant 200.
+        rpc: A backend's operations, tool name to the contract's request model; each is also
+            served as `POST /rpc/<tool>` through the same tool manager. `None` serves MCP alone.
 
     Returns:
-        A FastAPI app exposing `/healthz`, `/livez`, `/metrics` and `/mcp`.
+        A FastAPI app exposing `/healthz`, `/livez`, `/metrics`, `/mcp` and, given `rpc`,
+        `/rpc/<tool>`.
 
     Raises:
         RuntimeError: `server` was already wrapped (`_claim_server`).
-        ValueError: `MCP_ALLOWED_HOSTS` holds an unusable entry.
+        ValueError: `MCP_ALLOWED_HOSTS` holds an unusable entry, or `rpc` names an operation the
+            server does not serve (`rpc.rpc_routes`).
     """
     _claim_server(server, name=name)
     if token_env:
@@ -399,7 +397,11 @@ def connector_app(
         app.add_middleware(BodySizeLimit, max_bytes=max_request_bytes)
     # Last, therefore outermost: the request counter must see the 401s and 413s the layers inside
     # refuse.
-    app.add_middleware(RequestMetrics, server=name)
+    app.add_middleware(
+        RequestMetrics,
+        server=name,
+        rpc_paths=frozenset(rpc_path(operation) for operation in rpc or ()),
+    )
 
     @app.get("/healthz")
     async def healthz() -> Response:
@@ -513,6 +515,10 @@ def connector_app(
     app.add_api_route("/healthz/", healthz, methods=["GET"], include_in_schema=False)
     app.add_api_route("/livez/", livez, methods=["GET"], include_in_schema=False)
     app.add_api_route("/metrics/", metrics, methods=["GET"], include_in_schema=False)
+
+    # Before the mount, for the same reason as the probes: the `/` mount would answer `/rpc/...`.
+    if rpc:
+        app.include_router(rpc_routes(server, name=name, models=rpc))
 
     # Mounted last: Starlette matches in definition order, so the routes above win and
     # everything else — notably `/mcp` — falls through to the MCP transport.

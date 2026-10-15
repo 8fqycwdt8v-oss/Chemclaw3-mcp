@@ -41,6 +41,39 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
   **Other repository:** `chemclaw2_retrosynthesis` (`fastapi-mcp` mount, `Depends(require_token)`);
   owed here: `manifests/retro/connector.yaml`, with `retrosynthesis_multi_step` as a durable job.
 
+## 3b — Backends on one wire
+
+- [ ] **Remove MCP from `calc` and `rxnlabel`, and `manifests-internal/` with it.** Not before
+  Chemclaw3 has run a release on `calc_transport=rpc` (its W6.3) and the contracts pin carries
+  1.1.0. Then `rpc=` stays, `server.streamable_http_app()` and the session machinery go for these two,
+  the manifests leave `manifests_internal/` (a backend's package description is the request models),
+  and `contract_version` takes a major bump.
+  `servers/calc/src/chemclaw_mcp_calc/app.py`, `servers/rxnlabel/src/chemclaw_mcp_rxnlabel/app.py`,
+  `manifests-internal/`.
+
+- [ ] **A client that gives up on a `/rpc` call is not seen by the server.** Over MCP a timed-out
+  caller sent `notifications/cancelled`; over `/rpc` it closes the connection and the handler runs
+  on. The tool thread outlives either (`asyncio.shield` holds the slot), so the cost is a duplicate
+  on retry, as before. Worth a disconnect-driven cancel of the awaiting coroutine only if a retry
+  storm against a full pod is measured. `packages/mcp_server_kit/src/mcp_server_kit/rpc.py`.
+
+- [ ] **A request that promises a body and never finishes it is waited on forever, on `/mcp` and
+  `/rpc` alike.** Confirmed with a raw socket: `Content-Length: 900000` and one byte held the
+  connection past 20 s. uvicorn's `--timeout-keep-alive` covers idle connections only, the
+  Containerfiles pass no flag, and the Deployments set probes but no request timeout. Needs a read
+  timeout per chunk in the body-buffering loop (answer 408), sized above the slowest legitimate
+  client, with a test over a raw socket. The caller must hold the bearer and the NetworkPolicy admits
+  Chemclaw3 only, hence not urgent.
+  `packages/mcp_server_kit/src/mcp_server_kit/finite.py::NonFiniteLiteralRefusal`.
+
+- [ ] **Validating a hostile batch still runs on the event loop on `/mcp`.** The message sent back
+  is bounded on both transports, and `/rpc` validates a body over 64 KiB in a worker thread, but
+  upstream's `Tool.run` validates `tools/call` arguments inline and formats the whole error before
+  the sanitiser cuts it: a 600 KB batch of empty items is about three seconds of loop and a 100 MB
+  string. Offload means wrapping each tool's `fn_metadata.call_fn_with_arg_validation`
+  (a copy of six upstream lines, pinned in `test_upstream_surface.py`).
+  `packages/mcp_server_kit/src/mcp_server_kit/finite.py::finite_arguments`.
+
 ## 4 — Dependencies held back from Dependabot
 
 - [ ] **rdkit 2026.3.6 moves torsion-handle literals both repositories assert**: bump here and in

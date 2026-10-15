@@ -11,6 +11,10 @@ Operational scripts that are not part of any server's runtime.
   latency (plus `calc`'s `calculation_key`), and the prose share of non-test source at the
   pre-programme commit and in the working tree, written to `docs/architecture-baseline.json`
   (`make architecture-baseline`).
+- `bench_rpc_vs_mcp.py` — times `calc`'s `calculation_key` (the call under every cache lookup) over
+  a fresh MCP session, a warm one, a pooled `POST /rpc/...` and an unpooled one, with the server in a
+  thread and as its own process; prints JSON. The figures in
+  `D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release` come from it.
 - `install-chart-tools.sh` — installs the pinned, checksummed `helm` and `kubeconform` into a directory
   (the Jenkins gate runs it; a laptop can too). The pins equal `.github/workflows/ci.yml`'s, held by a
   delivery test.

@@ -17,11 +17,20 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from chemclaw_contracts.rpc import RpcError
+from chemclaw_contracts.rxnlabel import (
+    RXNLABEL_RESPONSES,
+    LabellerVersionRequest,
+    NameReactionRequest,
+    RepresentReactionRequest,
+)
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp_server_kit.testing import (
     assert_bearer_is_enforced,
     assert_manifest_matches,
+    assert_rpc_agrees_with_mcp,
+    assert_rpc_bearer_is_enforced,
     load_manifest,
 )
 
@@ -182,3 +191,50 @@ async def test_the_version_tool_answers_over_the_wire(running_server: str) -> No
         assert result.structuredContent is not None
         assert result.structuredContent["version"].startswith("rxnlabel@")
         assert "rdkit" in result.structuredContent["components"]
+
+
+def test_the_bearer_credential_is_enforced_on_the_rpc_surface(running_server: str) -> None:
+    """`/rpc/<tool>` owes the credential `/mcp` does, on every arm of the rule."""
+    assert_rpc_bearer_is_enforced(
+        running_server,
+        MANIFEST,
+        token=TOKEN,
+        operation=LabellerVersionRequest.tool_name,
+        arguments=LabellerVersionRequest().wire(),
+    )
+
+
+async def test_rpc_and_mcp_answer_the_same_arguments_alike(running_server: str) -> None:
+    """The version, one reaction and both batch forms give one answer over either transport."""
+    batch = [{"id": "r1", "reaction_smiles": BUCHWALD}]
+    await assert_rpc_agrees_with_mcp(
+        running_server,
+        token=TOKEN,
+        cases=[
+            ("labeller_version", LabellerVersionRequest().wire()),
+            ("name_reaction", NameReactionRequest(reaction_smiles=BUCHWALD).wire()),
+            (
+                "represent_reaction",
+                RepresentReactionRequest(
+                    reaction_smiles=BUCHWALD, species=["CC(C)(C)[O-]", "CC#N"]
+                ).wire(),
+            ),
+            ("represent_reactions", {"reactions": batch}),
+            ("name_reactions", {"reactions": batch}),
+        ],
+        responses=RXNLABEL_RESPONSES,
+    )
+
+
+def test_an_oversized_batch_is_a_refusal_the_caller_can_read(running_server: str) -> None:
+    """The batch cap arrives as `refused` with its words, not as a fault to retry."""
+    response = httpx.post(
+        f"{running_server}/rpc/name_reactions",
+        json={"reactions": [{"id": str(n), "reaction_smiles": BUCHWALD} for n in range(501)]},
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        timeout=30.0,
+    )
+    assert response.status_code == 400
+    error = RpcError.model_validate(response.json())
+    assert error.kind == "refused"
+    assert "batch limit" in error.message

@@ -13,6 +13,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from mcp_server_kit.limits import TimeBudgetExceeded
+
 from chemclaw_mcp_calc.engine.metrics import INLINE_BUDGET_EXCEEDED
 
 __all__ = ["TIME_BUDGET_MARKER", "Deadline", "TimeBudgetError"]
@@ -25,10 +27,11 @@ logger = logging.getLogger(__name__)
 TIME_BUDGET_MARKER = "[calc-time-budget]"
 
 
-class TimeBudgetError(ValueError):
+class TimeBudgetError(TimeBudgetExceeded):
     """The inline wall clock stopped this calculation; the input itself was not refused.
 
-    A `ValueError` so `connector_app` passes it verbatim; a subclass so it can be caught precisely.
+    A `ValueError` (through `TimeBudgetExceeded`) so `connector_app` passes it verbatim, and the
+    kind `/rpc` answers as `time_budget`; a subclass so it can be caught precisely.
     """
 
 

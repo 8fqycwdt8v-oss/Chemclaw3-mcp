@@ -26,6 +26,7 @@ __all__ = [
     "JsonFormatter",
     "SecretRedactingFilter",
     "configure_logging",
+    "printable",
     "redact_secrets",
     "register_secret_env",
     "structured_fields",
@@ -167,6 +168,18 @@ def _redact_userinfo(match: re.Match[str]) -> str:
     if second is None:
         return f"{scheme}{_REDACTED}@"
     return f"{scheme}{first}:{_REDACTED}@"
+
+
+def printable(text: str) -> str:
+    """`text` with each control character written out (`\\n`, `\\x1b`), for a caller-chosen string.
+
+    A request path arrives percent-decoded, so `%0a` in it would otherwise end a log line and start
+    a forged one. Applied where a request's path or identity headers are logged.
+    """
+    return "".join(
+        char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+        for char in text
+    )
 
 
 def redact_secrets(text: str) -> str:
