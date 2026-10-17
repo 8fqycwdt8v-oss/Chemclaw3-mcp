@@ -119,6 +119,7 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 - [A refusal set with a hole in it is not a refusal set](D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set.md)
 - [A cake stays incompressible until a filtration test arrives](D-2026-09-26-a-cake-stays-incompressible-until-a-filtration-test-arrives.md)
 - [A stiff semi-batch dose is integrated by an L-stable scheme, not refused](D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused.md)
+- [RK4's step floor sits at half its stability limit, and the step ceiling stays where it was](D-2026-10-23-rk4-steps-at-half-its-stability-limit.md)
 - [A per-class trust prior adjusts the corpus; it does not replace it](D-2026-09-26-a-class-prior-adjusts-the-corpus-it-does-not-replace-it.md)
 - [An environment trust prior adjusts the table; it does not replace it](D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it.md)
 - [A resolved structure is written without a dative arrow](D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow.md)

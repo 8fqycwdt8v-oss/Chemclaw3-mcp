@@ -26,10 +26,6 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
   measure the prior/rank shift; the SMARTS path stays as fallback.
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`.
 
-- [ ] **RK4's step floor in `kinetics` sits on its stability limit** (peak 0.21% low at `k = 10`):
-  add a margin (doubles worst-case cost, resize the ceiling) or route floor-bound doses to the stable
-  scheme. `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py::RK4_REAL_STABILITY_LIMIT`.
-
 ## 2 — Corpora that are not yet licensed to exist
 
 - [ ] **ChEMBL is CC-BY-SA; `chembl` waits on what that obliges for a derived answer** (vendored
