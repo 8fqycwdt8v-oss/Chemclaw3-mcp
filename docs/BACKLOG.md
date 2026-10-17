@@ -85,9 +85,9 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 
 ## 5 — Chemclaw3 consuming the fleet chart
 
-- [ ] **Chemclaw3's `deploy/kind/render-fleet.sh` and the tests that hold its `connectors.<name>.url`
-  values against this repository read `servers/*/deploy/*.yaml`, which no longer exist.** Render the
-  chart instead (`helm template`, `--set` for the kind image registry, `Never` pull policy and one
-  replica), then make the core chart depend on it so a connector's URL, port and token key derive from
-  `servers.<name>.port`. **Other repository:** `Chemclaw3`; the chart is
+- [ ] **Chemclaw3's chart does not depend on this one, so each connector's URL, port and token key is
+  written twice.** Chemclaw3's kind lane and the tests that hold its `connectors.<name>.url` values
+  against this repository already render this chart; what remains is the dependency (Chemclaw3's
+  W6.8), deriving them from `servers.<name>.port`, and a place Helm can fetch this chart from (an OCI
+  registry or a chart repository). **Other repository:** `Chemclaw3`; the chart is
   `deploy/helm/chemclaw-fleet`, its interface `deploy/README.md`.
