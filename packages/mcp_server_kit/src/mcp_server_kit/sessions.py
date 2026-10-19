@@ -1,19 +1,15 @@
-"""Bound MCP sessions in lifetime and number, and never reap one that is still computing.
+"""Bound MCP sessions in lifetime and number, on top of what upstream's transport already does.
 
-Every `initialize` mints a session (an instance-map entry, a live task, two streams), and as
-`FastMCP` ships nothing ever removes one: no idle timeout is passed, and upstream skips its own
-cleanup for a session a `DELETE` terminated. Each un-deleted session costs ~57 kB of RSS. This
-module adds:
+Every `initialize` mints a session (an instance-map entry, a live task, two streams) costing ~57 kB
+of RSS. Upstream (`mcp` >= 1.30) closes one that has had no HTTP request in flight for its idle
+timeout — a running tool call's request and an open GET stream both hold it — forgets a `DELETE`d
+one, and discards one whose opening request it refused. This module adds:
 
-- **An idle timeout** (`MCP_SESSION_IDLE_TIMEOUT_SECONDS`), held off while any tool call on the
-  session runs — and re-asserted after upstream pushes the deadline on every request — because
-  expiring a session mid-call silently cuts the SSE stream with no error.
-- **A short lease for a session never used after its handshake**, and immediate discard of a
-  session upstream minted for a request it refused.
-- **A sweep of terminated sessions** after every request.
-- **A ceiling** (`MCP_MAX_SESSIONS`): a timeout cannot stop one caller opening sessions faster than
-  they expire, so a handshake past the ceiling is refused promptly with **503** and `Retry-After`
-  before any session exists.
+- **This fleet's values for upstream's two bounds** (`MCP_SESSION_IDLE_TIMEOUT_SECONDS`,
+  `MCP_MAX_SESSIONS`), so `0` switches either off rather than leaving upstream's default in force.
+- **A short lease for a session never used after its handshake.**
+- **A ceiling refused promptly with 503 and `Retry-After`**, before any session exists and counted
+  on `/metrics`: a timeout cannot stop one caller opening sessions faster than they expire.
 """
 
 from __future__ import annotations
@@ -23,12 +19,11 @@ import math
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from typing import Any
 
 import anyio
 from mcp.server.fastmcp import FastMCP
-from mcp.server.lowlevel.server import request_ctx
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
 from mcp.types import ErrorData, JSONRPCError
 from starlette.responses import Response
@@ -51,23 +46,20 @@ __all__ = [
     "SMALLEST_POD_MEMORY_LIMIT_BYTES",
     "apply_session_ceiling",
     "apply_session_idle_timeout",
+    "configure_session_bounds",
     "max_sessions",
     "session_idle_timeout",
     "session_unused_timeout",
 ]
 
-# Upstream's recommendation, well above the gap between tool calls in one turn. Bounds an orphan's
-# lifetime, not a call's: a call in flight holds the deadline off.
+# Upstream's default, well above the gap between tool calls in one turn. Bounds an orphan's
+# lifetime, not a call's: upstream counts a call's request as in flight and holds the deadline off.
 DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800.0
 
 #: How long a session minted and never used again may hold its slot. Any real client's next request
-#: promotes it to the idle timeout via upstream's own push, so only aborted handshakes and floods
-#: keep this lease — which makes a filled ceiling recover in a minute, not thirty.
+#: promotes it to the idle timeout, which upstream restarts when that request completes, so only
+#: aborted handshakes and floods keep this lease — a filled ceiling recovers in a minute, not thirty.
 DEFAULT_SESSION_UNUSED_TIMEOUT_SECONDS = 60.0
-
-# Marks a transport whose request handler already re-asserts the hold, so a second concurrent
-# call on the same session does not stack a second wrapper on top of the first.
-_REASSERTED = "_chemclaw_hold_reasserted"
 
 # Marks a session that has had at least one request of its own, so the short first lease
 # `_settle_a_minted_session` applies at mint is never applied over an active one.
@@ -150,88 +142,12 @@ def session_unused_timeout(idle: float) -> float:
     return idle if seconds <= 0 else min(seconds, idle)
 
 
-def _current_transport(server: FastMCP) -> tuple[str, Any] | None:
-    """The session id and transport of the session this tool call is being served on.
-
-    `None` when unavailable (a direct call in a test, a stateless server, reaping off), and the tool
-    then runs unchanged.
-    """
-    headers = getattr(getattr(request_ctx.get(None), "request", None), "headers", None)
-    if headers is None:
-        return None
-    session_id = headers.get(MCP_SESSION_ID_HEADER)
-    if not session_id:
-        return None
-    try:
-        instances = server.session_manager._server_instances
-    except RuntimeError:  # pragma: no cover - no manager yet, so nothing to hold open
-        return None
-    transport = instances.get(session_id)
-    if transport is None or getattr(transport, "idle_scope", None) is None:
-        return None
-    return session_id, transport
-
-
-def _reassert_hold_after_upstreams_push(transport: Any, *, held: Callable[[], bool]) -> None:
-    """Put the hold back after every request upstream pushes the deadline for.
-
-    Upstream pushes the deadline in `_handle_stateful_request` and then calls
-    `transport.handle_request`; wrapping the latter is the only seam after the push and before the
-    request is served. Installed once per transport, dying with it; `held` is read at request time.
-    """
-    if getattr(transport, _REASSERTED, False):
-        return
-    wrapped = transport.handle_request
-
-    async def handle_request(*args: Any, **kwargs: Any) -> Any:
-        scope = getattr(transport, "idle_scope", None)
-        if scope is not None and held():
-            scope.deadline = math.inf
-        return await wrapped(*args, **kwargs)
-
-    transport.handle_request = handle_request
-    setattr(transport, _REASSERTED, True)
-
-
-def _hold_open_during_tool_calls(server: FastMCP, *, timeout: float) -> None:
-    """Suspend a session's idle deadline while any tool call on it is running.
-
-    Counted per session, so concurrent calls restore the deadline only when the last returns; the
-    re-assert reads the same count.
-    """
-    manager = getattr(server, "_tool_manager", None)
-    if manager is None:  # pragma: no cover - see `app._bind_caller_per_tool_call`
-        return
-    wrapped = manager.call_tool
-    in_flight: dict[str, int] = {}
-
-    async def call_tool(*args: Any, **kwargs: Any) -> Any:
-        current = _current_transport(server)
-        if current is None:
-            return await wrapped(*args, **kwargs)
-        session_id, transport = current
-        in_flight[session_id] = in_flight.get(session_id, 0) + 1
-        _reassert_hold_after_upstreams_push(transport, held=lambda: bool(in_flight.get(session_id)))
-        transport.idle_scope.deadline = math.inf
-        try:
-            return await wrapped(*args, **kwargs)
-        finally:
-            remaining = in_flight[session_id] - 1
-            if remaining:
-                in_flight[session_id] = remaining
-            else:
-                del in_flight[session_id]
-                transport.idle_scope.deadline = anyio.current_time() + timeout
-
-    manager.call_tool = call_tool
-
-
 def _drop_terminated_sessions(server: FastMCP) -> None:
-    """Reclaim sessions a polite `DELETE` terminated, which upstream's own cleanup will not.
+    """Forget sessions already terminated, so the ceiling counts only live ones.
 
-    Upstream removes a session only if it is *not* `is_terminated`, and `terminate()` sets that flag
-    first, so a `DELETE`d session stays in the map forever. A sweep, not a hook on `terminate`, so
-    it also covers sessions that never called a tool; O(live sessions).
+    Upstream forgets a `DELETE`d session only after the `DELETE` has been answered, so a handshake
+    arriving in that gap would be counted against a corpse. O(live sessions); `_session_owners` is
+    left to upstream's own discard, which pops both maps for every session that ends.
     """
     try:
         instances = server.session_manager._server_instances
@@ -245,50 +161,13 @@ def _drop_terminated_sessions(server: FastMCP) -> None:
         instances.pop(session_id, None)
 
 
-def _reclaim_after_every_request(server: FastMCP) -> None:
-    """Sweep terminated sessions once per request, on the manager's own ASGI entry.
+def _start_minted_sessions_on_the_short_lease(server: FastMCP, *, unused: float) -> None:
+    """Give a just-minted session the `unused` lease instead of the full idle timeout.
 
-    Every request passes here, so the request that terminates a session also reclaims it.
-    """
-    manager = server.session_manager
-    wrapped = manager.handle_request
-
-    async def handle_request(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return await wrapped(*args, **kwargs)
-        finally:
-            _drop_terminated_sessions(server)
-
-    manager.handle_request = handle_request  # type: ignore[method-assign]
-
-
-async def _discard_an_unusable_session(server: FastMCP, session_id: str) -> None:
-    """Close a session upstream minted for a request it then refused.
-
-    Upstream mints whenever the session-id header is absent, so a bare `DELETE`/`GET`, a sessionless
-    `ping` or a malformed body each answer 400 and leave an unusable session that would fill the
-    ceiling. The 400 carries the minted `mcp-session-id`, so it is named exactly. `terminate()` then
-    `pop`: both are needed to end the task and free the entry.
-    """
-    try:
-        instances = server.session_manager._server_instances
-    except RuntimeError:  # pragma: no cover - no manager yet, so nothing to discard
-        return
-    transport = instances.get(session_id)
-    if transport is None:  # pragma: no cover - already swept
-        return
-    await transport.terminate()
-    instances.pop(session_id, None)
-
-
-def _settle_a_minted_session(server: FastMCP, *, unused: float | None) -> None:
-    """Give a just-minted session a short lease, and discard one that was minted by mistake.
-
-    Decided from upstream's response: an error response's session is discarded; a served one starts
-    on the `unused` lease, which upstream's push on the next request promotes to the idle timeout.
-    `unused=None` installs the discard alone, which is needed even with reaping off. A session that
-    has received any further request is marked and never shortened, so a call started immediately
-    after the handshake cannot have its hold overwritten.
+    The minted id is read off upstream's response, and the lease starts once that response is
+    complete; upstream restarts the full countdown when the session's next request completes. A
+    session upstream refused is already gone and is skipped, and one that has had a request of its
+    own is marked and never shortened.
     """
     manager = server.session_manager
     wrapped = manager.handle_request
@@ -298,21 +177,18 @@ def _settle_a_minted_session(server: FastMCP, *, unused: float | None) -> None:
             _mark_session_used(server, _session_id_in(scope.get("headers", [])))
             await wrapped(scope, receive, send)
             return
-        minted: list[tuple[str, int]] = []
+        minted: list[str] = []
 
         async def send_and_note_the_session(message: Any) -> None:
             if message.get("type") == "http.response.start":
                 session_id = _session_id_in(message.get("headers", []))
                 if session_id is not None:
-                    minted.append((session_id, int(message["status"])))
+                    minted.append(session_id)
             await send(message)
 
         await wrapped(scope, receive, send_and_note_the_session)
-        for session_id, status in minted:
-            if status >= 400:
-                await _discard_an_unusable_session(server, session_id)
-            elif unused is not None:
-                _start_the_short_lease(server, session_id, unused=unused)
+        for session_id in minted:
+            _start_the_short_lease(server, session_id, unused=unused)
 
     manager.handle_request = handle_request  # type: ignore[method-assign]
 
@@ -330,7 +206,11 @@ def _mark_session_used(server: FastMCP, session_id: str | None) -> None:
 
 
 def _start_the_short_lease(server: FastMCP, session_id: str, *, unused: float) -> None:
-    """Put the just-minted session on the unused lease, unless it is already in use."""
+    """Put the just-minted session on the unused lease, unless it is already in use.
+
+    In use is a request of its own (the marker) or one in flight now, which upstream signals with
+    a deadline of `math.inf`; shortening that would close the session under the request.
+    """
     try:
         transport = server.session_manager._server_instances.get(session_id)
     except RuntimeError:  # pragma: no cover - no manager yet
