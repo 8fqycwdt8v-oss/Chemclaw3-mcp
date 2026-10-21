@@ -122,5 +122,7 @@ index of what is in force.
 | [D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package](D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package.md) | The fleet owns every connector contract; Chemclaw3 takes it as a git dependency pinned to a tag |
 | [D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release](D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release.md) | Backends (`calc`, `rxnlabel`) speak typed HTTP/JSON, served beside MCP for one release |
 | [D-2026-10-14-the-fleet-deploys-as-one-chart](D-2026-10-14-the-fleet-deploys-as-one-chart.md) | A server's deployment is a row in one Helm chart's values, and the deploy checks read what that chart renders |
+| [D-2026-10-21-a-prepare-and-parse-server-is-not-a-dft-tier](D-2026-10-21-a-prepare-and-parse-server-is-not-a-dft-tier.md) | **Proposed.** A server may prepare engine inputs and parse engine outputs for a calculation run elsewhere, executing no engine; "No DFT tier" narrows to "no tool that runs a QM engine or calls a hosted QM API" |
+| [D-2026-10-21-every-compute-server-serves-a-calculation-key](D-2026-10-21-every-compute-server-serves-a-calculation-key.md) | **Proposed.** A `compute: true` server serves `calculation_key` for every compute tool, derived by the kit's `keys.py`, with `calc_version` naming the engine build |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3
