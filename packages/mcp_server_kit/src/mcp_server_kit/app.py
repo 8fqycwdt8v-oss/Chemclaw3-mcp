@@ -346,8 +346,7 @@ def connector_app(
     # Before `streamable_http_app()`, which reads it. Raises on an unusable entry, naming it.
     apply_allowed_hosts(server)
     mcp_app = server.streamable_http_app()
-    # After `streamable_http_app()`, which builds the session manager this reaches into. Keeps a
-    # session alive while a call runs, so a long calculation is not reaped as idle.
+    # After `streamable_http_app()`, which builds the session manager this reaches into.
     apply_session_idle_timeout(server)
     # Installed last so the ceiling is outermost and a refused handshake never reaches the sweep.
     apply_session_ceiling(server, name=name)
