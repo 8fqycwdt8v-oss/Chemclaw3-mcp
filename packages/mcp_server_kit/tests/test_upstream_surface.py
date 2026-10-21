@@ -91,46 +91,41 @@ def test_jsonschema_validate_is_still_check_schema_then_best_match() -> None:
         )
 
 
-def test_fastmcp_still_does_not_pass_a_session_idle_timeout() -> None:
-    """An absence pin: `FastMCP` does not pass a session idle timeout, which is why `sessions.py`
-    exists.
+def test_the_session_manager_reads_its_idle_timeout_and_ceiling_when_it_mints() -> None:
+    """`sessions.py` sets two attributes rather than rebuilding the manager with the keywords.
 
-    If upstream starts passing it, `sessions.py` becomes an override rather than the only GC.
-    """
-    source = inspect.getsource(FastMCP.streamable_http_app)
-    assert "StreamableHTTPSessionManager(" in source, (
-        "FastMCP.streamable_http_app no longer constructs the session manager lazily; "
-        "mcp_server_kit/sessions.py sets its idle timeout after that call"
-    )
-    assert "session_idle_timeout" not in source, (
-        "FastMCP now passes session_idle_timeout itself; re-read mcp_server_kit/sessions.py, "
-        "which exists only because it did not"
-    )
-
-
-def test_the_session_manager_reads_its_idle_timeout_at_run_time() -> None:
-    """`sessions.py` sets the attribute rather than rebuilding the manager with the keyword.
-
-    Sound only because both readers read `self.session_idle_timeout` at run time; rebuilding would
+    Sound only because a session takes both from the manager when it is minted; rebuilding would
     restate every constructor argument and drop whichever upstream adds next.
     """
-    assert "session_idle_timeout" in inspect.signature(StreamableHTTPSessionManager).parameters
-    source = inspect.getsource(StreamableHTTPSessionManager)
-    assert source.count("self.session_idle_timeout") >= 3, (
-        "the session manager no longer reads self.session_idle_timeout at request time; "
-        "mcp_server_kit/sessions.py assigns it after construction"
+    source = inspect.getsource(StreamableHTTPSessionManager._admit_session)
+    assert "idle_timeout=self.session_idle_timeout" in source, (
+        "a new session no longer takes its idle timeout from the manager at mint; "
+        "mcp_server_kit/sessions.py assigns session_idle_timeout after construction"
     )
-    assert "idle_scope.deadline" in source, (
-        "the session manager no longer expires a session through an anyio CancelScope deadline; "
-        "mcp_server_kit/sessions.py suspends exactly that deadline while a tool call runs"
+    assert "self.max_sessions" in source, (
+        "the manager no longer reads its own ceiling at mint; mcp_server_kit/sessions.py turns it "
+        "off after construction so the kit's ceiling is the only one"
+    )
+
+
+def test_a_request_in_flight_suspends_the_sessions_idle_deadline() -> None:
+    """Upstream holds a session open while any request on it is in flight, a GET stream included.
+
+    `sessions.py` no longer wraps tool calls for this; without it a four-hour CREST search would be
+    reaped mid-stream with no error written. `test_sessions.py` drives it end to end.
+    """
+    source = inspect.getsource(StreamableHTTPServerTransport.handle_request)
+    assert "self._requests_in_flight += 1" in source
+    assert "self.idle_scope.deadline = math.inf" in source, (
+        "the transport no longer suspends its idle deadline while a request is in flight; "
+        "a long tool call can be reaped as idle again"
     )
 
 
 def test_a_live_session_is_reachable_by_id_through_the_managers_instance_map() -> None:
-    """The two private names `sessions._current_session` walks, and the header it starts from.
+    """The private names `sessions.py` reads a session through, and the header it starts from.
 
-    Without `_server_instances` and `idle_scope`, a tool call cannot find its session and long calls
-    would silently stop being held open.
+    Without `_server_instances` and `idle_scope`, the first lease cannot find or shorten a session.
     """
     manager = StreamableHTTPSessionManager(app=_probe()._mcp_server)
     assert isinstance(manager._server_instances, dict)
@@ -154,7 +149,8 @@ def test_a_session_is_minted_exactly_when_the_session_id_header_is_absent() -> N
     )
     # And the map it adds to is the one the ceiling counts, so "will mint" and "is counted" are
     # about the same dict.
-    assert "self._server_instances[http_transport.mcp_session_id] = http_transport" in source
+    admit = inspect.getsource(StreamableHTTPSessionManager._admit_session)
+    assert "self._server_instances[session_id] = http_transport" in admit
 
 
 async def test_list_tools_rebuilds_a_tools_schema_objects_every_time() -> None:
@@ -185,13 +181,13 @@ def test_a_session_is_recorded_in_a_second_map_only_for_an_authenticated_scope_u
     only while `BearerAuthMiddleware` sets no `AuthenticatedUser`; if upstream records owners
     unconditionally, or the kit adopts upstream's bearer middleware, deleted sessions leak there.
     """
-    source = inspect.getsource(StreamableHTTPSessionManager._handle_stateful_request)
+    source = inspect.getsource(StreamableHTTPSessionManager._admit_session)
     assert "if requestor is not None:" in source, (
         "upstream no longer guards `_session_owners` on an authenticated requestor; "
         "mcp_server_kit/sessions.py sweeps `_server_instances` only, on the grounds that the "
         "other map stays empty in this fleet"
     )
-    assert "self._session_owners[http_transport.mcp_session_id] = requestor" in source
+    assert "self._session_owners[session_id] = requestor" in source
     constructor = inspect.getsource(StreamableHTTPSessionManager.__init__)
     assert "self._session_owners" in constructor, (
         "upstream no longer keeps a second per-session map; re-read the sweep in "
