@@ -7,7 +7,7 @@ dependencies = [
     # The manifest each server reports its `contract_version` from, and the wire models it serves.
     "chemclaw-contracts",
     "fastapi>=0.115",
-    "mcp>=1.9,<2",
+    "mcp>=1.30,<2",
     "prometheus-client>=0.20",
     "pydantic>=2.9",
     "starlette>=0.38",

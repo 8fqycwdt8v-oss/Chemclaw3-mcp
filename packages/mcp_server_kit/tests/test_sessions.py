@@ -1,9 +1,8 @@
 """An abandoned MCP session is reaped; one with a call still running is not.
 
-`FastMCP` never passes upstream's `session_idle_timeout`, so `sessions.py` sets one. Upstream
-pushes the deadline only when a request arrives, so a tool call outliving the timeout would be
-cancelled mid-flight; the hold-open wrapper prevents that, and the counterfactual test drives the
-same slow tool without it.
+`sessions.py` sets the timeout; upstream suspends it while any request on the session is in
+flight, so a tool call outliving it still returns. These tests drive both halves through
+`connector_app`.
 
 Timings are short (1 s timeout, a 2.5 s tool) because the subject is a deadline, not a duration.
 """
@@ -13,15 +12,13 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
 import anyio
 import httpx
 import pytest
-from fastapi import FastAPI
 from mcp.server.fastmcp import FastMCP
 from mcp_server_kit.app import connector_app
 from mcp_server_kit.sessions import (
@@ -36,7 +33,7 @@ from mcp_server_kit.sessions import (
 TOKEN = "test-token-for-sessions"
 TOKEN_ENV = "MCP_KIT_SESSIONS_TOKEN"
 IDLE_TIMEOUT_SECONDS = 1.0
-# Comfortably longer than the idle timeout, so a call that is not held open is certain to be cut.
+# Comfortably longer than the idle timeout, so a call that were not held open would be cut.
 SLOW_TOOL_SECONDS = 2.5
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -76,6 +73,18 @@ def test_the_default_is_upstreams_recommendation_and_zero_turns_reaping_off(
     assert session_idle_timeout() is None
     monkeypatch.setenv("MCP_SESSION_IDLE_TIMEOUT_SECONDS", "not a number")
     assert session_idle_timeout() == DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS
+
+
+def test_zero_turns_reaping_and_the_ceiling_off_in_the_manager_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`0` reaches the session manager, which otherwise applies upstream's own defaults."""
+    monkeypatch.setenv("MCP_SESSION_IDLE_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("MCP_MAX_SESSIONS", "0")
+    server = _probe_server("off")
+    connector_app(server, name="off", token_env=TOKEN_ENV)
+    assert server.session_manager.session_idle_timeout is None
+    assert server.session_manager.max_sessions is None
 
 
 def _open_session(base: str) -> str:
@@ -161,57 +170,13 @@ async def test_a_session_with_a_call_in_flight_is_not_reaped(
             assert not still_here.isError
 
 
-@asynccontextmanager
-async def _unheld_app(name: str) -> AsyncIterator[FastAPI]:
-    """The counterfactual: upstream's idle timeout with nothing holding it open.
-
-    Assembled by hand, because `connector_app` is what installs the hold-open wrapper.
-    """
-    server = _probe_server(name)
-    mcp_app = server.streamable_http_app()
-    server.session_manager.session_idle_timeout = IDLE_TIMEOUT_SECONDS
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        async with server.session_manager.run():
-            yield
-
-    app = FastAPI(lifespan=lifespan)
-
-    @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
-
-    app.mount("/", mcp_app)
-    yield app
-
-
-async def test_without_the_hold_open_the_caller_never_gets_an_answer(
-    serving: Callable[..., Any], mcp_session: Callable[..., Any]
-) -> None:
-    """Without the hold-open, the caller never gets an answer.
-
-    This arm shows the timeout is armed and that the hold-open is what survives it. The failure is a
-    hang, not an error: expiring the session stops the SSE stream with no JSON-RPC error written, so
-    `wait_for` bounds the test.
-    """
-    async with _unheld_app("unheld") as app:
-        with serving(app) as base:
-            async with mcp_session(base) as session:
-                with pytest.raises(asyncio.TimeoutError):
-                    await asyncio.wait_for(
-                        session.call_tool("slow", {}), timeout=SLOW_TOOL_SECONDS * 2
-                    )
-
-
 @pytest.mark.parametrize("interfering", ["ping", "tools/list"])
 async def test_a_second_request_does_not_reap_the_call_in_flight(
     serving: Callable[..., Any], mcp_session: Callable[..., Any], interfering: str
 ) -> None:
     """A second request on the session does not reap the call in flight.
 
-    Upstream re-arms the deadline on every request for an existing session, including a ping or
-    `tools/list`, which would overwrite the hold-open's `math.inf`; the hold-open must re-assert.
+    A ping or `tools/list` ending while the call still runs must not re-arm the deadline under it.
     Chemclaw3 sends a ping as a cancellation flush when one call of a fan-out times out, so this is
     a real trigger.
     """
@@ -365,7 +330,7 @@ async def test_the_short_lease_is_never_applied_over_a_session_that_is_already_w
     """The short lease is never applied over a session that is already working.
 
     It is applied after the minting response is written, so a client may already have a tool call
-    in flight; overwriting the hold-open deadline would cancel it silently. Driven against the
+    in flight; overwriting its suspended deadline would cancel it silently. Driven against the
     helper because the window is microseconds wide: the decision is asserted, not the schedule.
     """
     server = _probe_server("guards")
@@ -385,7 +350,7 @@ async def test_the_short_lease_is_never_applied_over_a_session_that_is_already_w
         _start_the_short_lease(server, session_id, unused=FIRST_LEASE_SECONDS)
 
     assert working.idle_scope.deadline == math.inf, (
-        "a tool call in flight had its hold-open deadline replaced by the first lease; the call "
+        "a tool call in flight had its suspended deadline replaced by the first lease; the call "
         "would be cancelled from inside the transport with no error written to the caller"
     )
     assert promoted.idle_scope.deadline == far, (
