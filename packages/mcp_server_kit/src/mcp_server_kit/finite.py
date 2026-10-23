@@ -1,6 +1,10 @@
-"""Refuse a NaN or an infinity in any tool argument, for every served tool, on both channels.
+"""Refuse a NaN or an infinity in any tool argument or answer, for every served tool.
 
-Nothing upstream refuses one, and there are two ways in:
+An answer is refused too (`refuse_non_finite_answers`): MCP's text writes a model's NaN as `null`
+and a dict's as a bare `NaN`, and `/rpc` cannot encode one at all, so one computation would reach
+the caller three ways; a refusal is the one answer every channel can carry and no cache keeps.
+
+Nothing upstream refuses an argument, and there are two ways in:
 
 - **A bare literal** (`NaN`, `Infinity`, `1e400`) is accepted by the transport's `json.loads` and
   rewritten to `null`, so an optional argument would silently read as "not given".
@@ -15,8 +19,10 @@ defaults (not validated), and tools registered after `connector_app` ran.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
+from collections.abc import Callable
 from typing import Any
 
 from chemclaw_contracts.rpc import RPC_PREFIX, RpcError
@@ -96,6 +102,43 @@ def refuse_non_finite_arguments(server: FastMCP) -> None:
     """
     for tool in server._tool_manager.list_tools():
         tool.fn_metadata.arg_model = finite_arguments(tool.fn_metadata.arg_model)
+
+
+def _finite_answer(tool: str, fn: Callable[..., Any], is_async: bool) -> Callable[..., Any]:
+    """`fn` returning what it returned, or raising a `ValueError` naming its first non-finite float.
+
+    A `ValueError`, so the call is a caller-safe refusal on both channels and nothing is cached.
+    """
+
+    def checked(answer: Any) -> Any:
+        where = first_non_finite(answer, "answer")
+        if where is not None:
+            raise ValueError(
+                f"{tool} computed {where}, which {NON_FINITE_REFUSAL}. The calculation produced "
+                "no number here: a NaN or an infinity is not a result, and neither JSON nor a "
+                "cached record can carry it."
+            )
+        return answer
+
+    if is_async:
+
+        @functools.wraps(fn)
+        async def run_async(*args: Any, **kwargs: Any) -> Any:
+            return checked(await fn(*args, **kwargs))
+
+        return run_async
+
+    @functools.wraps(fn)
+    def run(*args: Any, **kwargs: Any) -> Any:
+        return checked(fn(*args, **kwargs))
+
+    return run
+
+
+def refuse_non_finite_answers(server: FastMCP) -> None:
+    """Install `_finite_answer` on every tool `server` serves, before its answer is serialised."""
+    for tool in server._tool_manager.list_tools():
+        tool.fn = _finite_answer(tool.name, tool.fn, tool.is_async)
 
 
 def _non_finite_literal(body: bytes) -> tuple[str, object] | None:

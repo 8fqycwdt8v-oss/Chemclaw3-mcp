@@ -52,7 +52,11 @@ from mcp_server_kit.degradation import (
     register_components,
 )
 from mcp_server_kit.executor import install_default_executor
-from mcp_server_kit.finite import NonFiniteLiteralRefusal, refuse_non_finite_arguments
+from mcp_server_kit.finite import (
+    NonFiniteLiteralRefusal,
+    refuse_non_finite_answers,
+    refuse_non_finite_arguments,
+)
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
     HEADER_CORRELATION,
@@ -335,6 +339,7 @@ def connector_app(
     # Before any wrapper, because it is not one: it replaces each tool's argument model, so a NaN or
     # an infinity is a validation refusal like any other and every wrapper below books it as one.
     refuse_non_finite_arguments(server)
+    refuse_non_finite_answers(server)
     _sanitize_tool_errors(server, name=name)
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
