@@ -11,15 +11,15 @@ import pytest
 from chemclaw_mcp_chem.engine.torsions import enumerate_torsion_candidates, torsion_handle
 from rdkit import Chem
 
-# `(SMILES, bond, handle)` — the identical table Chemclaw3 asserts, under rdkit 2026.03.5.
+# `(SMILES, bond, handle)` — the identical table Chemclaw3 asserts, under rdkit 2026.09.1.
 CONTRACT = [
-    ("CC(=O)Nc1ccccc1", (1, 3), "tor_d139107cd84f9333"),
-    ("O=C(C)Nc1ccccc1", (1, 3), "tor_d139107cd84f9333"),
-    ("c1ccc(NC(C)=O)cc1", (4, 5), "tor_d139107cd84f9333"),
-    ("CCCC", (1, 2), "tor_6b25409b2bd410a6"),
-    ("c1ccc(-c2ccccc2)cc1", (3, 4), "tor_17935ce6ec9a1219"),
-    ("Cc1ccc(C)cc1", (0, 1), "tor_7b6b88fe5991e188"),
-    ("Cc1ccc(C)cc1", (4, 5), "tor_7b6b88fe5991e188"),
+    ("CC(=O)Nc1ccccc1", (1, 3), "tor_a09b24d328061b96"),
+    ("O=C(C)Nc1ccccc1", (1, 3), "tor_a09b24d328061b96"),
+    ("c1ccc(NC(C)=O)cc1", (4, 5), "tor_a09b24d328061b96"),
+    ("CCCC", (1, 2), "tor_504719db4695b70e"),
+    ("c1ccc(-c2ccccc2)cc1", (3, 4), "tor_54e766936ffdb5ab"),
+    ("Cc1ccc(C)cc1", (0, 1), "tor_8a49a44e671d07de"),
+    ("Cc1ccc(C)cc1", (4, 5), "tor_8a49a44e671d07de"),
 ]
 
 

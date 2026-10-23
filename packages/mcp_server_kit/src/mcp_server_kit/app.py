@@ -388,7 +388,13 @@ def connector_app(
             # blocking shutdown; `cancel_futures` would drop queued work silently.
             tool_pool.shutdown(wait=False)
 
-    app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
+    # FastAPI's own OpenTelemetry (on by default) would record every request under the
+    # global provider, tracing switch or not; `tracing.py` is the one span source, identifiers only.
+    app = FastAPI(
+        title=f"chemclaw-mcp-{name}",
+        lifespan=lifespan,
+        telemetry={"tracing": False, "metrics": False, "logs": False},
+    )
     # First, therefore innermost: it buffers a body, so it runs only on one the size cap has bounded
     # and the bearer check has admitted, and its 400 is inside the caller log. See `finite.py`.
     app.add_middleware(NonFiniteLiteralRefusal)
