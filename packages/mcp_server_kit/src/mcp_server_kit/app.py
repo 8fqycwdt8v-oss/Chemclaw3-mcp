@@ -52,7 +52,11 @@ from mcp_server_kit.degradation import (
     register_components,
 )
 from mcp_server_kit.executor import install_default_executor
-from mcp_server_kit.finite import NonFiniteLiteralRefusal, refuse_non_finite_arguments
+from mcp_server_kit.finite import (
+    NonFiniteLiteralRefusal,
+    refuse_non_finite_answers,
+    refuse_non_finite_arguments,
+)
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
     HEADER_CORRELATION,
@@ -339,6 +343,7 @@ def connector_app(
     # Not a wrapper either: it replaces each tool's `FuncMetadata`, so a large call is validated off
     # the loop and its refusal is bounded before the wrappers below see it.
     offload_large_argument_validation(server)
+    refuse_non_finite_answers(server)
     _sanitize_tool_errors(server, name=name)
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
