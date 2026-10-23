@@ -21,9 +21,15 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
   and rewording the refusal, after one real 400–450-atom run on the shipped image.
   `servers/calc/src/chemclaw_mcp_calc/engine/budget.py`, `servers/calc/src/chemclaw_mcp_calc/engine/structure.py`.
 
-- [ ] **The hand-written reaction classifier gates the MoE priors; Rxn-INSIGHT is not wired to it.**
-  Rerun issue #128's arm with `rxnmapper` mapping, write a reviewed `NAME`→`ALL_CLASSES` table, and
-  measure the prior/rank shift; the SMARTS path stays as fallback.
+- [ ] **The hand-written reaction classifier answers `classify_reaction`; Rxn-INSIGHT is not wired
+  to it.** On issue #128's spectator corpus with `rxnmapper`'s own maps, Rxn-INSIGHT through #128's
+  keyword table names 12 of 12 traps and 8 of 8 controls, the SMARTS table 5 and 8. A prior/rank
+  shift cannot be measured yet: the vendored per-class priors are empty
+  (`servers/rxnpredict/src/chemclaw_mcp_rxnpredict/data/trust_priors.json`), so the class moves no
+  ranking until a calibration fills them, and `aggregate_forward` classifies from reactants alone,
+  where Rxn-INSIGHT (it needs a mapped product) cannot run. Owed: a reviewed `NAME`→`ALL_CLASSES`
+  table, then Rxn-INSIGHT first in `classify_reaction` and `aggregate_conditions` with the SMARTS
+  path as fallback, its `rxnmapper` load counted by admission.
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`.
 
 ## 2 — Corpora that are not yet licensed to exist
