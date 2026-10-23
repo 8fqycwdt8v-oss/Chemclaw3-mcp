@@ -29,16 +29,12 @@ from mcp_server_kit.logging import redact_secrets
 from mcp_server_kit.metrics import TOOL_CALLS
 from mcp_server_kit.refusal import is_caller_safe, validation_message
 from mcp_server_kit.tracing import tool_call_span
+from mcp_server_kit.validation import INLINE_VALIDATION_MAX_BYTES
 
 __all__ = ["rpc_routes"]
 
 # How much of a caller-chosen operation name an error echoes back.
 _ECHOED_OPERATION_CHARS = 64
-
-# Bodies up to this size are validated on the event loop, where it costs microseconds. A larger one
-# is validated in a worker thread: a hostile body is hundreds of thousands of validation errors,
-# seconds of work that would stall `/livez` if the loop did it.
-INLINE_VALIDATION_MAX_BYTES = 65_536
 
 
 def _error(status: int, kind: RpcErrorKind, message: str) -> Response:
