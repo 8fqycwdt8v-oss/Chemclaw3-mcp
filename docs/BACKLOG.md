@@ -17,8 +17,12 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 ## 1 — The resource-bound ratchet, where it stops
 
 - [ ] **A relaxation at `calc`'s atom ceiling spends its budget instead of converging.** At 450 atoms
-  the 780 s budget buys ~11 optimizer cycles against ~177 needed; decide between a cycle-count bound
-  and rewording the refusal, after one real 400–450-atom run on the shipped image.
+  the 780 s budget buys ~11 optimizer cycles; a 443-atom linear polyalanine, embedded as
+  `optimize_geometry` embeds it and relaxed through `optimize_structure` (tblite + geomeTRIC, one
+  thread), needed 463 cycles (4,389 s on an arm64 core, unbudgeted). A cycle count barely depends on the
+  host, so no budget near 780 s converges such a molecule; still owed is the time per cycle on the
+  shipped image on x86_64 (under amd64 emulation it is ~900 s, not a measurement), then the choice
+  between a cycle-count bound and rewording the refusal.
   `servers/calc/src/chemclaw_mcp_calc/engine/budget.py`, `servers/calc/src/chemclaw_mcp_calc/engine/structure.py`.
 
 - [ ] **The hand-written reaction classifier answers `classify_reaction`; Rxn-INSIGHT is not wired
