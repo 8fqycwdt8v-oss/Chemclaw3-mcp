@@ -184,17 +184,61 @@ def test_a_dose_past_the_explicit_ceiling_is_answered_by_the_stable_scheme() -> 
     assert profile.method == reactors.METHOD_STABLE
     assert profile.steps == reactors.STABLE_INTEGRATION_STEPS
     assert profile.peak_accumulation_fraction == pytest.approx(8.0545086724e-06, rel=1e-6)
-    assert profile.dose_damkohler * reactors.RK4_REAL_STABILITY_LIMIT > (
+    assert profile.dose_damkohler * reactors.RK4_STEP_MARGIN > (
         reactors.RK4_REAL_STABILITY_LIMIT * reactors.MAX_INTEGRATION_STEPS
     ), "the fixture is no longer past the RK4 ceiling, so this test no longer tests the switch"
 
 
 def test_a_dose_rk4_can_integrate_is_still_integrated_by_rk4() -> None:
-    """The switch is at the ceiling and nowhere else, so every answer RK4 gave is unchanged."""
-    for rate_constant in (0.02, 50.0):
+    """The switch is at the ceiling and nowhere else: RK4 answers every dose it can step damped."""
+    for rate_constant in (0.02, 25.0):
         assert _dose(rate_constant=rate_constant).method == reactors.METHOD_RK4
-    assert _stiff(rate_constant=2.5).method == reactors.METHOD_RK4
-    assert _stiff(rate_constant=2.6).method == reactors.METHOD_STABLE
+    assert _stiff(rate_constant=1.25).method == reactors.METHOD_RK4
+    assert _stiff(rate_constant=1.3).method == reactors.METHOD_STABLE
+
+
+#: The two geometries the closed-form check runs on, the worked dose and the stiff one: dose time
+#: (s), initial volume, dosed moles, dosed volume and co-reagent concentration.
+_GEOMETRIES: dict[str, tuple[float, float, float, float, float]] = {
+    "worked": (
+        _DOSE_TIME_SECONDS,
+        _INITIAL_VOLUME,
+        _DOSED_MOLES,
+        _DOSED_VOLUME,
+        _COREAGENT_CONCENTRATION,
+    ),
+    "stiff": (3600.0, 0.1, 5.0, 0.0, 60.0),
+}
+
+
+@pytest.mark.parametrize("rate_constant", [0.1778, 0.5623, 1.0, 10.0])
+@pytest.mark.parametrize("geometry", sorted(_GEOMETRIES))
+def test_a_dose_on_the_step_floor_lands_on_the_closed_form(
+    geometry: str, rate_constant: float
+) -> None:
+    """A dose whose RK4 step count the stiffness sets lands on its closed form.
+
+    Zero order in the co-reagent (never used up here) makes the stiffness bound exact and the dose
+    linear, `dN/dt = F - k*N`, so the peak is `(1 - exp(-k*t)) / (k*t)` at the end of the dose. With
+    `h*lambda` on RK4's stability limit itself the start-up transient never decays, and these read
+    between 0.0003% and 34% low.
+    """
+    dose_time, initial_volume, dosed_moles, dosed_volume, coreagent = _GEOMETRIES[geometry]
+    profile = reactors.semibatch_accumulation(
+        rate_constant=rate_constant,
+        order_in_dosed=1.0,
+        order_in_coreagent=0.0,
+        dose_time_seconds=dose_time,
+        initial_volume=initial_volume,
+        dosed_moles=dosed_moles,
+        dosed_volume=dosed_volume,
+        initial_coreagent_concentration=coreagent,
+    )
+    assert profile.method == reactors.METHOD_RK4
+    assert profile.steps > reactors.DEFAULT_INTEGRATION_STEPS, "the stiffness no longer sets steps"
+    damkohler = rate_constant * dose_time
+    exact = -math.expm1(-damkohler) / damkohler
+    assert profile.peak_accumulation_fraction == pytest.approx(exact, rel=1e-6)
 
 
 def _both(
@@ -233,9 +277,9 @@ def _both(
      "initial_coreagent_concentration", "order_in_dosed"),
     [
         pytest.param(0.02, 7200.0, 50.0, 40.0, 8.0, 0.9, 1.0, id="worked"),
-        pytest.param(50.0, 7200.0, 50.0, 40.0, 8.0, 0.9, 1.0, id="worked-k50"),
+        pytest.param(25.0, 7200.0, 50.0, 40.0, 8.0, 0.9, 1.0, id="worked-k25"),
         pytest.param(0.02, 3600.0, 0.1, 5.0, 0.0, 60.0, 1.0, id="stiff-k0.02"),
-        pytest.param(2.5, 3600.0, 0.1, 5.0, 0.0, 60.0, 1.0, id="stiff-k2.5"),
+        pytest.param(1.25, 3600.0, 0.1, 5.0, 0.0, 60.0, 1.0, id="stiff-k1.25"),
         pytest.param(0.5, 3600.0, 1.0, 40.0, 0.5, 45.0, 2.0, id="second-order"),
         pytest.param(1e-3, 3600.0, 1.0, 200.0, 0.0, 100.0, 2.0, id="second-order-slow"),
     ],
@@ -442,10 +486,10 @@ def _stiff(*, rate_constant: float, order_in_dosed: float = 1.0) -> reactors.Sem
 def test_a_profile_keeps_a_bounded_set_of_points_whatever_the_step_count() -> None:
     """Memory is O(samples), not O(steps), and the peak is exact rather than the nearest sample.
 
-    At `k = 2.5` the stability floor integrates ~194,000 steps, and only the returned samples are
+    At `k = 1.25` the stability floor integrates ~194,000 steps, and only the returned samples are
     kept.
     """
-    profile = _stiff(rate_constant=2.5)
+    profile = _stiff(rate_constant=1.25)
     assert len(profile.points) <= reactors.PROFILE_POINTS
     assert profile.points[0].time_seconds == 0.0
     assert profile.points[-1].time_seconds == pytest.approx(_STIFF_DOSE_SECONDS)
