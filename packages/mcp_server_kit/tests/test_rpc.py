@@ -83,6 +83,13 @@ class BudgetRequest(WireRequest):
     tool_name: ClassVar[str] = "boom_budget"
 
 
+class OverflowRequest(WireRequest):
+    """`overflow`."""
+
+    tool_name: ClassVar[str] = "overflow"
+    x: float
+
+
 class EgressRequest(WireRequest):
     """`dial_out`."""
 
@@ -100,6 +107,7 @@ MODELS: dict[str, type[WireRequest]] = {
         FullRequest,
         BudgetRequest,
         EgressRequest,
+        OverflowRequest,
     )
 }
 
@@ -143,6 +151,11 @@ def _probe_server() -> FastMCP:
     def boom_budget() -> dict[str, str]:
         """Stop as the pod's clock does."""
         raise TimeBudgetExceeded("[rpc-probe-time-budget] a probe exceeded this server's budget")
+
+    @server.tool()
+    def overflow(x: float) -> dict[str, float]:
+        """Return `x` scaled past the largest double: infinity for any `x` above 1."""
+        return {"scaled": x * 1e308}
 
     @server.tool()
     def dial_out() -> dict[str, str]:
@@ -391,6 +404,19 @@ def test_a_non_finite_number_is_refused_whichever_way_it_is_spelled(running_serv
     spelled = _post(running_server, "echo", {"text": "x", "scale": "nan"})
     assert spelled.status_code == 400
     assert "finite" in RpcError.model_validate(spelled.json()).message
+
+
+def test_a_non_finite_answer_is_a_refusal_not_a_fault(running_server: str) -> None:
+    """JSON cannot carry what the tool computed, so it is a 400 refusal, not a 500 to retry."""
+    response = _post(running_server, "overflow", OverflowRequest(x=10.0).wire())
+    assert response.status_code == 400, response.text
+    refusal = RpcError.model_validate(response.json())
+    assert refusal.kind == "refused"
+    assert "overflow computed answer['scaled']" in refusal.message
+    assert "finite" in refusal.message
+    assert _post(running_server, "overflow", OverflowRequest(x=1.0).wire()).json() == {
+        "scaled": 1e308
+    }
 
 
 def test_the_host_rule_applies(running_server: str) -> None:
