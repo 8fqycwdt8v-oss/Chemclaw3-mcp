@@ -62,9 +62,6 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 
 ## 4 — Dependencies held back from Dependabot
 
-- [ ] **rdkit 2026.3.6 moves torsion-handle literals both repositories assert**: bump here and in
-  Chemclaw3 together. `servers/chem/tests/test_torsions.py`, `pyproject.toml`.
-
 - [ ] **`run_python` does not warn that pandas 3 made copy-on-write mandatory** (`df[m]["c"] = x`
   silently does nothing): one docstring sentence and a sandbox test.
   `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.

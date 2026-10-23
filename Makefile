@@ -267,7 +267,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     default-deny egress, the guard), and nothing in `servers/`, `packages/`
 #                     or `scripts/` calls `load_custom_generate` or passes `trust_remote_code`
 #                     at all — measured with a grep over all three on 2026-10-01.
-#   CVE-2026-69112    accelerate 1.14.0 (PYSEC-2026-3804 — again the spelling the audit reports),
+#   CVE-2026-69112    accelerate 1.15.0 (PYSEC-2026-3804 — again the spelling the audit reports),
 #                     **no fix released — and 1.15.0 is not one**. Path traversal
 #                     in `load_checkpoint_in_model` / `load_checkpoint_and_dispatch`: a sharded
 #                     checkpoint's `weight_map` values are joined onto the checkpoint folder and
@@ -279,7 +279,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     fixed: `load_checkpoint_in_model` is **byte-identical** between the two wheels
 #                     (same bare `os.path.join(checkpoint_folder, f)`, no `realpath`, no
 #                     `commonpath`, no FIFO check), and upstream's fix commit is in no release yet.
-#                     A bump to 1.15.0 would buy a green gate and ship the same function.
+#                     The bump to 1.15.0 therefore keeps this entry: it ships the same function.
 #                     Unreachable here for a reason that needs none of that: **nothing calls the
 #                     vulnerable API.** `accelerate` is imported nowhere in `servers/` or
 #                     `packages/` — it enters one shipped image because `rxnpredict[reaction_t5]`
@@ -308,7 +308,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     re-deriving the list — and what settles it is the byte-diff above, not the
 #                     audit's silence. **That paragraph described the hole this file now has a
 #                     mechanism for**: the row in `pyproject.toml` pins this argument to
-#                     `accelerate==1.14.0`, so the *next bump* — to 1.15.0 or past it — turns the
+#                     `accelerate==1.15.0`, so the *next bump* past it turns the
 #                     suppression red and brings a reader back to this text, whether or not the
 #                     advisory has moved. Dependabot alerts are the second trigger and are outside
 #                     this file: they are enabled on this repository and unaffected by
