@@ -208,13 +208,16 @@ resolved. Use `/healthz`, not the chart, to see what a post-render patch or a `s
 | `MCP_MAX_SMILES_CHARS` | `4000` | Longest SMILES accepted, checked before parsing (`chem`, `safety`, `rxnlabel`, `rxnpredict`). |
 | `MCP_MAX_MOLECULE_ATOMS` | `2000` | Most atoms accepted, checked before canonicalising. Capped at what the process stack survives, so a value above that stops startup. |
 | `MCP_MAX_ECHO_CHARS` | `120` | How much of a refused input the error message quotes. |
+| `MCP_BODY_READ_TIMEOUT_SECONDS` | `60` | How long a request body may pause between two chunks. Past it the request gets **408** and its connection is closed, on `/mcp` and `/rpc`. |
 | `MCP_LOG_LEVEL` / `MCP_LOG_FORMAT` / `MCP_LOG_JSON` | `INFO` / timestamp-level-logger-correlation / off | Process logging. `MCP_LOG_JSON=1` gives one JSON object per line. |
 | `MCP_TRACING_ENABLED` | off | Continue Chemclaw3's `traceparent` as a span per tool call. Nothing is exported unless the deployment installs an OpenTelemetry SDK and destination. |
 | `MCP_EGRESS_GUARD` | `on` (set in every image) | The runtime no-egress guard. `off`/`0`/`false`/`no` disarms it, and `chemclaw_mcp_egress_guard_armed` shows that on a scrape. Leave it on. |
 | `MCP_EGRESS_ALLOW` | empty | Hosts the guard lets through. Empty in every shipped deployment, and only for scripts outside a serving image. |
 | `MCP_SERVER_REVISION` | set from the build argument | Reported on `/healthz`, `/livez` and the handshake. Do not set it by hand. |
 
-The per-request body cap is 1 MB (`413` above it). It is a code constant, not a variable.
+The per-request body cap is 1 MB (`413` above it). It is a code constant, not a variable. A
+`tools/call` whose request is over 64 KiB, or declares no length, is validated in a worker thread
+rather than on the event loop, as a `/rpc` body of that size is.
 
 ## 3. Wire it into Chemclaw3
 

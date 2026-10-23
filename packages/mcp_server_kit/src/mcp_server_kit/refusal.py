@@ -11,6 +11,9 @@ Invariants: a message a caller sees is at most `MAX_REFUSAL_CHARS` long, and nam
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
@@ -49,15 +52,24 @@ def bounded_message(text: str) -> str:
 def validation_message(exc: ValidationError) -> str:
     """The first `MAX_REPORTED_ERRORS` errors of `exc`, never the input they quote, and the count.
 
-    Reads `errors()` rather than `str(exc)`, so no error beyond the bound is rendered to text and
-    nothing a caller sent is echoed except the field names it chose.
+    Decoded one at a time off `exc.json()`, so nothing a caller sent is echoed except the field
+    names it chose. Not `str(exc)` or `errors()`: each builds every error as text or as objects,
+    over a second holding the GIL for a hostile body's 300,000, where the JSON is a sixth of that.
     """
     count = exc.error_count()
-    errors = exc.errors(include_input=False, include_url=False, include_context=False)
+    rendered = exc.json(include_input=False, include_url=False, include_context=False)
+    decoder = json.JSONDecoder()
+    errors: list[dict[str, Any]] = []
+    position = rendered.index("[") + 1
+    while len(errors) < min(count, MAX_REPORTED_ERRORS):
+        while rendered[position] in ", \t\r\n":
+            position += 1
+        error, position = decoder.raw_decode(rendered, position)
+        errors.append(error)
     lines = [
         f"{'.'.join(str(part) for part in error['loc']) or '<body>'}\n  {error['msg']}"
         f" [type={error['type']}]"
-        for error in errors[:MAX_REPORTED_ERRORS]
+        for error in errors
     ]
     noun = "error" if count == 1 else "errors"
     omitted = count - len(lines)
