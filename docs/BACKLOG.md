@@ -66,10 +66,6 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 
 ## 4 — Dependencies held back from Dependabot
 
-- [ ] **`run_python` does not warn that pandas 3 made copy-on-write mandatory** (`df[m]["c"] = x`
-  silently does nothing): one docstring sentence and a sandbox test.
-  `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.
-
 ## 5 — Chemclaw3 consuming the fleet chart
 
 - [ ] **Chemclaw3's chart does not depend on this one, so each connector's URL, port and token key is
