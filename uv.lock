@@ -24,6 +24,7 @@ members = [
     "chemclaw-contracts",
     "chemclaw-mcp-calc",
     "chemclaw-mcp-chem",
+    "chemclaw-mcp-chembl",
     "chemclaw-mcp-kinetics",
     "chemclaw-mcp-props",
     "chemclaw-mcp-pyexec",
@@ -520,6 +521,34 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
+name = "chemclaw-mcp-chembl"
+version = "0.1.0"
+source = { editable = "servers/chembl" }
+dependencies = [
+    { name = "mcp-server-kit" },
+    { name = "rdkit" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "mcp-server-kit", editable = "packages/mcp_server_kit" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+    { name = "rdkit", specifier = ">=2024.3.1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "chemclaw-mcp-kinetics"
 version = "0.1.0"
 source = { editable = "servers/kinetics" }
@@ -901,6 +930,7 @@ dev = [
     { name = "chemclaw-contracts" },
     { name = "chemclaw-mcp-calc" },
     { name = "chemclaw-mcp-chem" },
+    { name = "chemclaw-mcp-chembl" },
     { name = "chemclaw-mcp-kinetics" },
     { name = "chemclaw-mcp-props" },
     { name = "chemclaw-mcp-pyexec" },
@@ -935,6 +965,7 @@ dev = [
     { name = "chemclaw-contracts", editable = "packages/chemclaw_contracts" },
     { name = "chemclaw-mcp-calc", editable = "servers/calc" },
     { name = "chemclaw-mcp-chem", editable = "servers/chem" },
+    { name = "chemclaw-mcp-chembl", editable = "servers/chembl" },
     { name = "chemclaw-mcp-kinetics", editable = "servers/kinetics" },
     { name = "chemclaw-mcp-props", editable = "servers/props" },
     { name = "chemclaw-mcp-pyexec", editable = "servers/pyexec" },

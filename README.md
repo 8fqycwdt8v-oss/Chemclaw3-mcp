@@ -70,7 +70,7 @@ DNS-rebinding guard, a `401` from a mismatched token, a readiness `503` naming a
 
 No code change on either side. Chemclaw3 installs every connector's `connector.yaml` from the
 pinned `chemclaw-contracts` package (`chem`, `safety`, `rxnpredict`, `props`, `thermalsafety`,
-`kinetics`, `unitops`, `suitability`, `pyexec`), so it needs only an address and the token, under the
+`kinetics`, `unitops`, `suitability`, `chembl`, `pyexec`), so it needs only an address and the token, under the
 same variable name the server verifies:
 
 ```sh

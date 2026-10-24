@@ -305,10 +305,16 @@ jobs:
         env:
           SERVER: ${{ matrix.server }}
           REVISION: ${{ github.sha }}
-        run: >-
-          docker build -f "servers/$SERVER/Containerfile"
-          --build-arg "CHEMCLAW_REVISION=$REVISION"
-          -t "chemclaw-mcp-$SERVER:ci" .
+        run: |
+          # `chembl` builds its fixture subset here: the full subset is extracted from a 5.4 GB
+          # EMBL-EBI release, which a pull request's image job has no business moving. A release
+          # build (Jenkins) takes the default, `full`.
+          extra=()
+          if [ "$SERVER" = "chembl" ]; then extra=(--build-arg "CHEMBL_TIER=fixture"); fi
+          docker build -f "servers/$SERVER/Containerfile" \
+            --build-arg "CHEMCLAW_REVISION=$REVISION" \
+            "${extra[@]}" \
+            -t "chemclaw-mcp-$SERVER:ci" .
 
       # The size a pod pulls, printed so a dependency change that moves it is a number in this log
       # rather than a guess from wheel sizes. `docker image inspect` reports the uncompressed image,

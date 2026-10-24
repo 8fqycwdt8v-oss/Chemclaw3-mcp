@@ -10,7 +10,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src packages/chemclaw_contracts/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts $(wildcard servers/*/scripts)
+SRC := packages/mcp_server_kit/src packages/chemclaw_contracts/src servers/props/src servers/chem/src servers/safety/src servers/chembl/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts $(wildcard servers/*/scripts)
 # The test tree, globbed rather than listed: a new server's tests are checked the day the directory
 # exists, which is the half `SRC` gets wrong by being a list somebody has to remember to extend.
 # `conftest.py` is named because nothing globs it: it is layer 3 of the no-egress posture — the
@@ -458,6 +458,11 @@ run-chem: ## Run the chem server on its dev port with a dev token.
 run-safety: ## Run the safety server on its dev port with a dev token.
 	CHEMCLAW_SAFETY_TOKEN=$${CHEMCLAW_SAFETY_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_safety.app:app --host 127.0.0.1 --port 8859
+
+.PHONY: run-chembl
+run-chembl: ## Run the chembl server on its dev port with a dev token.
+	CHEMCLAW_CHEMBL_TOKEN=$${CHEMCLAW_CHEMBL_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_chembl.app:app --host 127.0.0.1 --port 8862
 
 .PHONY: run-pyexec
 run-pyexec: ## Run the pyexec analysis sandbox on its dev port with a dev token.

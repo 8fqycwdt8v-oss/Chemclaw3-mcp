@@ -101,6 +101,7 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 - [A field the author wrote is not a field that is missing](D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing.md)
 - [A corpus names who refreshes it and how often, in a shape the loader checks](D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often.md)
 - [GESTIS is not a source, and the reason outlives the build](D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build.md)
+- [ChEMBL is vendored only as share-alike data, after legal review](D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review.md)
 - [A derivable number the fleet held four times](D-2026-09-16-a-derivable-number-the-fleet-held-four-times.md)
 - [A transcription is proven equal, not argued better](D-2026-09-16-a-transcription-is-proven-equal-not-argued-better.md)
 - [A default ceiling is a silent truncation](D-2026-09-16-a-default-ceiling-is-a-silent-truncation.md)

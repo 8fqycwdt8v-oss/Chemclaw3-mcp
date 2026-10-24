@@ -271,6 +271,12 @@ CEILING_IS_ARGUED_ABSENT = {
     # subprocess, no pinned thread, and `MAX_FORMULA_CHARACTERS` bounds the one variable-length
     # input.
     "thermalsafety": "closed-form arithmetic, transport-bound, with its one input bounded",
+    # A few indexed reads of one read-only SQLite file. Measured on the 336 MB full subset
+    # (`time.process_time`, warmed, 200 calls): 0.19-0.62 ms for a lookup by id, name or structure
+    # and 0.44-1.55 ms for a summary, the widest being a 200-row page of imatinib's 1,659. The one
+    # unbounded input (an identifier) is held to the fleet's string bound and every result list is
+    # capped (`MAX_COMPOUNDS`, `MAX_ROWS`). No subprocess and no pinned thread.
+    "chembl": "indexed reads of a read-only file, with its identifier and result lists bounded",
     # Closed-form correlations, microseconds per call (the widest is Underwood's fixed bisection).
     # No subprocess, no pinned thread, and every argument is a scalar, so nothing for a ceiling to
     # bound; the arithmetic is a tiny fraction of an MCP round trip.

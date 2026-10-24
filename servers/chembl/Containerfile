@@ -1,0 +1,117 @@
+# The `chembl` server as one rootless image. Deliberately boring: the ChEMBL subset is baked in at
+# build time, the process runs unprivileged, and the runtime image holds no credential for any
+# external service because none is ever called.
+#
+# **The one stage that reaches the network is `subset`, and it is build-time only.** It runs
+# `scripts/chembl_extract_subset.py`, which downloads ChEMBL 37's SQLite release from EMBL-EBI,
+# refuses it unless its SHA-256 equals both the digest pinned in the script and EMBL-EBI's own
+# `checksums.txt`, and writes the subset and its `dataset.json`. Nothing of the download reaches the
+# runtime image: only `/out` is copied on, so the image holds a few hundred MB of subset, not the
+# 5.4 GB release, and the pod's default-deny NetworkPolicy still holds at request time.
+#
+# `CHEMBL_TIER=full` (the default, and what a release ships) builds the subset from the release.
+# `CHEMBL_TIER=fixture` skips the download and ships the small committed fixture — what CI builds,
+# since a pull request's image job has no business moving 5.4 GB. The tier is written into the
+# subset's `meta` table, into `dataset.json`'s version, and into every answer's `data_tier`, so a
+# fixture image is never mistaken for a full one by anyone reading a response.
+ARG CHEMBL_TIER=full
+
+FROM python:3.11-slim AS subset
+ARG CHEMBL_TIER
+WORKDIR /work
+COPY scripts/chembl_extract_subset.py /work/chembl_extract_subset.py
+COPY servers/chembl/src/chemclaw_mcp_chembl/data /fixture
+# `-I`: the script's directory is not on the import path, and the downloaded archive is data.
+RUN mkdir /out \
+    && if [ "${CHEMBL_TIER}" = "full" ]; then \
+         python -I /work/chembl_extract_subset.py --tier full --workdir /work/download --out-dir /out; \
+       elif [ "${CHEMBL_TIER}" = "fixture" ]; then \
+         cp /fixture/* /out/; \
+       else echo "CHEMBL_TIER must be full or fixture, not ${CHEMBL_TIER}" >&2; exit 1; fi
+
+FROM python:3.11-slim AS build
+
+WORKDIR /build
+# **The lock, because an image that re-resolves is an image nobody audited.**
+# `make deps-audit` reads `uv.lock`; until this line existed no Containerfile in this repository
+# copied it, so all seven re-resolved independently from the open lower bounds in each
+# `pyproject.toml`. Measured 2026-08-28 against the `rxnpredict` image: 11 of 100 packages differed
+# from the export the audit reads, `pandas` by a major version — so the supply-chain gate proved a
+# property of a file and not of anything shipped
+# (`D-2026-09-13-an-audit-of-a-lockfile-no-image-reads-audits-nothing`).
+COPY pyproject.toml uv.lock /build/
+COPY packages/mcp_server_kit /build/packages/mcp_server_kit
+COPY packages/chemclaw_contracts /build/packages/chemclaw_contracts
+COPY servers/chembl /build/servers/chembl
+# The subset this tier builds replaces the fixture the wheel would otherwise carry.
+COPY --from=subset /out/ /build/servers/chembl/src/chemclaw_mcp_chembl/data/
+
+# Wheels, not an editable install: what ships is what a `pip install` of the two packages produces,
+# which is also what the tests import. RDKit ships manylinux wheels, so nothing is compiled here.
+# Two `pip wheel` passes with the build backend installed in front of them, and the split is the
+# point. The first pass resolves *nothing*: every third-party version and hash comes from `uv.lock`
+# by way of `uv export --frozen`, so what this image installs is what `make deps-audit` read. The
+# second builds the two workspace packages `--no-deps`, because their dependencies are already in
+# the wheelhouse and letting pip look again is exactly the re-resolution this replaced.
+#
+# **`--no-build-isolation` on the second pass is what makes the backend the lock's rather than the
+# day's.** Both workspace distributions declare `build-system.requires = ["hatchling"]` with no
+# bound, so without it pip fetches a backend from PyPI at this moment — unhashed, absent from
+# `uv.lock`, and then *executed*. Measured across hatchling 1.21.1 and 1.32.3 on this workspace:
+# identical member sets and byte-identical payloads, with `WHEEL`, `METADATA` and `RECORD` differing
+# — `Metadata-Version: 2.1` against `2.5`. So the backend decides the metadata a wheel advertises
+# itself with, which is a smaller harm than a dropped corpus and is still a build whose output is a
+# function of the date (`D-2026-09-18-a-backend-that-writes-the-metadata-is-a-dependency-of-the-wheel`).
+#
+# `uv` is pinned only by a range: `--frozen` means the *resolution* cannot drift whichever
+# version runs, and a `uv` that changed this CLI would fail the build loudly rather than
+# quietly ship a different closure.
+RUN python -m pip install --no-cache-dir --upgrade pip "uv>=0.8.17,<1" \
+    && uv export --frozen --package chemclaw-mcp-chembl --no-dev --no-emit-workspace \
+         --format requirements-txt -o /build/requirements.txt \
+    && uv export --frozen --only-group build --no-emit-workspace \
+         --format requirements-txt -o /build/build-requirements.txt \
+    && python -m pip install --no-cache-dir --require-hashes -r /build/build-requirements.txt \
+    && python -m pip wheel --no-cache-dir --wheel-dir /wheels \
+         --require-hashes -r /build/requirements.txt \
+    && python -m pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /wheels ./packages/chemclaw_contracts ./packages/mcp_server_kit ./servers/chembl
+
+FROM python:3.11-slim
+
+# **A numeric UID, in group 0, with `HOME` on the scratch mount** — the OpenShift arbitrary-UID
+# convention. The number is what lets a kubelet verify `runAsNonRoot` against the image; no
+# Deployment pins it, because `restricted-v2` assigns a UID from the namespace's range (always
+# with GID 0) and rejects any other. Such a UID has no `/etc/passwd` entry, so a runtime would set
+# `HOME=/`; `/tmp` is the one path every Deployment mounts writable, whatever the UID.
+ARG UID=1001
+RUN useradd --uid ${UID} --gid 0 --create-home --shell /usr/sbin/nologin app
+ENV HOME=/tmp
+
+COPY --from=build /wheels /wheels
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels \
+        chemclaw-contracts mcp-server-kit chemclaw-mcp-chembl \
+    && rm -rf /wheels
+
+USER ${UID}
+EXPOSE 8862
+
+# The egress guard is armed on import and is left at its default. `MCP_EGRESS_ALLOW` is not set
+# here, and setting it in a deployment is a decision to be argued for — the NetworkPolicy beside
+# this file denies egress at the network layer regardless.
+ENV MCP_EGRESS_GUARD=on
+
+# The build this image is. `mcp_server_kit.app.server_revision` reads `MCP_SERVER_REVISION` and
+# carries it into the `initialize()` handshake's `serverInfo.version` and into `/healthz`, so a
+# caller learns which build answered without a second endpoint. Left unsupplied it reports
+# `"unknown"` — which is exactly what Chemclaw3's own revision field did for eight months, the field
+# and its test both present and no build ever setting the variable. So `tests/test_fleet_images.py`
+# asserts *this pair, in this file*: a provenance record nothing fills is one that quietly says
+# nothing. The release pipeline passes `--build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD)`.
+ARG CHEMCLAW_REVISION=unknown
+ENV MCP_SERVER_REVISION=${CHEMCLAW_REVISION}
+
+# The startup probe Chemclaw3's connector health check uses is GET /healthz on this port.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8862/healthz').status==200 else 1)"
+
+CMD ["uvicorn", "chemclaw_mcp_chembl.app:app", "--host", "0.0.0.0", "--port", "8862"]

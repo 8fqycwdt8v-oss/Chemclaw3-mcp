@@ -122,7 +122,7 @@ index of what is in force.
 | [D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package](D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package.md) | The fleet owns every connector contract; Chemclaw3 takes it as a git dependency pinned to a tag |
 | [D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release](D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release.md) | Backends (`calc`, `rxnlabel`) speak typed HTTP/JSON, served beside MCP for one release |
 | [D-2026-10-14-the-fleet-deploys-as-one-chart](D-2026-10-14-the-fleet-deploys-as-one-chart.md) | A server's deployment is a row in one Helm chart's values, and the deploy checks read what that chart renders |
+| [D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review](D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review.md) | ChEMBL is vendored as a segregated, attributed CC BY-SA 3.0 subset, after legal review the owner cleared (owner decision 2026-10-24) |
 | [D-2026-10-23-rk4-steps-at-half-its-stability-limit](D-2026-10-23-rk4-steps-at-half-its-stability-limit.md) | RK4's step floor sits at half its stability limit, and the step ceiling stays where it was |
-| [D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review](D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review.md) | **Proposed.** ChEMBL is vendored only as segregated, attributed CC BY-SA data, and only after legal review of what share-alike obliges |
 
 [`Chemclaw3`]: https://github.com/8fqycwdt8v-oss/Chemclaw3

@@ -1,0 +1,10 @@
+{
+  "name": "chembl-subset",
+  "version": "37-fixture",
+  "licence": "CC-BY-SA-3.0 (Creative Commons Attribution-ShareAlike 3.0 Unported, https://creativecommons.org/licenses/by-sa/3.0/). This file is an adaptation of ChEMBL release 37 (subset + aggregation) and is distributed under the same licence; credit ChEMBL, EMBL-EBI, and keep the ChEMBL ids and the release number.",
+  "retrieved_from": "https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/chembl_37/chembl_37_sqlite.tar.gz (SHA-256 33c203740555f96067710cdfc1c3c55d890660e5908ec5cbf5817492c290d281), built by scripts/chembl_extract_subset.py. Provenance only: nothing here is fetched at runtime.",
+  "description": "A fixture-tier subset of ChEMBL release 37 (13 compounds, selected as: 13 named compounds (scripts/chembl_extract_subset.py FIXTURE_IDS) and the parent of any salt form among them), 493 names and synonyms, 1697 targets and 6172 activity summaries aggregated per compound, target, standard type and unit (median, minimum, maximum and counts over exact values; censored values counted only). A selection and an aggregation of ChEMBL, not ChEMBL: check assay-level records before relying on a value.",
+  "sha256": "7c43f08086494acc694c326e9d6520486e3c5a439a21432009d2f913ad41e063",
+  "refresh_owner": "team:chemclaw3-mcp-maintainers",
+  "refresh_cadence": "P6M"
+}

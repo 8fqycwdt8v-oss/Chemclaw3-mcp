@@ -205,7 +205,7 @@ resolved. Use `/healthz`, not the chart, to see what a post-render patch or a `s
 | `MCP_SESSION_UNUSED_TIMEOUT_SECONDS` | `60` (capped at the idle timeout) | How long a newly opened session may wait for its first use. |
 | `MCP_THREAD_POOL_SIZE` | ⌈cgroup CPU limit⌉ + headroom | Worker threads that tool bodies run in. |
 | `MCP_THREAD_POOL_HEADROOM` | `4` | Threads added on top of the CPU limit when the size is derived. |
-| `MCP_MAX_SMILES_CHARS` | `4000` | Longest SMILES accepted, checked before parsing (`chem`, `safety`, `rxnlabel`, `rxnpredict`). |
+| `MCP_MAX_SMILES_CHARS` | `4000` | Longest SMILES accepted, checked before parsing (`chem`, `safety`, `chembl`, `rxnlabel`, `rxnpredict`). |
 | `MCP_MAX_MOLECULE_ATOMS` | `2000` | Most atoms accepted, checked before canonicalising. Capped at what the process stack survives, so a value above that stops startup. |
 | `MCP_MAX_ECHO_CHARS` | `120` | How much of a refused input the error message quotes. |
 | `MCP_BODY_READ_TIMEOUT_SECONDS` | `60` | How long a request body may pause between two chunks. Past it the request gets **408** and its connection is closed, on `/mcp` and `/rpc`. |
@@ -235,6 +235,7 @@ read from `chemclaw.core.config`. The Helm keys are in that repository's
 | `kinetics` | 8852 | `http://chemclaw-mcp-kinetics:8852/mcp` | `CHEMCLAW_KINETICS_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
 | `unitops` | 8853 | `http://chemclaw-mcp-unitops:8853/mcp` | `CHEMCLAW_UNITOPS_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
 | `suitability` | 8892 | `http://chemclaw-mcp-suitability:8892/mcp` | `CHEMCLAW_SUITABILITY_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
+| `chembl` | 8862 | `http://chemclaw-mcp-chembl:8862/mcp` | `CHEMCLAW_CHEMBL_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
 | `pyexec` | 8899 | `http://chemclaw-mcp-pyexec:8899/mcp` | `CHEMCLAW_PYEXEC_TOKEN` | connector, manifest in Chemclaw3's image, **off** until enabled |
 | `calc` | 8860 | `http://chemclaw-mcp-calc:8860/mcp` | `CHEMCLAW_CALC_TOKEN` | backend: `CHEMCLAW_CALC_SERVER_URL` |
 | `rxnlabel` | 8865 | `http://chemclaw-mcp-rxnlabel:8865/mcp` | `CHEMCLAW_RXNLABEL_TOKEN` | backend: `CHEMCLAW_RXNLABEL_SERVER_URL` |
@@ -244,7 +245,7 @@ read from `chemclaw.core.config`. The Helm keys are in that repository's
 ### Every fleet connector arrives in Chemclaw3's image
 
 Chemclaw3's image carries a `connector.yaml` for `chem`, `safety`, `rxnpredict`, `props`,
-`thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec`. They are installed with the
+`thermalsafety`, `kinetics`, `unitops`, `suitability`, `chembl` and `pyexec`. They are installed with the
 pinned `chemclaw-contracts` package, which this repository publishes, so the manifest, the tool
 list and the token variable are this repository's own. Nothing is mounted: Chemclaw3 refuses to
 start when one connector name is found in two directories, so a mount carrying a fleet connector's
@@ -269,7 +270,7 @@ The egress peer above matches the pods every Deployment the fleet chart renders 
 label. The chart takes either `egressDestinations` or `allowAnyDestination: true`, never both — a
 release already on the latter needs no entry.
 
-`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec` declare
+`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability`, `chembl` and `pyexec` declare
 `default_enabled: false` in their manifests. With an empty `CHEMCLAW_CONNECTORS_ENABLED` they are not
 bound. Naming one with `connectors.<name>.enabled: true` binds it. Each bound connector adds its tool
 schemas to the prompt of every model call, so enable only what a site uses.
