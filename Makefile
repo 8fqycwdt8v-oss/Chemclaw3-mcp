@@ -189,7 +189,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 # **The ids themselves are in `pyproject.toml`, and `AUDIT_IGNORE` below is derived from them.** Not
 # for tidiness: each row there carries the package the argument is about and the version `uv.lock`
 # resolved when it was written, and `tests/test_deps_suppressions.py` fails when the lock moves one.
-# Eight rows, and the audit's own line says `13 ignored`. **That gap is duplication, not aliasing,
+# Nine rows, and the audit's own line says `13 ignored`. **That gap is duplication, not aliasing,
 # and this comment said the opposite for a wave.** Measured 2026-09-14 against this lock, with no
 # suppressions passed: 13 findings over **eight distinct advisory ids** — five of the eight are
 # returned *twice* (`PYSEC-2026-2447`, `-3447`, `-2288`, `-2289`, `-2290`), three once. The
@@ -210,7 +210,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 # **`13` is a dated observation of a third-party service and nothing in the suite pins it** — the
 # suite runs with the egress guard armed, so the only thing that could ask is `make deps-audit`
 # itself, and the number will move on the advisory database's schedule rather than this repository's.
-# What is pinned is local and is the pair that matters: eight rows, each naming a package and the
+# What is pinned is local and is the pair that matters: nine rows, each naming a package and the
 # version `uv.lock` still resolves.
 #
 # What id-or-alias matching cannot notice is a
@@ -233,6 +233,10 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     setuptools 83 with the same torch). The defect is in `FileList`'s MANIFEST.in
 #                     matching when *building an sdist*; no server runs a build at request time or at
 #                     all.
+#   GHSA-xmj3-9gf7-h52w setuptools 80.10.2, fixed in 84.1.0 — held by the same `setuptools<81` cap.
+#                     Low severity, Windows only: a wheel's `namespace_packages.txt` makes the legacy
+#                     egg install write an empty `__init__.py` outside its target. Every image here
+#                     is Linux and none installs a wheel as an egg.
 #   PYSEC-2025-217    transformers 4.57.6, no fix released. RCE via a crafted X-CLIP *checkpoint
 #                     conversion*, which is a build-time script here and not shipped.
 #   PYSEC-2026-2288   transformers, fixed in 5.0.0. `Trainer._load_rng_state` calls `torch.load`
