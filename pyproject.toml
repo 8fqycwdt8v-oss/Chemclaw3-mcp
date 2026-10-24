@@ -268,6 +268,7 @@ ignore_missing_imports = true
 suppressions = [
     { id = "PYSEC-2026-2447", package = "diskcache", version = "5.6.3" },
     { id = "PYSEC-2026-3447", package = "setuptools", version = "80.10.2" },
+    { id = "GHSA-xmj3-9gf7-h52w", package = "setuptools", version = "80.10.2" },
     { id = "PYSEC-2025-217", package = "transformers", version = "4.57.6" },
     { id = "PYSEC-2026-2288", package = "transformers", version = "4.57.6" },
     { id = "PYSEC-2026-2289", package = "transformers", version = "4.57.6" },
