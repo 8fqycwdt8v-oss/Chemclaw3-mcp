@@ -90,6 +90,10 @@ servers:
     port: 8859
     requestTimeout: 30
     resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+  chembl: # a read-only SQLite subset baked into the image; the file's pages are reclaimable cache
+    port: 8862
+    requestTimeout: 30
+    resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
   calc: # xtb/CREST write scratch for minutes to hours; limits.cpu is CHEMCLAW_CALC_MAX_CONCURRENT_REQUESTS
     port: 8860
     requestTimeout: 900 # covers in-process work only: the xtb (3480 s) and CREST (14280 s) tiers outlive it

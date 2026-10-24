@@ -14,7 +14,7 @@ the tool surface it declares have to be edited together — a copy here would be
 of one fact, and the package is the only place Chemclaw3 reads it from. `servers/<name>/tests/test_server.py` checks the manifest against the tools a
 running server actually advertises; that check is only meaningful if there is exactly one manifest.
 
-`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec` declare
+`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability`, `chembl` and `pyexec` declare
 `default_enabled: false`, so an empty `CHEMCLAW_CONNECTORS_ENABLED` binds none of them.
 
 **Two servers must never be registered this way, and they are not in this directory.** `calc`

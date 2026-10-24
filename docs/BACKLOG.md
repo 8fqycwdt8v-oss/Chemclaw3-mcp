@@ -38,9 +38,6 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 
 ## 2 — Corpora that are not yet licensed to exist
 
-- [ ] **ChEMBL is CC-BY-SA; `chembl` waits on what that obliges for a derived answer** (vendored
-  slice, `dataset.json`, a tool's `source`). `MODULES.md`.
-
 ## 3 — Consuming a server hosted elsewhere
 
 - [ ] **`retro` needs a classified manifest here and a verified bearer on its mounted MCP surface.**

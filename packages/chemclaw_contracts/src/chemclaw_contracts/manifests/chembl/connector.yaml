@@ -1,0 +1,50 @@
+# The `chembl` bundle, as Chemclaw3 reads it.
+#
+# This is a connector Chemclaw3 does **not** run (D-2026-08-09-a-connector-we-do-not-run).
+# Chemclaw3 installs this file as package data of the pinned `chemclaw-contracts`, so the capability
+# appears with no core edit and no copy: this manifest is the only declaration of the `chembl`
+# bundle.
+#
+# The URL below is the loopback dev default. A cluster address is set per deployment, by
+# `CHEMCLAW_CONNECTOR_URLS` or by `connectors.chembl.url` in the Helm chart — hosting is a deployment
+# fact and does not belong in a manifest.
+name: chembl
+contract_version: 1.0.0
+description: >-
+  Compound identity and aggregated bioactivity from a vendored, checksummed subset of ChEMBL
+  (release 37, CC BY-SA 3.0): look a compound up by ChEMBL id, name or structure, and summarise its
+  recorded activities per target, standard type and unit with counts, spread and assay confidence.
+  The data is a selection of ChEMBL, not ChEMBL, and every answer carries the licence, release,
+  source and a statement of the changes made as a structured field. A summary is not an assay
+  record and no answer is a clinical, safety or efficacy claim. No store, no durable state, and no
+  network call at any point.
+
+endpoint:
+  transport: http
+  # A loopback dev default; the deployment moves it.
+  url: http://127.0.0.1:8862/mcp
+  health_url: http://127.0.0.1:8862/healthz
+  # An indexed read of one SQLite file, milliseconds; the bound exists to stop a mute connector
+  # hanging a turn, not to police a fast one.
+  request_timeout: 30
+  # Bearer even though the shipped URL is loopback. `HttpEndpoint` would accept `mode: none` here
+  # and refuse it the moment a deployment points this at a real host — and a manifest whose auth
+  # mode changes with its address is one whose serving side gets it wrong. The token env var is the
+  # same name on both sides: Chemclaw3 reads it to send, `app.py` reads it to verify.
+  auth:
+    mode: bearer
+    token_env: CHEMCLAW_CHEMBL_TOKEN
+  tools:
+    - chembl_lookup_compound
+    - chembl_bioactivity_summary
+  # Two reads of a read-only file: neither writes, spends compute worth gating, or has an effect
+  # the plan gate should hold, so both stay open while a plan is being built.
+  read_only:
+    - chembl_lookup_compound
+    - chembl_bioactivity_summary
+
+# **Off unless a deployment names it in `CHEMCLAW_CONNECTORS_ENABLED`**
+# (`D-2026-09-20-declaring-a-capability-and-binding-it-are-different-decisions` in Chemclaw3).
+# Every bound tool's schema is charged to every model call, so without the flag an empty enable-list
+# would bind this bundle on every turn. Naming it overrides.
+default_enabled: false
