@@ -69,7 +69,9 @@ What was built, and the choices inside option 2 the owner left to the build:
   kilobytes and has no large-file mechanism, and a subset of the size the owner scoped does not fit
   that. A small **fixture** subset built by the same script from named compounds *is* committed and is
   what the suite, a source checkout and a CI image run against. The tier (`full` or `fixture`) is
-  written into the file, its `dataset.json` version and every answer.
+  written into the file, its `dataset.json` version and every answer. The image defaults to the
+  fixture and the release pipeline (`Jenkinsfile`) asks for `full`: a default of `full` would make
+  every pull request's image job download 5.8 GB and write 30 GB.
 - **The notice is a field, not prose.** Every answer carries `attribution` (source and release,
   licence and licence URL, credit, a statement of changes, the share-alike condition, the citation,
   the data tier), a `source` line and a `caveat`. A fleet test holds that any `dataset.json` naming a
@@ -110,3 +112,5 @@ reads the manifest of whichever release is vendored).
   subset's checksum, schema version and release agree with its manifest.
 - `servers/chembl/tests/test_extract.py::test_the_archive_is_refused_unless_both_digests_agree` —
   the script refuses an archive that is not the pinned one.
+- `tests/test_delivery.py::test_a_release_build_of_chembl_asks_for_the_full_subset` — the default is
+  the fixture, and the pipeline that publishes images passes `CHEMBL_TIER=full`.

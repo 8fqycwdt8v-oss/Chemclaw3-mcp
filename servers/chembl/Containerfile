@@ -9,12 +9,13 @@
 # runtime image: only `/out` is copied on, so the image holds a few hundred MB of subset, not the
 # 5.4 GB release, and the pod's default-deny NetworkPolicy still holds at request time.
 #
-# `CHEMBL_TIER=full` (the default, and what a release ships) builds the subset from the release.
-# `CHEMBL_TIER=fixture` skips the download and ships the small committed fixture — what CI builds,
-# since a pull request's image job has no business moving 5.4 GB. The tier is written into the
-# subset's `meta` table, into `dataset.json`'s version, and into every answer's `data_tier`, so a
-# fixture image is never mistaken for a full one by anyone reading a response.
-ARG CHEMBL_TIER=full
+# `CHEMBL_TIER=fixture` (the default) skips the download and ships the small committed fixture: what
+# a pull request's image job builds, since it has no business moving 5.8 GB. `CHEMBL_TIER=full` builds
+# the subset from the release and is what a **release** ships — `Jenkinsfile` passes it for this server
+# and nothing else does. The full build needs ~36 GB of scratch and a route to EMBL-EBI. The tier is
+# written into the subset's `meta` table, into `dataset.json`'s version, on `/healthz` and into every
+# answer's `data_tier`, so a fixture image is never mistaken for a full one by anyone reading either.
+ARG CHEMBL_TIER=fixture
 
 FROM python:3.11-slim AS subset
 ARG CHEMBL_TIER

@@ -79,7 +79,7 @@ script **and** the one in EMBL-EBI's `checksums.txt`. Two tiers, one script:
 | Tier | What it holds | Where it lives |
 | --- | --- | --- |
 | `fixture` | 13 named compounds (aspirin, imatinib and its mesylate, a solvent, an antibody, â€¦) with every name, target and summary ChEMBL 37 has for them; 0.6 MB | **Committed** here: what the suite, a checkout and CI's image build run against |
-| `full` | 301,199 compounds, 111,957 names and synonyms, 13,668 targets and 2,695,237 activity summaries; **271 MB** (SQLite, built in about 6 minutes from the 30 GB release database) | **Not committed**: built into the image by `servers/chembl/Containerfile` (`CHEMBL_TIER=full`, the default) |
+| `full` | 301,199 compounds, 111,957 names and synonyms, 13,668 targets and 2,695,237 activity summaries; **271 MB** (SQLite, built in about 6 minutes from the 30 GB release database) | **Not committed**: built into the image by `servers/chembl/Containerfile` with `--build-arg CHEMBL_TIER=full`, which the `Jenkinsfile` passes for a release |
 
 **Why the full tier is not committed.** Every other corpus in this fleet is measured in kilobytes
 and the repository has no large-file mechanism; a subset of the size scoped for this server does
@@ -125,15 +125,18 @@ curl -s localhost:8862/healthz             # {"status":"ok","server":"chembl",â€
 
 The bearer token is `CHEMCLAW_CHEMBL_TOKEN`, enforced even on the loopback dev URL.
 
-To build the **image with the full subset** (needs network to `ftp.ebi.ac.uk` and ~36 GB of free
-scratch for the build; the default tier):
+The image defaults to the **fixture** tier, so a bare `docker build` (and CI's image job, which
+cannot move a 5.8 GB release) is cheap. A **release** image is the full subset, and must say so
+(needs network to `ftp.ebi.ac.uk` and ~36 GB of free scratch for the build; `Jenkinsfile` passes it):
 
 ```sh
-docker build -f servers/chembl/Containerfile --build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD) \
-  -t chemclaw-mcp-chembl:full .
-docker build -f servers/chembl/Containerfile --build-arg CHEMBL_TIER=fixture \
-  -t chemclaw-mcp-chembl:fixture .       # what CI builds
+docker build -f servers/chembl/Containerfile --build-arg CHEMBL_TIER=full \
+  --build-arg CHEMCLAW_REVISION=$(git rev-parse HEAD) -t chemclaw-mcp-chembl:full .
+docker build -f servers/chembl/Containerfile -t chemclaw-mcp-chembl:fixture .   # what CI builds
 ```
+
+A pod's tier is on `/healthz` (`datasets: ["chembl-subset@37-full"]`) and in every answer
+(`attribution.data_tier`); a deployment that expected the full subset should check one of them.
 
 ## Operating it
 
