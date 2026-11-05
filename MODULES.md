@@ -16,6 +16,7 @@ reads, because production has no egress. Nothing here duplicates a Chemclaw3 cap
 | `rxnpredict` | 8857 | **built** | Forward reaction and condition prediction, a Borda-weighted ensemble with per-model spread. | Model checkpoints baked in at build time. |
 | `chem` | 8858 | **built** | Bench chemistry over RDKit: compound resolution, stoichiometry, green metrics, depiction, torsions, species and degradant enumeration. | Vendored reagent CSV (CC0) plus RDKit. |
 | `safety` | 8859 | **built** | Cited hazard, genotoxicity and ICH impurity tables. | Vendored, checksummed YAML corpora plus RDKit. |
+| `chembl` | 8862 | **built** | ChEMBL compound lookup (id, name, structure) and aggregated bioactivity summaries, each answer carrying its CC BY-SA 3.0 attribution. | A checksummed SQLite subset of ChEMBL 37 (**CC BY-SA 3.0**), built from EMBL-EBI's release at image build time; a small fixture is committed. |
 | `calc` | 8860 | **built** (backend; MCP and `/rpc`) | The semiempirical physics behind Chemclaw3's calculators (GFN2-xTB, CREST), as keyed primitives. | No dataset; programs and parameters in the image. |
 | `rxnlabel` | 8865 | **built** (backend; MCP and `/rpc`) | Reaction and species representations, roles and named reactions. | RXNMapper checkpoint inside its hashed wheel. |
 | `suitability` | 8892 | **built** | USP <621> system suitability arithmetic from numbers a run already produced. | First-party formulas; no corpus. |
@@ -34,6 +35,7 @@ pull request.
 | `props` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
 | `chem` | 2 → 6 | 500m / 256Mi | 1 CPU, 0.5 Gi | 3 CPU, 1.5 Gi |
 | `safety` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
+| `chembl` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
 | `rxnlabel` | 2 → 4 | 500m / 1Gi | 1 CPU, 2 Gi | 2 CPU, 4 Gi |
 | `rxnpredict` | 2 → 4 | 500m / 2Gi | 1 CPU, 4 Gi | 2 CPU, 8 Gi |
 | `pyexec` | 2 → 6 | 1 / 512Mi | 2 CPU, 1 Gi | 6 CPU, 3 Gi |
@@ -42,7 +44,7 @@ pull request.
 | `kinetics` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
 | `unitops` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
 | `suitability` | 2 → 4 | 250m / 256Mi | 0.5 CPU, 0.5 Gi | 1 CPU, 1 Gi |
-| **fleet** | | | **10 CPU, 12.5 Gi** | **27 CPU, 30.5 Gi** |
+| **fleet** | | | **10.5 CPU, 13 Gi** | **28 CPU, 31.5 Gi** |
 
 ## Tranche 1 — Route and process engineering, still open
 
@@ -58,7 +60,6 @@ pull request.
 | --- | --- | --- | --- | --- |
 | `nomenclature` | 8864 | **next** | `iupac_name_to_structure`, `structure_to_inchi`, `validate_cas`, `normalize_identifier` | OPSIN via `py2opsin` (MIT), the jar inside the wheel; needs a JRE. |
 | `pubchem` | 8861 | proposed | `resolve_identifier`, `compound_properties`, `synonyms`, `cross_references` | A vendored PubChem subset; PubChem's own data is public domain. |
-| `chembl` | 8862 | proposed | `search_by_structure`, `bioactivities`, `target_lookup` | A ChEMBL slice. **CC-BY-SA: needs a licence review before it is built.** |
 | `solidform` | 8863 | proposed | `search_structures`, `unit_cell`, `simulate_powder_pattern`, `polymorph_precedent` | Crystallography Open Database (CC0) + pymatgen. |
 
 ## Tranche 3 — Safety, tox and regulatory

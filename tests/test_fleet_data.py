@@ -98,3 +98,32 @@ def test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why() -> None:
             "servers/ghs/README.md does not name GESTIS. The reason its corpus is PubChem LCSS and "
             "ECHA C&L has to travel with the server, or the next contributor reaches for GESTIS"
         )
+
+
+def test_a_share_alike_corpus_is_attributed_and_the_licence_is_named() -> None:
+    """A share-alike corpus names its licence and its source, and its server says so to a reader.
+
+    `D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review`: the first
+    third-party copyleft corpus carries its terms in its own manifest, says it is an adaptation, and
+    lives in a server whose README states the database-right caveat that is documentation, not code.
+    The check applies to any later corpus whose licence field names ShareAlike, not to ChEMBL alone.
+    """
+    marks = ("share-alike", "sharealike", "by-sa")
+    share_alike = []
+    for path in sorted(SERVERS.glob("*/src/*/data/**/dataset.json")):
+        provenance = json.loads(path.read_text(encoding="utf-8"))
+        if any(mark in str(provenance.get("licence", "")).lower() for mark in marks):
+            share_alike.append((path, provenance))
+    assert share_alike, "no share-alike corpus found; the one this test exists for has moved"
+    for path, provenance in share_alike:
+        where = path.relative_to(ROOT)
+        licence = str(provenance["licence"])
+        assert "https://creativecommons.org/licenses/" in licence, f"{where}: no licence URL"
+        assert "adaptation" in licence.lower(), f"{where}: does not say it is an adaptation"
+        assert str(provenance["retrieved_from"]).startswith("https://"), f"{where}: no source"
+        readme = (path.parents[3] / "README.md").read_text(encoding="utf-8")
+        for needle in ("ShareAlike", "sui generis"):
+            assert needle in readme, (
+                f"{path.parents[3].relative_to(ROOT)}/README.md does not mention {needle!r}; a "
+                "share-alike corpus's server says what redistributing its image redistributes"
+            )

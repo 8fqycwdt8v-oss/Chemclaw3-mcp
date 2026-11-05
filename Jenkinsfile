@@ -129,6 +129,10 @@ pipeline {
             def digests = [:]
             for (name in env.SERVER_LIST.split(' ')) {
               def ref = "${env.IMAGE_PREFIX}chemclaw-mcp-${name}:${env.IMAGE_TAG}"
+              // `chembl`'s Containerfile defaults to its 0.6 MB fixture so a pull request's image job
+              // never moves a 5.8 GB release; a release image is the full subset, so it is asked for
+              // here (servers/chembl/README.md). The tier is on /healthz and in every answer.
+              def tierArgs = (name == 'chembl') ? '--build-arg CHEMBL_TIER=full' : ''
               if (params.DRY_RUN || !env.IMAGE_REGISTRY) {
                 sh """
                   set -euo pipefail
@@ -137,7 +141,7 @@ pipeline {
                   case "\${builder}" in
                     kaniko) echo "kaniko cannot build without pushing — nothing to verify in a dry run" ;;
                     *) "\${builder}" build -f servers/${name}/Containerfile \
-                         --build-arg CHEMCLAW_REVISION=${env.REVISION} -t '${ref}' . ;;
+                         --build-arg CHEMCLAW_REVISION=${env.REVISION} ${tierArgs} -t '${ref}' . ;;
                   esac
                 """
               } else {
@@ -147,7 +151,7 @@ pipeline {
                   . .jenkins-lib/deploy/jenkins/lib/image.sh
                   registry_login '${env.IMAGE_REGISTRY}'
                   build_and_push servers/${name}/Containerfile . '${ref}' \
-                    --build-arg CHEMCLAW_REVISION=${env.REVISION}
+                    --build-arg CHEMCLAW_REVISION=${env.REVISION} ${tierArgs}
                 """).trim()
               }
             }

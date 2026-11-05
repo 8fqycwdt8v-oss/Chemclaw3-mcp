@@ -123,7 +123,8 @@ free port in **8850–8899** there, in the PR that adds the server.
 | ELN and ORD ingestion | `ingest/sources` |
 | Publishing results to an external store | `results` |
 
-No DFT tier: no tool shelling out to ORCA/Psi4/Gaussian/NWChem or calling a hosted QM API. A
+No DFT tier: no tool that runs a QM engine (ORCA/Psi4/Gaussian/NWChem) or calls a hosted QM API;
+a server may prepare engine inputs and parse engine outputs for a calculation run elsewhere. A
 capability leaves Chemclaw3 only as a *replacement* (same `name`, tools, arguments). Deliberate
 overlap is argued in the server's README. The two `CALCULATION_EPOCH` constants compose
 (`remote_key` folds Chemclaw3's over `calc`'s `params_hash`): a bump on either side invalidates all.

@@ -1,6 +1,10 @@
-"""Refuse a NaN or an infinity in any tool argument, for every served tool, on both channels.
+"""Refuse a NaN or an infinity in any tool argument or answer, for every served tool.
 
-Nothing upstream refuses one, and there are two ways in:
+An answer is refused too (`refuse_non_finite_answers`): MCP's text writes a model's NaN as `null`
+and a dict's as a bare `NaN`, and `/rpc` cannot encode one at all, so one computation would reach
+the caller three ways; a refusal is the one answer every channel can carry and no cache keeps.
+
+Nothing upstream refuses an argument, and there are two ways in:
 
 - **A bare literal** (`NaN`, `Infinity`, `1e400`) is accepted by the transport's `json.loads` and
   rewritten to `null`, so an optional argument would silently read as "not given".
@@ -11,12 +15,18 @@ Nothing upstream refuses one, and there are two ways in:
 A per-field `after` validator rather than `allow_inf_nan=False`, because model config does not
 reach nested argument models. Not covered: floats in non-model containers beyond list/tuple/dict,
 defaults (not validated), and tools registered after `connector_app` ran.
+
+Reading the body whole is also where a body that stops arriving is caught: each chunk is awaited
+for at most `BODY_READ_TIMEOUT_SECONDS`, then the request is answered 408 and its connection closed.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import math
+from collections.abc import Callable
 from typing import Any
 
 from chemclaw_contracts.rpc import RPC_PREFIX, RpcError
@@ -24,12 +34,26 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
 from mcp.types import INVALID_PARAMS, PARSE_ERROR
 from pydantic import BaseModel, ValidationInfo, create_model, field_validator
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from mcp_server_kit.limits import env_bound
 
 #: The words every refusal carries, so a test can tell this refusal from any other on the same
 #: argument without matching the whole sentence.
 NON_FINITE_REFUSAL = "is not a finite number"
+
+BODY_READ_TIMEOUT_SECONDS = env_bound(
+    "MCP_BODY_READ_TIMEOUT_SECONDS",
+    # The longest a body may pause between two chunks. A legitimate caller writes its body at once
+    # (the NetworkPolicy admits Chemclaw3 only, in-cluster), and a stock MCP client abandons a
+    # write after 30 s (`MCP_DEFAULT_TIMEOUT`); twice that, so a slow live client gives up first.
+    default=60,
+    # One second, because a pause is measured in whole seconds and the loop awaits each chunk: at
+    # `0` no body could arrive at all.
+    minimum=1,
+    consequence="every request body would be refused with 408 before its first chunk could arrive",
+)
 
 
 def first_non_finite(value: object, path: str) -> str | None:
@@ -98,6 +122,43 @@ def refuse_non_finite_arguments(server: FastMCP) -> None:
         tool.fn_metadata.arg_model = finite_arguments(tool.fn_metadata.arg_model)
 
 
+def _finite_answer(tool: str, fn: Callable[..., Any], is_async: bool) -> Callable[..., Any]:
+    """`fn` returning what it returned, or raising a `ValueError` naming its first non-finite float.
+
+    A `ValueError`, so the call is a caller-safe refusal on both channels and nothing is cached.
+    """
+
+    def checked(answer: Any) -> Any:
+        where = first_non_finite(answer, "answer")
+        if where is not None:
+            raise ValueError(
+                f"{tool} computed {where}, which {NON_FINITE_REFUSAL}. The calculation produced "
+                "no number here: a NaN or an infinity is not a result, and neither JSON nor a "
+                "cached record can carry it."
+            )
+        return answer
+
+    if is_async:
+
+        @functools.wraps(fn)
+        async def run_async(*args: Any, **kwargs: Any) -> Any:
+            return checked(await fn(*args, **kwargs))
+
+        return run_async
+
+    @functools.wraps(fn)
+    def run(*args: Any, **kwargs: Any) -> Any:
+        return checked(fn(*args, **kwargs))
+
+    return run
+
+
+def refuse_non_finite_answers(server: FastMCP) -> None:
+    """Install `_finite_answer` on every tool `server` serves, before its answer is serialised."""
+    for tool in server._tool_manager.list_tools():
+        tool.fn = _finite_answer(tool.name, tool.fn, tool.is_async)
+
+
 def _non_finite_literal(body: bytes) -> tuple[str, object] | None:
     """The first non-finite number `body` spells as a bare JSON literal, and the request's id.
 
@@ -138,7 +199,8 @@ class NonFiniteLiteralRefusal:
     authenticated; a clean body is replayed byte for byte. A request with an id gets 200 with a
     JSON-RPC error carrying that id — an MCP client tears down the session on a 400 — and one
     without gets 400. A `/rpc/` request gets the contract's `RpcError` with 400. A body nested past
-    the parser's depth is a 400 too, never a traceback.
+    the parser's depth is a 400 too, never a traceback. A body pausing past
+    `BODY_READ_TIMEOUT_SECONDS` gets a plain-text 408 on either route, as the size cap's 413 is.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -159,15 +221,30 @@ class NonFiniteLiteralRefusal:
             }
         await JSONResponse(content, status_code=400)(scope, receive, send)
 
+    @staticmethod
+    async def _too_slow(scope: Scope, receive: Receive, send: Send) -> None:
+        """Answer a body that stopped arriving: 408, closing the connection it still holds."""
+        await PlainTextResponse(
+            "request body not received in time",
+            status_code=408,
+            headers={"Connection": "close"},
+        )(scope, receive, send)
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Read a POST body whole, refuse it if it spells a non-finite number, else replay it."""
+        """Read a POST body whole: 408 if it stalls, refused if it spells a non-finite number."""
         if scope["type"] != "http" or scope.get("method") != "POST":
             await self._app(scope, receive, send)
             return
         chunks: list[bytes] = []
         ended: Message | None = None
         while True:
-            message = await receive()
+            try:
+                # Per chunk, so a large body on a slow link is never cut while it is still moving.
+                async with asyncio.timeout(BODY_READ_TIMEOUT_SECONDS):
+                    message = await receive()
+            except TimeoutError:
+                await self._too_slow(scope, receive, send)
+                return
             if message["type"] != "http.request":
                 ended = message
                 break

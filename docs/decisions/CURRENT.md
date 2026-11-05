@@ -96,11 +96,13 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 
 ## Data, corpora and identity of a result
 
+- [Every compute server serves `calculation_key` for each compute tool, derived by the kit and naming the engine build](D-2026-10-21-every-compute-server-serves-a-calculation-key.md)
 - [A hand-compiled rule table is a table with a typo in it](D-2026-09-13-a-hand-compiled-rule-table-is-a-table-with-a-typo-in-it.md)
 - [A range check cannot see a swap inside the range](D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range.md)
 - [A field the author wrote is not a field that is missing](D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing.md)
 - [A corpus names who refreshes it and how often, in a shape the loader checks](D-2026-09-26-a-corpus-names-who-refreshes-it-and-how-often.md)
 - [GESTIS is not a source, and the reason outlives the build](D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build.md)
+- [ChEMBL is vendored only as share-alike data, after legal review](D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review.md)
 - [A derivable number the fleet held four times](D-2026-09-16-a-derivable-number-the-fleet-held-four-times.md)
 - [A transcription is proven equal, not argued better](D-2026-09-16-a-transcription-is-proven-equal-not-argued-better.md)
 - [A default ceiling is a silent truncation](D-2026-09-16-a-default-ceiling-is-a-silent-truncation.md)
@@ -113,12 +115,14 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 
 ## Per-server science
 
+- [A server may prepare engine inputs and parse engine outputs for a calculation that runs elsewhere; no server runs a QM engine](D-2026-10-21-a-prepare-and-parse-server-is-not-a-dft-tier.md)
 - [The dependency a catalogue proposed was the one tool it could not carry](D-2026-09-15-the-dependency-a-catalogue-proposed-was-the-one-tool-it-could-not-carry.md)
 - [Two formulas for one quantity make the convention part of the answer](D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer.md)
 - [The refusals belong in front of the library](D-2026-09-16-the-refusals-belong-in-front-of-the-library.md)
 - [A refusal set with a hole in it is not a refusal set](D-2026-09-16-a-refusal-set-with-a-hole-in-it-is-not-a-refusal-set.md)
 - [A cake stays incompressible until a filtration test arrives](D-2026-09-26-a-cake-stays-incompressible-until-a-filtration-test-arrives.md)
 - [A stiff semi-batch dose is integrated by an L-stable scheme, not refused](D-2026-09-26-a-stiff-dose-is-integrated-by-a-stable-scheme-not-refused.md)
+- [RK4's step floor sits at half its stability limit, and the step ceiling stays where it was](D-2026-10-23-rk4-steps-at-half-its-stability-limit.md)
 - [A per-class trust prior adjusts the corpus; it does not replace it](D-2026-09-26-a-class-prior-adjusts-the-corpus-it-does-not-replace-it.md)
 - [An environment trust prior adjusts the table; it does not replace it](D-2026-09-26-an-environment-prior-adjusts-the-table-it-does-not-replace-it.md)
 - [A resolved structure is written without a dative arrow](D-2026-10-02-a-resolved-structure-is-written-without-a-dative-arrow.md)

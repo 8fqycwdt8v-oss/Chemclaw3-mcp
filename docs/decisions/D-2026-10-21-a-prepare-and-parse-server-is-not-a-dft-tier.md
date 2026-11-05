@@ -1,6 +1,6 @@
 # D-2026-10-21-a-prepare-and-parse-server-is-not-a-dft-tier — a server may prepare engine inputs and parse engine outputs for a calculation that runs elsewhere, while running no engine itself
 
-**Status:** proposed · **Date:** 2026-10-21
+**Status:** accepted · **Date:** 2026-10-21
 
 ## Context
 
@@ -47,7 +47,7 @@ Chemclaw3, where the physics does not belong (D-2026-08-16 on the Chemclaw3 side
 - `calc_version` for a `qm` key includes the engine version and the backend image digest declared
   by the Chemclaw3 backend manifest. That is D-2026-10-21-every-compute-server-serves-a-calculation-key
   in this record.
-- CLAUDE.md's "No DFT tier" paragraph is reworded on acceptance.
+- CLAUDE.md's "No DFT tier" paragraph reads "no tool that runs a QM engine or calls a hosted QM API".
 
 **Revisit when:** a parser needs to execute engine code to read its output (a binary checkpoint
 format with no documented layout). That would bring an engine's dependency closure back, and the

@@ -10,7 +10,7 @@ SHELL := bash
 
 .DEFAULT_GOAL := help
 UV ?= uv
-SRC := packages/mcp_server_kit/src packages/chemclaw_contracts/src servers/props/src servers/chem/src servers/safety/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts $(wildcard servers/*/scripts)
+SRC := packages/mcp_server_kit/src packages/chemclaw_contracts/src servers/props/src servers/chem/src servers/safety/src servers/chembl/src servers/calc/src servers/pyexec/src servers/rxnlabel/src servers/rxnpredict/src servers/kinetics/src servers/suitability/src servers/thermalsafety/src servers/unitops/src scripts $(wildcard servers/*/scripts)
 # The test tree, globbed rather than listed: a new server's tests are checked the day the directory
 # exists, which is the half `SRC` gets wrong by being a list somebody has to remember to extend.
 # `conftest.py` is named because nothing globs it: it is layer 3 of the no-egress posture — the
@@ -189,7 +189,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 # **The ids themselves are in `pyproject.toml`, and `AUDIT_IGNORE` below is derived from them.** Not
 # for tidiness: each row there carries the package the argument is about and the version `uv.lock`
 # resolved when it was written, and `tests/test_deps_suppressions.py` fails when the lock moves one.
-# Eight rows, and the audit's own line says `13 ignored`. **That gap is duplication, not aliasing,
+# Nine rows, and the audit's own line says `13 ignored`. **That gap is duplication, not aliasing,
 # and this comment said the opposite for a wave.** Measured 2026-09-14 against this lock, with no
 # suppressions passed: 13 findings over **eight distinct advisory ids** — five of the eight are
 # returned *twice* (`PYSEC-2026-2447`, `-3447`, `-2288`, `-2289`, `-2290`), three once. The
@@ -210,7 +210,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 # **`13` is a dated observation of a third-party service and nothing in the suite pins it** — the
 # suite runs with the egress guard armed, so the only thing that could ask is `make deps-audit`
 # itself, and the number will move on the advisory database's schedule rather than this repository's.
-# What is pinned is local and is the pair that matters: eight rows, each naming a package and the
+# What is pinned is local and is the pair that matters: nine rows, each naming a package and the
 # version `uv.lock` still resolves.
 #
 # What id-or-alias matching cannot notice is a
@@ -233,6 +233,10 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     setuptools 83 with the same torch). The defect is in `FileList`'s MANIFEST.in
 #                     matching when *building an sdist*; no server runs a build at request time or at
 #                     all.
+#   GHSA-xmj3-9gf7-h52w setuptools 80.10.2, fixed in 84.1.0 — held by the same `setuptools<81` cap.
+#                     Low severity, Windows only: a wheel's `namespace_packages.txt` makes the legacy
+#                     egg install write an empty `__init__.py` outside its target. Every image here
+#                     is Linux and none installs a wheel as an egg.
 #   PYSEC-2025-217    transformers 4.57.6, no fix released. RCE via a crafted X-CLIP *checkpoint
 #                     conversion*, which is a build-time script here and not shipped.
 #   PYSEC-2026-2288   transformers, fixed in 5.0.0. `Trainer._load_rng_state` calls `torch.load`
@@ -267,7 +271,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     default-deny egress, the guard), and nothing in `servers/`, `packages/`
 #                     or `scripts/` calls `load_custom_generate` or passes `trust_remote_code`
 #                     at all — measured with a grep over all three on 2026-10-01.
-#   CVE-2026-69112    accelerate 1.14.0 (PYSEC-2026-3804 — again the spelling the audit reports),
+#   CVE-2026-69112    accelerate 1.15.0 (PYSEC-2026-3804 — again the spelling the audit reports),
 #                     **no fix released — and 1.15.0 is not one**. Path traversal
 #                     in `load_checkpoint_in_model` / `load_checkpoint_and_dispatch`: a sharded
 #                     checkpoint's `weight_map` values are joined onto the checkpoint folder and
@@ -279,7 +283,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     fixed: `load_checkpoint_in_model` is **byte-identical** between the two wheels
 #                     (same bare `os.path.join(checkpoint_folder, f)`, no `realpath`, no
 #                     `commonpath`, no FIFO check), and upstream's fix commit is in no release yet.
-#                     A bump to 1.15.0 would buy a green gate and ship the same function.
+#                     The bump to 1.15.0 therefore keeps this entry: it ships the same function.
 #                     Unreachable here for a reason that needs none of that: **nothing calls the
 #                     vulnerable API.** `accelerate` is imported nowhere in `servers/` or
 #                     `packages/` — it enters one shipped image because `rxnpredict[reaction_t5]`
@@ -308,7 +312,7 @@ AUDIT_UNREACHABLE := ConnectionError|Failed to fetch|Max retries exceeded|Tempor
 #                     re-deriving the list — and what settles it is the byte-diff above, not the
 #                     audit's silence. **That paragraph described the hole this file now has a
 #                     mechanism for**: the row in `pyproject.toml` pins this argument to
-#                     `accelerate==1.14.0`, so the *next bump* — to 1.15.0 or past it — turns the
+#                     `accelerate==1.15.0`, so the *next bump* past it turns the
 #                     suppression red and brings a reader back to this text, whether or not the
 #                     advisory has moved. Dependabot alerts are the second trigger and are outside
 #                     this file: they are enabled on this repository and unaffected by
@@ -454,6 +458,11 @@ run-chem: ## Run the chem server on its dev port with a dev token.
 run-safety: ## Run the safety server on its dev port with a dev token.
 	CHEMCLAW_SAFETY_TOKEN=$${CHEMCLAW_SAFETY_TOKEN:-dev-token} \
 	$(UV) run uvicorn chemclaw_mcp_safety.app:app --host 127.0.0.1 --port 8859
+
+.PHONY: run-chembl
+run-chembl: ## Run the chembl server on its dev port with a dev token.
+	CHEMCLAW_CHEMBL_TOKEN=$${CHEMCLAW_CHEMBL_TOKEN:-dev-token} \
+	$(UV) run uvicorn chemclaw_mcp_chembl.app:app --host 127.0.0.1 --port 8862
 
 .PHONY: run-pyexec
 run-pyexec: ## Run the pyexec analysis sandbox on its dev port with a dev token.

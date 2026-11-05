@@ -15,6 +15,11 @@ Operational scripts that are not part of any server's runtime.
   a fresh MCP session, a warm one, a pooled `POST /rpc/...` and an unpooled one, with the server in a
   thread and as its own process; prints JSON. The figures in
   `D-2026-10-14-backends-speak-typed-http-json-beside-mcp-for-one-release` come from it.
+- `chembl_extract_subset.py` — builds `servers/chembl`'s data: downloads ChEMBL's SQLite release,
+  refuses it unless its SHA-256 equals the digest pinned in the script and EMBL-EBI's
+  `checksums.txt`, selects compounds and aggregates their activities into a small SQLite subset with
+  its `dataset.json`. Run by `servers/chembl/Containerfile` for the `full` tier, and by hand to
+  rebuild the committed fixture; stdlib only. Needs ~36 GB of scratch for the full tier.
 - `install-chart-tools.sh` — installs the pinned, checksummed `helm` and `kubeconform` into a directory
   (the Jenkins gate runs it; a laptop can too). The pins equal `.github/workflows/ci.yml`'s, held by a
   delivery test.

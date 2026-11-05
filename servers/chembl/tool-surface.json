@@ -1,0 +1,44 @@
+{
+  "chembl_bioactivity_summary": {
+    "identifier": {
+      "required": true,
+      "type": "string"
+    },
+    "kind": {
+      "default": "auto",
+      "required": false,
+      "type": "string"
+    },
+    "limit": {
+      "default": 50,
+      "required": false,
+      "type": "integer"
+    },
+    "min_confidence_score": {
+      "default": null,
+      "required": false,
+      "type": "integer|null"
+    },
+    "standard_type": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    },
+    "target_chembl_id": {
+      "default": null,
+      "required": false,
+      "type": "string|null"
+    }
+  },
+  "chembl_lookup_compound": {
+    "identifier": {
+      "required": true,
+      "type": "string"
+    },
+    "kind": {
+      "default": "auto",
+      "required": false,
+      "type": "string"
+    }
+  }
+}

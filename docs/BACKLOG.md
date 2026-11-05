@@ -17,23 +17,26 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
 ## 1 — The resource-bound ratchet, where it stops
 
 - [ ] **A relaxation at `calc`'s atom ceiling spends its budget instead of converging.** At 450 atoms
-  the 780 s budget buys ~11 optimizer cycles against ~177 needed; decide between a cycle-count bound
-  and rewording the refusal, after one real 400–450-atom run on the shipped image.
+  the 780 s budget buys ~11 optimizer cycles; a 443-atom linear polyalanine, embedded as
+  `optimize_geometry` embeds it and relaxed through `optimize_structure` (tblite + geomeTRIC, one
+  thread), needed 463 cycles (4,389 s on an arm64 core, unbudgeted). A cycle count barely depends on the
+  host, so no budget near 780 s converges such a molecule; still owed is the time per cycle on the
+  shipped image on x86_64 (under amd64 emulation it is ~900 s, not a measurement), then the choice
+  between a cycle-count bound and rewording the refusal.
   `servers/calc/src/chemclaw_mcp_calc/engine/budget.py`, `servers/calc/src/chemclaw_mcp_calc/engine/structure.py`.
 
-- [ ] **The hand-written reaction classifier gates the MoE priors; Rxn-INSIGHT is not wired to it.**
-  Rerun issue #128's arm with `rxnmapper` mapping, write a reviewed `NAME`→`ALL_CLASSES` table, and
-  measure the prior/rank shift; the SMARTS path stays as fallback.
+- [ ] **The hand-written reaction classifier answers `classify_reaction`; Rxn-INSIGHT is not wired
+  to it.** On issue #128's spectator corpus with `rxnmapper`'s own maps, Rxn-INSIGHT through #128's
+  keyword table names 12 of 12 traps and 8 of 8 controls, the SMARTS table 5 and 8. A prior/rank
+  shift cannot be measured yet: the vendored per-class priors are empty
+  (`servers/rxnpredict/src/chemclaw_mcp_rxnpredict/data/trust_priors.json`), so the class moves no
+  ranking until a calibration fills them, and `aggregate_forward` classifies from reactants alone,
+  where Rxn-INSIGHT (it needs a mapped product) cannot run. Owed: a reviewed `NAME`→`ALL_CLASSES`
+  table, then Rxn-INSIGHT first in `classify_reaction` and `aggregate_conditions` with the SMARTS
+  path as fallback, its `rxnmapper` load counted by admission.
   `servers/rxnpredict/src/chemclaw_mcp_rxnpredict/engine/meta/classifier.py::ALL_CLASSES`.
 
-- [ ] **RK4's step floor in `kinetics` sits on its stability limit** (peak 0.21% low at `k = 10`):
-  add a margin (doubles worst-case cost, resize the ceiling) or route floor-bound doses to the stable
-  scheme. `servers/kinetics/src/chemclaw_mcp_kinetics/engine/reactors.py::RK4_REAL_STABILITY_LIMIT`.
-
 ## 2 — Corpora that are not yet licensed to exist
-
-- [ ] **ChEMBL is CC-BY-SA; `chembl` waits on what that obliges for a derived answer** (vendored
-  slice, `dataset.json`, a tool's `source`). `MODULES.md`.
 
 ## 3 — Consuming a server hosted elsewhere
 
@@ -55,39 +58,16 @@ Related: [`decisions/`](decisions/) — a row that turns into a decision leaves 
   caller sent `notifications/cancelled`; over `/rpc` it closes the connection and the handler runs
   on. The tool thread outlives either (`asyncio.shield` holds the slot), so the cost is a duplicate
   on retry, as before. Worth a disconnect-driven cancel of the awaiting coroutine only if a retry
-  storm against a full pod is measured. `packages/mcp_server_kit/src/mcp_server_kit/rpc.py`.
-
-- [ ] **A request that promises a body and never finishes it is waited on forever, on `/mcp` and
-  `/rpc` alike.** Confirmed with a raw socket: `Content-Length: 900000` and one byte held the
-  connection past 20 s. uvicorn's `--timeout-keep-alive` covers idle connections only, the
-  Containerfiles pass no flag, and the Deployments set probes but no request timeout. Needs a read
-  timeout per chunk in the body-buffering loop (answer 408), sized above the slowest legitimate
-  client, with a test over a raw socket. The caller must hold the bearer and the NetworkPolicy admits
-  Chemclaw3 only, hence not urgent.
-  `packages/mcp_server_kit/src/mcp_server_kit/finite.py::NonFiniteLiteralRefusal`.
-
-- [ ] **Validating a hostile batch still runs on the event loop on `/mcp`.** The message sent back
-  is bounded on both transports, and `/rpc` validates a body over 64 KiB in a worker thread, but
-  upstream's `Tool.run` validates `tools/call` arguments inline and formats the whole error before
-  the sanitiser cuts it: a 600 KB batch of empty items is about three seconds of loop and a 100 MB
-  string. Offload means wrapping each tool's `fn_metadata.call_fn_with_arg_validation`
-  (a copy of six upstream lines, pinned in `test_upstream_surface.py`).
-  `packages/mcp_server_kit/src/mcp_server_kit/finite.py::finite_arguments`.
+  storm against a full pod is measured, which needs `/rpc` traffic: Chemclaw3's `calc_transport`
+  still defaults to `mcp`. `packages/mcp_server_kit/src/mcp_server_kit/rpc.py`.
 
 ## 4 — Dependencies held back from Dependabot
 
-- [ ] **rdkit 2026.3.6 moves torsion-handle literals both repositories assert**: bump here and in
-  Chemclaw3 together. `servers/chem/tests/test_torsions.py`, `pyproject.toml`.
-
-- [ ] **`run_python` does not warn that pandas 3 made copy-on-write mandatory** (`df[m]["c"] = x`
-  silently does nothing): one docstring sentence and a sandbox test.
-  `servers/pyexec/src/chemclaw_mcp_pyexec/tools.py`.
-
 ## 5 — Chemclaw3 consuming the fleet chart
 
-- [ ] **Chemclaw3's `deploy/kind/render-fleet.sh` and the tests that hold its `connectors.<name>.url`
-  values against this repository read `servers/*/deploy/*.yaml`, which no longer exist.** Render the
-  chart instead (`helm template`, `--set` for the kind image registry, `Never` pull policy and one
-  replica), then make the core chart depend on it so a connector's URL, port and token key derive from
-  `servers.<name>.port`. **Other repository:** `Chemclaw3`; the chart is
+- [ ] **Chemclaw3's chart does not depend on this one, so each connector's URL, port and token key is
+  written twice.** Chemclaw3's kind lane and the tests that hold its `connectors.<name>.url` values
+  against this repository already render this chart; what remains is the dependency (Chemclaw3's
+  W6.8), deriving them from `servers.<name>.port`, and a place Helm can fetch this chart from (an OCI
+  registry or a chart repository). **Other repository:** `Chemclaw3`; the chart is
   `deploy/helm/chemclaw-fleet`, its interface `deploy/README.md`.

@@ -213,6 +213,16 @@ looks (`D-2026-09-26-gestis-is-not-a-source-and-the-reason-outlives-the-build`).
 `tests/test_fleet_data.py::test_no_corpus_is_vendored_from_gestis_and_a_built_ghs_says_why` holds both
 halves.
 
+**A source under a share-alike licence is a corpus with obligations, not a refusal.** `servers/chembl`
+vendors an adaptation of ChEMBL (CC BY-SA 3.0) and is the pattern: the manifest's `licence` names the
+licence, its URL and that the file is an adaptation; every answer carries the credit, release, source
+and changes as a structured field the tests assert; the README says what redistributing the image
+redistributes and states the sui generis database-right caveat; a corpus too large for this
+repository is built into the image from a checksum-pinned source by a script in `scripts/`, with a
+small fixture committed (`D-2026-10-23-chembl-is-vendored-only-as-share-alike-data-after-legal-review`).
+`tests/test_fleet_data.py::test_a_share_alike_corpus_is_attributed_and_the_licence_is_named` holds it
+for any later corpus.
+
 **Then make the corpus validate itself.** This is the part most worth the effort, and `props`
 shows the pattern: CAS check digits, molecular weight against formula, and Antoine constants against
 the tabulated boiling point are all pairs of *independently written* numbers that must agree, so a

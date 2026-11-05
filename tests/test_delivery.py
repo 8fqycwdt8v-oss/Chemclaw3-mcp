@@ -294,3 +294,18 @@ def test_make_refuses_to_run_the_suite_without_helm_unless_told_to() -> None:
     assert re.search(r"^check: .*\bchart-validate\b", makefile, re.M)
     assert "CHEMCLAW_ALLOW_NO_HELM" in makefile
     assert "CHEMCLAW_ALLOW_NO_HELM" in (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+
+
+def test_a_release_build_of_chembl_asks_for_the_full_subset() -> None:
+    """`servers/chembl/Containerfile` defaults to its fixture so CI never moves the 5.8 GB release.
+
+    The default is only safe if the pipeline that publishes images says otherwise: a `Jenkinsfile`
+    that stopped passing `CHEMBL_TIER=full` would publish a 13-compound image as the ChEMBL server.
+    """
+    containerfile = (ROOT / "servers" / "chembl" / "Containerfile").read_text(encoding="utf-8")
+    assert "ARG CHEMBL_TIER=fixture" in containerfile
+    jenkinsfile = JENKINSFILE.read_text(encoding="utf-8")
+    assert "'--build-arg CHEMBL_TIER=full'" in jenkinsfile
+    assert jenkinsfile.count("${tierArgs}") == 2, (
+        "the dry-run build and the build-and-push must both pass the tier"
+    )

@@ -4,6 +4,9 @@
 `D-2026-09-26-a-tool-that-runs-on-the-event-loop-cannot-be-gated`'s "the cheaper integrator the row
 offered is not taken here". Its gate, its offload and its ceiling stand unchanged.
 
+**Superseded-by:** `D-2026-10-23-rk4-steps-at-half-its-stability-limit`, in part: RK4's floor
+below the ceiling, and the size of the finding queued at the end of this record.
+
 ## What was found
 
 `servers/kinetics`' `semibatch_accumulation` derived an RK4 step count from the problem

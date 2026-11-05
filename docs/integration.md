@@ -24,7 +24,7 @@ turns it into a hard failure — which is the right setting for a GxP deployment
 ## How Chemclaw3 gets the manifests
 
 Every fleet connector's `connector.yaml` (`chem`, `safety`, `rxnpredict`, `props`, `thermalsafety`,
-`kinetics`, `unitops`, `suitability`, `pyexec`) reaches Chemclaw3 as package data of
+`kinetics`, `unitops`, `suitability`, `chembl`, `pyexec`) reaches Chemclaw3 as package data of
 `chemclaw-contracts` (`packages/chemclaw_contracts`), which Chemclaw3 depends on at a pinned commit
 (`D-2026-10-08-the-fleet-publishes-its-contracts-as-a-pinned-git-package`). Chemclaw3 holds no copy:
 this repository is the single owner of each manifest, and Chemclaw3's default connectors directory
@@ -43,7 +43,7 @@ change to a manifest reaches Chemclaw3 when its pin moves to a commit carrying i
 hard-coded calls. Each server's `/healthz` reports the `contract_version` its manifest declares, so
 the consumer can compare the two at session open.
 
-`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability` and `pyexec` declare
+`props`, `thermalsafety`, `kinetics`, `unitops`, `suitability`, `chembl` and `pyexec` declare
 `default_enabled: false`, because every bound connector's tool schemas are paid on every model call.
 An empty `CHEMCLAW_CONNECTORS_ENABLED` binds none of them; an explicit list binds exactly what it
 names, in that order, and replaces the default set, so a list that adds `props` has to name the rest
@@ -334,7 +334,7 @@ hand-run build that drops the `--build-arg` is the remaining way to get `"unknow
 ### Which manifests reach the Chemclaw3 pod
 
 Every fleet connector (`chem`, `safety`, `rxnpredict`, `props`, `thermalsafety`, `kinetics`,
-`unitops`, `suitability`, `pyexec`) arrives in the Chemclaw3 image through `chemclaw-contracts`,
+`unitops`, `suitability`, `chembl`, `pyexec`) arrives in the Chemclaw3 image through `chemclaw-contracts`,
 pinned by commit in Chemclaw3's `pyproject.toml` until the release tag can be pushed. Nothing is
 mounted, and mounting a fleet connector's name is refused. `manifests-internal/` is never a path to
 add: it is the directory whose contents must not be discovered.

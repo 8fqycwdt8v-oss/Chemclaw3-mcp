@@ -9,9 +9,9 @@ the cross-cutting behaviours cannot be forgotten one server at a time. Each is q
 - The caller and the trace are re-bound per tool call, because a tool body runs in the session
   manager's task, not the request's.
 - An unexpected tool exception never reaches the model verbatim (`_sanitize_tool_errors`).
-- Validators, the default executor, session lifetime/ceiling, non-finite arguments and the
-  DNS-rebinding allow-list are handled by `schema_cache`, `executor`, `sessions`, `finite` and
-  `rebinding`.
+- Validators, the default executor, session lifetime/ceiling, non-finite arguments, where a large
+  call is validated and the DNS-rebinding allow-list are handled by `schema_cache`, `executor`,
+  `sessions`, `finite`, `validation` and `rebinding`.
 - Logging, the validator cache and the executor are configured in the lifespan, not at import, so
   importing a server's `app` module changes nothing about the importing process.
 """
@@ -52,7 +52,11 @@ from mcp_server_kit.degradation import (
     register_components,
 )
 from mcp_server_kit.executor import install_default_executor
-from mcp_server_kit.finite import NonFiniteLiteralRefusal, refuse_non_finite_arguments
+from mcp_server_kit.finite import (
+    NonFiniteLiteralRefusal,
+    refuse_non_finite_answers,
+    refuse_non_finite_arguments,
+)
 from mcp_server_kit.identity import (
     HEADER_ACTOR,
     HEADER_CORRELATION,
@@ -69,6 +73,7 @@ from mcp_server_kit.rpc import rpc_routes
 from mcp_server_kit.schema_cache import install_validator_cache
 from mcp_server_kit.sessions import apply_session_ceiling, apply_session_idle_timeout
 from mcp_server_kit.tracing import tool_call_span
+from mcp_server_kit.validation import offload_large_argument_validation
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +340,10 @@ def connector_app(
     # Before any wrapper, because it is not one: it replaces each tool's argument model, so a NaN or
     # an infinity is a validation refusal like any other and every wrapper below books it as one.
     refuse_non_finite_arguments(server)
+    # Not a wrapper either: it replaces each tool's `FuncMetadata`, so a large call is validated off
+    # the loop and its refusal is bounded before the wrappers below see it.
+    offload_large_argument_validation(server)
+    refuse_non_finite_answers(server)
     _sanitize_tool_errors(server, name=name)
     # Applied after the sanitizer so it wraps it: the caller is bound before anything else runs,
     # which is what lets a tool stamp a record with the turn that asked for it.
@@ -384,7 +393,13 @@ def connector_app(
             # blocking shutdown; `cancel_futures` would drop queued work silently.
             tool_pool.shutdown(wait=False)
 
-    app = FastAPI(title=f"chemclaw-mcp-{name}", lifespan=lifespan)
+    # FastAPI's own OpenTelemetry (on by default) would record every request under the
+    # global provider, tracing switch or not; `tracing.py` is the one span source, identifiers only.
+    app = FastAPI(
+        title=f"chemclaw-mcp-{name}",
+        lifespan=lifespan,
+        telemetry={"tracing": False, "metrics": False, "logs": False},
+    )
     # First, therefore innermost: it buffers a body, so it runs only on one the size cap has bounded
     # and the bearer check has admitted, and its 400 is inside the caller log. See `finite.py`.
     app.add_middleware(NonFiniteLiteralRefusal)

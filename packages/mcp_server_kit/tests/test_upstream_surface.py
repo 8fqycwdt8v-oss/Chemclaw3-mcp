@@ -10,13 +10,16 @@ whether the dependency is still right.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from typing import Any
 
 import jsonschema  # type: ignore[import-untyped]
 import jsonschema.validators  # type: ignore[import-untyped]
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.tools import ToolManager
+from mcp.server.fastmcp.tools import Tool, ToolManager
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from mcp.server.lowlevel import server as lowlevel
 from mcp.server.streamable_http import MCP_SESSION_ID_HEADER, StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -214,3 +217,39 @@ def test_the_tool_manager_and_the_transport_guard_still_have_the_shape_rpc_calls
     assert {"request", "is_post"} <= set(
         inspect.signature(TransportSecurityMiddleware.validate_request).parameters
     ), "TransportSecurityMiddleware.validate_request changed; mcp_server_kit/rpc.py runs it"
+
+
+def test_the_validation_the_kit_moves_off_the_loop_is_still_upstream_s_six_lines() -> None:
+    """`validation._OffloadedValidation` copies `FuncMetadata.call_fn_with_arg_validation`.
+
+    For a large call it runs these statements itself, split at the validation, so a step upstream
+    adds here would be skipped on exactly those calls. `Tool.run` must still reach it through
+    `self.fn_metadata`, and still format a failure into its message, which is why the copy bounds a
+    failure in the worker thread.
+    """
+    source = textwrap.dedent(inspect.getsource(FuncMetadata.call_fn_with_arg_validation))
+    definition = ast.parse(source).body[0]
+    assert isinstance(definition, ast.AsyncFunctionDef)
+    statements = [ast.unparse(statement) for statement in definition.body]
+    if statements and statements[0].startswith(("'", '"')):  # the docstring
+        statements = statements[1:]
+    assert statements == [
+        "arguments_pre_parsed = self.pre_parse_json(arguments_to_validate)",
+        "arguments_parsed_model = self.arg_model.model_validate(arguments_pre_parsed)",
+        "arguments_parsed_dict = arguments_parsed_model.model_dump_one_level()",
+        "arguments_parsed_dict |= arguments_to_pass_directly or {}",
+        "if fn_is_async:\n    return await fn(**arguments_parsed_dict)\n"
+        "else:\n    return fn(**arguments_parsed_dict)",
+    ], (
+        "FuncMetadata.call_fn_with_arg_validation changed; mcp_server_kit/validation.py runs a "
+        "copy of it for every large tools/call"
+    )
+    run = inspect.getsource(Tool.run)
+    assert "await self.fn_metadata.call_fn_with_arg_validation(" in run, (
+        "Tool.run no longer validates through self.fn_metadata; mcp_server_kit/validation.py "
+        "replaces exactly that object"
+    )
+    assert 'raise ToolError(f"Error executing tool {self.name}: {e}") from e' in run, (
+        "Tool.run no longer formats the failure into its message; mcp_server_kit/validation.py "
+        "bounds it in the worker because it did"
+    )

@@ -4,7 +4,7 @@
 - *PFR*: the batch equation with residence time for clock time, computed by calling it.
 - *CSTR*: steady state, the whole tank at outlet composition — hence more volume than a PFR.
 - *Semi-batch*: one reagent dosed at constant rate; integrated, since volume and both
-  concentrations change together. Fixed-step RK4 where stable within `MAX_INTEGRATION_STEPS`,
+  concentrations change together. Fixed-step RK4 where damped within `MAX_INTEGRATION_STEPS`,
   otherwise an L-stable SDIRK at a fixed step count.
 
 Plain Python, so the image carries no SciPy. Isothermal in every case: nothing here solves an
@@ -41,6 +41,11 @@ MAX_INTEGRATION_STEPS = 200_000
 #: RK4's stability limit on the real axis: stable for `h*|lambda| <= 2.785`. Used by
 #: `_steps_for_stability`, which keeps a fast reaction from being reported as a safe one.
 RK4_REAL_STABILITY_LIMIT = 2.785
+
+#: How far inside that limit the step floor puts `h*lambda`. On the limit RK4's amplification
+#: factor is 0.9996, so the start-up transient barely decays and a dose whose stiffness bound is
+#: tight reads low; at half of it the factor is 0.28 and the transient is gone in a few steps.
+RK4_STEP_MARGIN = 2.0
 
 #: Headroom over the dosed reagent's quasi-steady concentration when deriving the step floor, for
 #: RK4's transient and the co-reagent term `_stiffness_bound` leaves out. Enters the stiffness as
@@ -452,9 +457,9 @@ def _steps_for_stability(
     """The RK4 step count this dose actually needs, never fewer than `requested` — or `None`.
 
     RK4 diverges once `h * lambda` passes `RK4_REAL_STABILITY_LIMIT`, and a divergence clamped at
-    zero would report a fast reaction as having no accumulation at all. So the floor is derived from
-    the problem's stiffness. Past `MAX_INTEGRATION_STEPS` this returns `None` and the dose goes to
-    the stable scheme.
+    zero would report a fast reaction as having no accumulation at all; near the limit it is stable
+    but undamped. So the floor is derived from the problem's stiffness, `RK4_STEP_MARGIN` inside the
+    limit. Past `MAX_INTEGRATION_STEPS` this returns `None` and the dose goes to the stable scheme.
 
     Args:
         stiffness: `_stiffness_bound`'s upper bound on the Jacobian's eigenvalue, per second.
@@ -469,7 +474,7 @@ def _steps_for_stability(
     """
     if stiffness <= 0.0:
         return requested
-    needed = dose_time_seconds * stiffness / RK4_REAL_STABILITY_LIMIT
+    needed = dose_time_seconds * stiffness * RK4_STEP_MARGIN / RK4_REAL_STABILITY_LIMIT
     if not math.isfinite(needed):  # an infinite or NaN stiffness, or a product past DBL_MAX
         raise KineticsInputError(
             "this dose is too fast for any integrator here to represent: the rate's response to "

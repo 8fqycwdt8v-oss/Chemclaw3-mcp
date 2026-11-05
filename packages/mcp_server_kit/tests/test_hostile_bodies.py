@@ -9,7 +9,9 @@ that did, on `/rpc` and on `/mcp`:
 - a batch of empty items (two errors each), whose validation alone is seconds of work;
 - a body nested so deeply that `json.loads` raises `RecursionError`.
 
-Each is asserted on the answer's size and on how long the event loop stalled.
+Each is asserted on the answer's size and on how long the event loop stalled. A body that promises
+more than it sends stalls nothing and holds a connection instead; it is asserted on the 408 and the
+closed socket.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -28,6 +31,7 @@ import pytest
 from chemclaw_contracts.rpc import RpcError, WireRequest
 from mcp.server.fastmcp import FastMCP
 from mcp.types import PARSE_ERROR
+from mcp_server_kit import finite
 from mcp_server_kit.app import connector_app
 from pydantic import BaseModel, Field
 
@@ -36,7 +40,7 @@ TOKEN_ENV = "MCP_KIT_HOSTILE_PROBE_TOKEN"
 
 #: Under the kubelet's three seconds for `/livez` and well under the four to five seconds the
 #: unbounded handling stalled the loop for. A batch's 400,000 errors are built by pydantic in
-#: single calls that hold the GIL, so its budget leaves room for a loaded runner (1.5 s measured).
+#: single calls that hold the GIL, so its budget leaves room for a loaded runner.
 LOOP_LAG_BUDGET_SECONDS = 1.0
 BATCH_LOOP_LAG_BUDGET_SECONDS = 2.5
 HEARTBEAT_SECONDS = 0.01
@@ -45,8 +49,15 @@ HEARTBEAT_SECONDS = 0.01
 ANSWER_BUDGET_CHARS = 5_000
 ATTACK_KEYS = 70_000
 ATTACK_ITEMS = 200_000
-MCP_ATTACK_ITEMS = 20_000
+#: About 600 KB on the wire: under the 1 MB cap, and seconds of validation and formatting inline.
+MCP_ATTACK_ITEMS = 150_000
 ATTACK_DEPTH = 400_000
+#: The body a stalled client promises: under the 1 MB cap, so only the read timeout ends the wait.
+STALLED_BODY_DECLARED_BYTES = 900_000
+#: The read timeout these tests run at, so the two transports cost seconds rather than the default.
+STALLED_BODY_TIMEOUT_SECONDS = 1
+#: How long past it a test waits for the answer and the close before calling the connection held.
+STALLED_BODY_GRACE_SECONDS = 10.0
 
 
 class Item(BaseModel):
@@ -172,19 +183,112 @@ def test_a_batch_of_empty_items_is_refused_small_and_does_not_stall_the_loop(
     assert max(lag) < BATCH_LOOP_LAG_BUDGET_SECONDS, f"the loop stalled {max(lag):.2f} s"
 
 
-async def test_the_mcp_path_bounds_the_same_messages(
-    running_server: str, mcp_session: Callable[..., Any]
-) -> None:
-    """`tools/call` with a batch of empty items gets a short refusal, not upstream's whole text.
+@contextmanager
+def _mcp_by_hand(base: str) -> Iterator[httpx.Client]:
+    """An initialised MCP session driven with raw requests.
 
-    Only the message is bounded here; validating the batch still runs on the loop on this path.
+    So a test can send a body it encoded beforehand: an SDK client serialises a large call inside
+    the measured window, in this process and under the GIL the server's loop shares.
     """
-    async with mcp_session(running_server, token=TOKEN) as session:
-        result = await session.call_tool("batch", {"items": [{}] * MCP_ATTACK_ITEMS})
-    assert result.isError is True
-    text = "".join(getattr(block, "text", "") for block in result.content)
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(base_url=base, headers=headers, timeout=60.0) as client:
+        opened = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "hostile-bodies", "version": "0"},
+                },
+            },
+        )
+        assert opened.status_code == 200, opened.text
+        client.headers["mcp-session-id"] = opened.headers["mcp-session-id"]
+        client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+        yield client
+
+
+def _answered(response: httpx.Response) -> dict[str, Any]:
+    """The one JSON-RPC message in a streamable-HTTP answer, sent as SSE or as JSON."""
+    if response.headers.get("content-type", "").startswith("text/event-stream"):
+        data = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
+        return dict(json.loads(data[-1]))
+    return dict(response.json())
+
+
+def test_the_mcp_path_bounds_the_same_messages(
+    running_server: str,
+) -> None:
+    """`tools/call` with a ~600 KB batch of empty items: a short refusal and a prompt loop.
+
+    Upstream's `Tool.run` validates on the loop and formats all 300,000 errors into its message
+    before the sanitiser cuts it; the kit validates a large call in a worker thread and bounds the
+    message there. Which thread validated is asserted in `test_validation.py`; this holds the stall.
+    """
+    content = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": "batch", "arguments": {"items": [{}] * MCP_ATTACK_ITEMS}},
+        }
+    ).encode()
+    with _mcp_by_hand(running_server) as client, _watching_the_loop() as lag:
+        response = client.post("/mcp", content=content)
+    result = _answered(response)["result"]
+    assert result["isError"] is True
+    text = "".join(block.get("text", "") for block in result["content"])
     assert len(text) < ANSWER_BUDGET_CHARS, f"a {len(text)}-character refusal"
-    assert "validation error" in text
+    assert f"{2 * MCP_ATTACK_ITEMS} validation errors" in text
+    assert lag, "the heartbeat never ran"
+    assert max(lag) < LOOP_LAG_BUDGET_SECONDS, f"the loop stalled {max(lag):.2f} s"
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/rpc/echo"])
+def test_a_body_that_stops_arriving_is_answered_408_and_its_connection_closed(
+    running_server: str, path: str
+) -> None:
+    """A body that declares 900,000 bytes, sends one and goes silent gets 408, then a closed socket.
+
+    Over a raw socket, because a client library always finishes the body it declared. Without the
+    read timeout the buffering loop waited on this connection for as long as the client held it.
+    """
+    host, port = running_server.removeprefix("http://").rsplit(":", 1)
+    head = (
+        f"POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {TOKEN}\r\n"
+        "Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\n"
+        f"Content-Length: {STALLED_BODY_DECLARED_BYTES}\r\n\r\n"
+    ).encode()
+    answer = b""
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        socket.create_connection((host, int(port))) as connection,
+    ):
+        patch.setattr(finite, "BODY_READ_TIMEOUT_SECONDS", STALLED_BODY_TIMEOUT_SECONDS)
+        connection.settimeout(STALLED_BODY_TIMEOUT_SECONDS + STALLED_BODY_GRACE_SECONDS)
+        started = time.monotonic()
+        connection.sendall(head + b"{")
+        try:
+            while chunk := connection.recv(65_536):
+                answer += chunk
+        except TimeoutError:
+            pytest.fail(
+                f"{path}: {'answered' if answer else 'said nothing'} and still held the connection "
+                f"{STALLED_BODY_TIMEOUT_SECONDS + STALLED_BODY_GRACE_SECONDS:.0f} s after its body "
+                f"stopped arriving: {answer[:120]!r}"
+            )
+        waited = time.monotonic() - started
+    assert answer.startswith(b"HTTP/1.1 408"), f"{path}: {answer[:200]!r}"
+    assert waited >= STALLED_BODY_TIMEOUT_SECONDS * 0.9, (
+        f"{path}: answered {waited:.2f} s in, before the {STALLED_BODY_TIMEOUT_SECONDS} s timeout"
+    )
 
 
 def test_a_body_nested_past_the_parser_is_a_refusal_not_a_traceback(running_server: str) -> None:

@@ -1,6 +1,6 @@
 # D-2026-10-21-every-compute-server-serves-a-calculation-key — a server whose tools compute serves `calculation_key` for each of them, derived by the kit, naming the engine build
 
-**Status:** proposed · **Date:** 2026-10-21
+**Status:** accepted · **Date:** 2026-10-21
 
 ## Context
 

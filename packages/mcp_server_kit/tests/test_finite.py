@@ -52,6 +52,21 @@ def _probe_server() -> FastMCP:
         """Check `value` against a limit, if one is declared — `None` means "not declared"."""
         return "no limit declared" if limit is None else str(value <= limit)
 
+    @server.tool()
+    def amplify(x: float) -> Point:
+        """Scale `x` by 1e308: a finite argument whose answer overflows to infinity."""
+        return Point(label="amplified", value=x * 1e308)
+
+    @server.tool()
+    def series(x: float) -> dict[str, list[float]]:
+        """`x` and its difference from infinity: the second entry is a NaN for any finite `x`."""
+        return {"values": [x, math.inf - math.inf + x]}
+
+    @server.tool()
+    async def amplify_async(x: float) -> float:
+        """`amplify`, from a coroutine."""
+        return x * 1e308
+
     return server
 
 
@@ -115,6 +130,32 @@ async def test_a_finite_call_is_untouched(probe: FastMCP) -> None:
         await probe._tool_manager.call_tool("label_point", {"point": {"label": "a", "value": 1.0}})
         == "a=1.0"
     )
+
+
+@pytest.mark.parametrize(
+    ("tool", "where"),
+    [("amplify", "answer.value"), ("series", "answer['values'][1]"), ("amplify_async", "answer")],
+)
+async def test_a_non_finite_answer_is_refused_by_path(
+    probe: FastMCP, tool: str, where: str
+) -> None:
+    """A NaN or infinity a tool computes is a caller-safe refusal naming where it sits.
+
+    Over MCP a model's NaN would be written `null` and a dict's a bare `NaN`; over `/rpc` it cannot
+    be encoded. Refused before serialisation, the caller reads one answer on every channel.
+    """
+    with pytest.raises(ToolError) as refused:
+        await probe._tool_manager.call_tool(tool, {"x": 10.0}, convert_result=True)
+    assert isinstance(refused.value.__cause__, ValueError)
+    assert f"{tool} computed {where}, which {NON_FINITE_REFUSAL}" in str(refused.value)
+
+
+async def test_a_finite_answer_is_untouched(probe: FastMCP) -> None:
+    """The answer wrapper returns exactly what the tool returned when every float is finite."""
+    assert await probe._tool_manager.call_tool("amplify", {"x": 1e-308}) == Point(
+        label="amplified", value=1e-308 * 1e308
+    )
+    assert await probe._tool_manager.call_tool("amplify_async", {"x": 1e-308}) == 1e-308 * 1e308
 
 
 def test_the_advertised_schema_does_not_move() -> None:

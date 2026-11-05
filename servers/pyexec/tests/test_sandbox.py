@@ -72,6 +72,30 @@ def test_numpy_and_pandas_are_available() -> None:
     assert json.loads(outcome.result_json or "null") == pytest.approx(1.95, abs=0.05)
 
 
+def test_a_chained_assignment_changes_nothing_and_says_so() -> None:
+    """pandas 3's copy-on-write: the model is told, by pandas, in the output it reads.
+
+    `df[mask]["c"] = x` leaves `df` unchanged, and pandas' own `ChainedAssignmentError` warning
+    (which names the `.loc` form) lands in `stdout`, because the run's standard error is part of
+    it. That warning is the only thing telling the model its write did nothing, so this holds it:
+    a pandas that stopped warning, or a runner that stopped returning stderr, fails here. The `.loc`
+    form still changes the frame.
+    """
+    outcome = run(
+        "import pandas as pd\n"
+        "df = pd.DataFrame({'a': [1, 2, 3], 'c': [0, 0, 0]})\n"
+        "mask = df['a'] > 1\n"
+        "df[mask]['c'] = 9\n"
+        "chained = df['c'].tolist()\n"
+        "df.loc[mask, 'c'] = 9\n"
+        "result = [chained, df['c'].tolist()]",
+        limits=_fast(),
+    )
+    assert outcome.error is None
+    assert json.loads(outcome.result_json or "null") == [[0, 0, 0], [0, 9, 9]]
+    assert "ChainedAssignmentError" in outcome.stdout
+
+
 def test_scipy_submodules_import_lazily_inside_a_call() -> None:
     """Library-internal lazy imports do not go through the allowlist.
 
