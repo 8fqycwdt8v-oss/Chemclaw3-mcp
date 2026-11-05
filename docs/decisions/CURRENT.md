@@ -96,6 +96,7 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 
 ## Data, corpora and identity of a result
 
+- [Every compute server serves `calculation_key` for each compute tool, derived by the kit and naming the engine build](D-2026-10-21-every-compute-server-serves-a-calculation-key.md)
 - [A hand-compiled rule table is a table with a typo in it](D-2026-09-13-a-hand-compiled-rule-table-is-a-table-with-a-typo-in-it.md)
 - [A range check cannot see a swap inside the range](D-2026-09-14-a-range-check-cannot-see-a-swap-inside-the-range.md)
 - [A field the author wrote is not a field that is missing](D-2026-09-16-a-field-the-author-wrote-is-not-a-field-that-is-missing.md)
@@ -114,6 +115,7 @@ One line per record, grouped by area. The record itself is the [ledger](README.m
 
 ## Per-server science
 
+- [A server may prepare engine inputs and parse engine outputs for a calculation that runs elsewhere; no server runs a QM engine](D-2026-10-21-a-prepare-and-parse-server-is-not-a-dft-tier.md)
 - [The dependency a catalogue proposed was the one tool it could not carry](D-2026-09-15-the-dependency-a-catalogue-proposed-was-the-one-tool-it-could-not-carry.md)
 - [Two formulas for one quantity make the convention part of the answer](D-2026-09-15-two-formulas-for-one-quantity-make-the-convention-part-of-the-answer.md)
 - [The refusals belong in front of the library](D-2026-09-16-the-refusals-belong-in-front-of-the-library.md)
