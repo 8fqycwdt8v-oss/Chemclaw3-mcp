@@ -42,6 +42,9 @@
 mount: backend
 name: calc
 contract_version: 1.1.0
+# Every result here is cached by the caller, so `calculation_key` answers for each compute tool a key
+# or a caveat saying why there is none (`tests/test_fleet_compute_keys.py` calls it for every one).
+compute: true
 description: >-
   Fast local calculators, request/response and stateless: GFN2-xTB single-point energies, electronic
   properties, condensed Fukui site reactivity, geometry optimization, and the second derivatives and

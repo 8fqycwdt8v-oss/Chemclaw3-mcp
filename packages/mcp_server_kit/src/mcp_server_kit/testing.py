@@ -196,6 +196,8 @@ class ConnectorManifest(BaseModel):
     deliberate difference is named here:
 
     - `mount` — accepted here, refused there. That asymmetry *is* `manifests-internal/`.
+    - `compute` — accepted here on a backend only, for the same reason: it obliges the server to
+      serve `calculation_key` (`tests/test_fleet_compute_keys.py` calls it for every tool).
     - `auth.mode` — `bearer` only, where the consumer also allows `none`. `CLAUDE.md`'s rule, and
       `BearerAuth` carries the argument.
     - `endpoint` — required here, optional there. Over there a bundle may contribute Temporal jobs
@@ -240,6 +242,23 @@ class ConnectorManifest(BaseModel):
     #: The version of the surface this manifest declares (`docs/adding-a-server.md` has the bump
     #: rules). Optional here because it is optional over there; `/healthz` reports the same string.
     contract_version: str | None = Field(default=None, pattern=CONTRACT_VERSION_PATTERN)
+    #: The server computes results a caller caches, so it owes `calculation_key` for each compute
+    #: tool (`D-2026-10-21-every-compute-server-serves-a-calculation-key`).
+    compute: bool = False
+
+    @model_validator(mode="after")
+    def _compute_is_a_keyed_backend(self) -> Self:
+        """`compute: true` only on a backend (the consumer refuses the key) serving the probe."""
+        if not self.compute:
+            return self
+        if self.mount != "backend":
+            raise ValueError(
+                "`compute: true` is a key Chemclaw3's connector model refuses; only a "
+                "`mount: backend` manifest may carry it"
+            )
+        if "calculation_key" not in self.endpoint.tools:
+            raise ValueError("`compute: true` obliges the server to serve `calculation_key`")
+        return self
 
 
 def load_manifest(path: Path) -> ConnectorManifest:

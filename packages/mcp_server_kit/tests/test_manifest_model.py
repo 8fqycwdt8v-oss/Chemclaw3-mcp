@@ -154,3 +154,26 @@ def test_a_contract_version_that_is_not_semver_is_refused(tmp_path: Path, versio
 def test_a_manifest_without_a_contract_version_still_validates(tmp_path: Path) -> None:
     """The field is optional, as it is in the consumer's model."""
     assert load_manifest(_written(tmp_path, COMPLETE)).contract_version is None
+
+
+def test_compute_is_accepted_on_a_backend_that_serves_the_key_probe(tmp_path: Path) -> None:
+    """`compute: true` names an obligation, so it is modelled rather than ignored."""
+    endpoint = {**ENDPOINT, "tools": ["a_tool", "calculation_key"], "read_only": ["a_tool"]}
+    endpoint["state_changing"] = ["calculation_key"]
+    manifest = {**COMPLETE, "mount": "backend", "compute": True, "endpoint": endpoint}
+    assert load_manifest(_written(tmp_path, manifest)).compute is True
+    assert load_manifest(_written(tmp_path, COMPLETE)).compute is False
+
+
+def test_compute_on_a_connector_is_refused_as_the_consumer_would(tmp_path: Path) -> None:
+    """Chemclaw3's connector model forbids the key, so only a backend may carry it."""
+    endpoint = {**ENDPOINT, "tools": ["calculation_key"], "read_only": ["calculation_key"]}
+    with pytest.raises(ValueError, match="only a `mount: backend`"):
+        load_manifest(_written(tmp_path, {**COMPLETE, "compute": True, "endpoint": endpoint}))
+
+
+def test_compute_without_the_key_probe_is_refused(tmp_path: Path) -> None:
+    """The obligation is to serve `calculation_key`; a manifest that does not declare it cannot."""
+    manifest = {**COMPLETE, "mount": "backend", "compute": True}
+    with pytest.raises(ValueError, match="obliges the server to serve `calculation_key`"):
+        load_manifest(_written(tmp_path, manifest))

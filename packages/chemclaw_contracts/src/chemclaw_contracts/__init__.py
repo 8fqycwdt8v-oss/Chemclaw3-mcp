@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 # Equal to `version` in pyproject.toml; `tests/test_manifests.py` holds it.
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "CONTRACT_VERSION_PATTERN",

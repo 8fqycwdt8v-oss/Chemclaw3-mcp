@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from mcp_server_kit.keys import not_a_compute_tool
 from pydantic import BaseModel
 
 from chemclaw_mcp_calc.engine import (
@@ -323,10 +324,7 @@ def calculation_identity(tool: str, arguments: dict[str, Any]) -> CalculationIde
     """
     known = COMPUTE_TOOLS.get(tool)
     if known is None:
-        raise ValueError(
-            f"{tool!r} is not a compute tool on this server; expected one of "
-            f"{', '.join(sorted(COMPUTE_TOOLS))}"
-        )
+        raise not_a_compute_tool(tool, list(COMPUTE_TOOLS))
     accepts, derive = known
     unexpected = sorted(set(arguments) - accepts)
     if unexpected:
