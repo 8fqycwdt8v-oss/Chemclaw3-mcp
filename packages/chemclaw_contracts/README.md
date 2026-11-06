@@ -10,9 +10,9 @@ What this fleet promises its consumer, as one installable package.
   the exact argument dict) and the responses a caller reads. `servers/<name>/tests/test_contract.py`
   fails when a served schema drifts from them.
 - **`chemclaw_contracts.compute`**: `ComputeIdentity` (what `calculation_key` answers; `calc`'s
-  `CalculationIdentity` is an alias for it until 1.3.0) and `KeyedResult` (what every compute answer
-  carries). A backend whose manifest says `compute: true` answers `calculation_key` for every compute
-  tool (`tests/test_fleet_compute_keys.py`).
+  `CalculationIdentity` stays an alias for it for one minor version) and `KeyedResult` (what every
+  compute answer carries). A backend whose manifest says `compute: true` answers `calculation_key`
+  for every compute tool (`tests/test_fleet_compute_keys.py`).
 - **`chemclaw_contracts.rpc`**: where a backend operation lives (`POST /rpc/<tool>`, body = the
   tool's request model, 200 body = what its response model reads) and the `RpcError` envelope every
   non-200 the route itself produces carries. Served beside MCP by `calc` and `rxnlabel` from
