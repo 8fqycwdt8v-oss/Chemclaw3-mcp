@@ -5,20 +5,18 @@ embedded geometry's hash) exist only in this process; Chemclaw3 re-derives neith
 result carries `calc_version` and, where derivable, the flat
 `calc_type@calc_version:input_hash:params_hash`.
 
-A deliberate copy of Chemclaw3's `science/calc/store.py` key: the field names, the two
-`stable_hash` calls, the `{"epoch", "params"}` envelope and the flat separators must agree
-(`remote_key` reads the fields by name), and `tests/test_key_contract.py` pins them.
-`CALCULATION_EPOCH` need not agree: `remote_key` folds Chemclaw3's epoch over this `params_hash`,
-so the two compose. No store lives here; a key is provenance, never looked up.
+The key itself is the fleet's (`mcp_server_kit.keys.CalculationKey`); what is `calc`'s is the epoch
+folded into it. `CALCULATION_EPOCH` need not agree with Chemclaw3's: `remote_key` folds Chemclaw3's
+epoch over this `params_hash`, so the two compose. No store lives here; a key is provenance, never
+looked up.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
+from mcp_server_kit import keys
 from pydantic import BaseModel, Field
-
-from chemclaw_mcp_calc.engine.ids import stable_hash
 
 __all__ = ["CALCULATION_EPOCH", "CalculationKey", "Keyed"]
 
@@ -32,14 +30,10 @@ __all__ = ["CALCULATION_EPOCH", "CalculationKey", "Keyed"]
 CALCULATION_EPOCH = "2"
 
 
-class CalculationKey(BaseModel):
+class CalculationKey(keys.CalculationKey):
     """Content-addressed identity of a calculation, versioned by the calculator.
 
-    Two calculations share a key iff they are the same calculator *version* run on the same input
-    with the same parameters, under the same `CALCULATION_EPOCH`. `calc_version` is what prevents a
-    method update from returning a pre-update cached result; the epoch is what prevents a
-    ChemClaw-side fix or payload change from doing the same, and it is why `build` is the only
-    honest way to make a key.
+    The fleet's key with `calc`'s `CALCULATION_EPOCH` folded in by default, read when `build` runs.
 
     **`calc_version` names every program whose output survives into the payload, and no program
     that does not run** — a calculation that composes two programs names both, because either one
@@ -51,11 +45,6 @@ class CalculationKey(BaseModel):
     the ensemble reproducible. `CrestSpec` in `engine/xtb_spec.py` carries the argument.
     """
 
-    calc_type: str
-    calc_version: str
-    input_hash: str
-    params_hash: str
-
     @classmethod
     def build(
         cls,
@@ -63,21 +52,17 @@ class CalculationKey(BaseModel):
         calc_version: str,
         inputs: Any,
         params: Any = None,
-    ) -> CalculationKey:
-        """Construct a key by hashing the inputs and parameters.
-
-        The single place a key is assembled, so `CALCULATION_EPOCH` is always folded in.
-        """
-        return cls(
-            calc_type=calc_type,
-            calc_version=calc_version,
-            input_hash=stable_hash(inputs),
-            params_hash=stable_hash({"epoch": CALCULATION_EPOCH, "params": params}),
+        *,
+        epoch: str | None = None,
+    ) -> Self:
+        """The kit's `build`, with `CALCULATION_EPOCH` as the epoch unless one is given."""
+        return super().build(
+            calc_type,
+            calc_version,
+            inputs,
+            params,
+            epoch=CALCULATION_EPOCH if epoch is None else epoch,
         )
-
-    def as_str(self) -> str:
-        """Flat string form for use as a storage/index key — what a result carries to Chemclaw3."""
-        return f"{self.calc_type}@{self.calc_version}:{self.input_hash}:{self.params_hash}"
 
 
 class Keyed(BaseModel):

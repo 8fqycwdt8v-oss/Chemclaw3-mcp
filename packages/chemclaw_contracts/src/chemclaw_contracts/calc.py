@@ -4,7 +4,8 @@
 is the exact argument dict its tool takes (`wire()`), so a caller cannot send a name or type the
 server would refuse, and `servers/calc/tests/test_contract.py` fails when a tool's served input
 schema drifts from the model here. Compute payloads other than the identity and the structure are
-the caller's to model; they share only `KeyedResult`.
+the caller's to model; they share only `KeyedResult`, which with the identity is
+`chemclaw_contracts.compute`'s and is re-exported here.
 
 Invariants: requests forbid unknown arguments (`/rpc` refuses them as this model does; MCP's
 argument model ignores them); `wire()` sends only what the caller set, so a default is the
@@ -13,11 +14,17 @@ server's, never restated here.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from chemclaw_contracts._wire import WireRequest
+from chemclaw_contracts.compute import (
+    CalculationKeyParts,
+    CalculationKeyRequest,
+    ComputeIdentity,
+    KeyedResult,
+)
 
 __all__ = [
     "CALC_REQUESTS",
@@ -71,14 +78,6 @@ class Structure(BaseModel):
     smiles: str | None = None
     origin: str | None = None
     structure_id: str | None = None
-
-
-class CalculationKeyRequest(WireRequest):
-    """`calculation_key`: the identity `tool` would be stored under for `arguments`."""
-
-    tool_name: ClassVar[str] = "calculation_key"
-    tool: str
-    arguments: dict[str, Any]
 
 
 class ComputeXtbEnergyRequest(WireRequest):
@@ -241,36 +240,8 @@ class SearchBindingModesRequest(WireRequest):
     solvent: str | None = None
 
 
-class CalculationKeyParts(BaseModel):
-    """The four fields a store lookup takes. `calc_version` may contain `@` and `:`."""
-
-    calc_type: str
-    calc_version: str
-    input_hash: str
-    params_hash: str
-
-
-class CalculationIdentity(BaseModel):
-    """`calculation_key`'s answer: what a calculation would be stored under, unrun.
-
-    `key` and `calc_key` are `None` exactly where the key is not derivable, and `caveat` says why.
-    """
-
-    tool: str
-    calc_version: str
-    key: CalculationKeyParts | None = None
-    calc_key: str | None = None
-    structure_id: str | None = None
-    caveat: str | None = None
-
-
-class KeyedResult(BaseModel):
-    """What every compute tool's answer carries, whatever else it holds."""
-
-    model_config = ConfigDict(extra="allow")
-
-    calc_version: str
-    calc_key: str | None = None
+#: The name `calculation_key`'s answer had before it became the fleet's; kept for one minor version.
+CalculationIdentity = ComputeIdentity
 
 
 CALC_REQUESTS: dict[str, type[WireRequest]] = {
